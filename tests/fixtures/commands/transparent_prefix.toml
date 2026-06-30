@@ -1,0 +1,80 @@
+# Fixture: transparent prefix commands (sudo, docker exec, npx, etc.)
+
+[[case]]
+input = "sudo git status"
+expected_rewrite = "sudo quor git status"
+should_rewrite = true
+
+[[case]]
+input = "sudo git log --oneline"
+expected_rewrite = "sudo quor git log --oneline"
+should_rewrite = true
+
+[[case]]
+input = "sudo mypy quor/"
+expected_rewrite = "sudo quor mypy quor/"
+should_rewrite = true
+
+[[case]]
+input = "sudo pytest tests/"
+expected_rewrite = "sudo quor pytest tests/"
+should_rewrite = true
+
+[[case]]
+input = "docker exec mycontainer git status"
+expected_rewrite = "docker exec mycontainer quor git status"
+should_rewrite = true
+
+[[case]]
+input = "docker exec web git log --oneline -10"
+expected_rewrite = "docker exec web quor git log --oneline -10"
+should_rewrite = true
+
+[[case]]
+input = "docker exec api-server pytest tests/"
+expected_rewrite = "docker exec api-server quor pytest tests/"
+should_rewrite = true
+
+[[case]]
+input = "podman exec mycontainer git status"
+expected_rewrite = "podman exec mycontainer quor git status"
+should_rewrite = true
+
+[[case]]
+input = "npx tsc --noEmit"
+should_rewrite = false
+
+[[case]]
+input = "npx jest"
+should_rewrite = false
+
+[[case]]
+input = "time git log --oneline -20"
+expected_rewrite = "time quor git log --oneline -20"
+should_rewrite = true
+
+[[case]]
+input = "env TERM=dumb git status"
+should_rewrite = false
+
+[[case]]
+input = "nice -n 10 mypy quor/"
+should_rewrite = false
+
+# sudo on unknown command: still passes through
+[[case]]
+input = "sudo npm install"
+should_rewrite = false
+
+[[case]]
+input = "sudo make build"
+should_rewrite = false
+
+[[case]]
+input = "docker exec container npm install"
+should_rewrite = false
+
+# Nested transparent prefixes: sudo docker exec — only one level handled
+[[case]]
+input = "sudo docker exec mycontainer git status"
+should_rewrite = false

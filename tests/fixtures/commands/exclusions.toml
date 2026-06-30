@@ -1,0 +1,99 @@
+# Fixture: commands that must NOT be rewritten
+
+# Heredocs
+[[case]]
+input = "git commit -m <<EOF\nmy message\nEOF"
+should_rewrite = false
+
+[[case]]
+input = "cat << EOF\nhello\nEOF"
+should_rewrite = false
+
+[[case]]
+input = "git commit -F - << 'EOF'\nfix: patch\nEOF"
+should_rewrite = false
+
+# Pipe-incompatible targets
+[[case]]
+input = "git log --oneline | xargs echo"
+should_rewrite = false
+
+[[case]]
+input = "git status | awk '{print $2}'"
+should_rewrite = false
+
+[[case]]
+input = "git diff | sed 's/foo/bar/g'"
+should_rewrite = false
+
+[[case]]
+input = "pytest tests/ | awk '{print}'"
+should_rewrite = false
+
+[[case]]
+input = "mypy quor/ | sed -n '/error/p'"
+should_rewrite = false
+
+[[case]]
+input = "ruff check . | awk -F: '{print $1}'"
+should_rewrite = false
+
+[[case]]
+input = "git log | perl -ne 'print if /feat/'"
+should_rewrite = false
+
+# Structured output flags
+[[case]]
+input = "gh pr list --json number,title"
+should_rewrite = false
+
+[[case]]
+input = "git status --porcelain"
+should_rewrite = false
+
+[[case]]
+input = "git status --porcelain=v2"
+should_rewrite = false
+
+[[case]]
+input = "git log --format=json"
+should_rewrite = false
+
+# cat with non-display flags
+[[case]]
+input = "cat -e file.txt"
+should_rewrite = false
+
+[[case]]
+input = "cat -v binary.bin"
+should_rewrite = false
+
+[[case]]
+input = "cat -A file.txt"
+should_rewrite = false
+
+# Safe pipes to grep/head/tail (not xargs/awk/sed) ARE allowed
+[[case]]
+input = "git log --oneline | grep feat"
+expected_rewrite = "quor git log --oneline | grep feat"
+should_rewrite = true
+
+[[case]]
+input = "pytest tests/ | head -50"
+expected_rewrite = "quor pytest tests/ | head -50"
+should_rewrite = true
+
+[[case]]
+input = "mypy quor/ | tail -20"
+expected_rewrite = "quor mypy quor/ | tail -20"
+should_rewrite = true
+
+# Completely empty
+[[case]]
+input = ""
+should_rewrite = false
+
+# Only whitespace
+[[case]]
+input = "   "
+should_rewrite = false

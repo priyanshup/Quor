@@ -1,0 +1,67 @@
+# Fixture: environment variable prefix commands
+
+[[case]]
+input = "FORCE_COLOR=1 git status"
+expected_rewrite = "FORCE_COLOR=1 quor git status"
+should_rewrite = true
+
+[[case]]
+input = "FORCE_COLOR=0 git log --oneline"
+expected_rewrite = "FORCE_COLOR=0 quor git log --oneline"
+should_rewrite = true
+
+[[case]]
+input = "NO_COLOR=1 git diff"
+expected_rewrite = "NO_COLOR=1 quor git diff"
+should_rewrite = true
+
+[[case]]
+input = "PYTHONPATH=src pytest tests/"
+expected_rewrite = "PYTHONPATH=src quor pytest tests/"
+should_rewrite = true
+
+[[case]]
+input = "PYTHONPATH=src python -m pytest tests/"
+expected_rewrite = "PYTHONPATH=src quor python -m pytest tests/"
+should_rewrite = true
+
+[[case]]
+input = "MYPY_CACHE_DIR=/tmp mypy quor/"
+expected_rewrite = "MYPY_CACHE_DIR=/tmp quor mypy quor/"
+should_rewrite = true
+
+[[case]]
+input = "CI=true pytest tests/ -q"
+expected_rewrite = "CI=true quor pytest tests/ -q"
+should_rewrite = true
+
+[[case]]
+input = "DEBUG=1 ruff check ."
+expected_rewrite = "DEBUG=1 quor ruff check ."
+should_rewrite = true
+
+# Multiple env vars
+[[case]]
+input = "FORCE_COLOR=1 NO_COLOR=0 git status"
+expected_rewrite = "FORCE_COLOR=1 NO_COLOR=0 quor git status"
+should_rewrite = true
+
+[[case]]
+input = "CI=true PYTHONPATH=src python -m pytest"
+expected_rewrite = "CI=true PYTHONPATH=src quor python -m pytest"
+should_rewrite = true
+
+# Env prefix on unknown command: still passes through
+[[case]]
+input = "DEBUG=1 npm install"
+should_rewrite = false
+
+[[case]]
+input = "NODE_ENV=production make build"
+should_rewrite = false
+
+# Env prefix with empty var value
+[[case]]
+input = "X= git status"
+expected_rewrite = "X= quor git status"
+should_rewrite = true

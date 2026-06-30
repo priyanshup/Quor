@@ -1,0 +1,103 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "quor"
+version = "0.1.0.dev0"
+description = "Context compression middleware for AI coding assistants — transparent, rule-based, pip-installable on Windows."
+readme = "README.md"
+license = { text = "Apache-2.0" }
+requires-python = ">=3.11"
+keywords = ["ai", "context", "compression", "claude", "llm", "developer-tools", "windows"]
+classifiers = [
+    "Development Status :: 2 - Pre-Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: Utilities",
+]
+dependencies = [
+    "typer>=0.12.0",
+    "pydantic>=2.0.0",
+    "orjson>=3.9.0",
+    "platformdirs>=4.0.0",
+    "regex>=2024.0.0",
+    "rich>=13.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-cov>=5.0.0",
+    "mypy>=1.10.0",
+    "ruff>=0.4.0",
+]
+
+[project.scripts]
+quor = "quor.__main__:main"
+qr   = "quor.__main__:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["quor"]
+
+# ---------------------------------------------------------------------------
+# Ruff
+# ---------------------------------------------------------------------------
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "C4", "SIM", "RUF", "BLE"]
+ignore = [
+    "E501",   # line too long — ruff format handles wrapping
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["quor"]
+
+[tool.ruff.lint.flake8-bugbear]
+# typer.Argument(...)/typer.Option(...) as a parameter default is the
+# required, idiomatic way to declare CLI params — not a mutable-default bug.
+extend-immutable-calls = ["typer.Argument", "typer.Option"]
+
+# ---------------------------------------------------------------------------
+# Mypy
+# ---------------------------------------------------------------------------
+[tool.mypy]
+python_version = "3.11"
+strict = true
+warn_return_any = true
+warn_unused_configs = true
+
+[[tool.mypy.overrides]]
+module = ["regex"]
+ignore_missing_imports = true
+
+# ---------------------------------------------------------------------------
+# Pytest
+# ---------------------------------------------------------------------------
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--tb=short -q"
+markers = [
+    "integration: marks tests requiring real filesystem or subprocess (deselect with '-m not integration')",
+]
+
+# ---------------------------------------------------------------------------
+# Coverage
+# ---------------------------------------------------------------------------
+[tool.coverage.run]
+source = ["quor"]
+omit = ["tests/*"]
+
+[tool.coverage.report]
+show_missing = true
+# Raised to 80 in Phase 1 once pipeline code has unit tests.
+fail_under = 0

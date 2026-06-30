@@ -1,0 +1,151 @@
+# Fixture: simple commands (no compound operators, no pipes, no env prefix)
+
+[[case]]
+input = "git status"
+expected_rewrite = "quor git status"
+should_rewrite = true
+
+[[case]]
+input = "git diff"
+expected_rewrite = "quor git diff"
+should_rewrite = true
+
+[[case]]
+input = "git log"
+expected_rewrite = "quor git log"
+should_rewrite = true
+
+[[case]]
+input = "git log --oneline"
+expected_rewrite = "quor git log --oneline"
+should_rewrite = true
+
+[[case]]
+input = "git log --oneline -20"
+expected_rewrite = "quor git log --oneline -20"
+should_rewrite = true
+
+[[case]]
+input = "git diff HEAD~1"
+expected_rewrite = "quor git diff HEAD~1"
+should_rewrite = true
+
+[[case]]
+input = "git show abc1234"
+expected_rewrite = "quor git show abc1234"
+should_rewrite = true
+
+[[case]]
+input = "git blame src/main.py"
+expected_rewrite = "quor git blame src/main.py"
+should_rewrite = true
+
+[[case]]
+input = "pytest"
+expected_rewrite = "quor pytest"
+should_rewrite = true
+
+[[case]]
+input = "pytest tests/"
+expected_rewrite = "quor pytest tests/"
+should_rewrite = true
+
+[[case]]
+input = "pytest tests/unit/ -x"
+expected_rewrite = "quor pytest tests/unit/ -x"
+should_rewrite = true
+
+[[case]]
+input = "pytest tests/ --tb=short -q"
+expected_rewrite = "quor pytest tests/ --tb=short -q"
+should_rewrite = true
+
+[[case]]
+input = "pytest -k test_foo -v"
+expected_rewrite = "quor pytest -k test_foo -v"
+should_rewrite = true
+
+[[case]]
+input = "mypy quor/"
+expected_rewrite = "quor mypy quor/"
+should_rewrite = true
+
+[[case]]
+input = "mypy src/ --strict"
+expected_rewrite = "quor mypy src/ --strict"
+should_rewrite = true
+
+[[case]]
+input = "ruff check ."
+expected_rewrite = "quor ruff check ."
+should_rewrite = true
+
+[[case]]
+input = "ruff check quor/ --fix"
+expected_rewrite = "quor ruff check quor/ --fix"
+should_rewrite = true
+
+[[case]]
+input = "cat pyproject.toml"
+expected_rewrite = "quor cat pyproject.toml"
+should_rewrite = true
+
+[[case]]
+input = "cat -n src/main.py"
+expected_rewrite = "quor cat -n src/main.py"
+should_rewrite = true
+
+[[case]]
+input = "python -m pytest tests/"
+expected_rewrite = "quor python -m pytest tests/"
+should_rewrite = true
+
+[[case]]
+input = "python -m pytest -x --tb=short"
+expected_rewrite = "quor python -m pytest -x --tb=short"
+should_rewrite = true
+
+[[case]]
+input = "python -m mypy quor/"
+expected_rewrite = "quor python -m mypy quor/"
+should_rewrite = true
+
+[[case]]
+input = "python -m ruff check ."
+expected_rewrite = "quor python -m ruff check ."
+should_rewrite = true
+
+[[case]]
+input = "python3 -m pytest tests/"
+expected_rewrite = "quor python3 -m pytest tests/"
+should_rewrite = true
+
+# Unknown commands pass through
+[[case]]
+input = "npm install"
+should_rewrite = false
+
+[[case]]
+input = "ls -la"
+should_rewrite = false
+
+[[case]]
+input = "make build"
+should_rewrite = false
+
+[[case]]
+input = "cargo build"
+should_rewrite = false
+
+[[case]]
+input = "echo hello"
+should_rewrite = false
+
+# python without -m is unknown (no filter for it)
+[[case]]
+input = "python script.py"
+should_rewrite = false
+
+[[case]]
+input = "python -c 'print(1)'"
+should_rewrite = false

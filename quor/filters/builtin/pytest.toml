@@ -1,0 +1,59 @@
+# quor built-in filter: pytest
+# Strips passing-test noise; preserves failures, errors, and tracebacks.
+schema_version = 1
+
+[[filter]]
+name = "pytest"
+match_command = '^pytest\b|^python -m pytest\b'
+abort_unless = ["FAILED", "ERROR", "error"]
+on_empty = "All tests passed."
+
+[[filter.stages]]
+type = "strip_lines"
+patterns = [
+    '^[.sFPE]+$',
+    '^PASSED ',
+    '^test_.*PASSED$',
+    '^\s*\d+ passed',
+    '^platform ',
+    '^rootdir:',
+    '^plugins:',
+    '^collecting\s',
+    '=+ test session starts =+',
+    '=+ short test summary info =+',
+    '^cacheprovider',
+]
+preserve_patterns = [
+    'FAILED',
+    'ERROR',
+    'Error',
+    'Exception',
+    'assert',
+    'AssertionError',
+    'Traceback',
+]
+
+[[filter.stages]]
+type = "deduplicate_consecutive"
+
+[[filter.stages]]
+type = "max_tokens"
+limit = 500
+strategy = "tail"
+
+[[filter.tests]]
+description = "PASSED lines stripped, FAILED preserved"
+input = "PASSED tests/test_foo.py::test_a\nFAILED tests/test_foo.py::test_b\n    AssertionError: expected True"
+must_contain = ["FAILED", "AssertionError"]
+must_not_contain = ["PASSED tests/test_foo"]
+
+[[filter.tests]]
+description = "abort_unless: all-pass output returned unchanged"
+input = "PASSED tests/test_a.py::test_x\nPASSED tests/test_a.py::test_y\n2 passed in 0.1s"
+must_contain = ["PASSED"]
+
+[[filter.tests]]
+description = "Session header and collection lines stripped on failure run"
+input = "===== test session starts =====\ncollecting ...\nFAILED tests/test_b.py::test_z\nERROR: something went wrong"
+must_contain = ["FAILED", "ERROR"]
+must_not_contain = ["collecting ..."]

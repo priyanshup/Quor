@@ -1,0 +1,34 @@
+# quor built-in filter: generic
+# Fallback filter: remove ANSI noise, deduplicate, and cap token count.
+# Matches everything — must be last in any tier so specific filters win.
+schema_version = 1
+
+[[filter]]
+name = "generic"
+match_command = '.'
+
+[[filter.stages]]
+type = "remove_ansi"
+
+[[filter.stages]]
+type = "deduplicate_consecutive"
+
+[[filter.stages]]
+type = "max_tokens"
+limit = 1000
+strategy = "tail"
+
+[[filter.tests]]
+description = "Consecutive duplicate lines deduplicated"
+input = "same line\nsame line\ndifferent line"
+must_contain = ["same line", "different line"]
+
+[[filter.tests]]
+description = "Unique lines all preserved"
+input = "line_a\nline_b\nline_c"
+must_contain = ["line_a", "line_b", "line_c"]
+
+[[filter.tests]]
+description = "Content within token limit unchanged"
+input = "short output"
+must_contain = ["short output"]

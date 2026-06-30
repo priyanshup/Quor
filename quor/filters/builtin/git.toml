@@ -1,0 +1,131 @@
+# quor built-in filter: git
+# Compresses common git command output: status, log, diff, blame.
+schema_version = 1
+
+[[filter]]
+name = "git-status"
+match_command = '^git\s+status\b'
+
+[[filter.stages]]
+type = "strip_lines"
+patterns = [
+    '^  \(use "git',
+    '^nothing to commit',
+    '^nothing added to commit',
+    '^no changes added to commit',
+    '^On branch ',
+    "^Your branch is up to date",
+    "^Your branch is ahead",
+]
+preserve_patterns = [
+    'modified:',
+    'deleted:',
+    'renamed:',
+    'new file:',
+    'conflict',
+    'CONFLICT',
+    'Unmerged',
+]
+
+[[filter.stages]]
+type = "deduplicate_consecutive"
+
+[[filter.tests]]
+description = "Help hints stripped, modified files preserved"
+input = "On branch main\n  (use \"git add\" to stage)\n\tmodified:   src/main.py"
+must_contain = ["modified:   src/main.py"]
+must_not_contain = ["use \"git add\""]
+
+[[filter.tests]]
+description = "Conflict lines always preserved"
+input = "CONFLICT (content): Merge conflict in src/app.py\nAutomatic merge failed"
+must_contain = ["CONFLICT"]
+
+[[filter.tests]]
+description = "Clean working tree notice stripped"
+input = "On branch main\nnothing to commit, working tree clean"
+must_not_contain = ["nothing to commit"]
+
+[[filter]]
+name = "git-log"
+match_command = '^git\s+log\b'
+
+[[filter.stages]]
+type = "strip_lines"
+patterns = [
+    '^Author:',
+    '^Date:',
+    '^Merge:',
+]
+preserve_patterns = [
+    'commit ',
+    'fix',
+    'feat',
+    'BREAKING',
+]
+
+[[filter.stages]]
+type = "max_tokens"
+limit = 400
+strategy = "head"
+
+[[filter.tests]]
+description = "Author and date stripped, commit hash preserved"
+input = "commit abc1234\nAuthor: Dev <dev@example.com>\nDate:   Mon Jan 1 00:00:00 2024\n\n    feat: add feature"
+must_contain = ["commit abc1234", "feat: add feature"]
+must_not_contain = ["Author:", "Date:"]
+
+[[filter.tests]]
+description = "BREAKING change line always preserved"
+input = "commit def5678\nAuthor: Dev <dev@example.com>\n\n    BREAKING CHANGE: removed old API"
+must_contain = ["BREAKING CHANGE"]
+
+[[filter.tests]]
+description = "Head strategy keeps earliest commits"
+input = "commit aaa0001\n\n    first commit\ncommit bbb0002\n\n    second commit"
+must_contain = ["commit aaa0001"]
+
+[[filter]]
+name = "git-diff"
+match_command = '^git\s+(diff|show)\b'
+
+[[filter.stages]]
+type = "strip_lines"
+patterns = [
+    '^index ',
+    '^diff --git ',
+    '^--- a/',
+    '^\+\+\+ b/',
+    '^ $',
+]
+preserve_patterns = [
+    '^\+',
+    '^-',
+    '^@@',
+    'conflict',
+    'Error',
+]
+
+[[filter.stages]]
+type = "deduplicate_consecutive"
+
+[[filter.stages]]
+type = "max_tokens"
+limit = 600
+strategy = "both"
+
+[[filter.tests]]
+description = "Index header stripped, hunk header preserved"
+input = "diff --git a/foo.py b/foo.py\nindex abc..def 100644\n--- a/foo.py\n+++ b/foo.py\n@@ -1,3 +1,4 @@\n+new line"
+must_contain = ["@@ -1,3 +1,4 @@", "+new line"]
+must_not_contain = ["index abc..def"]
+
+[[filter.tests]]
+description = "Added and removed lines preserved"
+input = "@@ -1,2 +1,2 @@\n-old line\n+new line\n context"
+must_contain = ["-old line", "+new line"]
+
+[[filter.tests]]
+description = "Blank context lines stripped"
+input = "@@ -1,3 +1,3 @@\n context line\n \n+added line"
+must_contain = ["context line", "+added line"]

@@ -1,0 +1,50 @@
+# quor built-in filter: cat / file display
+# Strips comment lines and condenses blank-line runs.
+schema_version = 1
+
+[[filter]]
+name = "cat"
+match_command = '^cat\b'
+
+[[filter.stages]]
+type = "strip_lines"
+patterns = [
+    '^\s*#[^!]',
+    '^\s*//\s',
+    '^\s*--\s',
+    '^\s*;\s',
+]
+preserve_patterns = [
+    '^#!/',
+    'TODO',
+    'FIXME',
+    'HACK',
+    'XXX',
+    'NOTE',
+    'WARN',
+]
+
+[[filter.stages]]
+type = "deduplicate_consecutive"
+
+[[filter.stages]]
+type = "max_tokens"
+limit = 800
+strategy = "both"
+
+[[filter.tests]]
+description = "Comment lines stripped, shebangs preserved"
+input = "#!/usr/bin/env python\n# regular comment\ncode_line = True"
+must_contain = ["#!/usr/bin/env python", "code_line"]
+must_not_contain = ["# regular comment"]
+
+[[filter.tests]]
+description = "TODO comments preserved despite comment pattern"
+input = "# TODO: fix this\n# regular comment\ncode()"
+must_contain = ["TODO"]
+must_not_contain = ["# regular comment"]
+
+[[filter.tests]]
+description = "Non-comment content fully preserved"
+input = "import os\ndef main():\n    pass"
+must_contain = ["import os", "def main", "pass"]

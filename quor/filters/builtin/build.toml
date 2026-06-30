@@ -1,0 +1,89 @@
+# quor built-in filter: build tools
+# Compresses mypy and ruff output: keeps violations, strips success noise.
+schema_version = 1
+
+[[filter]]
+name = "mypy"
+match_command = '^mypy\b|^python -m mypy\b'
+abort_unless = ["error", "Error", "warning", "Warning", "note"]
+on_empty = "mypy: no issues found."
+
+[[filter.stages]]
+type = "strip_lines"
+patterns = [
+    '^Success: no issues found',
+    '^Found \d+ error',
+    '^\s*$',
+]
+preserve_patterns = [
+    'error:',
+    'warning:',
+    'note:',
+    'Error',
+]
+
+[[filter.stages]]
+type = "group_repeated"
+patterns = ['^.*: error: ']
+min_count = 3
+
+[[filter.stages]]
+type = "max_tokens"
+limit = 400
+strategy = "tail"
+
+[[filter.tests]]
+description = "Success line stripped when errors present"
+input = "src/foo.py:10: error: Incompatible types\nFound 1 error in 1 file"
+must_contain = ["error: Incompatible"]
+must_not_contain = ["Found 1 error"]
+
+[[filter.tests]]
+description = "abort_unless: clean mypy run returns success line unchanged"
+input = "Success: no issues found in 5 source files (checked 5 source files)"
+must_contain = ["Success"]
+
+[[filter.tests]]
+description = "Multiple error lines preserved"
+input = "src/a.py:1: error: Missing return\nsrc/b.py:5: error: Argument type"
+must_contain = ["src/a.py:1: error", "src/b.py:5: error"]
+
+[[filter]]
+name = "ruff"
+match_command = '^ruff\s+check\b|^python -m ruff\s+check\b'
+abort_unless = ["error", "Error", "warning", "E", "F", "W"]
+on_empty = "ruff: all checks passed."
+
+[[filter.stages]]
+type = "strip_lines"
+patterns = [
+    '^All checks passed',
+    '^Found \d+ error',
+    '\[\*\] \d+ fixable',
+]
+preserve_patterns = [
+    'error:',
+    'Error',
+    'warning:',
+]
+
+[[filter.stages]]
+type = "max_tokens"
+limit = 300
+strategy = "tail"
+
+[[filter.tests]]
+description = "All-checks-passed stripped when violations present"
+input = "src/foo.py:1:1: E501 Line too long\nFound 1 error."
+must_contain = ["E501 Line too long"]
+must_not_contain = ["Found 1 error"]
+
+[[filter.tests]]
+description = "abort_unless: clean ruff run returns original"
+input = "All checks passed!"
+must_contain = ["All checks passed"]
+
+[[filter.tests]]
+description = "Multiple violations preserved"
+input = "src/a.py:1:1: F401 unused import\nsrc/b.py:2:5: E302 blank lines"
+must_contain = ["F401", "E302"]

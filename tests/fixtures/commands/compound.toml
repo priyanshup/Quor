@@ -1,0 +1,82 @@
+# Fixture: compound commands (&&, ||, ;)
+
+[[case]]
+input = "git status && git diff"
+expected_rewrite = "quor git status && quor git diff"
+should_rewrite = true
+
+[[case]]
+input = "git add . && git status"
+expected_rewrite = "quor git add . && quor git status"
+should_rewrite = true
+
+[[case]]
+input = "mypy quor/ && ruff check quor/"
+expected_rewrite = "quor mypy quor/ && quor ruff check quor/"
+should_rewrite = true
+
+[[case]]
+input = "git diff && pytest tests/"
+expected_rewrite = "quor git diff && quor pytest tests/"
+should_rewrite = true
+
+[[case]]
+input = "git status ; git log --oneline -5"
+expected_rewrite = "quor git status ; quor git log --oneline -5"
+should_rewrite = true
+
+[[case]]
+input = "pytest tests/ || echo 'tests failed'"
+expected_rewrite = "quor pytest tests/ || echo 'tests failed'"
+should_rewrite = true
+
+[[case]]
+input = "git status || git status"
+expected_rewrite = "quor git status || quor git status"
+should_rewrite = true
+
+[[case]]
+input = "npm install && git status"
+expected_rewrite = "npm install && quor git status"
+should_rewrite = true
+
+[[case]]
+input = "npm install && npm test"
+should_rewrite = false
+
+# Three-way compound
+[[case]]
+input = "git status && git diff && pytest tests/"
+expected_rewrite = "quor git status && quor git diff && quor pytest tests/"
+should_rewrite = true
+
+[[case]]
+input = "make build && pytest tests/ && ruff check ."
+expected_rewrite = "make build && quor pytest tests/ && quor ruff check ."
+should_rewrite = true
+
+# Semicolons
+[[case]]
+input = "git log; git diff"
+expected_rewrite = "quor git log ; quor git diff"
+should_rewrite = true
+
+[[case]]
+input = "mypy quor/; ruff check quor/"
+expected_rewrite = "quor mypy quor/ ; quor ruff check quor/"
+should_rewrite = true
+
+# Mixed operators
+[[case]]
+input = "git fetch && git status || git log"
+expected_rewrite = "quor git fetch && quor git status || quor git log"
+should_rewrite = true
+
+# All-unknown compound stays unchanged
+[[case]]
+input = "make clean && make build"
+should_rewrite = false
+
+[[case]]
+input = "npm install && npm run build"
+should_rewrite = false
