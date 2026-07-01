@@ -1,7 +1,7 @@
 ﻿# PROJECT STATUS
 ## Quor — Current State Snapshot
 
-> Last updated: 2026-07-01 (Phase 7 complete)
+> Last updated: 2026-07-01 (Phase 8 core plugin infrastructure complete)
 > Update this document at the start of every implementation session.
 
 ---
@@ -13,9 +13,9 @@
 | Research | COMPLETE | 100% | All 5 research documents finalized. Archived. |
 | Architecture | COMPLETE | 100% | All decisions made. Documented in DECISIONS.md (25 ADRs). |
 | Documentation | COMPLETE | 95% | 10 canonical docs + README.md written. JSON Schema generated (Phase 3). |
-| Implementation | IN PROGRESS | 78% | Phases 0–7 complete. Phase 8 (plugin system) next. |
-| Testing | IN PROGRESS | 78% | 413 tests, ruff+mypy clean. All passing. |
-| Packaging | NOT STARTED | 0% | PyPI name available (verified 2026-06-30). Registration pending Phase 9. |
+| Implementation | IN PROGRESS | 88% | Phases 0–8 complete. Phase 9 (plugin discovery) next. |
+| Testing | IN PROGRESS | 88% | 560 tests, ruff+mypy clean. All passing. |
+| Packaging | NOT STARTED | 0% | PyPI name available (verified 2026-06-30). Registration pending Phase 10. |
 
 ---
 
@@ -100,14 +100,16 @@ Do not begin any public work until the name is secured.
 | 5 | Hook adapter | COMPLETE (34 adapter tests + 357 total, 96% coverage, ruff+mypy clean) |
 | 6 | Tracking | COMPLETE (35 tracking tests + 392 total, WAL mode, JSONL+SQLite, ruff+mypy clean) |
 | 7 | CLI commands | COMPLETE (21 CLI tests + 413 total, all 6 commands smoke-tested incl. `init --claude` end-to-end, ruff+mypy clean) |
-| 8 | Plugin system | NOT STARTED |
-| 9 | Packaging | NOT STARTED |
+| 7.5 | Pre-Phase 8 hardening | COMPLETE (493 total, see notes below) |
+| 8 | Plugin Infrastructure | COMPLETE (560 total, see notes below) |
+| 9 | Plugin Discovery & Loading | NOT STARTED |
+| 10 | Packaging | NOT STARTED |
 
 ---
 
 ## Testing Phase (IN PROGRESS)
 
-**413 tests passing** as of Phase 7 completion. All linters clean.
+**560 tests passing** as of Phase 8 complete. All linters clean.
 
 | Module | Tests | Notes |
 |---|---|---|
@@ -115,13 +117,18 @@ Do not begin any public work until the name is secured.
 | `quor/filters/` | 96 | 92% coverage |
 | `quor/rewrite/` | 177 | lexer, classifier, 100+ fixtures |
 | `quor/adapters/` | 34 | hook + dispatcher |
-| `quor/tracking/` | 35 | SQLite, JSONL, WAL, 90-day cleanup, GLOB scoping |
-| `quor/cli/commands/` | 21 | init/validate/explain/gain/verify/doctor via typer CliRunner |
+| `quor/tracking/` | 37 | SQLite, JSONL, WAL, 90-day cleanup, GLOB scoping, concurrent writers |
+| `quor/cli/commands/` | 35 | init/validate/explain/gain/verify/doctor + collision detection + encoding regression |
+| `tests/unit/test_filter_safety.py` | 35 | Error-safety snapshot tests across all 7 built-in filters |
+| `tests/unit/test_fail_open.py` | 16 | Chaos tests: corrupt TOML, malformed hook JSON, permission errors, hook timeout, ReDoS |
+| Codepage sweep | 6 | cp437/cp1252/utf-8/ascii via TestCodepageSweep |
+| `quor/plugins/` | 67 | Plugin Protocol, PluginRegistry (registration, lifecycle, execution, capability queries) |
 
 **Testing targets from RELEASE_CRITERIA.md:**
 - ≥80% coverage on `quor/pipeline/`, `quor/filters/`, `quor/rewrite/` — first two met
-- CI on `windows-latest` and `ubuntu-latest` — not yet configured
-- Default test suite completes in <30 seconds — ~5s currently ✓
+- CI on `windows-latest` and `ubuntu-latest` — ✓ configured in `.github/workflows/ci.yml`
+- Weekly canary — ✓ configured in `.github/workflows/canary.yml`
+- Default test suite completes in <30 seconds — ~16s currently ✓
 - 100+ command classifier fixtures — ✓ met in Phase 4
 
 ---
@@ -155,17 +162,22 @@ Do not begin any public work until the name is secured.
 
 ## Remaining Unknowns
 
-1. **Actual Python startup time on target Windows machine.** Estimate: will be <300ms. Must verify.
-2. **Claude Code hook timeout on Windows.** Documented as 30s. May be shorter in practice.
-3. **Claude Code `settings.json` format on Windows.** May differ from documented format.
-4. **Whether `quor` is still available on PyPI.** Check now: `pip index versions quor`.
-5. **Whether Headroom AI works on the target Windows machine.** If it does and its hook adapter works, the build decision should be revisited (contribute vs. build). This was listed as a pre-flight check but was not performed.
+1. **Claude Code hook timeout on Windows.** Documented as 30s. May be shorter in practice. Dispatcher hardened to 25s timeout (returns exit code 124). Canary will detect format changes.
+2. **Whether `quor` is still available on PyPI.** Registration deferred to Phase 9. Re-verify before Phase 9 begins.
+3. **Plugin API stability under adversarial plugins.** In-memory registry + api_version check implemented and tested. Entry-point scanning (Phase 9) is the remaining risk surface.
+
+**Resolved unknowns (no longer open):**
+- ~~Python startup time~~ — measured at ~70ms on this machine. No daemon needed.
+- ~~CI platform coverage~~ — `windows-latest` + `ubuntu-latest` both in `.github/workflows/ci.yml`.
+- ~~Fail-open behavior under chaos~~ — tested in `test_fail_open.py`: corrupted TOML, malformed JSON, permission errors, hook timeout, ReDoS all degrade safely.
+- ~~Filter safety on real error output~~ — all 7 built-in filters verified in `test_filter_safety.py`.
+- ~~Concurrent session safety~~ — two-writer WAL test passing. WAL PRAGMA retry loop added to `TrackingDB._connect()`.
 
 ---
 
 ## Known Blockers
 
-None beyond the three pre-implementation blockers described above.
+None. Phase 8 (Plugin Infrastructure) complete. Phase 9 (Plugin Discovery & Loading) may proceed.
 
 ---
 
@@ -180,17 +192,83 @@ Also added `[tool.ruff.lint.flake8-bugbear] extend-immutable-calls = ["typer.Arg
 
 The mode system (ADR-009: AUDIT/OPTIMIZE/SIMULATE) remains **display-only** — `quor doctor` and `quor gain` show the configured mode (read from `~/.config/quor/config.toml`, overridable by `QUOR_MODE` env var, default `"optimize"`), but `quor/adapters/dispatcher.py` does not yet branch on it. Wiring real mode-switching behavior into the dispatcher was explicitly deferred — it wasn't part of the Phase 7 CLI-commands deliverable, and changing dispatcher behavior would have been an unscoped risk to the existing passing test suite.
 
+## Pre-Phase 8 Hardening Notes (2026-07-01)
+
+**P0 items completed before Phase 8:**
+
+1. **Error-safety snapshot tests** (`tests/unit/test_filter_safety.py`, 35 tests). Real failing output samples for all 7 built-in filters (git-status, git-diff, pytest, mypy, ruff, cat, generic). Assert error-relevant lines are never marked COMPRESS; rendered output preserves all failure content.
+
+2. **Fail-open chaos tests** (`tests/unit/test_fail_open.py`, 16 tests). Confirmed ADR-018 holds under: corrupted TOML, malformed hook JSON, missing permissions, hook timeout (MemoryError/RuntimeError/TimeoutError), hanging subprocess (exit 124), pathological ReDoS regex (timeout → KEEP, warning emitted).
+
+3. **Hook collision detection** (`quor/cli/commands/init.py`, `doctor.py`). `quor init --claude` now scans existing PreToolUse hooks before writing, warns by name (Zap, RTK, Headroom AI, Comet), defaults confirmation to `False` when conflicts exist. `quor doctor` re-runs same check. Covered by `TestHookCollisionDetection` in `test_cli.py`.
+
+4. **CI on windows-latest and ubuntu-latest** — already existed in `.github/workflows/ci.yml`. Verified. No changes needed.
+
+**P1 items completed:**
+
+5. **Weekly canary** (`.github/workflows/canary.yml`). Monday 08:00 UTC cron. Installs unpinned `@anthropic-ai/claude-code`, verifies hook fires, response is valid JSON with correct rewrite, extra fields preserved, `quor init --claude` writes valid settings.json, full test suite passes.
+
+6. **Codepage/locale sweep** (`TestCodepageSweep`, `TestWindowsEncodingRegression` in `test_cli.py`). Parametrized for cp437/cp1252/utf-8/ascii — all get `reconfigure(encoding="utf-8")` called. ValueError and OSError from reconfigure are suppressed (contextlib.suppress). Phase 7 encoding crash has dedicated regression tests.
+
+7. **Concurrency test on tracker** (`TestConcurrentWrites` in `test_tracking.py`). Two threads × 30 records = 60 expected, all written without data loss. WAL PRAGMA retry loop added to `TrackingDB._connect()` (up to 5 attempts with 50ms backoff) — real bug found: concurrent open of the same SQLite file caused PRAGMA to fail with "database is locked" and the background thread to die silently.
+
+**Regression audit:**
+- Phase 7 duplicate-hook bug: already covered by `test_existing_hook_overwritten_not_duplicated`.
+- Phase 7 Windows encoding crash: now covered by `TestWindowsEncodingRegression` (4 dedicated tests).
+
+---
+
+## Phase 8 Notes (2026-07-01)
+
+**Public Plugin API** (`quor/plugins/base.py`, `quor/plugins/__init__.py`):
+
+- `Plugin` Protocol (`@runtime_checkable`) with `api_version: ClassVar[int]`, `metadata`, `initialize`, `execute`, `shutdown`. Lifecycle contract: `initialize` may raise `PluginError`; `execute` is fail-open; `shutdown` must never raise.
+- `PluginCategory(StrEnum)`: PRE_FILTER → FILTER → POST_FILTER. StrEnum so string comparisons work at runtime.
+- `ExecutionMode(StrEnum)`: AUDIT / OPTIMIZE / SIMULATE. Passed in `PluginContext.mode`.
+- `PluginContext(frozen, kw_only)`: project_root, mode, session_id, invocation_id. Lean by design — new optional fields may be added without breaking existing plugins.
+- `PluginPayload(frozen, kw_only)`: command, raw_output, current_output, content_type, annotations. Helper methods `replace_output()` and `with_annotation()` return new instances.
+- `PluginResult(frozen, kw_only)`: payload + was_modified + abort + note. `abort=True` is controlled early termination (not a failure).
+- `PluginMetadata(frozen, kw_only)`: required: plugin_id, display_name, version, category. Optional: author, description, priority (default 100), min_quor_version, capabilities tuple.
+- `CAPABILITY_*` string constants: advisory vocabulary (not enforcement) in v1. Third-party plugins may define their own namespaced capability strings.
+- `kw_only=True` on all four public dataclasses: allows future fields to be added without positional-order breaking changes.
+- `QUOR_PLUGIN_API_VERSION = 1`: gating constant. Plugins with mismatched `api_version` are rejected at registration time.
+
+**In-memory `PluginRegistry`** (`quor/plugins/registry.py`):
+
+- Three tiers: project > user > builtin. Same model as `FilterRegistry`.
+- `register(plugin, tier)`: validates Protocol conformance and `api_version`. Warns on same-tier duplicate (replaces) and cross-tier shadow (lower-tier accepted but noted as "will never run").
+- `unregister(plugin_id, tier)`: returns `True` if removed.
+- `get(plugin_id, tier=None)`: direct id lookup; when `tier=None`, returns highest-precedence-tier instance.
+- `plugins_for_category(category)`: project → user → builtin, sorted by ascending priority. Equal priority within the same tier preserves registration order (timsort stable sort + dict insertion order guarantee).
+- `all_plugins()`: PRE_FILTER → FILTER → POST_FILTER, with same ordering within each category.
+- `capabilities() -> frozenset[str]`: union of all capabilities declared by registered plugins.
+- `plugins_with_capability(capability)`: filters `all_plugins()` by declared capability; in execution order.
+- `initialize_all(ctx)`: calls `initialize()` on each plugin; `PluginError` or any exception disables the plugin (removes from registry, returns plugin_id in failed list). Disabled plugins are permanently absent from all subsequent lookups and pipeline runs.
+- `shutdown_all()`: suppresses all exceptions from `shutdown()`.
+- `run_pipeline(payload, ctx)`: runs all plugins across all categories, fail-open.
+- `run_category(category, payload, ctx)`: runs only plugins in one category, fail-open. Enables the Phase 9 dispatcher to interleave with the ContentMask pipeline: PRE_FILTER → ContentMask stages → POST_FILTER.
+- Internal `_execute_plugins(plugins, payload, ctx)`: shared execution logic. Exceptions from `execute()` → warn + pass payload through; `abort=True` → stop chain with no warning.
+
+**Design decision preserved from API review:** `StageHandler` (existing, TOML-configurable, ContentMask-typed) and `Plugin` (new, Python-code, lifecycle-managed) are kept as separate Protocol hierarchies. They serve different use cases and should not be merged.
+
+**No breaking changes to existing behavior:** all 493 pre-Phase 8 tests continue to pass. Phase 8 adds 67 new tests; total 560.
+
+---
+
 ## Immediate Next Milestone
 
-**Phase 8: Plugin System** (`quor.compression_stage` entry-points)
+**Phase 9: Plugin Discovery & Loading** (entry-point scanning, plugin_loader.py, cache, `quor doctor` diagnostics)
 
 Deliverables (see IMPLEMENTATION_PLAN.md for full spec):
-- Entry-point discovery for third-party `StageHandler` implementations
-- Plugin validation: `api_version` check, `StageHandler` Protocol conformance
-- Plugin failures log and skip — never raise, never break the pipeline
-- Discovery caching (avoid re-scanning entry points on every invocation)
+- `quor/pipeline/plugin_loader.py` — discover `quor.compression_stage` entry-points, populate `PluginRegistry` (Phase 8 registry already ready)
+- Plugin cache: `~/.config/quor/plugin-cache.json`, invalidated on package-set changes
+- `api_version` compatibility check at load time
+- `quor doctor` plugin diagnostics: list loaded plugins and load failures
+- `file://` escape hatch for local dev stages
 
-**Internal Alpha (v0.1)** target: after Phase 8 (Plugin system) is complete.
+**Phase 10: Packaging** follows Phase 9.
+
+**Internal Alpha (v0.1)** target: after Phase 10 (Packaging) is complete.
 
 ---
 

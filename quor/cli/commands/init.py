@@ -30,6 +30,15 @@ _HOOK_SCRIPT_NAME = "claude-hook.ps1"
 # so the script filename is what's actually present and matchable here.
 _HOOK_COMMAND_MARKER = _HOOK_SCRIPT_NAME
 
+# Known tools that register PreToolUse Bash hooks — used to give a named
+# warning when Quor detects a conflict.
+_KNOWN_HOOK_TOOLS: dict[str, str] = {
+    "zap": "Zap (RTK)",
+    "rtk": "RTK",
+    "headroom": "Headroom AI",
+    "comet": "Comet",
+}
+
 
 def init(
     claude: bool = typer.Option(False, "--claude", help="Install the Claude Code PreToolUse hook."),
@@ -49,14 +58,32 @@ def init(
 
     existing_settings = _read_settings(settings_file)
     already_installed = _hook_already_installed(existing_settings)
+    conflicts = _find_conflicting_hooks(existing_settings)
 
     console.print("[bold]Dry run[/bold]")
     console.print(f"  Will write hook script to: {hook_script_path}")
     console.print(f"  Will update settings file: {settings_file}")
     if already_installed:
-        console.print("  [yellow]A Quor hook is already registered — it will be overwritten.[/yellow]")
+        console.print(
+            "  [yellow]⚠  A Quor hook is already registered — it will be overwritten.[/yellow]"
+        )
 
-    if not yes and not typer.confirm("Proceed?", default=True):
+    if conflicts:
+        console.print(
+            "[yellow]⚠  Warning: another tool's PreToolUse Bash hook is already registered:[/yellow]"
+        )
+        for cmd in conflicts:
+            tool_name = _identify_hook_tool(cmd)
+            label = f" ({tool_name})" if tool_name else ""
+            console.print(f"  [yellow]• {cmd!r}{label}[/yellow]")
+        console.print(
+            "[yellow]  Installing Quor alongside it is untested and may cause commands to be "
+            "double-rewritten or fail. Proceed only if you understand the risk.[/yellow]"
+        )
+
+    # Default confirmation is False when conflicts exist (fail-safe).
+    default_confirm = not conflicts
+    if not yes and not typer.confirm("Proceed?", default=default_confirm):
         console.print("Aborted.")
         raise typer.Exit(code=ExitCode.GENERAL_ERROR)
 
@@ -94,6 +121,36 @@ def _hook_already_installed(settings: dict[str, Any]) -> bool:
             if _HOOK_COMMAND_MARKER in h.get("command", ""):
                 return True
     return False
+
+
+def _find_conflicting_hooks(settings: dict[str, Any]) -> list[str]:
+    """Return commands from non-Quor PreToolUse Bash hooks.
+
+    Any PreToolUse entry with matcher "Bash" (or no matcher, which also catches
+    Bash commands) whose command does not contain our marker is a potential
+    conflict — it could intercept the same commands Quor rewrites.
+    """
+    conflicts: list[str] = []
+    pre_tool_use = settings.get("hooks", {}).get("PreToolUse", [])
+    for entry in pre_tool_use:
+        # Only Bash-matcher hooks can conflict with Quor's command rewriting
+        matcher = entry.get("matcher", "")
+        if matcher not in ("Bash", ""):
+            continue
+        for h in entry.get("hooks", []):
+            cmd = h.get("command", "")
+            if _HOOK_COMMAND_MARKER not in cmd:
+                conflicts.append(cmd)
+    return conflicts
+
+
+def _identify_hook_tool(cmd: str) -> str:
+    """Return a human-readable tool name if the command matches a known tool, else ''."""
+    cmd_lower = cmd.lower()
+    for marker, name in _KNOWN_HOOK_TOOLS.items():
+        if marker in cmd_lower:
+            return name
+    return ""
 
 
 def _install_hook_entry(settings: dict[str, Any], hook_script_path: Path) -> dict[str, Any]:

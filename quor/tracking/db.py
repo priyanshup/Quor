@@ -157,7 +157,24 @@ class TrackingDB:
     def _connect(self) -> sqlite3.Connection:
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
         conn = sqlite3.connect(str(self._db_path), check_same_thread=False)
-        conn.execute("PRAGMA journal_mode=WAL")
+        # PRAGMA journal_mode=WAL requires a brief exclusive lock. If another
+        # connection already has the DB open, this can transiently fail. Retry
+        # a few times before giving up — WAL mode is still likely already set.
+        for attempt in range(5):
+            try:
+                conn.execute("PRAGMA journal_mode=WAL")
+                break
+            except sqlite3.OperationalError:
+                if attempt == 4:
+                    warnings.warn(
+                        "[quor] could not set WAL mode (database locked); "
+                        "concurrent tracking writes may be slower",
+                        stacklevel=1,
+                    )
+                else:
+                    import time
+
+                    time.sleep(0.05 * (attempt + 1))
         conn.execute("PRAGMA synchronous=NORMAL")
         self._apply_schema(conn)
         self._cleanup_old_records(conn)

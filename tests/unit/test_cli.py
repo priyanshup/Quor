@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -273,3 +274,258 @@ class TestInit:
         content = hook_path.read_text(encoding="utf-8")
         assert sys.executable in content
         assert "quor hook claude" in content
+
+
+# ---------------------------------------------------------------------------
+# Hook collision detection (P0 item 3)
+# ---------------------------------------------------------------------------
+
+
+def _settings_with_third_party_hook(cmd: str = "zap hook bash") -> dict[str, Any]:
+    """Build a settings dict that simulates another tool's PreToolUse Bash hook."""
+    return {
+        "hooks": {
+            "PreToolUse": [
+                {"matcher": "Bash", "hooks": [{"type": "command", "command": cmd}]},
+            ]
+        }
+    }
+
+
+class TestHookCollisionDetection:
+    def test_third_party_hook_triggers_warning(self, tmp_path: Path) -> None:
+        """init --claude warns when another Bash hook is already registered."""
+        settings_path = tmp_path / "settings.json"
+        settings_path.write_bytes(
+            orjson.dumps(_settings_with_third_party_hook("zap hook bash"))
+        )
+        result = runner.invoke(
+            app,
+            ["init", "--claude", "--yes", "--settings-path", str(settings_path)],
+        )
+        assert result.exit_code == 0
+        assert "Warning" in result.output or "⚠" in result.output
+
+    def test_third_party_hook_names_known_tool(self, tmp_path: Path) -> None:
+        """Zap is named explicitly in the collision warning."""
+        settings_path = tmp_path / "settings.json"
+        settings_path.write_bytes(
+            orjson.dumps(_settings_with_third_party_hook("/usr/local/bin/zap hook"))
+        )
+        result = runner.invoke(
+            app,
+            ["init", "--claude", "--yes", "--settings-path", str(settings_path)],
+        )
+        assert result.exit_code == 0
+        assert "Zap" in result.output
+
+    def test_unknown_third_party_hook_warns_generically(self, tmp_path: Path) -> None:
+        """An unrecognised command still generates a collision warning."""
+        settings_path = tmp_path / "settings.json"
+        settings_path.write_bytes(
+            orjson.dumps(_settings_with_third_party_hook("some-unknown-tool intercept"))
+        )
+        result = runner.invoke(
+            app,
+            ["init", "--claude", "--yes", "--settings-path", str(settings_path)],
+        )
+        assert result.exit_code == 0
+        # Warning present but no named tool
+        assert "Warning" in result.output or "⚠" in result.output
+
+    def test_no_conflict_when_only_quor_hook_present(self, tmp_path: Path) -> None:
+        """After quor init, re-running should NOT detect a conflict with itself."""
+        settings_path = tmp_path / "settings.json"
+        # First install
+        runner.invoke(
+            app, ["init", "--claude", "--yes", "--settings-path", str(settings_path)]
+        )
+        # Second install — Quor's own hook is present; must not collide with itself
+        result = runner.invoke(
+            app, ["init", "--claude", "--yes", "--settings-path", str(settings_path)]
+        )
+        assert result.exit_code == 0
+        # "already registered" message but no collision warning
+        assert "already registered" in result.output
+
+    def test_doctor_reports_collision(self, tmp_path: Path) -> None:
+        """quor doctor reports a conflict when another Bash hook is registered."""
+        settings_path = tmp_path / "settings.json"
+        settings_path.write_bytes(
+            orjson.dumps(_settings_with_third_party_hook("zap hook bash"))
+        )
+        with patch("pathlib.Path.home", return_value=tmp_path):
+            result = runner.invoke(app, ["doctor"])
+        # doctor exit 1 (hook script missing + collision) and mentions conflict
+        assert "conflicting" in result.output.lower() or "conflict" in result.output.lower()
+
+    def test_doctor_no_collision_when_settings_missing(self) -> None:
+        """doctor passes the collision check when settings.json doesn't exist."""
+        with patch("pathlib.Path.home", return_value=Path("/nonexistent/path/xyz")):
+            result = runner.invoke(app, ["doctor"])
+        # Should not mention collision (check is skipped cleanly when file absent)
+        assert "No conflicting" not in result.output or "✓ No conflicting" in result.output
+
+
+# ---------------------------------------------------------------------------
+# _find_conflicting_hooks unit tests
+# ---------------------------------------------------------------------------
+
+
+class TestFindConflictingHooks:
+    def test_empty_settings_returns_no_conflicts(self) -> None:
+        from quor.cli.commands.init import _find_conflicting_hooks
+
+        assert _find_conflicting_hooks({}) == []
+
+    def test_quor_hook_not_reported_as_conflict(self) -> None:
+        from quor.cli.commands.init import _find_conflicting_hooks
+
+        settings = {
+            "hooks": {
+                "PreToolUse": [
+                    {
+                        "matcher": "Bash",
+                        "hooks": [
+                            {
+                                "type": "command",
+                                "command": 'powershell -File "C:\\quor\\claude-hook.ps1"',
+                            }
+                        ],
+                    }
+                ]
+            }
+        }
+        assert _find_conflicting_hooks(settings) == []
+
+    def test_third_party_bash_hook_returned(self) -> None:
+        from quor.cli.commands.init import _find_conflicting_hooks
+
+        cmd = "zap hook bash"
+        settings = _settings_with_third_party_hook(cmd)
+        conflicts = _find_conflicting_hooks(settings)
+        assert cmd in conflicts
+
+    def test_non_bash_matcher_ignored(self) -> None:
+        from quor.cli.commands.init import _find_conflicting_hooks
+
+        settings = {
+            "hooks": {
+                "PreToolUse": [
+                    {
+                        "matcher": "Python",
+                        "hooks": [{"type": "command", "command": "some-tool hook"}],
+                    }
+                ]
+            }
+        }
+        # Non-Bash matcher cannot intercept Bash commands → not a conflict
+        assert _find_conflicting_hooks(settings) == []
+
+
+# ---------------------------------------------------------------------------
+# Regression: Windows encoding crash (Phase 7 fix)
+# ---------------------------------------------------------------------------
+
+
+class TestWindowsEncodingRegression:
+    """Regression tests for the Windows cp1252 UnicodeEncodeError crash.
+
+    Bug: CLI output paths (✓/✗ glyphs) crashed on Windows because text-mode
+    stdout/stderr defaulted to cp1252, which cannot encode those characters.
+    Fix: _ensure_utf8_stdio() calls stream.reconfigure(encoding='utf-8') once
+    in main() before any CLI or dispatch output is written.
+    """
+
+    def test_ensure_utf8_stdio_calls_reconfigure(self) -> None:
+        from quor.__main__ import _ensure_utf8_stdio
+
+        stdout_mock = MagicMock()
+        stderr_mock = MagicMock()
+
+        with patch.object(sys, "stdout", stdout_mock), patch.object(sys, "stderr", stderr_mock):
+            _ensure_utf8_stdio()
+
+        stdout_mock.reconfigure.assert_called_once_with(encoding="utf-8")
+        stderr_mock.reconfigure.assert_called_once_with(encoding="utf-8")
+
+    def test_ensure_utf8_stdio_suppresses_value_error(self) -> None:
+        """ValueError from reconfigure (e.g. BytesIO-backed capture) must be swallowed."""
+        from quor.__main__ import _ensure_utf8_stdio
+
+        mock_stream = MagicMock()
+        mock_stream.reconfigure.side_effect = ValueError("not a text stream")
+
+        with patch.object(sys, "stdout", mock_stream), patch.object(sys, "stderr", mock_stream):
+            _ensure_utf8_stdio()  # must not raise
+
+        mock_stream.reconfigure.assert_called_with(encoding="utf-8")
+
+    def test_ensure_utf8_stdio_suppresses_os_error(self) -> None:
+        """OSError from reconfigure must be swallowed (stream may not support it)."""
+        from quor.__main__ import _ensure_utf8_stdio
+
+        mock_stream = MagicMock()
+        mock_stream.reconfigure.side_effect = OSError("reconfigure failed")
+
+        with patch.object(sys, "stdout", mock_stream), patch.object(sys, "stderr", mock_stream):
+            _ensure_utf8_stdio()  # must not raise
+
+    def test_ensure_utf8_stdio_handles_stream_without_reconfigure(self) -> None:
+        """Streams that lack reconfigure() are silently skipped (no AttributeError)."""
+        from quor.__main__ import _ensure_utf8_stdio
+
+        class _NoReconfigure:
+            pass
+
+        stream = _NoReconfigure()
+        with patch.object(sys, "stdout", stream), patch.object(sys, "stderr", stream):
+            _ensure_utf8_stdio()  # must not raise
+
+
+# ---------------------------------------------------------------------------
+# Codepage / locale sweep (P1 item 6)
+# ---------------------------------------------------------------------------
+
+
+class TestCodepageSweep:
+    """_ensure_utf8_stdio must reconfigure regardless of the stream's original codepage.
+
+    Regression against the Windows cp1252 crash: streams that report non-UTF-8
+    encodings must be reconfigured to UTF-8 so that ✓/✗ glyphs don't crash the CLI.
+    """
+
+    import pytest
+
+    @pytest.mark.parametrize("codepage", ["cp437", "cp1252", "utf-8", "ascii"])
+    def test_reconfigure_called_for_any_codepage(self, codepage: str) -> None:
+        from quor.__main__ import _ensure_utf8_stdio
+
+        stdout_mock = MagicMock()
+        stdout_mock.encoding = codepage
+        stderr_mock = MagicMock()
+        stderr_mock.encoding = codepage
+
+        with (
+            patch.object(sys, "stdout", stdout_mock),
+            patch.object(sys, "stderr", stderr_mock),
+        ):
+            _ensure_utf8_stdio()
+
+        # Both streams must be reconfigured regardless of starting encoding
+        stdout_mock.reconfigure.assert_called_once_with(encoding="utf-8")
+        stderr_mock.reconfigure.assert_called_once_with(encoding="utf-8")
+
+    def test_cp1252_stream_reconfigure_failure_does_not_crash(self) -> None:
+        """If reconfigure raises on a cp1252 stream, the CLI must not crash."""
+        from quor.__main__ import _ensure_utf8_stdio
+
+        mock_stream = MagicMock()
+        mock_stream.encoding = "cp1252"
+        mock_stream.reconfigure.side_effect = ValueError("cannot reconfigure")
+
+        with (
+            patch.object(sys, "stdout", mock_stream),
+            patch.object(sys, "stderr", mock_stream),
+        ):
+            _ensure_utf8_stdio()  # must not raise

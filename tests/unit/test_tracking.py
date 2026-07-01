@@ -529,3 +529,78 @@ class TestDispatcherTracking:
         assert row is not None
         assert row[0] == 1       # passthrough
         assert row[1] is None    # no filter
+
+
+# ---------------------------------------------------------------------------
+# Concurrency — WAL mode under two simultaneous writers (P1 item 7)
+# ---------------------------------------------------------------------------
+
+
+class TestConcurrentWrites:
+    """Prove WAL mode allows two sessions to write simultaneously without data loss.
+
+    This simulates two Claude Code sessions running commands at the same time and
+    both writing their invocation records to the same shared SQLite database.
+    Without WAL mode, one writer would get SQLITE_BUSY and records would be lost.
+    """
+
+    N_RECORDS = 30  # per writer; total expected = 2 × N_RECORDS
+
+    def _write_records(self, db_path: Path, start: int, count: int) -> None:
+        db = TrackingDB(db_path=db_path)
+        for i in range(count):
+            db.record(
+                _sample_record(
+                    command=f"git status {start + i}",
+                    project_path="/concurrent-project",
+                )
+            )
+        db.flush(timeout=5.0)
+        db.close()
+
+    def test_two_concurrent_writers_no_data_loss(self, tmp_path: Path) -> None:
+        writer_a = threading.Thread(
+            target=self._write_records,
+            args=(tmp_path / "quor.db", 0, self.N_RECORDS),
+        )
+        writer_b = threading.Thread(
+            target=self._write_records,
+            args=(tmp_path / "quor.db", self.N_RECORDS, self.N_RECORDS),
+        )
+
+        writer_a.start()
+        writer_b.start()
+        writer_a.join(timeout=15)
+        writer_b.join(timeout=15)
+
+        assert not writer_a.is_alive(), "Writer A did not complete within timeout"
+        assert not writer_b.is_alive(), "Writer B did not complete within timeout"
+
+        with sqlite3.connect(str(tmp_path / "quor.db")) as conn:
+            count = conn.execute("SELECT COUNT(*) FROM invocations").fetchone()[0]
+
+        expected = self.N_RECORDS * 2
+        assert count == expected, (
+            f"Expected {expected} records from two concurrent writers, got {count}. "
+            "Data loss detected — WAL mode may not be effective."
+        )
+
+    def test_concurrent_writers_wal_mode_confirmed(self, tmp_path: Path) -> None:
+        """WAL journal mode must be set even when two writers open the same DB."""
+        db_path = tmp_path / "quor.db"
+
+        writer_a = threading.Thread(
+            target=self._write_records, args=(db_path, 0, 5)
+        )
+        writer_b = threading.Thread(
+            target=self._write_records, args=(db_path, 5, 5)
+        )
+        writer_a.start()
+        writer_b.start()
+        writer_a.join(timeout=10)
+        writer_b.join(timeout=10)
+
+        with sqlite3.connect(str(db_path)) as conn:
+            mode = conn.execute("PRAGMA journal_mode").fetchone()[0]
+
+        assert mode == "wal", f"Expected WAL mode but got {mode!r}"

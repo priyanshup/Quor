@@ -640,3 +640,37 @@ Quor reads and writes to `~/.config/quor/`, `~/.local/share/quor/`, and SQLite d
 - The fixture is in `conftest.py` at the repo root. It is `autouse=True` — no test can forget to use it.
 - Integration tests that deliberately test the real config path are explicitly marked with `@pytest.mark.integration` and excluded from the default CI run.
 - The default CI run (no flags) must complete in <30 seconds with all tests isolated.
+
+---
+
+## ADR-026: Plugin Architecture — Two-Tier Separation (Plugin Protocol vs StageHandler)
+
+**Status:** Decided  
+**Date:** 2026-07-01
+
+**Context:**  
+ADR-007 established `quor.compression_stage` entry-points for third-party `StageHandler` implementations — stateless, TOML-configurable, ContentMask-typed compression stages. During Phase 8 implementation it became clear that a second category of extension was needed: lifecycle-managed, Python-coded middleware for telemetry, policy enforcement, routing, enrichment, and observability. Attempting to fit these into `StageHandler` would have required adding lifecycle methods (`initialize`, `shutdown`) and a payload envelope to an interface that is deliberately minimal and TOML-configurable.
+
+**Options considered:**
+
+- **Extend `StageHandler`** with optional lifecycle methods: backwards-compatible but would conflate two different responsibilities. Every existing stage author would see lifecycle methods that are irrelevant to their use case. TOML-driven stage config and Python-driven plugin config share no meaningful overlap.
+- **Single unified `Plugin` protocol** replacing `StageHandler`: would require migrating all five existing built-in compression stages to the new interface. High disruption, no benefit.
+- **Two separate Protocols** (`StageHandler` and `Plugin`), each with its own registry: clean separation of concerns. ContentMask pipeline stays TOML-driven and stage-based. `PluginRegistry` handles lifecycle-managed middleware. Phase 9 wires entry-point discovery for both.
+
+**Decision:** Two separate Protocol hierarchies, each with its own registry and execution model:
+
+| | `StageHandler` | `Plugin` |
+|---|---|---|
+| Purpose | Content compression | Middleware |
+| Configured via | TOML `[[filter.stages]]` | Python code |
+| Entry-point group | `quor.compression_stage` | (same, different subgroup TBD in Phase 9) |
+| Lifecycle | None | `initialize` / `execute` / `shutdown` |
+| Fail-open | Stage skip + warn | Plugin disable or payload passthrough |
+| Categories | N/A (order = TOML declaration) | PRE_FILTER → FILTER → POST_FILTER |
+
+**Consequences:**
+- `Plugin` Protocol lives in `quor/plugins/base.py`. `StageHandler` Protocol lives in `quor/pipeline/stages/base.py`. Neither imports the other.
+- Phase 9 must wire entry-point discovery for both independently.
+- Plugin authors who need line-level `ContentMask` access should implement `StageHandler`. Plugin authors who need lifecycle management, annotations, or cross-plugin communication should implement `Plugin`.
+- The `ExecutionMode` enum (AUDIT/OPTIMIZE/SIMULATE) is available to `Plugin.execute()` via `PluginContext.mode`. `StageHandler` stages are mode-unaware in v1.
+- `kw_only=True` on all four public `Plugin`-side dataclasses ensures new optional fields can be added without positional-order breaking changes after v1.

@@ -38,7 +38,11 @@ def run_dispatch(args: list[str], tracking: TrackingDB | None = None) -> int:
             stderr=None,       # inherit: real stderr flows to user directly
             encoding="utf-8",
             errors="replace",  # graceful handling of non-UTF-8 output
+            timeout=25,        # 25 s leaves room for filter + tracking within 30 s hook budget
         )
+    except subprocess.TimeoutExpired:
+        print(f"[quor] command {args[0]!r} timed out after 25 s", file=sys.stderr)
+        return 124
     except (OSError, FileNotFoundError) as exc:
         print(f"[quor] cannot run {args[0]!r}: {exc}", file=sys.stderr)
         return 127

@@ -364,37 +364,76 @@ args: ["git", "status"]
 
 ---
 
-## Phase 8: Plugin System
+## Phase 8: Plugin Infrastructure
 
-**Objective:** Enable third-party stages via entry-points.
+**Objective:** Build the public Plugin API and in-memory registry that Phase 9 discovery and third-party plugin authors will consume. No entry-point scanning, no dynamic importing, no file loading.
 
 **Deliverables:**
-- [ ] `quor/pipeline/plugin_loader.py` — discover `quor.compression_stage` entry-points, validate against Protocol, cache result
-- [ ] Plugin cache: `~/.config/quor/plugin-cache.json`, invalidated when package set changes
-- [ ] `api_version` compatibility check: warn and skip if `api_version > 1`
-- [ ] Plugin failure isolation: any exception during load or apply → log warning, skip
-- [ ] `quor doctor` plugin check: list loaded plugins, their version, any load failures
-- [ ] `file://` escape hatch: stages can reference `file:///path/to/module.py::ClassName`
+- [x] `quor/plugins/base.py` — `Plugin` Protocol (`@runtime_checkable`, `ClassVar[int] api_version`), `PluginContext` (frozen, kw_only), `PluginMetadata` (frozen, kw_only), `PluginPayload` (frozen, kw_only, with `replace_output()` and `with_annotation()` helpers), `PluginResult` (frozen, kw_only), `PluginCategory(StrEnum)`, `ExecutionMode(StrEnum)`, `CAPABILITY_*` advisory string constants, `QUOR_PLUGIN_API_VERSION = 1`
+- [x] `quor/plugins/registry.py` — `PluginRegistry`: `register`, `unregister`, `get`, `plugins_for_category`, `all_plugins`, `capabilities`, `plugins_with_capability`, `count`, `initialize_all`, `shutdown_all`, `run_pipeline`, `run_category`; `_execute_plugins` shared fail-open execution core
+- [x] `quor/plugins/__init__.py` — re-exports all public types; `PluginError` re-exported from `quor.errors` so plugin authors never import from internals
+- [x] Three-tier registration precedence: project > user > builtin (same model as `FilterRegistry`)
+- [x] Deterministic execution order: tier → category (PRE_FILTER → FILTER → POST_FILTER) → ascending priority → registration order for ties (guaranteed by Python's stable timsort + dict insertion order)
+- [x] Fail-open contract: `execute()` exceptions caught + warned, payload passes through unchanged; `initialize()` `PluginError` permanently disables the plugin (removes from registry); `shutdown()` exceptions suppressed
+
+**Architecture note:** `Plugin` Protocol and `PluginRegistry` are intentionally a separate abstraction from `StageHandler`. `StageHandler` is TOML-configurable, ContentMask-typed, stateless compression. `Plugin` is Python-coded, lifecycle-managed, higher-level middleware (telemetry, policy, routing, enrichment). Phase 9 wires entry-point discovery for both abstractions. See ADR-026.
 
 **Unit tests:**
-- [ ] Plugin with correct api_version loads successfully
-- [ ] Plugin with api_version > 1 warns and skips
-- [ ] Plugin that raises during apply → stage skipped, pipeline continues
+- [x] Protocol conformance (satisfies / does not satisfy `isinstance` checks)
+- [x] `PluginPayload` helpers: `with_annotation`, `replace_output`, immutability
+- [x] Registration: valid, Protocol violation, wrong `api_version`, duplicate (same tier), cross-tier shadow
+- [x] Lookup: `get()` by id and by tier; stable ordering (equal priorities); all-three-tiers precedence
+- [x] Lifecycle: `initialize` called; `PluginError` disables; unexpected exception disables; disabled plugin absent from `all_plugins()` and `run_pipeline()`; `shutdown` called; `shutdown` exception suppressed
+- [x] `run_pipeline`: no plugins, transform, chain order, fail-open, abort, `raw_output` preserved, annotation chaining, `MemoryError` caught
+- [x] Capability queries: `capabilities()`, `plugins_with_capability()`, empty registry, execution order preserved
+- [x] `run_category`: category isolation from others, no plugins, abort stops within category, fail-open
+
+**Exit criteria:**
+- [x] `pytest tests/unit/test_plugins.py` passes (67 tests)
+- [x] `mypy quor/plugins/` passes with no errors
+- [x] `ruff check quor/plugins/` passes with no errors
+- [x] No regressions in the pre-Phase 8 test suite (560 total tests passing)
+
+**Estimated complexity:** 1.5 days
+
+**Dependencies:** Phase 5 complete (does not require Phase 7)
+
+**Status:** COMPLETE (2026-07-01)
+
+---
+
+## Phase 9: Plugin Discovery & Loading
+
+**Objective:** Wire entry-point discovery into `PluginRegistry` and the ContentMask pipeline. Phase 8 built the stable interface; this phase implements the deployment mechanism.
+
+**Deliverables:**
+- [ ] `quor/pipeline/plugin_loader.py` — discover `quor.compression_stage` entry-points via `importlib.metadata`, validate against `StageHandler` Protocol, register results into the pipeline; register `Plugin`-implementing entry-points into `PluginRegistry`
+- [ ] Plugin cache: `~/.config/quor/plugin-cache.json`, invalidated when installed package set changes (compare `importlib.metadata` distribution set hash)
+- [ ] `api_version` compatibility check: warn and skip if plugin `api_version > QUOR_PLUGIN_API_VERSION`
+- [ ] Plugin failure isolation: any exception during load, import, or validation → log warning, skip plugin; pipeline continues
+- [ ] `quor doctor` plugin diagnostics: list loaded plugins with their version and tier; report any load failures
+- [ ] `file://` escape hatch: stages can reference `file:///path/to/module.py::ClassName` (developer convenience only)
+
+**Unit tests:**
+- [ ] Plugin with correct `api_version` loads successfully
+- [ ] Plugin with `api_version > 1` warns and skips
+- [ ] Plugin that raises during `apply()` → stage skipped, pipeline continues
 - [ ] Plugin that fails to import → warning, graceful skip
-- [ ] Cache: second call uses cache, does not re-discover
-- [ ] file:// stage: loads module from path, instantiates class
+- [ ] Cache: second call uses cached result, does not re-scan entry-points
+- [ ] `file://` stage: loads module from path, instantiates class, validates Protocol
 
 **Exit criteria:**
 - [ ] A minimal test plugin (`tests/fixtures/test_plugin/`) loads via entry-points in CI
 - [ ] Plugin failure test confirms hook still returns valid output
+- [ ] `quor doctor` lists the test plugin with correct version
 
-**Estimated complexity:** 1 day
+**Estimated complexity:** 0.5 days
 
-**Dependencies:** Phase 5 complete (does not require Phase 7)
+**Dependencies:** Phase 8 complete
 
 ---
 
-## Phase 9: Packaging and Distribution
+## Phase 10: Packaging and Distribution
 
 **Objective:** Get Quor to a pip-installable state that works on a fresh corporate Windows machine.
 
@@ -416,7 +455,7 @@ args: ["git", "status"]
 
 **Estimated complexity:** 1 day
 
-**Dependencies:** Phase 7 + 8 complete
+**Dependencies:** Phase 7 + 9 complete
 
 ---
 
@@ -433,8 +472,9 @@ args: ["git", "status"]
 | 5 | Hook adapter | 1.5 days | 8 days |
 | 6 | Tracking | 1 day | 9 days |
 | 7 | CLI commands | 2.5 days | 11.5 days |
-| 8 | Plugin system | 1 day | 12.5 days |
-| 9 | Packaging | 1 day | 13.5 days |
+| 8 | Plugin Infrastructure | 1.5 days | 13 days |
+| 9 | Plugin Discovery & Loading | 0.5 days | 13.5 days |
+| 10 | Packaging | 1 day | 14.5 days |
 
 **Realistic timeline: 3–4 weeks** (accounting for debugging, Windows-specific issues, and iteration on filter quality).
 
@@ -447,10 +487,11 @@ args: ["git", "status"]
 - Phases 2 and 3 are sequential.
 - Phase 5 requires both Phase 3 and Phase 4.
 
-**The critical path is:** Pre-flight → 0 → 1 → 2 → 3 → 5 → 6 → 7 → 9
+**The critical path is:** Pre-flight → 0 → 1 → 2 → 3 → 5 → 6 → 7 → 10
 
 **Phase 4 can start in parallel with Phase 2.**  
-**Phase 8 can start in parallel with Phase 7.**
+**Phase 8 (Plugin Infrastructure) can start in parallel with Phase 7 (after Phase 5).**  
+**Phase 9 (Plugin Discovery & Loading) depends on Phase 8.**
 
 ---
 

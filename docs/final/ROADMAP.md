@@ -25,7 +25,7 @@
 - Fail-open at all levels
 
 **What does NOT ship:**
-- Plugin system (Phase 8)
+- Plugin Discovery & Loading (Phase 9) — entry-point scanning and plugin cache
 - Public PyPI release
 - Windows-generic CI (only builder's machine validated)
 - Any other AI assistant adapter

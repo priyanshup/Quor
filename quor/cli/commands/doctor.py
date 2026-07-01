@@ -41,6 +41,7 @@ def doctor() -> None:
     checks.extend(_check_dependencies())
     checks.append(_check_hook_script())
     checks.append(_check_hook_roundtrip())
+    checks.append(_check_hook_collision())
     checks.append(_check_sqlite())
     checks.append(_check_filters())
     checks.append(_check_mode())
@@ -77,6 +78,30 @@ def _check_hook_script() -> tuple[str, bool, str]:
     exists = hook_path.exists()
     detail = str(hook_path) if exists else f"not found at {hook_path} — run `quor init --claude`"
     return ("Hook script installed", exists, detail)
+
+
+def _check_hook_collision() -> tuple[str, bool, str]:
+    """Warn if another tool's PreToolUse Bash hook is registered alongside Quor's."""
+    from quor.cli.commands.init import _find_conflicting_hooks, _read_settings
+    from quor.errors import ConfigError
+
+    settings_file = Path.home() / ".claude" / "settings.json"
+    if not settings_file.exists():
+        return ("No conflicting PreToolUse hooks", True, "")
+    try:
+        settings = _read_settings(settings_file)
+        conflicts = _find_conflicting_hooks(settings)
+        if conflicts:
+            detail = (
+                f"{len(conflicts)} other Bash hook(s) detected — "
+                "double-rewriting risk; run `quor init --claude` to review"
+            )
+            return ("No conflicting PreToolUse hooks", False, detail)
+        return ("No conflicting PreToolUse hooks", True, "")
+    except ConfigError as exc:
+        return ("No conflicting PreToolUse hooks", True, f"(could not check: {exc})")
+    except Exception:  # noqa: BLE001 — settings file may not exist or be parseable
+        return ("No conflicting PreToolUse hooks", True, "")
 
 
 def _check_hook_roundtrip() -> tuple[str, bool, str]:
