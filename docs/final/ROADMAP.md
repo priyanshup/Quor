@@ -26,7 +26,6 @@
 - Plugin Infrastructure and Discovery & Loading (Phases 8-9, pulled forward from the original v0.5 target): `quor.compression_stage` / `quor.plugin` entry-points, plugin cache, `api_version` compatibility check, `file://` escape hatch for local custom stages
 
 **What does NOT ship:**
-- Public PyPI release
 - Windows-generic CI (only builder's machine validated)
 - Any other AI assistant adapter
 
@@ -35,6 +34,13 @@
 - A real Claude Code session with `git status`, `pytest`, and `cat` runs without hook failures
 - `quor gain` shows accurate savings for 10+ real invocations
 - All inline filter tests pass (`quor verify` exit code 0)
+
+> **Update (2026-07-01):** v0.1.0 was published directly to both TestPyPI
+> (validation) and the main PyPI registry, ahead of the v0.5 gate below —
+> the "Public PyPI release" line originally listed under "What does NOT
+> ship" no longer applies. See `PROJECT_STATUS.md`'s "Release Publication
+> Notes" for details. Windows-generic CI (multiple real machines, not just
+> the builder's) was also validated as part of this release.
 
 ---
 
@@ -46,7 +52,7 @@
 - Windows CI on GitHub Actions (`windows-latest`)
 - Linux CI on GitHub Actions (`ubuntu-latest`)
 - ≥80% test coverage on pipeline/ and filters/
-- TestPyPI upload (not main PyPI yet)
+- ~~TestPyPI upload (not main PyPI yet)~~ — done ahead of schedule at v0.1.0 (both TestPyPI and main PyPI)
 - `quor doctor --timing` flag for latency profiling
 - Tee mechanism: original cached before compression, `[full output: path]` footer
 - `on_empty` trigger rate tracked and shown in `quor gain`

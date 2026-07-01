@@ -2,8 +2,8 @@
 
 ## Supported Versions
 
-Quor is currently pre-1.0 (Internal Alpha). Only the latest released
-version receives security fixes; there is no long-term-support branch yet.
+Quor is currently pre-1.0. Only the latest released version receives
+security fixes; there is no long-term-support branch yet.
 
 | Version | Supported |
 |---------|-----------|

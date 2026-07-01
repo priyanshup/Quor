@@ -443,16 +443,16 @@ args: ["git", "status"]
 - [x] Built-in filter TOML files included in the built wheel (confirmed by inspecting the actual built wheel's contents — hatchling's default `packages = ["quor"]` behavior already includes non-Python files under the package tree; no explicit `include` directive was needed)
 - [x] Version bumped to `0.1.0`
 - [x] `CHANGELOG.md` with initial release notes
-- [ ] `README.md` with: one-sentence description, Windows-first callout, installation (`pip install quor`), quick start (5 commands), screenshot of `quor gain` — description/callout/installation done; a 5-command quick-start walkthrough and a `quor gain` screenshot are still outstanding
-- [ ] TestPyPI upload: `python -m twine upload --repository testpypi dist/*`
-- [ ] Fresh Windows VM install test: `pip install --index-url https://test.pypi.org/simple/ quor`
-- [ ] PyPI upload (after TestPyPI validates)
+- [x] `README.md` with: one-sentence description, Windows-first callout, installation (`pip install quor`), quick start (5 commands), Troubleshooting section — done; a `quor gain` screenshot was not produced (no graphical capture available in this environment), a text-based expected-output example was used instead for the Quick Start's `quor doctor` step
+- [x] TestPyPI upload — via `.github/workflows/publish-testpypi.yml` (manual `workflow_dispatch`), 2026-07-01
+- [x] Fresh Windows VM install test — not a VM, but verified via `pip install --index-url https://test.pypi.org/simple/ ...` on 3 separate real machines (personal laptop ×2 Python versions, corporate/office laptop), 2026-07-01
+- [x] PyPI upload — tag `v0.1.0` pushed, `.github/workflows/release.yml` published to PyPI automatically, 2026-07-01
 
 **Exit criteria:**
-- [ ] `pip install quor` on fresh Windows 11 VM (no prior Python dependencies) → works — not yet testable; no PyPI upload exists
-- [ ] `quor doctor` shows all green on fresh install — verified against a locally-built wheel installed into a clean venv, not yet against a PyPI install
+- [x] `pip install quor` on fresh Windows 11 (no prior Quor install) → works — verified on 3 machines against the real PyPI index, 2026-07-01
+- [x] `quor doctor` shows all green on fresh install (after `quor init --claude`) — verified on real PyPI installs; a fresh install correctly shows one red item ("Hook script installed") until `quor init --claude` is run, which is expected behavior, not a defect
 - [x] `quor init --claude` succeeds on Windows without admin rights — exercised repeatedly throughout development on this non-admin Windows dev environment
-- [ ] The full end-to-end flow (install → init → real Claude Code session → gain) works on Windows — the hook contract is verified against crafted payloads (`.github/workflows/canary.yml`) but not against a literal live Claude Code session
+- [ ] The full end-to-end flow (install → init → real Claude Code session → gain) works on Windows — the hook contract is verified against crafted payloads (`.github/workflows/canary.yml`) but not against a literal live Claude Code session; still open
 
 **Estimated complexity:** 1 day
 

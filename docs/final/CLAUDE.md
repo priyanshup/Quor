@@ -13,7 +13,7 @@ Quor is a Python CLI tool that compresses AI coding assistant command output bef
 **Package name:** `quor` (CLI commands: `quor` and `qr`)  
 **Python version:** 3.11+ required (stdlib `tomllib`)  
 **Primary OS:** Windows 10/11 (corporate, no admin rights, pip only)  
-**Status:** Phases 0-9 complete (605 tests passing, ruff+mypy clean). Phase 10 (Packaging & Release) is next. See PROJECT_STATUS.md for the current session snapshot.
+**Status:** Phases 0-10 complete (605 tests passing, ruff+mypy clean). v0.1.0 published to PyPI (2026-07-01). See PROJECT_STATUS.md for the current session snapshot.
 
 Read PROJECT_BIBLE.md for the full product context. Read DECISIONS.md for the reasoning behind every architectural choice. Do not re-derive decisions already made.
 
@@ -305,6 +305,6 @@ A task is done when:
 
 ## Current Implementation Task
 
-Phases 0-9 are complete (ContentMask pipeline, filters, rewriter, hook adapter, tracking, CLI, plugin infrastructure and discovery). Phase 10 (Packaging & Release) is next — see IMPLEMENTATION_PLAN.md for its deliverables and PROJECT_STATUS.md for the current session snapshot.
+Phases 0-10 are complete (ContentMask pipeline, filters, rewriter, hook adapter, tracking, CLI, plugin infrastructure and discovery, packaging & release). v0.1.0 is published to PyPI. See ROADMAP.md for the next milestone (v0.5 — Public Alpha) and PROJECT_STATUS.md for the current session snapshot.
 
 The three pre-Phase-0 gates (Python startup time, Claude Code hook mechanism verification, PyPI name availability) were all resolved before Phase 0 began; see PROJECT_STATUS.md's "Pre-implementation blockers" section for the historical record.

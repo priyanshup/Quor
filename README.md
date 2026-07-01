@@ -2,7 +2,7 @@
 
 > A rule-based command-output optimization and context-compression layer that reduces unnecessary LLM context while preserving important information.
 
-> **Status:** Internal Alpha — not yet on PyPI. Phases 0-9 complete (605 tests passing, ruff + mypy clean, verified on Python 3.11, 3.13, 3.14). Phase 10 (Packaging & Release) is in progress.
+> **Status:** v0.1.0 released — [available on PyPI](https://pypi.org/project/quor/). All 10 implementation phases complete (605 tests passing, ruff + mypy clean, verified on Python 3.11 and 3.14 across multiple machines).
 
 ---
 
@@ -129,7 +129,105 @@ pip install quor
 quor init --claude
 ```
 
-*Not yet on PyPI — available once Phase 10 (Packaging & Release) publishes it.*
+That's it — `quor` and `qr` are both installed as commands, and `quor init --claude` wires up the Claude Code hook. Requires Python 3.11+.
+
+---
+
+## Quick Start
+
+```bash
+# 1. Install
+pip install quor
+
+# 2. Wire up the Claude Code hook
+quor init --claude
+
+# 3. Confirm everything is healthy
+quor doctor
+
+# 4. See what Quor would do to a real command, without running anything for real
+quor explain "pytest tests/"
+
+# 5. After using Claude Code for a while, check your savings
+quor gain
+```
+
+Expected output for step 3 (`quor doctor`) on a healthy install:
+
+```
+✓ Python ≥ 3.11 — 3.11
+✓ Dependency 'typer'
+✓ Dependency 'pydantic'
+✓ Dependency 'orjson'
+✓ Dependency 'platformdirs'
+✓ Dependency 'regex'
+✓ Dependency 'rich'
+✓ Hook script installed — C:\Users\<you>\AppData\Local\quor\quor\hooks\claude-hook.ps1
+✓ Hook responds correctly
+✓ No conflicting PreToolUse hooks
+✓ Tracking DB readable/writable
+✓ Built-in filter tests pass
+✓ Mode: optimize
+✓ Plugin discovery — no third-party plugins installed
+```
+
+If any line shows `✗`, `quor doctor` prints what to run to fix it (usually `quor init --claude`).
+
+---
+
+## Troubleshooting
+
+**`'pip' is not recognized` / `'python' is not recognized`**
+
+The Python installer's "Add python.exe to PATH" option is easy to miss, especially on a per-user install. Two fixes:
+
+- Fastest, no setup needed: use the `py` launcher or full module invocation instead of the bare command:
+
+  ```bash
+  py -m pip install quor
+  py -m quor doctor
+  ```
+
+- Permanent fix: add your Python install's base folder and its `Scripts` subfolder to your **User** PATH (Windows key → "Edit environment variables for your account" → select `Path` → Edit → New). This does not require admin rights. Close and reopen your terminal afterward — existing windows won't see the change.
+
+**Multiple Python versions installed, unsure which one Quor uses**
+
+Use the `py` launcher to be explicit:
+
+```bash
+py --list          # show all installed versions
+py -3.11 -m pip install quor
+py -3.11 -m quor doctor
+```
+
+**`pip.exe` / `quor.exe` "Access is denied" on a locked-down corporate machine**
+
+Some corporate endpoint-protection policies block execution of newly created `.exe` wrapper scripts even though the underlying Python interpreter is allowed to run. Work around it by always going through the interpreter instead of the wrapper:
+
+```bash
+python -m pip install quor
+python -m quor doctor
+```
+
+**Installing into a virtual environment on Windows and getting strange import errors**
+
+If your venv's path is deeply nested (e.g. under a long temp directory), Windows' classic 260-character path limit can silently truncate files during install. Create the venv somewhere short (e.g. `C:\myvenv`) and reinstall.
+
+**`quor doctor` shows a red `✗` for "Hook script installed"**
+
+Run `quor init --claude` — this is expected on any install where the hook hasn't been wired up yet, not a bug.
+
+**`quor doctor` shows a red `✗` for "No conflicting PreToolUse hooks"**
+
+Another tool already has a `PreToolUse` hook registered in Claude Code's `settings.json`. Run `quor init --claude` again to review and resolve the conflict; Quor will not silently overwrite another tool's hook.
+
+**Checking which version of Quor is installed**
+
+There's no `quor --version` flag yet — use:
+
+```bash
+pip show quor
+```
 
 ---
 
@@ -184,7 +282,7 @@ version-by-version plan.
 | 7 | CLI commands | **Complete** |
 | 8 | Plugin infrastructure | **Complete** |
 | 9 | Plugin discovery & loading | **Complete** |
-| 10 | Packaging & release | In progress |
+| 10 | Packaging & release | **Complete** — [v0.1.0 on PyPI](https://pypi.org/project/quor/) |
 
 605 tests passing, ruff + mypy clean on `quor/` and `tests/`, verified on Python 3.11, 3.13, and 3.14. See [docs/final/PROJECT_STATUS.md](docs/final/PROJECT_STATUS.md) for the current snapshot, [docs/final/IMPLEMENTATION_PLAN.md](docs/final/IMPLEMENTATION_PLAN.md) for the full roadmap, and [CHANGELOG.md](CHANGELOG.md) for the v0.1.0 release notes.
 

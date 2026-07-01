@@ -327,7 +327,7 @@ Official `quor-*` namespace guidelines:
 
 ### Bug reports must include:
 1. OS and Python version (`python --version`, `quor doctor`)
-2. Quor version (`quor --version`)
+2. Quor version (`pip show quor` — there's no `quor --version` flag yet)
 3. The command that caused the issue
 4. What happened vs. what you expected
 5. The output of `quor explain "<your command>"` (if applicable)
@@ -359,9 +359,13 @@ Releases are managed by maintainers. Contributors do not cut releases.
 4. CI green on main branch
 5. `python -m build` produces clean wheel and sdist
 6. `twine check dist/*` passes
-7. TestPyPI upload tested on fresh Windows VM
-8. Tag pushed: `git tag v0.1.0 && git push origin v0.1.0` (triggers `.github/workflows/release.yml`)
-9. PyPI upload (manual until a `PYPI_API_TOKEN` secret is configured for the release workflow)
+7. Manually trigger `.github/workflows/publish-testpypi.yml` from the Actions tab (`workflow_dispatch`, supplying the expected version) and verify install from TestPyPI on at least one fresh Python environment:
+   ```bash
+   pip install --index-url https://test.pypi.org/simple/ --extra-index-url https://pypi.org/simple/ quor==<version>
+   quor doctor
+   ```
+8. Tag pushed: `git tag v<version> && git push origin v<version>` (triggers `.github/workflows/release.yml`)
+9. `release.yml` runs automatically: builds the wheel/sdist, verifies the tag matches `pyproject.toml`'s version, publishes the GitHub Release, and publishes to PyPI using the `pypi` environment's `PYPI_API_TOKEN` secret — no manual PyPI upload step is needed once that secret is configured
 
 ---
 

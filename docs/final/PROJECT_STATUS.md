@@ -1,7 +1,7 @@
 ﻿# PROJECT STATUS
 ## Quor — Current State Snapshot
 
-> Last updated: 2026-07-02 (Release Preparation — see notes below)
+> Last updated: 2026-07-02 (v0.1.0 published — see Release Notes below)
 > Update this document at the start of every implementation session.
 
 ---
@@ -12,10 +12,10 @@
 |---|---|---|---|
 | Research | COMPLETE | 100% | All 5 research documents finalized. Archived. |
 | Architecture | COMPLETE | 100% | All decisions made. Documented in DECISIONS.md (28 ADRs). |
-| Documentation | COMPLETE | 98% | 10 canonical docs + README, CHANGELOG, LICENSE, CONTRIBUTING, CODE_OF_CONDUCT, SECURITY all written. JSON Schema generated (Phase 3). |
-| Implementation | IN PROGRESS | 94% | Phases 0–9 complete (Phase 9 gaps closed in completion pass). Phase 10 (packaging) in progress. |
-| Testing | IN PROGRESS | 94% | 605 tests, ruff+mypy clean on `quor/` and `tests/`. All passing, fully machine-isolated. Verified on Python 3.11, 3.13, 3.14. |
-| Packaging | IN PROGRESS | 70% | Version bumped to 0.1.0. LICENSE, CHANGELOG.md, `[project.urls]`, release workflow, and GitHub community files all added. PyPI name still available (last verified 2026-07-02). Not yet published. |
+| Documentation | COMPLETE | 100% | 10 canonical docs + README, CHANGELOG, LICENSE, CONTRIBUTING, CODE_OF_CONDUCT, SECURITY all written and reconciled against the released package (see Release Notes below). |
+| Implementation | COMPLETE | 100% | All 10 phases complete, including packaging. |
+| Testing | COMPLETE | 100% | 605 tests, ruff+mypy clean on `quor/` and `tests/`. All passing, fully machine-isolated. Verified on Python 3.11, 3.13, 3.14. |
+| Packaging | COMPLETE | 100% | v0.1.0 published to both TestPyPI and PyPI on 2026-07-01. Installed and verified from a real PyPI/TestPyPI index on three separate machines (Python 3.11 and 3.14). |
 
 ---
 
@@ -57,9 +57,9 @@ All architectural decisions are finalized. The 28 ADRs in DECISIONS.md are the a
 
 ---
 
-## Implementation Phase (IN PROGRESS — Phases 0-9 complete)
+## Implementation Phase (COMPLETE — Phases 0-10)
 
-**Phases 0 through 9 are implemented and tested; Phase 10 (Packaging) has not started.** The pre-implementation blockers below were resolved before Phase 0 began and are kept here as a historical record.
+**All 10 phases are implemented, tested, and released as v0.1.0.** The pre-implementation blockers below were resolved before Phase 0 began and are kept here as a historical record.
 
 ### Pre-implementation blockers (resolved before Phase 0)
 
@@ -103,7 +103,7 @@ Do not begin any public work until the name is secured.
 | 7.5 | Pre-Phase 8 hardening | COMPLETE (493 total, see notes below) |
 | 8 | Plugin Infrastructure | COMPLETE (560 total, see notes below) |
 | 9 | Plugin Discovery & Loading | COMPLETE (597 total, see notes below) |
-| 10 | Packaging | IN PROGRESS (see Release Preparation Notes below) |
+| 10 | Packaging | COMPLETE — v0.1.0 published to PyPI 2026-07-01 (see Release Notes below) |
 
 ---
 
@@ -134,7 +134,7 @@ Do not begin any public work until the name is secured.
 
 ---
 
-## Documentation Phase (98% Complete)
+## Documentation Phase (100% Complete)
 
 ### What exists (as of 2026-07-02):
 
@@ -158,18 +158,20 @@ Do not begin any public work until the name is secured.
 
 ### What does not yet exist:
 
-Nothing outstanding at the documentation level. Remaining Phase 10 work is
-publishing (TestPyPI/PyPI upload, fresh-VM install verification), not
-documentation.
+Nothing outstanding. TestPyPI/PyPI publishing and install verification are
+both done (see Release Notes below); a first-time-user documentation pass
+was completed afterward to reconcile README/CHANGELOG/CONTRIBUTING/SECURITY
+against the actual released package and CLI behavior.
 
 ---
 
 ## Remaining Unknowns
 
 1. **Claude Code hook timeout on Windows.** Documented as 30s. May be shorter in practice. Dispatcher hardened to 25s timeout (returns exit code 124). Canary will detect format changes.
-2. **Whether `quor` is still available on PyPI.** Registration deferred to Phase 10. Re-verify before Phase 10 begins.
+2. **Full end-to-end verification against a live Claude Code session.** Install, `quor init --claude`, and `quor doctor` are all verified against the real PyPI/TestPyPI package on three machines; the hook contract itself is verified against crafted payloads (`.github/workflows/canary.yml`), but not yet against an actual live Claude Code session invoking it.
 
 **Resolved unknowns (no longer open):**
+- ~~Whether `quor` is available on PyPI~~ — registered and published; `pip install quor` works (verified 2026-07-01).
 - ~~Python startup time~~ — measured at ~70ms on this machine. No daemon needed.
 - ~~CI platform coverage~~ — `windows-latest` + `ubuntu-latest` both in `.github/workflows/ci.yml`.
 - ~~Fail-open behavior under chaos~~ — tested in `test_fail_open.py`: corrupted TOML, malformed JSON, permission errors, hook timeout, ReDoS all degrade safely.
@@ -181,7 +183,7 @@ documentation.
 
 ## Known Blockers
 
-None. Phase 9 (Plugin Discovery & Loading) complete. Phase 10 (Packaging) may proceed.
+None. v0.1.0 is published to PyPI and TestPyPI (2026-07-01).
 
 ---
 
@@ -261,9 +263,7 @@ The mode system (ADR-009: AUDIT/OPTIMIZE/SIMULATE) remains **display-only** — 
 
 ## Immediate Next Milestone
 
-**Phase 10: Packaging** — `pyproject.toml` entry-points, PyPI registration, README, release workflow.
-
-**Internal Alpha (v0.1)** target: after Phase 10 (Packaging) is complete.
+**v0.1.0 is released.** `pyproject.toml` entry-points, PyPI registration, README, and the release workflow are all done and published. The next milestone is **v0.5 — Public Alpha** (see ROADMAP.md): Windows + Linux CI already exist from v0.1, so the remaining gap is broader real-world usage (multiple non-builder developers) and the additional Public Alpha gates in RELEASE_CRITERIA.md.
 
 ---
 
@@ -360,6 +360,20 @@ what the review explicitly called for.
 - **`.github/workflows/release.yml` added** — tag-triggered (`v*`): builds wheel + sdist, verifies with `twine check`, verifies the tag matches `pyproject.toml`'s version, attaches artifacts to a GitHub Release, and has a `publish-pypi` job gated behind a `pypi` GitHub environment and a `PYPI_API_TOKEN` secret. Without that secret configured, the job fails fast with an explicit error rather than silently publishing or silently skipping.
 - **README additions:** a "Performance & Token Reduction" section (mechanism, why reduction varies, what compresses well vs. what's preserved, a benchmark methodology, and a results table explicitly marked "To be measured" — no invented numbers) and a "Roadmap: Observability (Planned)" section clearly marked as not-yet-implemented (compression statistics, before/after preview, dry-run mode, verbose diagnostics).
 - **Documentation consistency:** checked off 140 previously-unchecked `[ ]` deliverable/test/exit-criteria boxes in `IMPLEMENTATION_PLAN.md` for the Pre-Implementation Checklist through Phase 7 — all of those phases have been independently confirmed COMPLETE in this same document's phase table for several sessions, but the checkboxes themselves had never been updated to match. ADR count references updated to 28 throughout (see ADR-028). `quor schema`'s existence as a 7th, exempted utility command is now noted in `CLAUDE.md` and `quor/cli/main.py`'s module docstring, and added to the README's command table.
+
+---
+
+## Release Publication Notes (2026-07-01 — 2026-07-02)
+
+Closed out Phase 10 by actually publishing, rather than just preparing to publish.
+
+- **`.github/workflows/publish-testpypi.yml` added.** A manual (`workflow_dispatch`) workflow, independent of the tag-triggered `release.yml`, that builds, verifies (`twine check`, an input-version-vs-`pyproject.toml` check), and publishes to TestPyPI. Lets a release be dry-run validated without pushing the real version tag.
+- **TestPyPI publish validated**, then **v0.1.0 tagged and released to real PyPI** via the existing `release.yml` (build → GitHub Release → `publish-pypi` job, gated on the `pypi` environment's `PYPI_API_TOKEN` secret).
+- **Installed and verified from the published index on three separate machines:**
+  - Personal laptop, Python 3.11 (clean venv) and Python 3.14 — both pass, including `quor doctor`.
+  - Corporate/office laptop, Python 3.14 — passes, but required `python -m pip` / `python -m quor` instead of the `pip.exe`/`quor.exe` wrapper scripts directly, because this machine's endpoint-protection policy blocked execution of the wrapper executables even though the interpreter itself was permitted. Documented as a Troubleshooting entry in `README.md`.
+  - Incidentally confirmed Windows' 260-character path limit can silently break a venv install if the venv directory is deeply nested — also added to `README.md` Troubleshooting.
+- **First-time-user documentation pass** (this pass): reconciled `README.md`, `CHANGELOG.md`, `CONTRIBUTING.md`, `SECURITY.md`, and this document against the actual released package and real CLI `--help` output (captured directly from the published `0.1.0` wheel). Found and fixed one genuine doc bug: `CONTRIBUTING.md` told bug reporters to run `quor --version`, which doesn't exist as a flag — replaced with `pip show quor` everywhere it was referenced. Added a README Quick Start and Troubleshooting section (PATH issues, `py` launcher, multiple Python versions, corporate AppLocker-style `.exe` blocking, path-length limits). No application code was changed.
 
 ---
 

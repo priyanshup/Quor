@@ -3,9 +3,10 @@
 All notable changes to Quor are documented here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [0.1.0] — Internal Alpha
+## [0.1.0] — 2026-07-01
 
-First public-quality release. Quor is a rule-based command-output
+First public release, published to [PyPI](https://pypi.org/project/quor/).
+Quor is a rule-based command-output
 optimization and context-compression layer for AI coding assistants: it
 runs your command, captures the output, and applies a deterministic,
 fail-open filtering pipeline before the output reaches the assistant's
@@ -106,6 +107,7 @@ A dedicated pass to close reliability gaps before packaging:
   display-only in this release — `quor doctor` and `quor gain` show the
   configured mode, but the dispatcher does not yet branch on it. This is
   an intentional, scoped roadmap item (see PROJECT_STATUS.md), not a bug.
-- Not yet published to PyPI.
+- No `quor --version` flag yet — check the installed version with
+  `pip show quor`.
 
 [0.1.0]: https://github.com/priyanshup/Quor/releases/tag/v0.1.0
