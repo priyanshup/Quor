@@ -37,6 +37,7 @@ dev = [
     "pytest-cov>=5.0.0",
     "mypy>=1.10.0",
     "ruff>=0.4.0",
+    "quor-test-stage @ file:./tests/fixtures/test_plugin",
 ]
 
 [project.scripts]
@@ -45,6 +46,9 @@ qr   = "quor.__main__:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["quor"]
+
+[tool.hatch.metadata]
+allow-direct-references = true
 
 # ---------------------------------------------------------------------------
 # Ruff
@@ -78,6 +82,10 @@ warn_unused_configs = true
 
 [[tool.mypy.overrides]]
 module = ["regex"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["quor_test_stage", "quor_test_stage.*"]
 ignore_missing_imports = true
 
 # ---------------------------------------------------------------------------

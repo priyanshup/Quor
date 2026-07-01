@@ -18,7 +18,8 @@ Quick reference::
         CAPABILITY_OBSERVABILITY,
         CAPABILITY_READ_ONLY,
     )
-    from quor.plugins.registry import PluginRegistry  # Quor-internal use
+    # Internal use only — not part of the third-party plugin API:
+    from quor.plugins import PluginRegistry
 """
 
 from quor.errors import PluginError
@@ -38,6 +39,7 @@ from quor.plugins.base import (
     PluginPayload,
     PluginResult,
 )
+from quor.plugins.registry import PluginRegistry
 
 __all__ = [
     "CAPABILITY_CONTENT_TRANSFORM",
@@ -54,5 +56,6 @@ __all__ = [
     "PluginError",
     "PluginMetadata",
     "PluginPayload",
+    "PluginRegistry",
     "PluginResult",
 ]

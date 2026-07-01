@@ -1,7 +1,7 @@
 ﻿# PROJECT STATUS
 ## Quor — Current State Snapshot
 
-> Last updated: 2026-07-01 (Phase 8 core plugin infrastructure complete)
+> Last updated: 2026-07-01 (Phase 9 plugin discovery & loading complete)
 > Update this document at the start of every implementation session.
 
 ---
@@ -13,8 +13,8 @@
 | Research | COMPLETE | 100% | All 5 research documents finalized. Archived. |
 | Architecture | COMPLETE | 100% | All decisions made. Documented in DECISIONS.md (25 ADRs). |
 | Documentation | COMPLETE | 95% | 10 canonical docs + README.md written. JSON Schema generated (Phase 3). |
-| Implementation | IN PROGRESS | 88% | Phases 0–8 complete. Phase 9 (plugin discovery) next. |
-| Testing | IN PROGRESS | 88% | 560 tests, ruff+mypy clean. All passing. |
+| Implementation | IN PROGRESS | 94% | Phases 0–9 complete. Phase 10 (packaging) next. |
+| Testing | IN PROGRESS | 94% | 597 tests, ruff+mypy clean. All passing. |
 | Packaging | NOT STARTED | 0% | PyPI name available (verified 2026-06-30). Registration pending Phase 10. |
 
 ---
@@ -102,14 +102,14 @@ Do not begin any public work until the name is secured.
 | 7 | CLI commands | COMPLETE (21 CLI tests + 413 total, all 6 commands smoke-tested incl. `init --claude` end-to-end, ruff+mypy clean) |
 | 7.5 | Pre-Phase 8 hardening | COMPLETE (493 total, see notes below) |
 | 8 | Plugin Infrastructure | COMPLETE (560 total, see notes below) |
-| 9 | Plugin Discovery & Loading | NOT STARTED |
+| 9 | Plugin Discovery & Loading | COMPLETE (597 total, see notes below) |
 | 10 | Packaging | NOT STARTED |
 
 ---
 
 ## Testing Phase (IN PROGRESS)
 
-**560 tests passing** as of Phase 8 complete. All linters clean.
+**597 tests passing** as of Phase 9 complete. All linters clean.
 
 | Module | Tests | Notes |
 |---|---|---|
@@ -123,6 +123,7 @@ Do not begin any public work until the name is secured.
 | `tests/unit/test_fail_open.py` | 16 | Chaos tests: corrupt TOML, malformed hook JSON, permission errors, hook timeout, ReDoS |
 | Codepage sweep | 6 | cp437/cp1252/utf-8/ascii via TestCodepageSweep |
 | `quor/plugins/` | 67 | Plugin Protocol, PluginRegistry (registration, lifecycle, execution, capability queries) |
+| `quor/pipeline/plugin_loader.py` | 37 | Entry-point discovery, cache, file:// loader, load report |
 
 **Testing targets from RELEASE_CRITERIA.md:**
 - ≥80% coverage on `quor/pipeline/`, `quor/filters/`, `quor/rewrite/` — first two met
@@ -177,7 +178,7 @@ Do not begin any public work until the name is secured.
 
 ## Known Blockers
 
-None. Phase 8 (Plugin Infrastructure) complete. Phase 9 (Plugin Discovery & Loading) may proceed.
+None. Phase 9 (Plugin Discovery & Loading) complete. Phase 10 (Packaging) may proceed.
 
 ---
 
@@ -257,18 +258,46 @@ The mode system (ADR-009: AUDIT/OPTIMIZE/SIMULATE) remains **display-only** — 
 
 ## Immediate Next Milestone
 
-**Phase 9: Plugin Discovery & Loading** (entry-point scanning, plugin_loader.py, cache, `quor doctor` diagnostics)
-
-Deliverables (see IMPLEMENTATION_PLAN.md for full spec):
-- `quor/pipeline/plugin_loader.py` — discover `quor.compression_stage` entry-points, populate `PluginRegistry` (Phase 8 registry already ready)
-- Plugin cache: `~/.config/quor/plugin-cache.json`, invalidated on package-set changes
-- `api_version` compatibility check at load time
-- `quor doctor` plugin diagnostics: list loaded plugins and load failures
-- `file://` escape hatch for local dev stages
-
-**Phase 10: Packaging** follows Phase 9.
+**Phase 10: Packaging** — `pyproject.toml` entry-points, PyPI registration, README, release workflow.
 
 **Internal Alpha (v0.1)** target: after Phase 10 (Packaging) is complete.
+
+---
+
+## Phase 9 Notes (2026-07-01)
+
+**`quor/pipeline/plugin_loader.py`** — new module; full entry-point discovery and file:// loader:
+
+- `discover_stage_handlers(use_cache)` — scans `quor.compression_stage` entry-points, validates Protocol + `api_version == 1`, returns `{stage_type: (handler_cls, StageConfig)}`. Fail-open: bad plugins warn + skip; rest continue.
+- `discover_plugins(registry, use_cache, tier)` — scans `quor.plugin` entry-points, validates Plugin Protocol + `api_version`, registers into `PluginRegistry`. Fail-open: same contract.
+- `get_extra_stage_handlers()` — process-lifetime memo that `filters/registry._build_stage_entry()` calls on any unknown stage type; avoids rescanning on every pipeline run.
+- `get_load_report(use_cache)` — full discovery summary (`PluginLoadReport`) used by `quor doctor`. Returns `StageInfo`, `PluginInfo`, and `FailureInfo` dataclasses.
+- `load_from_file_uri(uri)` — loads a `StageHandler` from `file:///path/module.py::ClassName`. Validates Protocol and `api_version`; raises `PluginError` on any failure. Not cached; for dev/test use only.
+- `invalidate_cache()` — deletes `~/.config/quor/plugin-cache.json`.
+- Plugin cache: `~/.config/quor/plugin-cache.json`, JSON via orjson. Keyed by SHA-256 hash of `name==version` pairs for all installed distributions. Both entry-point groups are scanned and written atomically to avoid partial caches.
+
+**`quor/filters/registry._build_stage_entry()`** extended:
+
+- `file://` prefix: loads handler via `plugin_loader.load_from_file_uri()`, uses `StageConfig` base class for config.
+- Unknown built-in: falls through to `get_extra_stage_handlers()` before raising `ConfigError`. Known list in the error message now includes third-party stages.
+
+**`quor/adapters/dispatcher.py`** extended — full plugin pipeline:
+
+- PRE_FILTER plugins run on raw captured output before ContentMask filter.
+- ContentMask filter runs on PRE_FILTER output (unchanged path if no matching filter).
+- POST_FILTER plugins run on ContentMask-filtered output.
+- All plugin pipeline steps are wrapped in `try/except Exception`; any failure falls back to the ContentMask-filtered output.
+- `PluginRegistry` is created per-dispatch, `discover_plugins()` populates it (file cache makes this fast on warm path), `initialize_all()` is called if any plugins exist, `shutdown_all()` is always called at end.
+
+**`quor/cli/commands/doctor.py`** extended:
+
+- `_check_plugins()`: calls `get_load_report(use_cache=False)`, reports discovered stages and plugins; marks check `False` if any load failures exist. Green when no third-party plugins are installed (expected state during v0.1 development).
+
+**Test fixture** (`tests/fixtures/test_plugin/`):
+
+- `quor-test-stage` — installable package with `NoOpTestStage` (`stage_type = "noop_test"`, `api_version = 1`). Registered in `pyproject.toml` dev deps as `file:./tests/fixtures/test_plugin`. Integration test `TestInstalledTestPlugin` discovers it via real entry-point scanning.
+
+**37 new tests** in `tests/unit/test_plugin_loader.py`; total 597 passing.
 
 ---
 

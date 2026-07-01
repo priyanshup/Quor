@@ -49,18 +49,55 @@ def _build_stage_entry(stage_dict: dict[str, Any]) -> StageEntry:
     """Convert a raw stage dict (from TOML) into a validated StageEntry.
 
     Raises ConfigError on unknown type or validation failure.
+
+    Supports two extension mechanisms beyond the built-in _STAGE_HANDLERS:
+    - ``file://`` URI: loads a StageHandler from a local Python file, for
+      development use without packaging (see plugin_loader.load_from_file_uri).
+    - Third-party entry-points: discovered via quor.compression_stage entry-point
+      group and returned by plugin_loader.get_extra_stage_handlers().
     """
     stage_type = stage_dict.get("type", "")
-    if stage_type not in _STAGE_HANDLERS:
-        raise ConfigError(
-            f"Unknown stage type: {stage_type!r}. Known: {sorted(_STAGE_HANDLERS)}"
-        )
-    handler_cls, config_cls = _STAGE_HANDLERS[stage_type]
-    try:
-        config = config_cls.model_validate(stage_dict)
-    except ValidationError as exc:
-        raise ConfigError(f"Invalid config for stage {stage_type!r}: {exc}") from exc
-    return StageEntry(handler=handler_cls(), config=config)
+
+    # file:// escape hatch — load StageHandler from a local Python file
+    if stage_type.startswith("file://"):
+        from quor.errors import PluginError
+        from quor.pipeline.plugin_loader import load_from_file_uri
+
+        try:
+            handler = load_from_file_uri(stage_type)
+        except PluginError as exc:
+            raise ConfigError(f"file:// stage failed to load: {exc}") from exc
+        try:
+            config = StageConfig.model_validate(stage_dict)
+        except ValidationError as exc:
+            raise ConfigError(f"Invalid config for file:// stage: {exc}") from exc
+        return StageEntry(handler=handler, config=config)
+
+    # Built-in stages (fast path — no extra lookup needed)
+    if stage_type in _STAGE_HANDLERS:
+        handler_cls, config_cls = _STAGE_HANDLERS[stage_type]
+        try:
+            config = config_cls.model_validate(stage_dict)
+        except ValidationError as exc:
+            raise ConfigError(f"Invalid config for stage {stage_type!r}: {exc}") from exc
+        return StageEntry(handler=handler_cls(), config=config)
+
+    # Third-party stages discovered via quor.compression_stage entry-points
+    from quor.pipeline.plugin_loader import get_extra_stage_handlers
+
+    extra = get_extra_stage_handlers()
+    if stage_type in extra:
+        handler_cls, config_cls = extra[stage_type]
+        try:
+            config = config_cls.model_validate(stage_dict)
+        except ValidationError as exc:
+            raise ConfigError(f"Invalid config for stage {stage_type!r}: {exc}") from exc
+        return StageEntry(handler=handler_cls(), config=config)
+
+    all_known = sorted({*_STAGE_HANDLERS, *extra})
+    raise ConfigError(
+        f"Unknown stage type: {stage_type!r}. Known: {all_known}"
+    )
 
 
 class FilterRegistry:

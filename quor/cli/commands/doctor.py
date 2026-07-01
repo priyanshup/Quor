@@ -45,6 +45,7 @@ def doctor() -> None:
     checks.append(_check_sqlite())
     checks.append(_check_filters())
     checks.append(_check_mode())
+    checks.append(_check_plugins())
 
     all_ok = True
     for name, ok, detail in checks:
@@ -153,3 +154,33 @@ def _check_filters() -> tuple[str, bool, str]:
 def _check_mode() -> tuple[str, bool, str]:
     mode = load_user_config().mode
     return (f"Mode: {mode}", True, "")
+
+
+def _check_plugins() -> tuple[str, bool, str]:
+    """Report discovered third-party stages and plugins; flag any load failures."""
+    from quor.pipeline.plugin_loader import get_load_report
+
+    try:
+        report = get_load_report(use_cache=False)
+    except Exception as exc:  # noqa: BLE001
+        return ("Plugin discovery", True, f"(could not check: {exc})")
+
+    if report.is_empty:
+        return ("Plugin discovery", True, "no third-party plugins installed")
+
+    if report.failures:
+        names = ", ".join(f.entry_point_name for f in report.failures)
+        return (
+            "Plugin discovery",
+            False,
+            f"{len(report.failures)} load failure(s): {names}",
+        )
+
+    parts: list[str] = []
+    if report.stages:
+        stage_names = ", ".join(s.stage_type for s in report.stages)
+        parts.append(f"{len(report.stages)} stage(s): {stage_names}")
+    if report.plugins:
+        plugin_names = ", ".join(p.plugin_id for p in report.plugins)
+        parts.append(f"{len(report.plugins)} plugin(s): {plugin_names}")
+    return ("Plugin discovery", True, "; ".join(parts))

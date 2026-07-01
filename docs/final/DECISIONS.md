@@ -674,3 +674,6 @@ ADR-007 established `quor.compression_stage` entry-points for third-party `Stage
 - Plugin authors who need line-level `ContentMask` access should implement `StageHandler`. Plugin authors who need lifecycle management, annotations, or cross-plugin communication should implement `Plugin`.
 - The `ExecutionMode` enum (AUDIT/OPTIMIZE/SIMULATE) is available to `Plugin.execute()` via `PluginContext.mode`. `StageHandler` stages are mode-unaware in v1.
 - `kw_only=True` on all four public `Plugin`-side dataclasses ensures new optional fields can be added without positional-order breaking changes after v1.
+
+**Implementation Evolution:**  
+During implementation, Quor adopted an interface-first approach for the plugin architecture. Rather than implementing plugin discovery immediately, the project first stabilized the public Plugin API, lifecycle, registry, and execution model. This separated Plugin Infrastructure from Plugin Discovery & Loading, allowing third-party plugins to target a stable public API before runtime discovery mechanisms were introduced. As a result, the original single "Plugin System" phase was split into two phases: Phase 8 (Plugin Infrastructure) and Phase 9 (Plugin Discovery & Loading). This was an implementation refinement, not a change in product vision or architecture.

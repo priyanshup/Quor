@@ -407,25 +407,25 @@ args: ["git", "status"]
 **Objective:** Wire entry-point discovery into `PluginRegistry` and the ContentMask pipeline. Phase 8 built the stable interface; this phase implements the deployment mechanism.
 
 **Deliverables:**
-- [ ] `quor/pipeline/plugin_loader.py` — discover `quor.compression_stage` entry-points via `importlib.metadata`, validate against `StageHandler` Protocol, register results into the pipeline; register `Plugin`-implementing entry-points into `PluginRegistry`
-- [ ] Plugin cache: `~/.config/quor/plugin-cache.json`, invalidated when installed package set changes (compare `importlib.metadata` distribution set hash)
-- [ ] `api_version` compatibility check: warn and skip if plugin `api_version > QUOR_PLUGIN_API_VERSION`
-- [ ] Plugin failure isolation: any exception during load, import, or validation → log warning, skip plugin; pipeline continues
-- [ ] `quor doctor` plugin diagnostics: list loaded plugins with their version and tier; report any load failures
-- [ ] `file://` escape hatch: stages can reference `file:///path/to/module.py::ClassName` (developer convenience only)
+- [x] `quor/pipeline/plugin_loader.py` — discover `quor.compression_stage` entry-points via `importlib.metadata`, validate against `StageHandler` Protocol, register results into the pipeline; register `Plugin`-implementing entry-points into `PluginRegistry`
+- [x] Plugin cache: `~/.config/quor/plugin-cache.json`, invalidated when installed package set changes (compare `importlib.metadata` distribution set hash)
+- [x] `api_version` compatibility check: warn and skip if plugin `api_version > QUOR_PLUGIN_API_VERSION`
+- [x] Plugin failure isolation: any exception during load, import, or validation → log warning, skip plugin; pipeline continues
+- [x] `quor doctor` plugin diagnostics: list loaded plugins with their version and tier; report any load failures
+- [x] `file://` escape hatch: stages can reference `file:///path/to/module.py::ClassName` (developer convenience only)
 
 **Unit tests:**
-- [ ] Plugin with correct `api_version` loads successfully
-- [ ] Plugin with `api_version > 1` warns and skips
-- [ ] Plugin that raises during `apply()` → stage skipped, pipeline continues
-- [ ] Plugin that fails to import → warning, graceful skip
-- [ ] Cache: second call uses cached result, does not re-scan entry-points
-- [ ] `file://` stage: loads module from path, instantiates class, validates Protocol
+- [x] Plugin with correct `api_version` loads successfully
+- [x] Plugin with `api_version > 1` warns and skips
+- [x] Plugin that raises during `apply()` → stage skipped, pipeline continues
+- [x] Plugin that fails to import → warning, graceful skip
+- [x] Cache: second call uses cached result, does not re-scan entry-points
+- [x] `file://` stage: loads module from path, instantiates class, validates Protocol
 
 **Exit criteria:**
-- [ ] A minimal test plugin (`tests/fixtures/test_plugin/`) loads via entry-points in CI
-- [ ] Plugin failure test confirms hook still returns valid output
-- [ ] `quor doctor` lists the test plugin with correct version
+- [x] A minimal test plugin (`tests/fixtures/test_plugin/`) loads via entry-points in CI
+- [x] Plugin failure test confirms hook still returns valid output
+- [x] `quor doctor` lists the test plugin with correct version
 
 **Estimated complexity:** 0.5 days
 

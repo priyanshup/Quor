@@ -2,6 +2,9 @@
 
 Called when Claude Code executes the rewritten command `quor git status`.
 sys.argv[1:] = ["git", "status"] → subprocess runs git status, output filtered.
+
+Execution order:
+  subprocess → PRE_FILTER plugins → ContentMask filter → POST_FILTER plugins → stdout
 """
 
 from __future__ import annotations
@@ -9,6 +12,7 @@ from __future__ import annotations
 import subprocess
 import sys
 import time
+import uuid
 import warnings
 from pathlib import Path
 
@@ -18,11 +22,16 @@ from quor.tracking.db import InvocationRecord, TrackingDB, count_tokens
 
 
 def run_dispatch(args: list[str], tracking: TrackingDB | None = None) -> int:
-    """Run `args` as a subprocess, apply filter, write to stdout.
+    """Run `args` as a subprocess, apply filter and plugin pipeline, write to stdout.
 
     Returns the subprocess exit code. Never raises — any error falls through
     to unfiltered output (fail-open). If `tracking` is provided, records the
-    invocation in the background (non-blocking).
+    invocation.
+
+    Plugin pipeline (fail-open at each step):
+      PRE_FILTER  — before ContentMask; plugins may annotate or modify raw output
+      ContentMask — built-in TOML-configured compression stages
+      POST_FILTER — after ContentMask; plugins may observe or transform final output
     """
     if not args:
         return 0
@@ -38,7 +47,7 @@ def run_dispatch(args: list[str], tracking: TrackingDB | None = None) -> int:
             stderr=None,       # inherit: real stderr flows to user directly
             encoding="utf-8",
             errors="replace",  # graceful handling of non-UTF-8 output
-            timeout=25,        # 25 s leaves room for filter + tracking within 30 s hook budget
+            timeout=25,        # 25 s leaves room for filter + plugins within 30 s hook budget
         )
     except subprocess.TimeoutExpired:
         print(f"[quor] command {args[0]!r} timed out after 25 s", file=sys.stderr)
@@ -58,28 +67,94 @@ def run_dispatch(args: list[str], tracking: TrackingDB | None = None) -> int:
     except Exception as exc:  # noqa: BLE001
         warnings.warn(f"[quor] filter registry error: {exc}", stacklevel=1)
 
+    # --- Setup plugin pipeline (fail-open; empty registry = no-op) ---
+    from quor.plugins.base import ExecutionMode, PluginCategory, PluginContext, PluginPayload
+    from quor.plugins.registry import PluginRegistry
+
+    plugin_registry = PluginRegistry()
+    plugin_ctx: PluginContext | None = None
+
+    try:
+        from quor.config.loader import load_user_config
+        from quor.pipeline.plugin_loader import discover_plugins
+
+        discover_plugins(plugin_registry, use_cache=True, tier="user")
+        if plugin_registry.all_plugins():
+            mode_str = load_user_config().mode
+            try:
+                mode = ExecutionMode(mode_str)
+            except ValueError:
+                mode = ExecutionMode.OPTIMIZE
+
+            plugin_ctx = PluginContext(
+                project_root=Path.cwd(),
+                mode=mode,
+                session_id="",
+                invocation_id=uuid.uuid4().hex,
+            )
+            plugin_registry.initialize_all(plugin_ctx)
+    except Exception as exc:  # noqa: BLE001
+        warnings.warn(f"[quor] plugin discovery error: {exc}", stacklevel=1)
+        plugin_ctx = None
+
+    # --- PRE_FILTER plugins ---
+    pre_output = captured
+    if plugin_ctx is not None:
+        try:
+            pre_payload = PluginPayload(
+                command=cmd_str,
+                raw_output=captured,
+                current_output=captured,
+                content_type=detect(captured).value,
+            )
+            pre_payload = plugin_registry.run_category(
+                PluginCategory.PRE_FILTER, pre_payload, plugin_ctx
+            )
+            pre_output = pre_payload.current_output
+        except Exception as exc:  # noqa: BLE001
+            warnings.warn(f"[quor] PRE_FILTER plugin error: {exc}", stacklevel=1)
+
+    # --- Passthrough when no filter matches ---
     if filter_config is None or registry is None:
+        _teardown_plugins(plugin_registry, plugin_ctx)
         _track(
             tracking,
             cmd_str=cmd_str,
             original=captured,
-            filtered=captured,
+            filtered=pre_output,
             filter_name=None,
             was_passthrough=True,
             t0=t0,
         )
-        sys.stdout.write(captured)
+        sys.stdout.write(pre_output)
         sys.stdout.flush()
         return proc.returncode
 
-    # --- Apply filter ---
+    # --- Apply ContentMask filter ---
+    content_type = detect(pre_output).value
     try:
-        content_type = detect(captured).value
-        filtered = registry.apply(filter_config, captured, content_type=content_type)
+        filtered = registry.apply(filter_config, pre_output, content_type=content_type)
     except Exception as exc:  # noqa: BLE001
         warnings.warn(f"[quor] filter apply error: {exc}", stacklevel=1)
-        filtered = captured  # fail-open
+        filtered = pre_output
 
+    # --- POST_FILTER plugins ---
+    if plugin_ctx is not None:
+        try:
+            post_payload = PluginPayload(
+                command=cmd_str,
+                raw_output=captured,
+                current_output=filtered,
+                content_type=content_type,
+            )
+            post_payload = plugin_registry.run_category(
+                PluginCategory.POST_FILTER, post_payload, plugin_ctx
+            )
+            filtered = post_payload.current_output
+        except Exception as exc:  # noqa: BLE001
+            warnings.warn(f"[quor] POST_FILTER plugin error: {exc}", stacklevel=1)
+
+    _teardown_plugins(plugin_registry, plugin_ctx)
     _track(
         tracking,
         cmd_str=cmd_str,
@@ -93,6 +168,21 @@ def run_dispatch(args: list[str], tracking: TrackingDB | None = None) -> int:
     sys.stdout.write(filtered)
     sys.stdout.flush()
     return proc.returncode
+
+
+def _teardown_plugins(
+    plugin_registry: object, plugin_ctx: object | None
+) -> None:
+    """Shutdown all plugins if they were initialized. Fail-open."""
+    if plugin_ctx is None:
+        return
+    try:
+        from quor.plugins.registry import PluginRegistry as _PR
+
+        if isinstance(plugin_registry, _PR):
+            plugin_registry.shutdown_all()
+    except Exception as exc:  # noqa: BLE001
+        warnings.warn(f"[quor] plugin shutdown error: {exc}", stacklevel=1)
 
 
 def _track(

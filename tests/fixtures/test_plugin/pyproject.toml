@@ -1,0 +1,15 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "quor-test-stage"
+version = "0.1.0"
+description = "Minimal no-op StageHandler fixture for Quor plugin loader tests"
+requires-python = ">=3.11"
+
+[tool.hatch.build.targets.wheel]
+packages = ["quor_test_stage"]
+
+[project.entry-points."quor.compression_stage"]
+noop_test = "quor_test_stage.stage:NoOpTestStage"
