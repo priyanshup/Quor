@@ -1,7 +1,7 @@
 ﻿# PROJECT STATUS
 ## Quor — Current State Snapshot
 
-> Last updated: 2026-07-01 (Phase 9 completion pass — see notes below)
+> Last updated: 2026-07-02 (Final pre-release cleanup — see notes below)
 > Update this document at the start of every implementation session.
 
 ---
@@ -126,7 +126,7 @@ Do not begin any public work until the name is secured.
 | `quor/pipeline/plugin_loader.py` | 37 | Entry-point discovery, cache, file:// loader, load report |
 
 **Testing targets from RELEASE_CRITERIA.md:**
-- ≥80% coverage on `quor/pipeline/`, `quor/filters/`, `quor/rewrite/` — first two met
+- ≥80% coverage on `quor/pipeline/`, `quor/filters/`, `quor/rewrite/` — all three met (93% overall)
 - CI on `windows-latest` and `ubuntu-latest` — ✓ configured in `.github/workflows/ci.yml`
 - Weekly canary — ✓ configured in `.github/workflows/canary.yml`
 - Default test suite completes in <30 seconds — ~16s currently ✓
@@ -153,11 +153,9 @@ Do not begin any public work until the name is secured.
 
 ### What does not yet exist:
 
-- `README.md` — write in Phase 9 (after Quor actually works)
-- `CHANGELOG.md` — write at first release
-- JSON Schema — generate in Phase 3 from Pydantic models
-- `pyproject.toml` — write in Phase 0
-- Built-in filter TOML files — write in Phase 3
+- `CHANGELOG.md` — write at first release (Phase 10)
+
+Everything else previously listed here (`README.md`, JSON Schema via `quor schema`, `pyproject.toml`, built-in filter TOML files) now exists — see the Implementation Phase table above.
 
 ---
 
@@ -326,6 +324,17 @@ A follow-up implementation audit found that two Phase 9 items didn't actually ma
 - `DECISIONS.md`: added the tier scope-boundary note to ADR-026 (see above). No new ADR needed — this is a boundary on an existing decision, not a new one.
 
 **8 new tests** across `test_plugin_loader.py` (+4), `test_plugins.py` (+2), `test_cli.py` (+1), `test_adapters.py` (+1); total 605 passing.
+
+---
+
+## Final Pre-Release Cleanup Notes (2026-07-02)
+
+Closed the small remaining technical-debt items ahead of Phase 10. No new features, no architecture changes, no test count change (605 passing, 2 tests modified in place).
+
+- **Removed `ExitCode.PLUGIN_ERROR` (dead code).** Traced every `PluginError` raise site in the codebase — all are caught internally (`plugin_loader.py`, `PluginRegistry`) and converted to a warning + skip, or re-wrapped into `ConfigError` before reaching a CLI exit boundary. `QuorError.exit_code` is never read anywhere in the codebase for any subclass. `PluginError` now carries the default `GENERAL_ERROR`.
+- **Modernized the last two `Path.home()`-patching tests.** `test_doctor_reports_collision` and `test_doctor_no_collision_when_settings_missing` in `test_cli.py` now use `--settings-path` injection like the rest of the file. This also fixed a latent bug: the collision test wrote its fixture to `tmp_path/settings.json` while patching `Path.home()` to `tmp_path`, but `doctor`'s default path is `Path.home()/.claude/settings.json` — the fixture was never actually at the path being checked, so the collision was never really being detected. The assertion (checking for the substring `"conflicting"`) passed anyway, because that word is in the check's label text regardless of pass/fail. Now asserts `exit_code` and the actual failure-detail string.
+- **Python version compatibility resolved by real execution, not just static review.** This closes the follow-up ADR-027 explicitly left open ("evidence 3.13/3.14 have not been systematically vetted, only incidentally exercised"). Created actual Python 3.11 and 3.13 virtual environments (via `uv venv --python <version>`) alongside the existing 3.14 development environment, and ran `ruff check quor/ tests/`, `mypy quor/`, and the full pytest suite in each — all three identical: clean lint/types, 605/605 tests passing. `requires-python` remains unbounded above (no incompatibility found to justify capping it). Python 3.12 was not independently re-verified locally (already covered by every GitHub Actions run) but sits directly between two verified points. See ADR-027's "Update" note for the full record.
+- **Incidental discovery (not acted on):** installing dev extras on Python 3.11 initially failed with an old bundled pip (24.0) — `InvalidRequirement: Invalid URL given` — because it couldn't parse the dev extra's relative `file:./tests/fixtures/test_plugin` URL. Upgrading to pip 26.1.2 fixed it immediately. Not a Python-version incompatibility; flagged in case a contributor hits it with a stale cached pip.
 
 ---
 
