@@ -1,7 +1,7 @@
 ﻿# PROJECT STATUS
 ## Quor — Current State Snapshot
 
-> Last updated: 2026-07-01 (Phase 9 plugin discovery & loading complete)
+> Last updated: 2026-07-01 (Release Hardening phase complete)
 > Update this document at the start of every implementation session.
 
 ---
@@ -14,7 +14,7 @@
 | Architecture | COMPLETE | 100% | All decisions made. Documented in DECISIONS.md (25 ADRs). |
 | Documentation | COMPLETE | 95% | 10 canonical docs + README.md written. JSON Schema generated (Phase 3). |
 | Implementation | IN PROGRESS | 94% | Phases 0–9 complete. Phase 10 (packaging) next. |
-| Testing | IN PROGRESS | 94% | 597 tests, ruff+mypy clean. All passing. |
+| Testing | IN PROGRESS | 94% | 597 tests, ruff+mypy clean on `quor/` and `tests/`. All passing, fully machine-isolated. |
 | Packaging | NOT STARTED | 0% | PyPI name available (verified 2026-06-30). Registration pending Phase 10. |
 
 ---
@@ -298,6 +298,17 @@ The mode system (ADR-009: AUDIT/OPTIMIZE/SIMULATE) remains **display-only** — 
 - `quor-test-stage` — installable package with `NoOpTestStage` (`stage_type = "noop_test"`, `api_version = 1`). Registered in `pyproject.toml` dev deps as `file:./tests/fixtures/test_plugin`. Integration test `TestInstalledTestPlugin` discovers it via real entry-point scanning.
 
 **37 new tests** in `tests/unit/test_plugin_loader.py`; total 597 passing.
+
+---
+
+## Release Hardening Phase Notes (2026-07-01)
+
+Paused feature work to address technical debt surfaced while investigating a Ruff CI failure (SIM105). No new features, no Plugin API changes, no architecture changes. See ADR-027 in DECISIONS.md for the tooling-policy decisions.
+
+- **Test isolation:** `quor/cli/commands/doctor.py::_check_hook_collision()` hardcoded `Path.home() / ".claude" / "settings.json"`, so 8 tests in `tests/unit/test_cli.py` silently depended on whichever real hooks happened to be installed on the developer's machine. `_check_hook_collision()` and `doctor()` now accept an injectable `settings_path` (hidden `--settings-path` CLI option, mirroring the existing pattern in `init.py`); `init --claude` threads its own resolved settings path into the `doctor` run it triggers at the end. Production behavior is unchanged — only the default (`Path.home()/.claude/settings.json`) is now overridable. 3 of those 8 tests had been asserting `exit_code == 0` for cases with a genuine unresolved third-party hook conflict — a pass that only ever happened because the bug meant `doctor` was silently checking the wrong file. Corrected to expect `ExitCode.GENERAL_ERROR`, matching doctor's actual (and intentional) contract.
+- **CI/local tooling parity:** `ruff` and `mypy` are now exact-pinned in `pyproject.toml` dev extras (`ruff==0.15.20`, `mypy==2.1.0`) — these are the tools whose point releases most often add new lint rules or stricter checks, which is what caused the original SIM105 incident. `pytest`/`pytest-cov` use bounded ranges instead, since test-runner releases are comparatively stable.
+- **CI test linting:** `ruff check tests/` had never been run in CI (only `quor/` was linted), so 45 lint violations had silently accumulated in `tests/`. Fixed all of them (safe auto-fixes plus manual fixes for ambiguous-unicode assertions, nested `with` blocks, and three blind `except Exception`/`pytest.raises(Exception)` asserts narrowed to the actual exception types raised). One fix (`test_tracking.py::test_tracking_failure_does_not_raise`) had been silently vacuous — it built a record but never called `db.record()` — and now genuinely exercises the fail-open write-error path. `ci.yml` now runs `ruff check quor/ tests/`.
+- **Python version policy:** local dev on this machine runs 3.14, while CI only tests 3.11/3.12 (the versions in `pyproject.toml` classifiers). `doctor.py` already carries a `_FakeStdout` workaround specifically for a 3.14 stdout.buffer behavior change — evidence 3.13/3.14 aren't actually vetted yet, just incidentally installable. Recommendation: keep v0.1 scoped to 3.11/3.12 only; CI already reflects this, so no CI change was needed. `pyproject.toml`'s `requires-python` was deliberately left unbounded above rather than capped, since capping it would break `pip install -e ".[dev]"` on this contributor's own 3.14 environment — see ADR-027 for the tradeoff and a follow-up recommendation.
 
 ---
 

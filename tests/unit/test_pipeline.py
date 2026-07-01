@@ -12,7 +12,7 @@ from typing import ClassVar
 import pytest
 
 from quor.pipeline.content_type import ContentType, detect
-from quor.pipeline.engine import Pipeline, PipelineResult, StageEntry
+from quor.pipeline.engine import Pipeline, StageEntry
 from quor.pipeline.mask import ContentMask, Decision, LineMask
 from quor.pipeline.stages.base import StageConfig, StageHandler, StageResult
 

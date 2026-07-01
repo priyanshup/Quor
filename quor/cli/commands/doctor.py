@@ -33,7 +33,11 @@ class _FakeStdout:
         pass
 
 
-def doctor() -> None:
+def doctor(
+    settings_path: Path | None = typer.Option(
+        None, "--settings-path", hidden=True, help="Override the Claude settings.json path (for testing)."
+    ),
+) -> None:
     """Run health checks and print a summary with colored status indicators."""
     checks: list[tuple[str, bool, str]] = []
 
@@ -41,7 +45,7 @@ def doctor() -> None:
     checks.extend(_check_dependencies())
     checks.append(_check_hook_script())
     checks.append(_check_hook_roundtrip())
-    checks.append(_check_hook_collision())
+    checks.append(_check_hook_collision(settings_path))
     checks.append(_check_sqlite())
     checks.append(_check_filters())
     checks.append(_check_mode())
@@ -81,12 +85,12 @@ def _check_hook_script() -> tuple[str, bool, str]:
     return ("Hook script installed", exists, detail)
 
 
-def _check_hook_collision() -> tuple[str, bool, str]:
+def _check_hook_collision(settings_path: Path | None = None) -> tuple[str, bool, str]:
     """Warn if another tool's PreToolUse Bash hook is registered alongside Quor's."""
     from quor.cli.commands.init import _find_conflicting_hooks, _read_settings
     from quor.errors import ConfigError
 
-    settings_file = Path.home() / ".claude" / "settings.json"
+    settings_file = settings_path or (Path.home() / ".claude" / "settings.json")
     if not settings_file.exists():
         return ("No conflicting PreToolUse hooks", True, "")
     try:

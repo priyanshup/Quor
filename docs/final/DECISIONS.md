@@ -677,3 +677,39 @@ ADR-007 established `quor.compression_stage` entry-points for third-party `Stage
 
 **Implementation Evolution:**  
 During implementation, Quor adopted an interface-first approach for the plugin architecture. Rather than implementing plugin discovery immediately, the project first stabilized the public Plugin API, lifecycle, registry, and execution model. This separated Plugin Infrastructure from Plugin Discovery & Loading, allowing third-party plugins to target a stable public API before runtime discovery mechanisms were introduced. As a result, the original single "Plugin System" phase was split into two phases: Phase 8 (Plugin Infrastructure) and Phase 9 (Plugin Discovery & Loading). This was an implementation refinement, not a change in product vision or architecture.
+
+---
+
+## ADR-027: Release Hardening — Dev Tooling Version Policy & CI Lint Scope
+
+**Status:** Decided
+**Date:** 2026-07-01
+
+**Context:**
+A Ruff SIM105 failure reached CI despite a prior commit claiming "Ruff + mypy clean." Investigation found the violation reproduced identically with the locally installed Ruff — not a version mismatch, just a check that was never actually run before that commit. The investigation surfaced three related, previously-undiscovered gaps: `ruff`/`mypy`/`pytest` are unpinned in `pyproject.toml` (silent drift is possible over time even though local and CI happened to match on the day of the incident); CI only ever linted `quor/`, never `tests/` (45 violations had silently accumulated there); and local development on this machine runs Python 3.14, one version ahead of CI's tested 3.11/3.12 matrix.
+
+**Options considered (versioning):**
+- Full lock file (`uv.lock` / `pip-compile`): maximum reproducibility, but CI's install step is plain `pip install -e ".[dev]"` — adopting a lock file would mean also changing CI to a lock-aware install command, a bigger footprint than this hardening pass justifies, and `uv` was not confirmed available in the current dev sandbox.
+- Exact-pin every dev dependency: fully reproducible, but adds update-PR churn for tools (`pytest`, `pytest-cov`) that rarely cause silent breakage.
+- Exact-pin only the tools that generate new, breaking-by-default checks on point releases (`ruff`, `mypy`); bounded compatible ranges for the rest (`pytest`, `pytest-cov`).
+
+**Decision (versioning):** Exact-pin `ruff` and `mypy` (`ruff==0.15.20`, `mypy==2.1.0` — both the versions verified clean during this pass). Bound `pytest`/`pytest-cov` to `<10.0.0` / `<8.0.0` respectively rather than pinning exactly, since a pytest major bump (8→9 already happened silently under the old unbounded range) is far less likely to introduce a *false* CI failure than a new Ruff rule or a new mypy strictness default.
+
+**Options considered (CI lint scope):**
+- Leave `tests/` unlinted: matches historical behavior, but the exact silent-drift failure mode that caused this hardening pass would recur for test code specifically.
+- Lint `tests/` with a separate, looser Ruff config: more setup, more to maintain, and no strong reason test code needs different rules than `quor/`.
+- Lint `tests/` with the same `[tool.ruff]` config already in `pyproject.toml`: simplest, and 45 accumulated violations were fixed in this same pass so it starts clean.
+
+**Decision (CI lint scope):** `ci.yml`'s lint step now runs `ruff check quor/ tests/`. No separate config.
+
+**Options considered (Python version support):**
+- Support only 3.11/3.12 for v0.1 (matches current CI matrix and `pyproject.toml` classifiers).
+- Add 3.13 to CI: a stable, non-bleeding-edge release; reasonable middle ground.
+- Add 3.14 to CI: matches this contributor's local machine, but `doctor.py` already carries a `_FakeStdout` workaround for a 3.14-specific `stdout.buffer` behavior change — evidence 3.13/3.14 have not been systematically vetted, only incidentally exercised.
+
+**Decision (Python version support):** Officially scope v0.1 to Python 3.11/3.12 only. CI already reflects this — no workflow change needed. `pyproject.toml`'s `requires-python = ">=3.11"` was deliberately left unbounded above rather than capped to `<3.13`: capping it would make `pip install -e ".[dev]"` fail on this contributor's own 3.14 environment as a side effect of an unrelated hardening pass, which is a bigger, more disruptive change than this ADR is scoped to make unilaterally.
+
+**Consequences:**
+- Bumping `ruff`/`mypy` going forward is a deliberate, visible `pyproject.toml` diff — not a silent `pip install` side effect. Expect periodic small PRs to bump these pins as new versions are adopted.
+- `tests/` is now part of the CI-enforced lint surface; new test code must pass `ruff check tests/` before merge.
+- Follow-up (not done in this ADR): decide whether to (a) cap `requires-python` to `<3.13` and require contributors to develop on 3.11/3.12, or (b) add 3.13/3.14 to the CI matrix and verify the existing 3.14-specific workarounds are sufficient. Either is a bigger, separate decision than this hardening pass.

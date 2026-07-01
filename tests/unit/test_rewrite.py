@@ -7,9 +7,8 @@ from pathlib import Path
 
 import pytest
 
-from quor.rewrite.classifier import ClassificationResult, classify_command, rewrite_command
+from quor.rewrite.classifier import classify_command, rewrite_command
 from quor.rewrite.lexer import (
-    Token,
     TokenKind,
     has_heredoc,
     parse_args,

@@ -18,7 +18,6 @@ from quor.filters.registry import FilterRegistry
 from quor.pipeline.engine import PipelineResult
 from quor.pipeline.mask import Decision
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------

@@ -33,10 +33,15 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
-    "pytest>=8.0.0",
-    "pytest-cov>=5.0.0",
-    "mypy>=1.10.0",
-    "ruff>=0.4.0",
+    # pytest/pytest-cov are bounded, not exact-pinned: stable across minor/major
+    # releases and rarely the source of silent CI-vs-local divergence.
+    "pytest>=8.0.0,<10.0.0",
+    "pytest-cov>=5.0.0,<8.0.0",
+    # ruff/mypy are exact-pinned: new releases regularly add lint rules or
+    # tighten checks, which silently breaks CI without any code change unless
+    # local and CI resolve the identical version (see DECISIONS.md).
+    "mypy==2.1.0",
+    "ruff==0.15.20",
     "quor-test-stage @ file:./tests/fixtures/test_plugin",
 ]
 

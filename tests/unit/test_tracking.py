@@ -5,10 +5,9 @@ from __future__ import annotations
 import io
 import sqlite3
 import subprocess
-import sys
 import threading
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -16,14 +15,12 @@ import orjson
 import pytest
 
 from quor.tracking.db import (
-    GainReport,
     InvocationRecord,
     TrackingDB,
     count_tokens,
     get_tracking_db,
     query_gain,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -38,15 +35,15 @@ def _db_and_jsonl(tmp_path: Path) -> tuple[TrackingDB, Path, Path]:
 
 
 def _sample_record(**kwargs) -> InvocationRecord:
-    defaults = dict(
-        command="git status",
-        project_path="/home/user/myproject",
-        original_tokens=100,
-        final_tokens=20,
-        filter_name="git-status",
-        was_passthrough=False,
-        duration_ms=12.5,
-    )
+    defaults = {
+        "command": "git status",
+        "project_path": "/home/user/myproject",
+        "original_tokens": 100,
+        "final_tokens": 20,
+        "filter_name": "git-status",
+        "was_passthrough": False,
+        "duration_ms": 12.5,
+    }
     defaults.update(kwargs)
     return InvocationRecord(**defaults)
 
@@ -240,7 +237,7 @@ class TestTrackingDbJsonl:
         assert len(lines) == 3
 
     def test_jsonl_fields_match_sqlite_schema(self, tmp_path: Path) -> None:
-        db, db_path, jsonl_path = _db_and_jsonl(tmp_path)
+        db, _db_path, jsonl_path = _db_and_jsonl(tmp_path)
         db.record(_sample_record())
         db.flush()
         db.close()
@@ -271,7 +268,7 @@ class TestTrackingDbJsonl:
 class TestCleanup:
     def _insert_old_record(self, db_path: Path, days_ago: int) -> None:
         old_date = (
-            datetime.now(timezone.utc) - timedelta(days=days_ago)
+            datetime.now(UTC) - timedelta(days=days_ago)
         ).isoformat(timespec="seconds")
         with sqlite3.connect(str(db_path)) as conn:
             conn.execute(
@@ -352,7 +349,7 @@ class TestQueryGain:
                         r.get("filter_name", "git"),
                         r.get("was_passthrough", 0),
                         r.get("duration_ms", 10.0),
-                        r.get("recorded_at", datetime.now(timezone.utc).isoformat()),
+                        r.get("recorded_at", datetime.now(UTC).isoformat()),
                         1,
                     ),
                 )
@@ -411,7 +408,7 @@ class TestQueryGain:
     def test_days_filter(self, tmp_path: Path) -> None:
         db_path = tmp_path / "quor.db"
         old_date = (
-            datetime.now(timezone.utc) - timedelta(days=60)
+            datetime.now(UTC) - timedelta(days=60)
         ).isoformat(timespec="seconds")
         self._populate(db_path, [
             {"recorded_at": old_date, "project_path": "/proj"},
@@ -451,15 +448,14 @@ class TestGetTrackingDb:
         assert (data_dir / "quor.db").exists()
 
     def test_tracking_failure_does_not_raise(self, tmp_path: Path) -> None:
-        """DB write failure must not propagate to caller."""
+        """A write failure in the background worker must not propagate to the caller."""
         db = TrackingDB(db_path=tmp_path / "quor.db")
-        # Force a write error by replacing the queue with a broken one
-        bad_rec = _sample_record(command="should not crash")
-        # Even if internal write fails, record() must not raise
-        with patch.object(db, "_queue") as mock_q:
-            mock_q.put.side_effect = RuntimeError("queue broken")
-            # record() catches queue errors — actually it calls queue.put() directly
-            # Let's test by ensuring the thread's write error is swallowed
+        with (
+            patch.object(db, "_write_sqlite", side_effect=RuntimeError("disk full")),
+            pytest.warns(UserWarning, match="tracking write error"),
+        ):
+            db.record(_sample_record(command="should not crash"))
+            db.flush()
         db.close()
 
 
@@ -544,7 +540,7 @@ class TestConcurrentWrites:
     Without WAL mode, one writer would get SQLITE_BUSY and records would be lost.
     """
 
-    N_RECORDS = 30  # per writer; total expected = 2 × N_RECORDS
+    N_RECORDS = 30  # per writer; total expected = 2 x N_RECORDS
 
     def _write_records(self, db_path: Path, start: int, count: int) -> None:
         db = TrackingDB(db_path=db_path)

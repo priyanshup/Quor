@@ -15,13 +15,13 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+from pydantic import ValidationError
 
 from quor.config.model import FilterConfig, FilterTest, QuorConfig
 from quor.errors import ConfigError
 from quor.filters.loader import load_filter_file
 from quor.filters.registry import FilterRegistry, _build_stage_entry
 from quor.filters.trust import is_git_tracked
-
 
 # ---------------------------------------------------------------------------
 # Config model
@@ -74,7 +74,7 @@ class TestConfigModel:
 
     def test_filter_config_frozen(self) -> None:
         fc = FilterConfig(name="x", match_command=".*")
-        with pytest.raises(Exception):
+        with pytest.raises(ValidationError):
             fc.name = "y"  # type: ignore[misc]
 
 
@@ -246,10 +246,12 @@ class TestFilterRegistryTiering:
         (project_root / ".quor" / "filters").mkdir(parents=True)
         _make_filter_toml(project_root / ".quor" / "filters", "custom", "^custom")
 
-        with patch("quor.filters.registry.is_git_tracked", return_value=False):
-            with warnings.catch_warnings(record=True) as caught:
-                warnings.simplefilter("always")
-                registry = FilterRegistry(project_root=project_root, skip_user=True)
+        with (
+            patch("quor.filters.registry.is_git_tracked", return_value=False),
+            warnings.catch_warnings(record=True) as caught,
+        ):
+            warnings.simplefilter("always")
+            registry = FilterRegistry(project_root=project_root, skip_user=True)
 
         assert registry._project == []
         assert any("not git-tracked" in str(w.message) for w in caught)
@@ -275,10 +277,12 @@ class TestFilterRegistryTiering:
         registry._builtin = []
         registry._user = []
         registry._project = []
-        with patch("quor.filters.registry._BUILTIN_DIR", tmp_path):
-            with warnings.catch_warnings(record=True) as caught:
-                warnings.simplefilter("always")
-                registry._load_builtin()
+        with (
+            patch("quor.filters.registry._BUILTIN_DIR", tmp_path),
+            warnings.catch_warnings(record=True) as caught,
+        ):
+            warnings.simplefilter("always")
+            registry._load_builtin()
         assert any("broken.toml" in str(w.message) for w in caught)
 
 

@@ -27,7 +27,6 @@ from quor.pipeline.stages.max_tokens import MaxTokensConfig, MaxTokensStage
 from quor.pipeline.stages.remove_ansi import RemoveAnsiConfig, RemoveAnsiStage
 from quor.pipeline.stages.strip_lines import StripLinesConfig, StripLinesStage
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -172,10 +171,12 @@ class TestStripLines:
         config = self._config(patterns=[r".*"])
         mask = ContentMask.from_text("any content")
 
-        with patch.object(_utils, "_search", side_effect=TimeoutError("timed out")):
-            with warnings.catch_warnings(record=True) as caught:
-                warnings.simplefilter("always")
-                result = self.stage.apply(mask, config)
+        with (
+            patch.object(_utils, "_search", side_effect=TimeoutError("timed out")),
+            warnings.catch_warnings(record=True) as caught,
+        ):
+            warnings.simplefilter("always")
+            result = self.stage.apply(mask, config)
 
         assert result.lines[0].decision is Decision.KEEP
         assert any("timed out" in str(w.message).lower() for w in caught)
@@ -292,19 +293,19 @@ class TestGroupRepeated:
         mask = ContentMask.from_text("WARNING: foo\nother line")
         result = self.stage.apply(mask, self._config(patterns=["^WARNING:"], min_count=2))
         assert result.lines[0].decision is Decision.KEEP
-        assert "(×" not in result.lines[0].line
+        assert "(×" not in result.lines[0].line  # noqa: RUF001
 
     def test_two_occurrences_collapsed_with_min_count_2(self) -> None:
         mask = ContentMask.from_text("WARNING: foo\nWARNING: foo")
         result = self.stage.apply(mask, self._config(patterns=["^WARNING:"], min_count=2))
-        assert "×2" in result.lines[0].line
+        assert "×2" in result.lines[0].line  # noqa: RUF001
         assert result.lines[1].decision is Decision.COMPRESS
 
     def test_five_occurrences_suffix(self) -> None:
         text = "\n".join(["WARNING: disk low"] * 5)
         mask = ContentMask.from_text(text)
         result = self.stage.apply(mask, self._config(patterns=["^WARNING:"], min_count=2))
-        assert "×5" in result.lines[0].line
+        assert "×5" in result.lines[0].line  # noqa: RUF001
         assert result.lines[0].decision is Decision.KEEP
         for lm in result.lines[1:]:
             assert lm.decision is Decision.COMPRESS
@@ -314,7 +315,7 @@ class TestGroupRepeated:
         text = "\n".join(["INFO: loop"] * n)
         mask = ContentMask.from_text(text)
         result = self.stage.apply(mask, self._config(patterns=["^INFO:"], min_count=2))
-        assert f"×{n}" in result.lines[0].line
+        assert f"×{n}" in result.lines[0].line  # noqa: RUF001
 
     def test_protect_line_breaks_run(self) -> None:
         lines = (
@@ -327,8 +328,8 @@ class TestGroupRepeated:
         mask = ContentMask(lines=lines)
         result = self.stage.apply(mask, self._config(patterns=["^WARNING:"], min_count=2))
         assert result.lines[2].decision is Decision.PROTECT
-        assert "×2" in result.lines[0].line
-        assert "×2" in result.lines[3].line
+        assert "×2" in result.lines[0].line  # noqa: RUF001
+        assert "×2" in result.lines[3].line  # noqa: RUF001
 
     def test_protect_lines_not_modified(self) -> None:
         lm = _protect("WARNING: critical")
@@ -342,12 +343,12 @@ class TestGroupRepeated:
         mask = ContentMask.from_text(text)
         result = self.stage.apply(mask, self._config(patterns=["^WARNING:"], min_count=2))
         # First run: lines 0-1 collapsed
-        assert "×2" in result.lines[0].line
+        assert "×2" in result.lines[0].line  # noqa: RUF001
         assert result.lines[1].decision is Decision.COMPRESS
         # INFO line untouched
         assert result.lines[2].decision is Decision.KEEP
         # Second run: lines 3-4 collapsed
-        assert "×2" in result.lines[3].line
+        assert "×2" in result.lines[3].line  # noqa: RUF001
         assert result.lines[4].decision is Decision.COMPRESS
 
     def test_wrong_config_type_raises(self) -> None:
@@ -361,10 +362,12 @@ class TestGroupRepeated:
         mask = ContentMask.from_text("WARNING: foo\nWARNING: foo")
 
         # group_repeated imports _search by name, so patch it in its own module namespace
-        with patch.object(_gr_mod, "_search", side_effect=TimeoutError("timed out")):
-            with warnings.catch_warnings(record=True) as caught:
-                warnings.simplefilter("always")
-                result = self.stage.apply(mask, config)
+        with (
+            patch.object(_gr_mod, "_search", side_effect=TimeoutError("timed out")),
+            warnings.catch_warnings(record=True) as caught,
+        ):
+            warnings.simplefilter("always")
+            result = self.stage.apply(mask, config)
 
         assert any("timed out" in str(w.message).lower() for w in caught)
         # No lines should be compressed on timeout

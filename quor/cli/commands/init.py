@@ -99,7 +99,7 @@ def init(
     console.print("\nRunning `quor doctor`...\n")
     from quor.cli.commands.doctor import doctor as run_doctor
 
-    run_doctor()
+    run_doctor(settings_path=settings_file)
 
 
 def _read_settings(path: Path) -> dict[str, Any]:

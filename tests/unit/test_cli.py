@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import sys
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -200,8 +200,9 @@ class TestDoctor:
         hook_path = tmp_path / "hooks" / "claude-hook.ps1"
         hook_path.parent.mkdir(parents=True, exist_ok=True)
         hook_path.write_text("dummy", encoding="utf-8")
+        settings_path = tmp_path / "settings.json"
         with patch("platformdirs.user_data_dir", return_value=str(tmp_path)):
-            result = runner.invoke(app, ["doctor"])
+            result = runner.invoke(app, ["doctor", "--settings-path", str(settings_path)])
         assert result.exit_code == 0
         assert "✓ Hook script installed" in result.output
 
@@ -303,7 +304,10 @@ class TestHookCollisionDetection:
             app,
             ["init", "--claude", "--yes", "--settings-path", str(settings_path)],
         )
-        assert result.exit_code == 0
+        # init installs alongside the third-party hook (per --yes); the third-party
+        # hook is left in place, so the trailing `quor doctor` run correctly reports
+        # the still-unresolved collision as a failure.
+        assert result.exit_code == ExitCode.GENERAL_ERROR
         assert "Warning" in result.output or "⚠" in result.output
 
     def test_third_party_hook_names_known_tool(self, tmp_path: Path) -> None:
@@ -316,7 +320,9 @@ class TestHookCollisionDetection:
             app,
             ["init", "--claude", "--yes", "--settings-path", str(settings_path)],
         )
-        assert result.exit_code == 0
+        # See test_third_party_hook_triggers_warning: the trailing doctor run
+        # correctly flags the still-unresolved third-party hook.
+        assert result.exit_code == ExitCode.GENERAL_ERROR
         assert "Zap" in result.output
 
     def test_unknown_third_party_hook_warns_generically(self, tmp_path: Path) -> None:
@@ -329,7 +335,9 @@ class TestHookCollisionDetection:
             app,
             ["init", "--claude", "--yes", "--settings-path", str(settings_path)],
         )
-        assert result.exit_code == 0
+        # See test_third_party_hook_triggers_warning: the trailing doctor run
+        # correctly flags the still-unresolved third-party hook.
+        assert result.exit_code == ExitCode.GENERAL_ERROR
         # Warning present but no named tool
         assert "Warning" in result.output or "⚠" in result.output
 

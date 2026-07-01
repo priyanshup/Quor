@@ -3,20 +3,18 @@
 from __future__ import annotations
 
 import io
-import json
 import subprocess
 import sys
-from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
 
 import orjson
 import pytest
+from pydantic import ValidationError
 
 from quor.adapters.base import HookInput, HookOutput, ToolInput
 from quor.adapters.claude import HOOK_COMMAND, HOOK_PS1_TEMPLATE, run_hook
 from quor.adapters.dispatcher import run_dispatch
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -145,7 +143,7 @@ class TestRunHookRewrite:
         }
         result = _run_hook_with(payload)
         assert result["tool_input"]["description"] == "show history"
-        assert "quor git log" == result["tool_input"]["command"]
+        assert result["tool_input"]["command"] == "quor git log"
 
     def test_output_is_valid_json(self) -> None:
         payload = _make_hook_payload("git status")
@@ -201,7 +199,7 @@ class TestRunHookInvalidJson:
         with (
             patch.object(sys, "stdin", io.StringIO("not valid json {")),
             patch.object(sys, "stdout", fake_stdout),
-            pytest.raises(Exception),
+            pytest.raises(orjson.JSONDecodeError),
         ):
             run_hook()
 
@@ -210,7 +208,7 @@ class TestRunHookInvalidJson:
         with (
             patch.object(sys, "stdin", io.StringIO('{"tool_name": "Bash"}')),
             patch.object(sys, "stdout", fake_stdout),
-            pytest.raises(Exception),
+            pytest.raises(ValidationError),
         ):
             run_hook()
 

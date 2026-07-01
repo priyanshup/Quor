@@ -14,7 +14,6 @@ or hanging. Each scenario proves the error model from ADR-018 holds:
 from __future__ import annotations
 
 import io
-import sqlite3
 import subprocess
 import sys
 import warnings
@@ -25,7 +24,6 @@ import orjson
 import pytest
 
 from quor.tracking.db import InvocationRecord, TrackingDB
-
 
 # ---------------------------------------------------------------------------
 # 1. Corrupted TOML config
@@ -209,7 +207,7 @@ class TestPermissionErrors:
 
         with (
             patch("quor.filters.loader.open", new=_selective_open),
-            warnings.catch_warnings(record=True) as caught,
+            warnings.catch_warnings(record=True),
         ):
             warnings.simplefilter("always")
             registry = FilterRegistry(project_root=None)
@@ -335,12 +333,12 @@ class TestRegexTimeout:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """TimeoutError from _search → warning emitted, line stays KEEP (fail-open)."""
-        from quor.pipeline.stages import _utils
         from quor.pipeline.mask import ContentMask, Decision
+        from quor.pipeline.stages import _utils
         from quor.pipeline.stages.strip_lines import StripLinesConfig, StripLinesStage
 
         def _always_timeout(
-            pat: object, line: str  # noqa: ARG001
+            pat: object, line: str
         ) -> None:
             raise TimeoutError("pattern match timed out")
 
@@ -363,12 +361,12 @@ class TestRegexTimeout:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """TimeoutError in preserve_patterns → line NOT incorrectly PROTECTED or COMPRESS."""
-        from quor.pipeline.stages import _utils
         from quor.pipeline.mask import ContentMask, Decision
+        from quor.pipeline.stages import _utils
         from quor.pipeline.stages.strip_lines import StripLinesConfig, StripLinesStage
 
         def _always_timeout(
-            pat: object, line: str  # noqa: ARG001
+            pat: object, line: str
         ) -> None:
             raise TimeoutError("timed out")
 
@@ -393,8 +391,8 @@ class TestRegexTimeout:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Real catastrophic backtracking pattern with short timeout → TimeoutError caught."""
-        from quor.pipeline.stages import _utils
         from quor.pipeline.mask import ContentMask, Decision
+        from quor.pipeline.stages import _utils
         from quor.pipeline.stages.strip_lines import StripLinesConfig, StripLinesStage
 
         # Shorten the timeout so the test completes quickly
