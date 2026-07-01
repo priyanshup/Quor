@@ -718,3 +718,25 @@ A Ruff SIM105 failure reached CI despite a prior commit claiming "Ruff + mypy cl
 - Follow-up (not done in this ADR): decide whether to (a) cap `requires-python` to `<3.13` and require contributors to develop on 3.11/3.12, or (b) add 3.13/3.14 to the CI matrix and verify the existing 3.14-specific workarounds are sufficient. Either is a bigger, separate decision than this hardening pass.
 
 **Update (2026-07-02 — Final Pre-Release Cleanup):** The Python version follow-up above is now resolved by real execution rather than static review. Created actual Python 3.11 and 3.13 virtual environments (via `uv venv --python <version>`) alongside the existing 3.14 development environment, and ran `ruff check quor/ tests/`, `mypy quor/`, and the full pytest suite in each — all three identical: clean lint/types, 605/605 tests passing. No 3.13/3.14-specific incompatibility was found beyond the `_FakeStdout` workaround already in place. Decision: `requires-python` stays unbounded above (no incompatibility to justify capping it); CI's matrix stays at 3.11/3.12 (expanding CI is a separate cost/benefit decision from verifying local compatibility, and every commit is already covered on those two versions). Python 3.12 itself was not independently re-verified in this pass — it sits directly between two verified points and is already exercised by every CI run.
+
+---
+
+## ADR-028: Release Packaging — Dev Fixture Excluded From Published Metadata
+
+**Status:** Decided
+**Date:** 2026-07-02
+
+**Context:**
+A release-readiness review found that `pyproject.toml`'s `dev` extra declared `quor-test-stage @ file:./tests/fixtures/test_plugin` — a relative `file://` URL pointing at the in-repo plugin-discovery test fixture. `pip`/`uv` bake this verbatim into the built wheel's `METADATA` (confirmed by inspecting the actual built wheel). That path only exists inside a source checkout of this repository; anyone who runs `pip install quor[dev]` against a copy installed from PyPI gets an unresolvable path and, with some pip versions, an outright `InvalidRequirement: Invalid URL given` parse error (reproduced with pip 24.0 during Python-version verification in the prior hardening pass; pip 26.1.2 resolves it but still can't find the path once installed from PyPI).
+
+**Options considered:**
+- Leave it as-is: the fixture keeps working for source-checkout contributors, but every published release ships a `dev` extra that fails for anyone installing it from PyPI — a real, reproducible break for a normal-looking command.
+- Publish `quor-test-stage` to PyPI as its own tiny package and depend on it normally: works, but creates a second package to version, maintain, and keep in sync for a fixture that exists purely to test entry-point discovery — disproportionate maintenance cost for what it's for.
+- Remove the fixture from `pyproject.toml`'s `dev` extra entirely; install it as a separate, explicit step in CI and in contributor setup docs.
+
+**Decision:** Remove `quor-test-stage` from `[project.optional-dependencies].dev`. It is installed via a separate `pip install -e ./tests/fixtures/test_plugin` step in `.github/workflows/ci.yml`, `.github/workflows/canary.yml`, and documented as a required second step in `CONTRIBUTING.md` and the README's Development Setup. Production behavior is unchanged — this only affects what a contributor or CI runner does to get the *test suite* fully working; end users installing plain `quor` were never affected either way.
+
+**Consequences:**
+- The published wheel's `dev` extra now only lists real PyPI packages (`pytest`, `pytest-cov`, `mypy`, `ruff`) — `pip install quor[dev]` from PyPI will resolve cleanly (though a PyPI user still won't have the `tests/` directory to point the fixture at; that extra was always intended for contributors working from a source checkout, not end users).
+- Contributors must remember the second install step — documented in three places (CI workflows, `CONTRIBUTING.md`, README) specifically to reduce the chance of it being missed or drifting out of sync.
+- If a genuinely reusable, general-purpose plugin-testing fixture is ever needed by third parties (not just this repo's own test suite), publishing it as a real PyPI package should be reconsidered — this decision is scoped to "make the current release clean," not a permanent rejection of that option.

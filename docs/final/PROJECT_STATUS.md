@@ -1,7 +1,7 @@
 ﻿# PROJECT STATUS
 ## Quor — Current State Snapshot
 
-> Last updated: 2026-07-02 (Final pre-release cleanup — see notes below)
+> Last updated: 2026-07-02 (Release Preparation — see notes below)
 > Update this document at the start of every implementation session.
 
 ---
@@ -11,11 +11,11 @@
 | Area | Status | % Complete | Notes |
 |---|---|---|---|
 | Research | COMPLETE | 100% | All 5 research documents finalized. Archived. |
-| Architecture | COMPLETE | 100% | All decisions made. Documented in DECISIONS.md (27 ADRs). |
-| Documentation | COMPLETE | 95% | 10 canonical docs + README.md written. JSON Schema generated (Phase 3). |
-| Implementation | IN PROGRESS | 94% | Phases 0–9 complete (Phase 9 gaps closed in completion pass). Phase 10 (packaging) next. |
-| Testing | IN PROGRESS | 94% | 605 tests, ruff+mypy clean on `quor/` and `tests/`. All passing, fully machine-isolated. |
-| Packaging | NOT STARTED | 0% | PyPI name available (verified 2026-06-30). Registration pending Phase 10. |
+| Architecture | COMPLETE | 100% | All decisions made. Documented in DECISIONS.md (28 ADRs). |
+| Documentation | COMPLETE | 98% | 10 canonical docs + README, CHANGELOG, LICENSE, CONTRIBUTING, CODE_OF_CONDUCT, SECURITY all written. JSON Schema generated (Phase 3). |
+| Implementation | IN PROGRESS | 94% | Phases 0–9 complete (Phase 9 gaps closed in completion pass). Phase 10 (packaging) in progress. |
+| Testing | IN PROGRESS | 94% | 605 tests, ruff+mypy clean on `quor/` and `tests/`. All passing, fully machine-isolated. Verified on Python 3.11, 3.13, 3.14. |
+| Packaging | IN PROGRESS | 70% | Version bumped to 0.1.0. LICENSE, CHANGELOG.md, `[project.urls]`, release workflow, and GitHub community files all added. PyPI name still available (last verified 2026-07-02). Not yet published. |
 
 ---
 
@@ -39,7 +39,7 @@ The one exception: the three empirical pre-flight checks are observations about 
 
 ## Architecture Phase (COMPLETE)
 
-All architectural decisions are finalized. The 27 ADRs in DECISIONS.md are the authoritative record.
+All architectural decisions are finalized. The 28 ADRs in DECISIONS.md are the authoritative record.
 
 **Nothing in the architecture is undecided or provisional.** If implementation reveals that a decision was wrong, update DECISIONS.md with the new decision and the reason for the change — do not implement around an ADR without updating it.
 
@@ -103,7 +103,7 @@ Do not begin any public work until the name is secured.
 | 7.5 | Pre-Phase 8 hardening | COMPLETE (493 total, see notes below) |
 | 8 | Plugin Infrastructure | COMPLETE (560 total, see notes below) |
 | 9 | Plugin Discovery & Loading | COMPLETE (597 total, see notes below) |
-| 10 | Packaging | NOT STARTED |
+| 10 | Packaging | IN PROGRESS (see Release Preparation Notes below) |
 
 ---
 
@@ -134,28 +134,33 @@ Do not begin any public work until the name is secured.
 
 ---
 
-## Documentation Phase (90% Complete)
+## Documentation Phase (98% Complete)
 
-### What exists (as of 2026-06-30):
+### What exists (as of 2026-07-02):
 
 | Document | Path | Status |
 |---|---|---|
 | PROJECT_BIBLE.md | docs/final/ | COMPLETE |
 | IMPLEMENTATION_PLAN.md | docs/final/ | COMPLETE |
 | CLAUDE.md | docs/final/ | COMPLETE |
-| CONTRIBUTING.md | docs/final/ | COMPLETE |
+| CONTRIBUTING.md | repository root (moved from docs/final/ so GitHub's Community Standards checklist detects it; docs/final/CONTRIBUTING.md is now a pointer) | COMPLETE |
 | ROADMAP.md | docs/final/ | COMPLETE |
 | DECISIONS.md | docs/final/ | COMPLETE |
 | ANTI_GOALS.md | docs/final/ | COMPLETE |
 | RELEASE_CRITERIA.md | docs/final/ | COMPLETE |
 | PROJECT_STATUS.md | docs/final/ | COMPLETE (this file) |
 | RESEARCH_COMPLETION.md | docs/final/ | COMPLETE |
+| README.md | repository root | COMPLETE |
+| CHANGELOG.md | repository root | COMPLETE (v0.1.0 entry) |
+| LICENSE | repository root | COMPLETE (Apache-2.0) |
+| CODE_OF_CONDUCT.md | repository root | COMPLETE |
+| SECURITY.md | repository root | COMPLETE |
 
 ### What does not yet exist:
 
-- `CHANGELOG.md` — write at first release (Phase 10)
-
-Everything else previously listed here (`README.md`, JSON Schema via `quor schema`, `pyproject.toml`, built-in filter TOML files) now exists — see the Implementation Phase table above.
+Nothing outstanding at the documentation level. Remaining Phase 10 work is
+publishing (TestPyPI/PyPI upload, fresh-VM install verification), not
+documentation.
 
 ---
 
@@ -335,6 +340,26 @@ Closed the small remaining technical-debt items ahead of Phase 10. No new featur
 - **Modernized the last two `Path.home()`-patching tests.** `test_doctor_reports_collision` and `test_doctor_no_collision_when_settings_missing` in `test_cli.py` now use `--settings-path` injection like the rest of the file. This also fixed a latent bug: the collision test wrote its fixture to `tmp_path/settings.json` while patching `Path.home()` to `tmp_path`, but `doctor`'s default path is `Path.home()/.claude/settings.json` — the fixture was never actually at the path being checked, so the collision was never really being detected. The assertion (checking for the substring `"conflicting"`) passed anyway, because that word is in the check's label text regardless of pass/fail. Now asserts `exit_code` and the actual failure-detail string.
 - **Python version compatibility resolved by real execution, not just static review.** This closes the follow-up ADR-027 explicitly left open ("evidence 3.13/3.14 have not been systematically vetted, only incidentally exercised"). Created actual Python 3.11 and 3.13 virtual environments (via `uv venv --python <version>`) alongside the existing 3.14 development environment, and ran `ruff check quor/ tests/`, `mypy quor/`, and the full pytest suite in each — all three identical: clean lint/types, 605/605 tests passing. `requires-python` remains unbounded above (no incompatibility found to justify capping it). Python 3.12 was not independently re-verified locally (already covered by every GitHub Actions run) but sits directly between two verified points. See ADR-027's "Update" note for the full record.
 - **Incidental discovery (not acted on):** installing dev extras on Python 3.11 initially failed with an old bundled pip (24.0) — `InvalidRequirement: Invalid URL given` — because it couldn't parse the dev extra's relative `file:./tests/fixtures/test_plugin` URL. Upgrading to pip 26.1.2 fixed it immediately. Not a Python-version incompatibility; flagged in case a contributor hits it with a stale cached pip.
+
+---
+
+## Release Preparation Notes (2026-07-02)
+
+Closed every remaining item from the release-readiness review ahead of the
+v0.1.0 tag. No architecture changes; no new runtime functionality beyond
+what the review explicitly called for.
+
+- **Version bumped `0.1.0.dev0` → `0.1.0`** in `pyproject.toml` and `quor/__init__.py`. A `.devN` suffix means `pip install quor` would not resolve to it by default (PEP 440) — publishing without this fix would have made the documented install command fail for ordinary users.
+- **`LICENSE` created** (Apache-2.0, matching the `license` field already declared in `pyproject.toml`). `README.md`'s `[LICENSE](LICENSE)` link was previously dead.
+- **`[project.urls]` added** to `pyproject.toml`: Homepage, Repository, Issues, Documentation, Changelog — all confirmed present in the built wheel's `METADATA` after the change.
+- **Positioning unified** across `README.md`, `pyproject.toml`'s `description`, and the CLI's Typer `help=` text and root-callback docstring (`quor/cli/main.py`) — all now describe Quor as "a rule-based command-output optimization and context-compression layer that reduces unnecessary LLM context while preserving important information," avoiding any wording that implies bypassing corporate/enterprise controls.
+- **`quor[dev]` packaging fixed** — see ADR-028. The relative `file://` dev dependency is no longer published; it's installed as a separate step in CI and documented in `CONTRIBUTING.md`.
+- **Classifiers updated** to include `Programming Language :: Python :: 3.13` and `3.14` (both verified by real execution in the prior cleanup pass — 3.12 was already listed and is covered by CI).
+- **`CHANGELOG.md` created** with a full v0.1.0 entry covering all phases, Release Hardening, Plugin Infrastructure, Plugin Discovery, testing milestones, and known limitations.
+- **GitHub community files added at the repository root** (where GitHub's Community Standards checklist looks): `CONTRIBUTING.md` (moved from `docs/final/`), `CODE_OF_CONDUCT.md` (new, Contributor Covenant 2.1), `SECURITY.md` (new, scoped to this project's actual fail-open/no-network design).
+- **`.github/workflows/release.yml` added** — tag-triggered (`v*`): builds wheel + sdist, verifies with `twine check`, verifies the tag matches `pyproject.toml`'s version, attaches artifacts to a GitHub Release, and has a `publish-pypi` job gated behind a `pypi` GitHub environment and a `PYPI_API_TOKEN` secret. Without that secret configured, the job fails fast with an explicit error rather than silently publishing or silently skipping.
+- **README additions:** a "Performance & Token Reduction" section (mechanism, why reduction varies, what compresses well vs. what's preserved, a benchmark methodology, and a results table explicitly marked "To be measured" — no invented numbers) and a "Roadmap: Observability (Planned)" section clearly marked as not-yet-implemented (compression statistics, before/after preview, dry-run mode, verbose diagnostics).
+- **Documentation consistency:** checked off 140 previously-unchecked `[ ]` deliverable/test/exit-criteria boxes in `IMPLEMENTATION_PLAN.md` for the Pre-Implementation Checklist through Phase 7 — all of those phases have been independently confirmed COMPLETE in this same document's phase table for several sessions, but the checkboxes themselves had never been updated to match. ADR count references updated to 28 throughout (see ADR-028). `quor schema`'s existence as a 7th, exempted utility command is now noted in `CLAUDE.md` and `quor/cli/main.py`'s module docstring, and added to the README's command table.
 
 ---
 

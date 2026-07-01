@@ -17,7 +17,7 @@ The research phase produced five documents across four categories:
 4. **Competitive research** (competitive-research.md): ecosystem map, 6 deep-dive competitor analyses, build-vs-contribute verdict, name candidates.
 5. **Engineering patterns** (engineering-patterns.md): synthesis of DSPy, LLMLingua, TextGrad, Promptfoo, SAMMO, EvoPrompt, Headroom AI. 24 engineering patterns. V1 build plan. Final dependency list. Final SQLite schema. Final TOML format.
 
-All five documents have been archived to `docs/archive/`. All decisions have been extracted and codified in `docs/final/DECISIONS.md` (25 ADRs at research-phase close; 27 as of the current implementation phase — see `docs/final/PROJECT_STATUS.md` for the current count). The canonical documents in `docs/final/` supersede all archived research.
+All five documents have been archived to `docs/archive/`. All decisions have been extracted and codified in `docs/final/DECISIONS.md` (25 ADRs at research-phase close; 28 as of the current implementation phase — see `docs/final/PROJECT_STATUS.md` for the current count). The canonical documents in `docs/final/` supersede all archived research.
 
 **No further research is needed.** The architecture is fully specified. The implementation is fully planned. Every open question was answered during research or is answerable via the three empirical pre-flight checks.
 

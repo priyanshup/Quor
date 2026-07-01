@@ -35,21 +35,21 @@ Target: <300ms. If consistently >300ms, design a persistent daemon before Phase 
 **Objective:** Get a clean, building, testable repository from zero.
 
 **Deliverables:**
-- [ ] `pyproject.toml` with all 6 core dependencies and correct entry-points
-- [ ] `quor/__init__.py` with `__version__ = "0.1.0.dev0"`
-- [ ] `quor/__main__.py` — version check (3.11+), routes to hook or CLI. No logic.
-- [ ] `quor/errors.py` — complete exception hierarchy
-- [ ] `conftest.py` — autouse isolation fixture (patches platformdirs)
-- [ ] `.github/workflows/ci.yml` — Python 3.11, 3.12 on ubuntu-latest and windows-latest
-- [ ] `pyproject.toml` — ruff, mypy, pytest config
-- [ ] `CONTRIBUTING.md` placeholders
+- [x] `pyproject.toml` with all 6 core dependencies and correct entry-points
+- [x] `quor/__init__.py` with `__version__ = "0.1.0.dev0"`
+- [x] `quor/__main__.py` — version check (3.11+), routes to hook or CLI. No logic.
+- [x] `quor/errors.py` — complete exception hierarchy
+- [x] `conftest.py` — autouse isolation fixture (patches platformdirs)
+- [x] `.github/workflows/ci.yml` — Python 3.11, 3.12 on ubuntu-latest and windows-latest
+- [x] `pyproject.toml` — ruff, mypy, pytest config
+- [x] `CONTRIBUTING.md` placeholders
 
 **Exit criteria:**
-- [ ] `pip install -e .` succeeds on Windows without compilation
-- [ ] `quor --help` prints without error
-- [ ] CI green on windows-latest and ubuntu-latest
-- [ ] `mypy quor/` passes
-- [ ] `ruff check quor/` passes
+- [x] `pip install -e .` succeeds on Windows without compilation
+- [x] `quor --help` prints without error
+- [x] CI green on windows-latest and ubuntu-latest
+- [x] `mypy quor/` passes
+- [x] `ruff check quor/` passes
 
 **Estimated complexity:** 0.5 days
 
@@ -65,22 +65,22 @@ Target: <300ms. If consistently >300ms, design a persistent daemon before Phase 
 **Objective:** Build the core abstraction that everything else rests on.
 
 **Deliverables:**
-- [ ] `quor/pipeline/mask.py` — `Decision` enum, `LineMask` frozen dataclass, `ContentMask` (list of LineMask + render method)
-- [ ] `quor/pipeline/engine.py` — `Pipeline.execute()`: runs stages in order, enforces PROTECT immutability, handles stage failures (skip + warn)
-- [ ] `quor/pipeline/stages/base.py` — `StageHandler` Protocol (runtime_checkable), `StageConfig` (Pydantic v2), `StageResult`
-- [ ] `quor/pipeline/content_type.py` — heuristic content type detector: JSON, ANSI-heavy, Python traceback, diff, plain text
+- [x] `quor/pipeline/mask.py` — `Decision` enum, `LineMask` frozen dataclass, `ContentMask` (list of LineMask + render method)
+- [x] `quor/pipeline/engine.py` — `Pipeline.execute()`: runs stages in order, enforces PROTECT immutability, handles stage failures (skip + warn)
+- [x] `quor/pipeline/stages/base.py` — `StageHandler` Protocol (runtime_checkable), `StageConfig` (Pydantic v2), `StageResult`
+- [x] `quor/pipeline/content_type.py` — heuristic content type detector: JSON, ANSI-heavy, Python traceback, diff, plain text
 
 **Unit tests:**
-- [ ] ContentMask: render() with all-KEEP, all-COMPRESS, mixed, all-PROTECT
-- [ ] ContentMask: PROTECT lines survive render regardless of Decision
-- [ ] Pipeline: stage that raises → stage skipped, subsequent stages run
-- [ ] Pipeline: PROTECT decision from stage N cannot be changed by stage N+1
-- [ ] Content type: fixture-based tests for each type (JSON blob, pytest output, git diff, etc.)
+- [x] ContentMask: render() with all-KEEP, all-COMPRESS, mixed, all-PROTECT
+- [x] ContentMask: PROTECT lines survive render regardless of Decision
+- [x] Pipeline: stage that raises → stage skipped, subsequent stages run
+- [x] Pipeline: PROTECT decision from stage N cannot be changed by stage N+1
+- [x] Content type: fixture-based tests for each type (JSON blob, pytest output, git diff, etc.)
 
 **Exit criteria:**
-- [ ] `pytest tests/unit/test_pipeline.py` passes
-- [ ] Coverage ≥80% on pipeline/
-- [ ] mypy passes
+- [x] `pytest tests/unit/test_pipeline.py` passes
+- [x] Coverage ≥80% on pipeline/
+- [x] mypy passes
 
 **Estimated complexity:** 1 day
 
@@ -93,27 +93,27 @@ Target: <300ms. If consistently >300ms, design a persistent daemon before Phase 
 **Objective:** Implement all five compression stages that the built-in filters will use.
 
 **Deliverables:**
-- [ ] `quor/pipeline/stages/remove_ansi.py` — COMPRESS ANSI-only lines using `regex`
-- [ ] `quor/pipeline/stages/strip_lines.py` — COMPRESS lines matching `patterns`; PROTECT lines matching `preserve_patterns`
-- [ ] `quor/pipeline/stages/deduplicate_consecutive.py` — COMPRESS adjacent duplicate lines
-- [ ] `quor/pipeline/stages/group_repeated.py` — collapse N repetitions of a pattern to `message (×N)`
-- [ ] `quor/pipeline/stages/max_tokens.py` — COMPRESS beyond budget (strategies: `head`, `tail`, `both`)
-- [ ] Pattern compilation at filter load time (not per-line), using `regex` with `timeout=1.0`
+- [x] `quor/pipeline/stages/remove_ansi.py` — COMPRESS ANSI-only lines using `regex`
+- [x] `quor/pipeline/stages/strip_lines.py` — COMPRESS lines matching `patterns`; PROTECT lines matching `preserve_patterns`
+- [x] `quor/pipeline/stages/deduplicate_consecutive.py` — COMPRESS adjacent duplicate lines
+- [x] `quor/pipeline/stages/group_repeated.py` — collapse N repetitions of a pattern to `message (×N)`
+- [x] `quor/pipeline/stages/max_tokens.py` — COMPRESS beyond budget (strategies: `head`, `tail`, `both`)
+- [x] Pattern compilation at filter load time (not per-line), using `regex` with `timeout=1.0`
 
 **Unit tests (per stage):**
-- [ ] Empty input → empty output (no crash)
-- [ ] Input with no matching lines → all KEEP (no change)
-- [ ] Input with all matching lines → all COMPRESS
-- [ ] PROTECT lines survive strip_lines even when matching `patterns`
-- [ ] group_repeated: exactly N occurrences → `(×N)` suffix on first
-- [ ] max_tokens: `tail` strategy keeps last N lines
-- [ ] max_tokens: `head` strategy keeps first N lines
-- [ ] Pattern with catastrophic backtracking potential → timeout after 1s, warn, skip
+- [x] Empty input → empty output (no crash)
+- [x] Input with no matching lines → all KEEP (no change)
+- [x] Input with all matching lines → all COMPRESS
+- [x] PROTECT lines survive strip_lines even when matching `patterns`
+- [x] group_repeated: exactly N occurrences → `(×N)` suffix on first
+- [x] max_tokens: `tail` strategy keeps last N lines
+- [x] max_tokens: `head` strategy keeps first N lines
+- [x] Pattern with catastrophic backtracking potential → timeout after 1s, warn, skip
 
 **Exit criteria:**
-- [ ] All stage unit tests pass
-- [ ] Coverage ≥80% on pipeline/stages/
-- [ ] Each stage passes mypy
+- [x] All stage unit tests pass
+- [x] Coverage ≥80% on pipeline/stages/
+- [x] Each stage passes mypy
 
 **Estimated complexity:** 1 day
 
@@ -126,14 +126,14 @@ Target: <300ms. If consistently >300ms, design a persistent daemon before Phase 
 **Objective:** Load filter configs from TOML, validate with Pydantic v2, implement three-tier lookup.
 
 **Deliverables:**
-- [ ] `quor/config/model.py` — Pydantic v2 models: `QuorConfig`, `FilterConfig`, `StageConfig`, `FilterTest`
-- [ ] `quor/filters/loader.py` — load TOML → `FilterConfig`, validate, raise `ConfigError` on invalid
-- [ ] `quor/filters/trust.py` — `is_git_tracked(path: Path) -> bool` using `git ls-files --error-unmatch`
-- [ ] `quor/filters/registry.py` — three-tier lookup: project → user → built-in
-- [ ] JSON Schema generation: `python -m quor schema` outputs schema to stdout
-- [ ] All five built-in TOML filter files (git, pytest, build, cat, generic) with ≥3 tests each
-- [ ] `abort_unless` / `abort_if` short-circuit logic in registry/engine
-- [ ] `on_empty` handling in pipeline render
+- [x] `quor/config/model.py` — Pydantic v2 models: `QuorConfig`, `FilterConfig`, `StageConfig`, `FilterTest`
+- [x] `quor/filters/loader.py` — load TOML → `FilterConfig`, validate, raise `ConfigError` on invalid
+- [x] `quor/filters/trust.py` — `is_git_tracked(path: Path) -> bool` using `git ls-files --error-unmatch`
+- [x] `quor/filters/registry.py` — three-tier lookup: project → user → built-in
+- [x] JSON Schema generation: `python -m quor schema` outputs schema to stdout
+- [x] All five built-in TOML filter files (git, pytest, build, cat, generic) with ≥3 tests each
+- [x] `abort_unless` / `abort_if` short-circuit logic in registry/engine
+- [x] `on_empty` handling in pipeline render
 
 **Built-in filter files:**
 
@@ -164,20 +164,20 @@ Target: <300ms. If consistently >300ms, design a persistent daemon before Phase 
 - `max_tokens` with configurable limit (default 1000), strategy `tail`
 
 **Unit tests:**
-- [ ] Load valid TOML → FilterConfig (no error)
-- [ ] Load invalid TOML → ConfigError with useful message
-- [ ] Lookup: project filter overrides built-in
-- [ ] Lookup: untrusted project filter → warn + skip
-- [ ] abort_unless: no match → return original
-- [ ] abort_if: match → return original
-- [ ] on_empty: empty render → return on_empty string
-- [ ] All five built-in filters pass their inline tests
+- [x] Load valid TOML → FilterConfig (no error)
+- [x] Load invalid TOML → ConfigError with useful message
+- [x] Lookup: project filter overrides built-in
+- [x] Lookup: untrusted project filter → warn + skip
+- [x] abort_unless: no match → return original
+- [x] abort_if: match → return original
+- [x] on_empty: empty render → return on_empty string
+- [x] All five built-in filters pass their inline tests
 
 **Exit criteria:**
-- [ ] `pytest tests/unit/test_filters.py` passes
-- [ ] All inline tests pass (`quor verify` — even though quor CLI is not yet built, the test runner can be invoked directly)
-- [ ] Coverage ≥80% on filters/
-- [ ] JSON Schema generated successfully
+- [x] `pytest tests/unit/test_filters.py` passes
+- [x] All inline tests pass (`quor verify` — even though quor CLI is not yet built, the test runner can be invoked directly)
+- [x] Coverage ≥80% on filters/
+- [x] JSON Schema generated successfully
 
 **Estimated complexity:** 2 days
 
@@ -190,9 +190,9 @@ Target: <300ms. If consistently >300ms, design a persistent daemon before Phase 
 **Objective:** Build the command rewriting logic that the hook adapter uses.
 
 **Deliverables:**
-- [ ] `quor/rewrite/lexer.py` — quote-aware shell tokenizer (handles `"arg with spaces"`, `'single quoted'`, `$VAR`)
-- [ ] `quor/rewrite/rules.py` — ordered `RULES` list: general-to-specific, covering simple commands, compound (`&&`, `||`, `;`, `&`), env prefixes, transparent prefixes (docker exec, sudo, etc.)
-- [ ] `quor/rewrite/classifier.py` — `classify_command(cmd: str) -> ClassificationResult` and `rewrite_command(cmd: str) -> str | None`
+- [x] `quor/rewrite/lexer.py` — quote-aware shell tokenizer (handles `"arg with spaces"`, `'single quoted'`, `$VAR`)
+- [x] `quor/rewrite/rules.py` — ordered `RULES` list: general-to-specific, covering simple commands, compound (`&&`, `||`, `;`, `&`), env prefixes, transparent prefixes (docker exec, sudo, etc.)
+- [x] `quor/rewrite/classifier.py` — `classify_command(cmd: str) -> ClassificationResult` and `rewrite_command(cmd: str) -> str | None`
 
 **Exclusion rules (commands that are NOT rewritten):**
 - Commands containing heredocs (`<<`)
@@ -202,14 +202,14 @@ Target: <300ms. If consistently >300ms, design a persistent daemon before Phase 
 - Unknown commands (passthrough)
 
 **Fixture-based tests:**
-- [ ] 100+ command strings covering: simple, compound, env-prefixed, transparent-prefixed, heredoc, pipe-incompatible, structured-output
-- [ ] Each fixture: `input`, `expected_rewrite`, `should_rewrite: bool`
-- [ ] All fixtures are TOML or JSON files in `tests/fixtures/commands/`
+- [x] 100+ command strings covering: simple, compound, env-prefixed, transparent-prefixed, heredoc, pipe-incompatible, structured-output
+- [x] Each fixture: `input`, `expected_rewrite`, `should_rewrite: bool`
+- [x] All fixtures are TOML or JSON files in `tests/fixtures/commands/`
 
 **Exit criteria:**
-- [ ] All 100+ command fixtures pass
-- [ ] mypy passes on rewrite/
-- [ ] No single rule in RULES covers more than 20 fixture cases (specificity check)
+- [x] All 100+ command fixtures pass
+- [x] mypy passes on rewrite/
+- [x] No single rule in RULES covers more than 20 fixture cases (specificity check)
 
 **Estimated complexity:** 1.5 days
 
@@ -222,12 +222,12 @@ Target: <300ms. If consistently >300ms, design a persistent daemon before Phase 
 **Objective:** Connect the rewriter and pipeline to Claude Code's PreToolUse hook protocol.
 
 **Deliverables:**
-- [ ] `quor/adapters/base.py` — `HookAdapter` Protocol, `HookInput` (Pydantic), `HookOutput` (Pydantic)
-- [ ] `quor/adapters/claude.py` — parse Claude Code JSON, call rewriter, return modified JSON
-- [ ] Top-level try/except in `__main__.py` hook mode: any exception → return original JSON to stdout
-- [ ] Cursor doubled-BOM handling: strip `\xEF\xBB\xBF\xEF\xBB\xBF` before JSON parsing
-- [ ] Hook mode does not import `rich` (validated in CI — test that hook stdout is valid JSON after import)
-- [ ] PowerShell hook script template (for `quor init --claude` to write)
+- [x] `quor/adapters/base.py` — `HookAdapter` Protocol, `HookInput` (Pydantic), `HookOutput` (Pydantic)
+- [x] `quor/adapters/claude.py` — parse Claude Code JSON, call rewriter, return modified JSON
+- [x] Top-level try/except in `__main__.py` hook mode: any exception → return original JSON to stdout
+- [x] Cursor doubled-BOM handling: strip `\xEF\xBB\xBF\xEF\xBB\xBF` before JSON parsing
+- [x] Hook mode does not import `rich` (validated in CI — test that hook stdout is valid JSON after import)
+- [x] PowerShell hook script template (for `quor init --claude` to write)
 
 **Hook invocation flow:**
 ```
@@ -250,18 +250,18 @@ args: ["git", "status"]
 ```
 
 **Unit tests:**
-- [ ] Hook: valid Claude JSON → rewritten JSON
-- [ ] Hook: invalid JSON → return original stdout (fail-open test)
-- [ ] Hook: doubled-BOM JSON → stripped correctly before parse
-- [ ] Dispatcher: command not in registry → original output
-- [ ] Dispatcher: pipeline raises → original output (fail-open)
-- [ ] Dispatcher: subprocess fails (exit code non-zero) → original stderr preserved
+- [x] Hook: valid Claude JSON → rewritten JSON
+- [x] Hook: invalid JSON → return original stdout (fail-open test)
+- [x] Hook: doubled-BOM JSON → stripped correctly before parse
+- [x] Dispatcher: command not in registry → original output
+- [x] Dispatcher: pipeline raises → original output (fail-open)
+- [x] Dispatcher: subprocess fails (exit code non-zero) → original stderr preserved
 
 **Exit criteria:**
-- [ ] Synthetic hook test: echo JSON to stdin of `quor hook claude`, verify JSON out
-- [ ] Hook stdout is valid JSON (no rich output contamination)
-- [ ] Fail-open test: force a pipeline exception, verify hook still returns original
-- [ ] Windows-specific: test on windows-latest CI
+- [x] Synthetic hook test: echo JSON to stdin of `quor hook claude`, verify JSON out
+- [x] Hook stdout is valid JSON (no rich output contamination)
+- [x] Fail-open test: force a pipeline exception, verify hook still returns original
+- [x] Windows-specific: test on windows-latest CI
 
 **Estimated complexity:** 1.5 days
 
@@ -274,24 +274,24 @@ args: ["git", "status"]
 **Objective:** Persist pipeline results for `quor gain` and CI artifact export.
 
 **Deliverables:**
-- [ ] `quor/tracking/schema.sql` — finalized schema (see DECISIONS.md ADR-008)
-- [ ] `quor/tracking/db.py` — `TrackingDB`: background thread writer, WAL mode, GLOB project scoping, 90-day cleanup
-- [ ] JSONL writer: append-only, one JSON object per line, same fields as SQLite
-- [ ] `quor/tracking/db.py` — `query_gain(project_path: Path, days: int = 30) -> GainReport`
-- [ ] Schema migration runner (checks `schema_migrations` table on startup)
+- [x] `quor/tracking/schema.sql` — finalized schema (see DECISIONS.md ADR-008)
+- [x] `quor/tracking/db.py` — `TrackingDB`: background thread writer, WAL mode, GLOB project scoping, 90-day cleanup
+- [x] JSONL writer: append-only, one JSON object per line, same fields as SQLite
+- [x] `quor/tracking/db.py` — `query_gain(project_path: Path, days: int = 30) -> GainReport`
+- [x] Schema migration runner (checks `schema_migrations` table on startup)
 
 **Unit tests:**
-- [ ] Write record → row in SQLite
-- [ ] Write record → line in JSONL
-- [ ] Tracking failure → hook still returns output (non-blocking confirmed)
-- [ ] 90-day cleanup: records older than 90 days removed
-- [ ] GLOB scoping: records from other projects not included in project gain
-- [ ] Path stored as POSIX string (no backslashes even on Windows)
+- [x] Write record → row in SQLite
+- [x] Write record → line in JSONL
+- [x] Tracking failure → hook still returns output (non-blocking confirmed)
+- [x] 90-day cleanup: records older than 90 days removed
+- [x] GLOB scoping: records from other projects not included in project gain
+- [x] Path stored as POSIX string (no backslashes even on Windows)
 
 **Exit criteria:**
-- [ ] `pytest tests/unit/test_tracking.py` passes
-- [ ] On Windows: path stored correctly (no backslash)
-- [ ] WAL mode confirmed in test (PRAGMA journal_mode)
+- [x] `pytest tests/unit/test_tracking.py` passes
+- [x] On Windows: path stored correctly (no backslash)
+- [x] WAL mode confirmed in test (PRAGMA journal_mode)
 
 **Estimated complexity:** 1 day
 
@@ -306,57 +306,57 @@ args: ["git", "status"]
 **Deliverables:**
 
 `quor init --claude`:
-- [ ] Locate or prompt for Claude Code settings.json path
-- [ ] Show dry-run: "Will write hook script to X. Will update settings.json at Y."
-- [ ] Write PowerShell hook script with full `sys.executable` path embedded
-- [ ] Update settings.json atomically (tempfile + rename)
-- [ ] Run `quor doctor` automatically
-- [ ] Handle: settings.json doesn't exist → create it. Existing hook → prompt to overwrite.
+- [x] Locate or prompt for Claude Code settings.json path
+- [x] Show dry-run: "Will write hook script to X. Will update settings.json at Y."
+- [x] Write PowerShell hook script with full `sys.executable` path embedded
+- [x] Update settings.json atomically (tempfile + rename)
+- [x] Run `quor doctor` automatically
+- [x] Handle: settings.json doesn't exist → create it. Existing hook → prompt to overwrite.
 
 `quor validate [file]`:
-- [ ] If file provided: validate that file. If not: validate all three registry tiers.
-- [ ] Show: filter names, stage counts, test counts, any validation errors.
-- [ ] Must complete in <1 second. No subprocess execution.
-- [ ] Exit code 2 on ConfigError.
+- [x] If file provided: validate that file. If not: validate all three registry tiers.
+- [x] Show: filter names, stage counts, test counts, any validation errors.
+- [x] Must complete in <1 second. No subprocess execution.
+- [x] Exit code 2 on ConfigError.
 
 `quor explain <command>`:
-- [ ] Classify command: show rewrite decision and which rule matched
-- [ ] Look up filter: show which tier supplied it
-- [ ] Run pipeline in SIMULATE mode: show stage-by-stage trace
-- [ ] For each stage: lines removed, patterns matched, tokens saved
-- [ ] Use rich Panel and Table for formatting
-- [ ] Show final: original tokens → filtered tokens (±20%)
+- [x] Classify command: show rewrite decision and which rule matched
+- [x] Look up filter: show which tier supplied it
+- [x] Run pipeline in SIMULATE mode: show stage-by-stage trace
+- [x] For each stage: lines removed, patterns matched, tokens saved
+- [x] Use rich Panel and Table for formatting
+- [x] Show final: original tokens → filtered tokens (±20%)
 
 `quor gain`:
-- [ ] Read from SQLite for current project (platformdirs data dir)
-- [ ] Show: total invocations, total tokens saved (±20%), filter hit rate, top 5 filters by savings
-- [ ] Show: `on_empty` trigger rate, passthrough rate, mode (AUDIT/OPTIMIZE/SIMULATE)
-- [ ] `--days N` flag (default 30)
-- [ ] `--project /path` flag (default: cwd)
+- [x] Read from SQLite for current project (platformdirs data dir)
+- [x] Show: total invocations, total tokens saved (±20%), filter hit rate, top 5 filters by savings
+- [x] Show: `on_empty` trigger rate, passthrough rate, mode (AUDIT/OPTIMIZE/SIMULATE)
+- [x] `--days N` flag (default 30)
+- [x] `--project /path` flag (default: cwd)
 
 `quor verify`:
-- [ ] Load all three tiers of filter registry
-- [ ] For each filter: run all `[[filter.tests]]` entries
-- [ ] Report: passed/failed per test, per filter
-- [ ] Exit code 1 if any test fails
-- [ ] Exit code 0 if all pass (even with no tests — but warn if filter has 0 tests)
+- [x] Load all three tiers of filter registry
+- [x] For each filter: run all `[[filter.tests]]` entries
+- [x] Report: passed/failed per test, per filter
+- [x] Exit code 1 if any test fails
+- [x] Exit code 0 if all pass (even with no tests — but warn if filter has 0 tests)
 
 `quor doctor`:
-- [ ] Check: Python version ≥ 3.11
-- [ ] Check: All dependencies importable at their required versions
-- [ ] Check: Hook script exists and is writable
-- [ ] Check: Run synthetic hook invocation (echo test JSON, verify JSON response)
-- [ ] Check: SQLite is readable and writable
-- [ ] Check: All built-in filter tests pass
-- [ ] Check: Current mode (warn if AUDIT for >7 days)
-- [ ] Show: summary with colored status indicators
+- [x] Check: Python version ≥ 3.11
+- [x] Check: All dependencies importable at their required versions
+- [x] Check: Hook script exists and is writable
+- [x] Check: Run synthetic hook invocation (echo test JSON, verify JSON response)
+- [x] Check: SQLite is readable and writable
+- [x] Check: All built-in filter tests pass
+- [x] Check: Current mode (warn if AUDIT for >7 days)
+- [x] Show: summary with colored status indicators
 
 **Exit criteria:**
-- [ ] All six commands execute without error
-- [ ] `quor init --claude` writes correct hook on Windows CI
-- [ ] `quor doctor` shows all green on clean install
-- [ ] `quor verify` passes on all built-in filters
-- [ ] End-to-end test: init → run a command → doctor → gain (on windows-latest)
+- [x] All six commands execute without error
+- [x] `quor init --claude` writes correct hook on Windows CI
+- [x] `quor doctor` shows all green on clean install
+- [x] `quor verify` passes on all built-in filters
+- [x] End-to-end test: init → run a command → doctor → gain (on windows-latest)
 
 **Estimated complexity:** 2.5 days
 
@@ -439,20 +439,20 @@ args: ["git", "status"]
 **Objective:** Get Quor to a pip-installable state that works on a fresh corporate Windows machine.
 
 **Deliverables:**
-- [ ] `pyproject.toml` complete: all metadata, entry-points, classifiers, Python 3.11+ constraint
-- [ ] Built-in filter TOML files included via `[tool.hatch.build.targets.wheel] include`
-- [ ] Version bumped to `0.1.0`
-- [ ] `CHANGELOG.md` with initial release notes
-- [ ] `README.md` with: one-sentence description, Windows-first callout, installation (`pip install quor`), quick start (5 commands), screenshot of `quor gain`
+- [x] `pyproject.toml` complete: all metadata, entry-points, classifiers, Python 3.11+ constraint, `[project.urls]`
+- [x] Built-in filter TOML files included in the built wheel (confirmed by inspecting the actual built wheel's contents — hatchling's default `packages = ["quor"]` behavior already includes non-Python files under the package tree; no explicit `include` directive was needed)
+- [x] Version bumped to `0.1.0`
+- [x] `CHANGELOG.md` with initial release notes
+- [ ] `README.md` with: one-sentence description, Windows-first callout, installation (`pip install quor`), quick start (5 commands), screenshot of `quor gain` — description/callout/installation done; a 5-command quick-start walkthrough and a `quor gain` screenshot are still outstanding
 - [ ] TestPyPI upload: `python -m twine upload --repository testpypi dist/*`
 - [ ] Fresh Windows VM install test: `pip install --index-url https://test.pypi.org/simple/ quor`
 - [ ] PyPI upload (after TestPyPI validates)
 
 **Exit criteria:**
-- [ ] `pip install quor` on fresh Windows 11 VM (no prior Python dependencies) → works
-- [ ] `quor doctor` shows all green on fresh install
-- [ ] `quor init --claude` succeeds on Windows without admin rights
-- [ ] The full end-to-end flow (install → init → real Claude Code session → gain) works on Windows
+- [ ] `pip install quor` on fresh Windows 11 VM (no prior Python dependencies) → works — not yet testable; no PyPI upload exists
+- [ ] `quor doctor` shows all green on fresh install — verified against a locally-built wheel installed into a clean venv, not yet against a PyPI install
+- [x] `quor init --claude` succeeds on Windows without admin rights — exercised repeatedly throughout development on this non-admin Windows dev environment
+- [ ] The full end-to-end flow (install → init → real Claude Code session → gain) works on Windows — the hook contract is verified against crafted payloads (`.github/workflows/canary.yml`) but not against a literal live Claude Code session
 
 **Estimated complexity:** 1 day
 

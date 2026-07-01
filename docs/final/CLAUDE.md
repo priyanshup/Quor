@@ -99,7 +99,7 @@ Stages annotate. Final render applies. Stages never mutate line content.
 
 ## The Six CLI Commands
 
-These are the ONLY commands that exist in V1. Do not add more without explicit approval.
+These are the ONLY filtering-operation commands that exist in V1. Do not add more without explicit approval.
 
 1. `quor init --claude` — install Claude Code hook. Shows dry-run first, writes atomically (tempfile + rename), runs `doctor` automatically.
 2. `quor validate [file]` — validate config. Must complete in <1 second. No subprocess execution.
@@ -107,6 +107,8 @@ These are the ONLY commands that exist in V1. Do not add more without explicit a
 4. `quor gain` — token savings summary. Reads from SQLite. Always shows ±20% uncertainty.
 5. `quor verify` — run all inline filter tests. Exit code 1 if any test fails.
 6. `quor doctor` — health check: hook responding? Tests passing? Schema current? Mode set?
+
+`quor schema` also exists as a 7th, exempted utility command (JSON Schema dump for the filter TOML format) — it's not a filtering operation, so it doesn't count against the six.
 
 Both `quor` and `qr` are CLI entry points.
 

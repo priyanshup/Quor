@@ -1,8 +1,8 @@
 # Quor
 
-> A command-output optimization layer for LLM-assisted development — reduces token usage and improves context efficiency for AI coding assistants through deterministic, fail-open filtering.
+> A rule-based command-output optimization and context-compression layer that reduces unnecessary LLM context while preserving important information.
 
-> **Status:** Internal Alpha — not yet on PyPI. Phases 0-9 complete (605 tests passing, ruff + mypy clean). Under active development toward Phase 10 (Packaging & Release).
+> **Status:** Internal Alpha — not yet on PyPI. Phases 0-9 complete (605 tests passing, ruff + mypy clean, verified on Python 3.11, 3.13, 3.14). Phase 10 (Packaging & Release) is in progress.
 
 ---
 
@@ -22,14 +22,15 @@ git status          →  quor git status
 
 **Key properties:**
 
-- **Deterministic.** Same input always produces the same output. No LLM calls, no ML models, no non-determinism in the filtering path itself.
+- **Deterministic preprocessing.** Same input always produces the same output. No LLM calls, no ML models, no non-determinism in the filtering path itself.
+- **Token reduction and context optimization.** Removes low-signal output (unchanged lines, repeated noise, verbose logs) so more of the assistant's context budget is spent on content that matters.
 - **Fail-open.** Every layer degrades to the original, unfiltered output on error rather than risking data loss. A broken filter, a plugin crash, or a timeout never blocks your command or hides information — it just means nothing gets removed that turn.
-- **Transparent and configurable.** Every filtering decision is traceable: `quor explain "pytest tests/"` shows exactly what each stage removed and why. Filters are plain TOML you can read, edit, and version-control.
+- **Transparent, rule-based processing.** Every filtering decision is traceable: `quor explain "pytest tests/"` shows exactly what each stage removed and why. Filters are plain TOML you can read, edit, and version-control.
 - **Plugin extensible.** Third-party stages and lifecycle plugins register via standard Python entry-points — no core changes required to add support for a new tool or add custom telemetry/policy logic.
-- **Non-compiler architecture.** Quor doesn't parse or understand the command it runs — it runs the real tool, captures the real output, and filters text. There's no semantic model of your code, no static analysis, and nothing that could silently change what a command actually does.
-- **Windows-native, pip-installable.** `pip install quor` — no Rust toolchain, no Homebrew, no compilation step. Works in locked-down corporate environments where the only allowed install path is `pip`.
+- **Non-compiler architecture.** Quor doesn't parse, execute, or semantically understand the command it runs — it runs the real tool, captures the real output, and applies text-level rules. There's no static analysis and nothing that changes what a command actually does or returns.
+- **Windows-native, pip-installable.** `pip install quor` — no Rust toolchain, no Homebrew, no compilation step.
 
-Quor does not change what a command does, what it's allowed to access, or what it returns to you on your own terminal — it only changes what gets forwarded into the assistant's context window, and it tells you exactly what and why.
+Quor does not change what a command does, what it's allowed to access, or what it returns to you on your own terminal — it only changes what gets forwarded into the assistant's context window, deterministically and transparently.
 
 ---
 
@@ -43,6 +44,84 @@ Quor does not change what a command does, what it's allowed to access, or what i
 
 ---
 
+## Performance & Token Reduction
+
+### How Quor reduces context
+
+Quor's pipeline annotates every output line with one of three decisions —
+`KEEP`, `COMPRESS`, or `PROTECT` — and the final render drops every
+`COMPRESS` line. Reduction comes entirely from removing lines that carry no
+new information for the assistant, never from summarizing, rewriting, or
+truncating the meaning of the lines that remain.
+
+**Algorithms responsible for compression:**
+
+- `remove_ansi` — strips lines that are pure terminal escape/color codes once stripped of formatting.
+- `strip_lines` — removes lines matching configured noise patterns (e.g. `PASSED` lines, dot-progress output), while `preserve_patterns` marks matching lines `PROTECT` unconditionally.
+- `deduplicate_consecutive` — collapses runs of identical adjacent lines to the first occurrence.
+- `group_repeated` — collapses N repetitions of a matched pattern into the first instance plus a `(×N)` count.
+- `max_tokens` — truncates beyond a configured budget using a `head`, `tail`, or `both` strategy, only after the above stages have already removed redundant content.
+
+### Why reduction varies by content
+
+Compression ratio depends entirely on how repetitive or verbose the actual
+output is — there is no fixed "Quor compression rate." A clean `pytest`
+run with 500 passing tests and one failure compresses aggressively (500
+near-identical `PASSED` lines carry no new information). A `git diff`
+against a single changed file compresses very little, because nearly every
+line is already signal.
+
+**Compresses well:** long runs of passing test output, unchanged `git
+status` entries, repeated build warnings, verbose dependency-resolution
+logs, ANSI-heavy terminal formatting.
+
+**Intentionally preserved, never compressed:** failures, tracebacks,
+`AssertionError` and similar exception text, diff hunks, anything matching
+a filter's `preserve_patterns`, and any line already marked `PROTECT` by an
+earlier stage — no later stage can downgrade a `PROTECT` decision.
+
+### Why determinism matters here
+
+Because every stage is a rule (pattern match, dedup, count, or budget) and
+never a model call, the same input always produces the same output, and
+`quor explain <command>` can show the exact stage-by-stage reasoning behind
+every decision. This is what makes the behavior auditable and predictable
+in a way a summarization-based approach cannot be: nothing is ever
+paraphrased, and nothing is removed without a rule you can inspect (and
+override) in a TOML file.
+
+### Benchmark framework
+
+Token savings should be measured as:
+
+```
+reduction % = 1 - (output_tokens / input_tokens)
+```
+
+using Quor's own `char / 4` token estimator (`quor/tracking/db.py::count_tokens`,
+documented as a ±20% approximation — the same figure `quor gain` reports),
+against a representative sample of *real* command output for each scenario,
+not synthetic or cherry-picked examples. A credible benchmark run should
+capture, per scenario: the command, raw output token count, filtered output
+token count, which filter/stages fired, and whether the output was a
+passing run, a failing run, or a mixed run — since pass/fail mix is the
+single biggest driver of reduction percentage for test-runner output.
+
+| Scenario | Input Tokens | Output Tokens | Reduction % | Notes |
+|---|---|---|---|---|
+| `pytest` — large suite, all passing | *To be measured* | *To be measured* | *To be measured* | |
+| `pytest` — large suite, one failure | *To be measured* | *To be measured* | *To be measured* | |
+| `git status` — many unchanged files | *To be measured* | *To be measured* | *To be measured* | |
+| `git diff` — single small file changed | *To be measured* | *To be measured* | *To be measured* | |
+| `ruff check` — clean | *To be measured* | *To be measured* | *To be measured* | |
+| `ruff check` — several violations | *To be measured* | *To be measured* | *To be measured* | |
+
+No measurements have been recorded yet. `quor gain` will report real,
+per-project figures once Quor is in use; this table will be populated from
+that data (or a dedicated benchmark script) rather than estimated.
+
+---
+
 ## Installation
 
 ```bash
@@ -50,7 +129,7 @@ pip install quor
 quor init --claude
 ```
 
-*Not yet on PyPI — available after Phase 10 (Packaging & Release).*
+*Not yet on PyPI — available once Phase 10 (Packaging & Release) publishes it.*
 
 ---
 
@@ -64,8 +143,30 @@ quor init --claude
 | `quor verify` | Run all inline filter tests |
 | `quor validate [file]` | Validate a filter config file |
 | `quor doctor` | Health check — hook responding? Tests passing? |
+| `quor schema` | Output the filter file JSON Schema to stdout |
 
 Both `quor` and `qr` are registered as entry points.
+
+---
+
+## Roadmap: Observability (Planned)
+
+The following are **planned, not yet implemented.** They're listed here so
+it's clear what to expect next, not as claims about current behavior:
+
+- **Compression statistics** — richer per-run breakdowns than `quor gain`'s
+  current cumulative view (per-stage contribution, per-filter history).
+- **Estimated token savings inline** — surfacing the ±20% estimate at the
+  point of use, not only via a separate `quor gain` invocation.
+- **Before/after preview** — a way to see the unfiltered and filtered
+  output side by side without needing to run `quor explain` separately.
+- **Dry-run mode** — run the filtering pipeline and report what *would* be
+  removed without actually altering the output sent to the assistant.
+- **Verbose diagnostics** — an opt-in detailed trace mode for debugging
+  filter behavior, beyond what `quor explain` already provides.
+
+See [docs/final/ROADMAP.md](docs/final/ROADMAP.md) for the full
+version-by-version plan.
 
 ---
 
@@ -83,11 +184,11 @@ Both `quor` and `qr` are registered as entry points.
 | 7 | CLI commands | **Complete** |
 | 8 | Plugin infrastructure | **Complete** |
 | 9 | Plugin discovery & loading | **Complete** |
-| 10 | Packaging & release | Not started |
+| 10 | Packaging & release | In progress |
 
-605 tests passing, ruff + mypy clean on `quor/` and `tests/`, verified on Python 3.11, 3.13, and 3.14. See [docs/final/PROJECT_STATUS.md](docs/final/PROJECT_STATUS.md) for the current snapshot and [docs/final/IMPLEMENTATION_PLAN.md](docs/final/IMPLEMENTATION_PLAN.md) for the full roadmap.
+605 tests passing, ruff + mypy clean on `quor/` and `tests/`, verified on Python 3.11, 3.13, and 3.14. See [docs/final/PROJECT_STATUS.md](docs/final/PROJECT_STATUS.md) for the current snapshot, [docs/final/IMPLEMENTATION_PLAN.md](docs/final/IMPLEMENTATION_PLAN.md) for the full roadmap, and [CHANGELOG.md](CHANGELOG.md) for the v0.1.0 release notes.
 
-The operating-mode system (AUDIT / OPTIMIZE / SIMULATE) is intentionally display-only in this phase — `quor doctor` and `quor gain` show the configured mode, but the dispatcher doesn't yet branch on it. This is a scoped, documented roadmap item, not a bug; see `docs/final/PROJECT_STATUS.md` for details.
+The operating-mode system (AUDIT / OPTIMIZE / SIMULATE) is intentionally display-only in this release — `quor doctor` and `quor gain` show the configured mode, but the dispatcher doesn't yet branch on it. This is a scoped, documented roadmap item, not a bug; see `docs/final/PROJECT_STATUS.md` for details.
 
 ---
 
@@ -97,10 +198,21 @@ The operating-mode system (AUDIT / OPTIMIZE / SIMULATE) is intentionally display
 git clone https://github.com/priyanshup/Quor.git
 cd Quor
 pip install -e ".[dev]"
+pip install -e ./tests/fixtures/test_plugin
 pytest tests/
 ```
 
+The second install step is required for the plugin-discovery tests — see
+[CONTRIBUTING.md](CONTRIBUTING.md) for why it's a separate step rather than
+a `pyproject.toml` dev dependency.
+
 Requires Python 3.11+. Windows is the primary development and CI target. Pure Python — no `uv` or other non-pip tooling required.
+
+---
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the full contributor guide, [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) for community standards, and [SECURITY.md](SECURITY.md) to report a vulnerability.
 
 ---
 

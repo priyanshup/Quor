@@ -30,6 +30,9 @@ jobs:
       - name: Install project with dev dependencies
         run: pip install -e ".[dev]"
 
+      - name: Install test plugin fixture
+        run: pip install -e ./tests/fixtures/test_plugin
+
       - name: Lint — ruff
         run: ruff check quor/ tests/
 

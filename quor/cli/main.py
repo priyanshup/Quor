@@ -1,12 +1,15 @@
 """Typer application and command registration.
 
-All six V1 commands are registered here (do not add more without approval):
+The six V1 commands (do not add more without approval) plus the `schema`
+utility command (JSON Schema dump, not a filtering operation — exempt from
+the six-command count):
   quor init --claude
   quor validate [file]
   quor explain <command>
   quor gain
   quor verify
   quor doctor
+  quor schema
 """
 
 import typer
@@ -21,7 +24,7 @@ from quor.cli.commands.verify import verify
 
 app = typer.Typer(
     name="quor",
-    help="Context compression middleware for AI coding assistants.",
+    help="Rule-based command-output optimization and context-compression layer for AI coding assistants.",
     add_completion=False,
     rich_markup_mode="rich",
     no_args_is_help=False,
@@ -37,7 +40,7 @@ app.command()(doctor)
 
 @app.callback(invoke_without_command=True)
 def root(ctx: typer.Context) -> None:
-    """Quor — compress AI coding assistant command output before it hits the context window."""
+    """Quor — reduces unnecessary LLM context from AI coding assistant command output before it hits the context window, while preserving what matters."""
     if ctx.invoked_subcommand is None:
         typer.echo(f"quor {__version__}")
         raise typer.Exit()

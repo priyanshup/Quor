@@ -4,12 +4,12 @@ build-backend = "hatchling.build"
 
 [project]
 name = "quor"
-version = "0.1.0.dev0"
-description = "Context compression middleware for AI coding assistants — transparent, rule-based, pip-installable on Windows."
+version = "0.1.0"
+description = "A rule-based command-output optimization and context-compression layer that reduces unnecessary LLM context while preserving important information."
 readme = "README.md"
 license = { text = "Apache-2.0" }
 requires-python = ">=3.11"
-keywords = ["ai", "context", "compression", "claude", "llm", "developer-tools", "windows"]
+keywords = ["ai", "context", "compression", "claude", "llm", "developer-tools", "windows", "token-reduction"]
 classifiers = [
     "Development Status :: 2 - Pre-Alpha",
     "Environment :: Console",
@@ -19,6 +19,8 @@ classifiers = [
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Topic :: Software Development :: Libraries :: Python Modules",
     "Topic :: Utilities",
 ]
@@ -31,6 +33,13 @@ dependencies = [
     "rich>=13.0.0",
 ]
 
+[project.urls]
+Homepage = "https://github.com/priyanshup/Quor"
+Repository = "https://github.com/priyanshup/Quor"
+Issues = "https://github.com/priyanshup/Quor/issues"
+Documentation = "https://github.com/priyanshup/Quor/tree/main/docs/final"
+Changelog = "https://github.com/priyanshup/Quor/blob/main/CHANGELOG.md"
+
 [project.optional-dependencies]
 dev = [
     # pytest/pytest-cov are bounded, not exact-pinned: stable across minor/major
@@ -42,7 +51,12 @@ dev = [
     # local and CI resolve the identical version (see DECISIONS.md).
     "mypy==2.1.0",
     "ruff==0.15.20",
-    "quor-test-stage @ file:./tests/fixtures/test_plugin",
+    # The quor-test-stage fixture (tests/fixtures/test_plugin) is deliberately
+    # NOT listed here as a `file:` dependency: a relative file:// URL is baked
+    # verbatim into published package metadata, and breaks for anyone who
+    # installs quor[dev] from PyPI rather than from a source checkout (the
+    # path doesn't exist outside the repo). It's installed as a separate step
+    # in CI and in local dev setup instead — see CONTRIBUTING.md.
 ]
 
 [project.scripts]
