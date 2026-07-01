@@ -237,6 +237,52 @@ class TestRegistryRegistration:
         with pytest.raises(PluginError, match="api_version"):
             reg.register(WrongVersion())
 
+    def test_register_older_api_version_succeeds(self) -> None:
+        """A plugin built against an older api_version is still accepted."""
+
+        class OlderVersion:
+            api_version: ClassVar[int] = 0
+
+            @property
+            def metadata(self) -> PluginMetadata:
+                return _make_metadata(plugin_id="com.test.older")
+
+            def initialize(self, ctx: PluginContext) -> None:
+                pass
+
+            def execute(self, payload: PluginPayload, ctx: PluginContext) -> PluginResult:
+                return PluginResult(payload=payload)
+
+            def shutdown(self) -> None:
+                pass
+
+        reg = PluginRegistry()
+        reg.register(OlderVersion())
+        assert reg.get("com.test.older") is not None
+
+    def test_register_non_int_api_version_raises(self) -> None:
+        """A non-int api_version is rejected, not compared with '>' (which would raise)."""
+
+        class NonIntVersion:
+            api_version: ClassVar[object] = "1"  # type: ignore[assignment]
+
+            @property
+            def metadata(self) -> PluginMetadata:
+                return _make_metadata()
+
+            def initialize(self, ctx: PluginContext) -> None:
+                pass
+
+            def execute(self, payload: PluginPayload, ctx: PluginContext) -> PluginResult:
+                return PluginResult(payload=payload)
+
+            def shutdown(self) -> None:
+                pass
+
+        reg = PluginRegistry()
+        with pytest.raises(PluginError, match="api_version"):
+            reg.register(NonIntVersion())  # type: ignore[arg-type]
+
     def test_duplicate_id_same_tier_warns_and_replaces(self) -> None:
         reg = PluginRegistry()
         reg.register(_NoOpPlugin("com.test.a"))

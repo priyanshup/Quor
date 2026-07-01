@@ -411,11 +411,12 @@ args: ["git", "status"]
 - [x] Plugin cache: `~/.config/quor/plugin-cache.json`, invalidated when installed package set changes (compare `importlib.metadata` distribution set hash)
 - [x] `api_version` compatibility check: warn and skip if plugin `api_version > QUOR_PLUGIN_API_VERSION`
 - [x] Plugin failure isolation: any exception during load, import, or validation → log warning, skip plugin; pipeline continues
-- [x] `quor doctor` plugin diagnostics: list loaded plugins with their version and tier; report any load failures
+- [x] `quor doctor` plugin diagnostics: list loaded plugins with their version; report any load failures. Tier is deliberately not reported — entry-point discovery has no signal that maps to project/user/builtin tier without a new discovery mechanism; documented as a permanent scope boundary in DECISIONS.md ADR-026.
 - [x] `file://` escape hatch: stages can reference `file:///path/to/module.py::ClassName` (developer convenience only)
 
 **Unit tests:**
 - [x] Plugin with correct `api_version` loads successfully
+- [x] Plugin with older `api_version` (<= current) loads successfully
 - [x] Plugin with `api_version > 1` warns and skips
 - [x] Plugin that raises during `apply()` → stage skipped, pipeline continues
 - [x] Plugin that fails to import → warning, graceful skip
@@ -424,8 +425,8 @@ args: ["git", "status"]
 
 **Exit criteria:**
 - [x] A minimal test plugin (`tests/fixtures/test_plugin/`) loads via entry-points in CI
-- [x] Plugin failure test confirms hook still returns valid output
-- [x] `quor doctor` lists the test plugin with correct version
+- [x] Plugin failure test confirms hook still returns valid output — `test_plugin_execute_failure_is_isolated` in `test_adapters.py` registers a real (non-mock) failing `Plugin` and drives it through the actual `run_dispatch()`
+- [x] `quor doctor` lists a discovered plugin with its correct version — `test_plugin_diagnostics_include_version` in `test_cli.py` (the installed test fixture is a `StageHandler`, which has no version concept, so this is verified with a `Plugin`-shaped report instead)
 
 **Estimated complexity:** 0.5 days
 

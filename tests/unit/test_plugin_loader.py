@@ -58,10 +58,23 @@ class _GoodStage:
 
 
 class _BadApiVersionStage:
-    """StageHandler with unsupported api_version."""
+    """StageHandler with unsupported (newer-than-current) api_version."""
 
     api_version: ClassVar[int] = 99
     stage_type: ClassVar[str] = "bad_version_stage"
+
+    def can_handle(self, content: str, content_type: str) -> bool:
+        return True
+
+    def apply(self, mask: ContentMask, config: StageConfig) -> ContentMask:
+        return mask
+
+
+class _OldApiVersionStage:
+    """StageHandler declaring an older-than-current api_version — still accepted."""
+
+    api_version: ClassVar[int] = 0
+    stage_type: ClassVar[str] = "old_version_stage"
 
     def can_handle(self, content: str, content_type: str) -> bool:
         return True
@@ -108,6 +121,18 @@ from quor.pipeline.stages.base import StageConfig
 class BadVersionFileStage:
     api_version: ClassVar[int] = 2
     stage_type: ClassVar[str] = "bad_v"
+    def can_handle(self, c, ct): return True
+    def apply(self, m, cfg): return m
+'''
+
+_OLD_API_SOURCE = '''\
+from typing import ClassVar
+from quor.pipeline.mask import ContentMask
+from quor.pipeline.stages.base import StageConfig
+
+class OldVersionFileStage:
+    api_version: ClassVar[int] = 0
+    stage_type: ClassVar[str] = "old_v"
     def can_handle(self, c, ct): return True
     def apply(self, m, cfg): return m
 '''
@@ -189,6 +214,14 @@ class TestLoadStageHandlerCls:
         assert failure is not None
         assert "api_version" in failure.reason
 
+    def test_accepts_older_api_version(self) -> None:
+        """A stage declaring an older-than-current api_version is still loaded."""
+        cls, failure = _load_stage_handler_cls(
+            "old_ver", f"{_THIS_MODULE}:_OldApiVersionStage"
+        )
+        assert failure is None
+        assert cls is _OldApiVersionStage
+
     def test_fails_non_protocol_class(self) -> None:
         cls, failure = _load_stage_handler_cls(
             "not_stage", f"{_THIS_MODULE}:_NotAStage"
@@ -253,6 +286,17 @@ class TestDiscoverStageHandlers:
         assert "bad_version_stage" not in handlers
         assert len(failures) == 1
         assert "api_version" in failures[0].reason
+
+    def test_discovers_stage_with_older_api_version(self) -> None:
+        spec = self._spec("old", f"{_THIS_MODULE}:_OldApiVersionStage")
+        with patch(
+            "quor.pipeline.plugin_loader._get_ep_specs",
+            return_value=([spec], []),
+        ):
+            handlers, failures = discover_stage_handlers(use_cache=False)
+        assert not failures
+        assert "old_version_stage" in handlers
+        assert handlers["old_version_stage"][0] is _OldApiVersionStage
 
     def test_skips_bad_import_with_warning(self) -> None:
         spec = self._spec("missing", "no.such.module:Cls")
@@ -350,6 +394,44 @@ class TestDiscoverPlugins:
         plugin = registry.get("com.test.discover")
         assert plugin is not None
 
+    def test_registers_plugin_with_older_api_version(self) -> None:
+        """A plugin built against an older api_version is still discovered."""
+        from quor.plugins.base import PluginCategory, PluginMetadata, PluginPayload, PluginResult
+
+        class _OldPlugin:
+            api_version: ClassVar[int] = 0
+
+            @property
+            def metadata(self) -> PluginMetadata:
+                return PluginMetadata(
+                    plugin_id="com.test.old_discover",
+                    display_name="Old Discover Test",
+                    version="1.0.0",
+                    category=PluginCategory.POST_FILTER,
+                )
+
+            def initialize(self, ctx: object) -> None:
+                pass
+
+            def execute(self, payload: PluginPayload, ctx: object) -> PluginResult:
+                return PluginResult(payload=payload)  # type: ignore[arg-type]
+
+            def shutdown(self) -> None:
+                pass
+
+        sys.modules[_THIS_MODULE]._OldPlugin = _OldPlugin  # type: ignore[attr-defined]
+        spec = {"name": "old_discover_test", "value": f"{_THIS_MODULE}:_OldPlugin"}
+
+        registry = PluginRegistry()
+        with patch(
+            "quor.pipeline.plugin_loader._get_ep_specs",
+            return_value=([], [spec]),
+        ):
+            failures = discover_plugins(registry, use_cache=False)
+
+        assert not failures
+        assert registry.get("com.test.old_discover") is not None
+
 
 # ===========================================================================
 # load_from_file_uri
@@ -391,6 +473,14 @@ class TestLoadFromFileUri:
         uri = f"file://{stage_file}::BadVersionFileStage"
         with pytest.raises(PluginError, match="api_version"):
             load_from_file_uri(uri)
+
+    def test_accepts_older_api_version(self, tmp_path: Path) -> None:
+        stage_file = tmp_path / "old.py"
+        stage_file.write_text(_OLD_API_SOURCE, encoding="utf-8")
+        uri = f"file://{stage_file}::OldVersionFileStage"
+        handler = load_from_file_uri(uri)
+        assert isinstance(handler, StageHandler)
+        assert handler.stage_type == "old_v"  # type: ignore[union-attr]
 
     def test_raises_on_non_protocol_class(self, tmp_path: Path) -> None:
         stage_file = tmp_path / "notprotocol.py"

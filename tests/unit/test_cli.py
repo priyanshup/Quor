@@ -206,6 +206,34 @@ class TestDoctor:
         assert result.exit_code == 0
         assert "✓ Hook script installed" in result.output
 
+    def test_plugin_diagnostics_include_version(self, tmp_path: Path) -> None:
+        """quor doctor lists discovered plugins with their declared version."""
+        from quor.pipeline.plugin_loader import PluginInfo, PluginLoadReport
+
+        hook_path = tmp_path / "hooks" / "claude-hook.ps1"
+        hook_path.parent.mkdir(parents=True, exist_ok=True)
+        hook_path.write_text("dummy", encoding="utf-8")
+        settings_path = tmp_path / "settings.json"
+
+        fake_report = PluginLoadReport(
+            plugins=[
+                PluginInfo(
+                    entry_point_name="com.test.versioned",
+                    module_path="some.module",
+                    class_name="SomePlugin",
+                    plugin_id="com.test.versioned",
+                    version="2.3.1",
+                    api_version=1,
+                )
+            ],
+        )
+        with (
+            patch("platformdirs.user_data_dir", return_value=str(tmp_path)),
+            patch("quor.pipeline.plugin_loader.get_load_report", return_value=fake_report),
+        ):
+            result = runner.invoke(app, ["doctor", "--settings-path", str(settings_path)])
+        assert "com.test.versioned@2.3.1" in result.output
+
 
 # ---------------------------------------------------------------------------
 # quor init --claude

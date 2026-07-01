@@ -89,7 +89,8 @@ class PluginRegistry:
 
         Validation (raises ``PluginError`` on failure):
         - The object must satisfy the Plugin Protocol structurally.
-        - ``plugin.api_version`` must equal ``QUOR_PLUGIN_API_VERSION``.
+        - ``plugin.api_version`` must be an ``int`` <= ``QUOR_PLUGIN_API_VERSION``.
+          A plugin declaring a newer API version than Quor supports is rejected.
 
         Warnings (does not raise):
         - Same plugin_id already registered at the same tier → replaces,
@@ -102,10 +103,10 @@ class PluginRegistry:
                 f"Object {plugin!r} does not satisfy the Plugin Protocol"
             )
 
-        if plugin.api_version != QUOR_PLUGIN_API_VERSION:
+        if not isinstance(plugin.api_version, int) or plugin.api_version > QUOR_PLUGIN_API_VERSION:
             raise PluginError(
                 f"Plugin api_version {plugin.api_version!r} is not supported "
-                f"(expected {QUOR_PLUGIN_API_VERSION}). "
+                f"(expected <= {QUOR_PLUGIN_API_VERSION}). "
                 "Check that the plugin is compatible with this version of Quor."
             )
 

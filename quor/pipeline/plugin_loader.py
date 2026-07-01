@@ -249,11 +249,11 @@ def _load_stage_handler_cls(
         )
 
     api_ver = getattr(handler, "api_version", None)
-    if api_ver != 1:
+    if not isinstance(api_ver, int) or api_ver > 1:
         return None, FailureInfo(
             ep_name,
             _STAGE_EP_GROUP,
-            f"api_version {api_ver!r} is not supported (expected 1)",
+            f"api_version {api_ver!r} is not supported (expected <= 1)",
         )
 
     return handler_cls, None
@@ -281,12 +281,12 @@ def _load_plugin_cls(
             ep_name, _PLUGIN_EP_GROUP, "does not satisfy Plugin Protocol"
         )
 
-    if plugin.api_version != QUOR_PLUGIN_API_VERSION:
+    if not isinstance(plugin.api_version, int) or plugin.api_version > QUOR_PLUGIN_API_VERSION:
         return None, FailureInfo(
             ep_name,
             _PLUGIN_EP_GROUP,
             f"api_version {plugin.api_version!r} is not supported "
-            f"(expected {QUOR_PLUGIN_API_VERSION})",
+            f"(expected <= {QUOR_PLUGIN_API_VERSION})",
         )
 
     return plugin_cls, None
@@ -458,7 +458,7 @@ def load_from_file_uri(uri: str) -> StageHandler:
     - Module file does not exist
     - Class not found in module
     - Class does not satisfy StageHandler Protocol
-    - api_version != 1
+    - api_version > 1 (or not an int)
     """
     if not uri.startswith("file://"):
         raise PluginError(f"Not a file:// URI: {uri!r}")
@@ -502,9 +502,9 @@ def load_from_file_uri(uri: str) -> StageHandler:
         )
 
     api_ver = getattr(handler, "api_version", None)
-    if api_ver != 1:
+    if not isinstance(api_ver, int) or api_ver > 1:
         raise PluginError(
-            f"{class_name}.api_version = {api_ver!r}; only api_version = 1 is supported"
+            f"{class_name}.api_version = {api_ver!r}; only api_version <= 1 is supported"
         )
 
     return handler

@@ -341,6 +341,68 @@ class TestDispatcher:
         assert captured.getvalue() == "some output\n"
         assert exit_code == 0
 
+    def test_plugin_execute_failure_is_isolated(self) -> None:
+        """A Plugin that raises unexpectedly during execute() must not break the hook.
+
+        End-to-end fail-open verification for Phase 9: registers a real Plugin
+        (not a mock) into the actual PluginRegistry that run_dispatch() builds,
+        drives it through the real dispatcher path (subprocess mocked only at
+        the OS boundary), and confirms the exception is isolated, a warning is
+        emitted, the original output is preserved unchanged, and the hook still
+        returns valid output with the correct exit code.
+        """
+        from quor.plugins.base import (
+            PluginCategory,
+            PluginContext,
+            PluginMetadata,
+            PluginPayload,
+            PluginResult,
+        )
+
+        class _ExplodingPlugin:
+            api_version = 1
+
+            @property
+            def metadata(self) -> PluginMetadata:
+                return PluginMetadata(
+                    plugin_id="com.test.exploding",
+                    display_name="Exploding Plugin",
+                    version="1.0.0",
+                    category=PluginCategory.PRE_FILTER,
+                )
+
+            def initialize(self, ctx: PluginContext) -> None:
+                pass
+
+            def execute(self, payload: PluginPayload, ctx: PluginContext) -> PluginResult:
+                raise RuntimeError("plugin exploded unexpectedly")
+
+            def shutdown(self) -> None:
+                pass
+
+        def _fake_discover_plugins(registry: object, *, use_cache: bool = True, tier: str = "user") -> list:
+            registry.register(_ExplodingPlugin(), tier=tier)  # type: ignore[attr-defined]
+            return []
+
+        proc = _make_proc(stdout="hello world\n")
+        captured = io.StringIO()
+        with (
+            patch("subprocess.run", return_value=proc),
+            patch("sys.stdout", captured),
+            patch(
+                "quor.pipeline.plugin_loader.discover_plugins",
+                side_effect=_fake_discover_plugins,
+            ),
+            pytest.warns(UserWarning, match="raised during execute"),
+        ):
+            exit_code = run_dispatch(["echo", "hello"])
+
+        # Execution continued and returned the real subprocess exit code.
+        assert exit_code == 0
+        # Original output preserved unchanged — the failing plugin's would-be
+        # transformation never took effect.
+        assert captured.getvalue() == "hello world\n"
+
 
 # ---------------------------------------------------------------------------
 # __main__ routing tests

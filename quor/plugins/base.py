@@ -414,8 +414,9 @@ class Plugin(Protocol):
             def shutdown(self) -> None:
                 pass
 
-    Plugins with ``api_version != QUOR_PLUGIN_API_VERSION`` are rejected at
-    registration time.
+    Plugins with ``api_version > QUOR_PLUGIN_API_VERSION`` are rejected at
+    registration time. Plugins declaring an older ``api_version`` are accepted
+    for forwards compatibility.
 
     Lifecycle
     ---------

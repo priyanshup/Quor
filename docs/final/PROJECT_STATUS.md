@@ -1,7 +1,7 @@
 ﻿# PROJECT STATUS
 ## Quor — Current State Snapshot
 
-> Last updated: 2026-07-01 (Release Hardening phase complete)
+> Last updated: 2026-07-01 (Phase 9 completion pass — see notes below)
 > Update this document at the start of every implementation session.
 
 ---
@@ -11,10 +11,10 @@
 | Area | Status | % Complete | Notes |
 |---|---|---|---|
 | Research | COMPLETE | 100% | All 5 research documents finalized. Archived. |
-| Architecture | COMPLETE | 100% | All decisions made. Documented in DECISIONS.md (25 ADRs). |
+| Architecture | COMPLETE | 100% | All decisions made. Documented in DECISIONS.md (27 ADRs). |
 | Documentation | COMPLETE | 95% | 10 canonical docs + README.md written. JSON Schema generated (Phase 3). |
-| Implementation | IN PROGRESS | 94% | Phases 0–9 complete. Phase 10 (packaging) next. |
-| Testing | IN PROGRESS | 94% | 597 tests, ruff+mypy clean on `quor/` and `tests/`. All passing, fully machine-isolated. |
+| Implementation | IN PROGRESS | 94% | Phases 0–9 complete (Phase 9 gaps closed in completion pass). Phase 10 (packaging) next. |
+| Testing | IN PROGRESS | 94% | 605 tests, ruff+mypy clean on `quor/` and `tests/`. All passing, fully machine-isolated. |
 | Packaging | NOT STARTED | 0% | PyPI name available (verified 2026-06-30). Registration pending Phase 10. |
 
 ---
@@ -39,7 +39,7 @@ The one exception: the three empirical pre-flight checks are observations about 
 
 ## Architecture Phase (COMPLETE)
 
-All architectural decisions are finalized. The 25 ADRs in DECISIONS.md are the authoritative record.
+All architectural decisions are finalized. The 27 ADRs in DECISIONS.md are the authoritative record.
 
 **Nothing in the architecture is undecided or provisional.** If implementation reveals that a decision was wrong, update DECISIONS.md with the new decision and the reason for the change — do not implement around an ADR without updating it.
 
@@ -57,11 +57,11 @@ All architectural decisions are finalized. The 25 ADRs in DECISIONS.md are the a
 
 ---
 
-## Implementation Phase (NOT STARTED)
+## Implementation Phase (IN PROGRESS — Phases 0-9 complete)
 
-**No Python code has been written.** The `docs/final/` directory contains planning documents only.
+**Phases 0 through 9 are implemented and tested; Phase 10 (Packaging) has not started.** The pre-implementation blockers below were resolved before Phase 0 began and are kept here as a historical record.
 
-### Pre-implementation blockers
+### Pre-implementation blockers (resolved before Phase 0)
 
 Three things must be done before Phase 0 begins:
 
@@ -109,7 +109,7 @@ Do not begin any public work until the name is secured.
 
 ## Testing Phase (IN PROGRESS)
 
-**597 tests passing** as of Phase 9 complete. All linters clean.
+**605 tests passing** as of the Phase 9 completion pass (see notes below); all linters clean on `quor/` and `tests/`. The module breakdown below is a snapshot from Phase 9's initial completion and does not sum exactly to the current total — see the Completion Summary at the top of this document for the current total.
 
 | Module | Tests | Notes |
 |---|---|---|
@@ -164,8 +164,7 @@ Do not begin any public work until the name is secured.
 ## Remaining Unknowns
 
 1. **Claude Code hook timeout on Windows.** Documented as 30s. May be shorter in practice. Dispatcher hardened to 25s timeout (returns exit code 124). Canary will detect format changes.
-2. **Whether `quor` is still available on PyPI.** Registration deferred to Phase 9. Re-verify before Phase 9 begins.
-3. **Plugin API stability under adversarial plugins.** In-memory registry + api_version check implemented and tested. Entry-point scanning (Phase 9) is the remaining risk surface.
+2. **Whether `quor` is still available on PyPI.** Registration deferred to Phase 10. Re-verify before Phase 10 begins.
 
 **Resolved unknowns (no longer open):**
 - ~~Python startup time~~ — measured at ~70ms on this machine. No daemon needed.
@@ -173,6 +172,7 @@ Do not begin any public work until the name is secured.
 - ~~Fail-open behavior under chaos~~ — tested in `test_fail_open.py`: corrupted TOML, malformed JSON, permission errors, hook timeout, ReDoS all degrade safely.
 - ~~Filter safety on real error output~~ — all 7 built-in filters verified in `test_filter_safety.py`.
 - ~~Concurrent session safety~~ — two-writer WAL test passing. WAL PRAGMA retry loop added to `TrackingDB._connect()`.
+- ~~Plugin API stability under adversarial plugins~~ — in-memory registry + api_version compatibility check implemented and tested (older/current/newer versions); entry-point scanning (Phase 9) is complete, including an end-to-end fail-open integration test through the real dispatcher path (`test_plugin_execute_failure_is_isolated`).
 
 ---
 
@@ -309,6 +309,23 @@ Paused feature work to address technical debt surfaced while investigating a Ruf
 - **CI/local tooling parity:** `ruff` and `mypy` are now exact-pinned in `pyproject.toml` dev extras (`ruff==0.15.20`, `mypy==2.1.0`) — these are the tools whose point releases most often add new lint rules or stricter checks, which is what caused the original SIM105 incident. `pytest`/`pytest-cov` use bounded ranges instead, since test-runner releases are comparatively stable.
 - **CI test linting:** `ruff check tests/` had never been run in CI (only `quor/` was linted), so 45 lint violations had silently accumulated in `tests/`. Fixed all of them (safe auto-fixes plus manual fixes for ambiguous-unicode assertions, nested `with` blocks, and three blind `except Exception`/`pytest.raises(Exception)` asserts narrowed to the actual exception types raised). One fix (`test_tracking.py::test_tracking_failure_does_not_raise`) had been silently vacuous — it built a record but never called `db.record()` — and now genuinely exercises the fail-open write-error path. `ci.yml` now runs `ruff check quor/ tests/`.
 - **Python version policy:** local dev on this machine runs 3.14, while CI only tests 3.11/3.12 (the versions in `pyproject.toml` classifiers). `doctor.py` already carries a `_FakeStdout` workaround specifically for a 3.14 stdout.buffer behavior change — evidence 3.13/3.14 aren't actually vetted yet, just incidentally installable. Recommendation: keep v0.1 scoped to 3.11/3.12 only; CI already reflects this, so no CI change was needed. `pyproject.toml`'s `requires-python` was deliberately left unbounded above rather than capped, since capping it would break `pip install -e ".[dev]"` on this contributor's own 3.14 environment — see ADR-027 for the tradeoff and a follow-up recommendation.
+
+---
+
+## Phase 9 Completion Pass Notes (2026-07-01)
+
+A follow-up implementation audit found that two Phase 9 items didn't actually match the implementation plan or its exit criteria, despite being marked COMPLETE. This pass closed both gaps and reconciled documentation drift found during the same audit:
+
+1. **`api_version` compatibility check was stricter than specified.** The plan calls for accepting `api_version <= QUOR_PLUGIN_API_VERSION` and rejecting only newer versions; the code used `!=`, rejecting older versions too. Fixed at all four check sites: `_load_stage_handler_cls`, `_load_plugin_cls`, `load_from_file_uri` (all in `plugin_loader.py`), and `PluginRegistry.register()`. Each now guards with `isinstance(api_version, int)` before comparing — switching `!=` to `>` would otherwise raise `TypeError` (breaking the fail-open contract) if a malformed plugin declared a non-int `api_version`. 8 new tests cover older/current/newer/non-int `api_version` across all four sites.
+2. **`quor doctor` plugin diagnostics didn't show version, and tier was never implemented.** `_check_plugins()` now renders `plugin_id@version` (the version was already captured in `PluginInfo` but never displayed). Tier is *not* implemented: entry-point discovery has no signal from Python packaging metadata that maps to "project/user/builtin" — inventing one would mean designing a new discovery mechanism, which is out of scope for a gap-closing pass. Documented as a deliberate, permanent scope boundary in DECISIONS.md (ADR-026 "Known scope gap" note), not a deferred TODO.
+3. **No test exercised the dispatcher's plugin fail-open path end-to-end.** Added `test_plugin_execute_failure_is_isolated` in `test_adapters.py`: registers a real `Plugin` (not a mock) that raises in `execute()`, drives it through the actual `run_dispatch()` (subprocess mocked only at the OS boundary), and asserts the warning is emitted, output is unchanged, and the correct exit code is returned.
+
+**Documentation reconciled:**
+- `ROADMAP.md`: "Plugin Discovery & Loading" moved from v0.5's "what ships" / v0.1's "what does NOT ship" to v0.1's "what ships" — `IMPLEMENTATION_PLAN.md` already gated Phase 10 (v0.1) on Phase 9 being complete, so the two documents disagreed about which release the plugin system belongs to. It shipped in v0.1; the roadmap now says so.
+- `PROJECT_STATUS.md` (this file): ADR count (25 → 27), test total (597 → 605), removed a stale "No Python code has been written" header left over from before Phase 0, and resolved a stale "Remaining Unknown" that still described Phase 9 as pending.
+- `DECISIONS.md`: added the tier scope-boundary note to ADR-026 (see above). No new ADR needed — this is a boundary on an existing decision, not a new one.
+
+**8 new tests** across `test_plugin_loader.py` (+4), `test_plugins.py` (+2), `test_cli.py` (+1), `test_adapters.py` (+1); total 605 passing.
 
 ---
 

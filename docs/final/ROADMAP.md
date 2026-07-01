@@ -23,9 +23,9 @@
 - Three-tier filter registry (project > user > built-in)
 - PROTECT decision propagation
 - Fail-open at all levels
+- Plugin Infrastructure and Discovery & Loading (Phases 8-9, pulled forward from the original v0.5 target): `quor.compression_stage` / `quor.plugin` entry-points, plugin cache, `api_version` compatibility check, `file://` escape hatch for local custom stages
 
 **What does NOT ship:**
-- Plugin Discovery & Loading (Phase 9) — entry-point scanning and plugin cache
 - Public PyPI release
 - Windows-generic CI (only builder's machine validated)
 - Any other AI assistant adapter
@@ -40,11 +40,9 @@
 
 ## v0.5 — Public Alpha: "Installable, Trustworthy, Tested"
 
-**Theme:** Safe to share with other developers. CI-validated on Windows and Linux. Plugin system available.
+**Theme:** Safe to share with other developers. CI-validated on Windows and Linux. (Plugin system shipped in v0.1 — see below.)
 
 **What ships (adds to v0.1):**
-- Plugin system: `quor.compression_stage` entry-points, plugin cache, api_version validation
-- `file://` escape hatch for local custom stages
 - Windows CI on GitHub Actions (`windows-latest`)
 - Linux CI on GitHub Actions (`ubuntu-latest`)
 - ≥80% test coverage on pipeline/ and filters/
@@ -101,7 +99,7 @@
 **Exits when:**
 - All RELEASE_CRITERIA.md v1.0 gates met
 - Zero P0 bugs open
-- Plugin API has not changed since v0.5 (stability proof)
+- Plugin API has not changed since v0.1, when it first shipped (stability proof)
 - `pip install quor` works on fresh installs of: Windows 11, Ubuntu 22.04, and Python 3.11, 3.12, 3.13
 
 ---

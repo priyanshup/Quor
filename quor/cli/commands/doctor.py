@@ -185,6 +185,6 @@ def _check_plugins() -> tuple[str, bool, str]:
         stage_names = ", ".join(s.stage_type for s in report.stages)
         parts.append(f"{len(report.stages)} stage(s): {stage_names}")
     if report.plugins:
-        plugin_names = ", ".join(p.plugin_id for p in report.plugins)
+        plugin_names = ", ".join(f"{p.plugin_id}@{p.version}" for p in report.plugins)
         parts.append(f"{len(report.plugins)} plugin(s): {plugin_names}")
     return ("Plugin discovery", True, "; ".join(parts))
