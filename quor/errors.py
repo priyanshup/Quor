@@ -17,7 +17,6 @@ class ExitCode(IntEnum):
     GENERAL_ERROR = 1
     CONFIG_ERROR = 2
     HOOK_ERROR = 3
-    PLUGIN_ERROR = 4
     DEPENDENCY_MISSING = 5  # Python version check failure
 
 
@@ -58,7 +57,13 @@ class CacheError(QuorError):
 
 
 class PluginError(QuorError):
-    """A plugin failed to load, validate, or apply."""
+    """A plugin failed to load, validate, or apply.
+
+    Always caught internally (plugin_loader, PluginRegistry) and converted to
+    a warning + skip — Quor's fail-open contract means this never propagates
+    to a process exit code, so it carries the default GENERAL_ERROR rather
+    than a dedicated code.
+    """
 
     def __init__(self, message: str) -> None:
-        super().__init__(message, ExitCode.PLUGIN_ERROR)
+        super().__init__(message, ExitCode.GENERAL_ERROR)

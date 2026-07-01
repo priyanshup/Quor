@@ -390,17 +390,16 @@ class TestHookCollisionDetection:
         settings_path.write_bytes(
             orjson.dumps(_settings_with_third_party_hook("zap hook bash"))
         )
-        with patch("pathlib.Path.home", return_value=tmp_path):
-            result = runner.invoke(app, ["doctor"])
-        # doctor exit 1 (hook script missing + collision) and mentions conflict
-        assert "conflicting" in result.output.lower() or "conflict" in result.output.lower()
+        result = runner.invoke(app, ["doctor", "--settings-path", str(settings_path)])
+        assert result.exit_code == ExitCode.GENERAL_ERROR
+        assert "✗ No conflicting PreToolUse hooks" in result.output
+        assert "1 other Bash hook(s) detected" in result.output
 
-    def test_doctor_no_collision_when_settings_missing(self) -> None:
+    def test_doctor_no_collision_when_settings_missing(self, tmp_path: Path) -> None:
         """doctor passes the collision check when settings.json doesn't exist."""
-        with patch("pathlib.Path.home", return_value=Path("/nonexistent/path/xyz")):
-            result = runner.invoke(app, ["doctor"])
-        # Should not mention collision (check is skipped cleanly when file absent)
-        assert "No conflicting" not in result.output or "✓ No conflicting" in result.output
+        settings_path = tmp_path / "settings.json"  # deliberately never created
+        result = runner.invoke(app, ["doctor", "--settings-path", str(settings_path)])
+        assert "✓ No conflicting PreToolUse hooks" in result.output
 
 
 # ---------------------------------------------------------------------------
