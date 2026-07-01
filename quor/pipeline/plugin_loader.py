@@ -20,6 +20,7 @@ Fail-open contract:
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import importlib.metadata
 import importlib.util
@@ -102,10 +103,8 @@ def _package_set_hash() -> str:
     """Short SHA-256 fingerprint of the installed distribution set."""
     keys: list[str] = []
     for d in importlib.metadata.distributions():
-        try:
+        with contextlib.suppress(KeyError):
             keys.append(f"{d.metadata['Name']}=={d.metadata['Version']}")
-        except KeyError:
-            pass
     return hashlib.sha256("\n".join(sorted(keys)).encode()).hexdigest()[:24]
 
 
