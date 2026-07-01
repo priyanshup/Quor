@@ -3,6 +3,25 @@
 All notable changes to Quor are documented here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.1.1] — 2026-07-02
+
+Documentation-only release. No changes to `quor`'s source code or behavior.
+
+- Reconciled `README.md`, `CONTRIBUTING.md`, `SECURITY.md`, and the
+  `docs/final/` canonical status docs with the actual released v0.1.0
+  package — removed stale "not yet on PyPI" / "Internal Alpha" language.
+- Added a Quick Start and a Troubleshooting section to `README.md`
+  (PATH issues, `py` launcher, multiple Python versions, corporate
+  `.exe`-execution blocking, Windows path-length limits), based on real
+  multi-machine install verification.
+- Fixed a documentation bug: `CONTRIBUTING.md` told bug reporters to run
+  `quor --version`, which does not exist as a CLI flag; replaced with
+  `pip show quor` throughout.
+- Documented the actual, now-automated TestPyPI/PyPI release process in
+  `CONTRIBUTING.md`'s Release Process checklist.
+
+[0.1.1]: https://github.com/priyanshup/Quor/releases/tag/v0.1.1
+
 ## [0.1.0] — 2026-07-01
 
 First public release, published to [PyPI](https://pypi.org/project/quor/).
