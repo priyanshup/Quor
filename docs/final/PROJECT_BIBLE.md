@@ -282,13 +282,15 @@ raw string
     → ContentMask(lines=[LineMask(line, KEEP, reason="", stage="")])
     → Stage 1: remove_ansi → updates COMPRESS decisions on ANSI-only lines
     → Stage 2: deduplicate_consecutive → COMPRESS repeated adjacent lines
-    → Stage 3: strip_lines → COMPRESS lines matching patterns
-    → Stage 4: group_repeated → collapse repeated patterns to "text (×N)"
+    → Stage 3: group_repeated → collapse repeated patterns to "text (×N)"
+    → Stage 4: strip_lines → COMPRESS lines matching patterns
     → Stage 5: max_tokens → COMPRESS lines beyond budget
     → Final render: join KEEP/PROTECT lines
     → if empty and on_empty defined: return on_empty string
     → print to stdout
 ```
+
+Ordering matters due to PROTECT semantics (see ADR-031 and QB-014).
 
 **Package Structure:**
 ```
