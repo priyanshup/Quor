@@ -145,6 +145,7 @@ class StageHandler(Protocol):
 - `truncate_lines` — cap KEEP line length to `max_length`, appending `marker`; PROTECT exempt
 - `regex_replace` — apply ordered regex substitution `rules` (capture groups supported) to KEEP lines
 - `match_output` — if the whole rendered output fullmatches `pattern`, collapse to `summary`; refuses to fire if any PROTECT line is present
+- `python_ast_summarize` — COMPRESS function/method body lines (stdlib `ast` parse only; never rewrites/reformats kept lines); fails open (propagates parse errors to the engine's per-stage fail-open) on any non-Python or invalid-syntax input (QB-005)
 
 ---
 
@@ -253,6 +254,29 @@ genuinely flaky, that is itself a bug to fix or an explicitly documented, review
 - Must be written so a future, unrelated change cannot silently reintroduce the same bug — prefer
   asserting the *observable* outcome (e.g. rendered output, on-disk bytes) over an internal
   implementation detail that could be refactored around without re-breaking the real behavior.
+
+**Rule 4 — Competitor-first design.** For every non-trivial feature (new architecture, new pipeline
+primitive, new ecosystem support, new parser, new compression strategy, new runtime capability, or
+any feature requiring design decisions):
+1. First consult Quor's existing competitor and landscape analysis documents already in the repo
+   (`docs/archive/research/zap-analysis.md`, `docs/archive/product-discovery/competitive-research.md`,
+   `docs/archive/product-discovery/final-discovery.md`,
+   `docs/archive/architecture-exploration/engineering-patterns.md`, and any other archived research —
+   see `docs/final/PROJECT_STATUS.md`/`RESEARCH_COMPLETION.md` for the full index).
+2. Reuse existing conclusions wherever possible. Do not repeat research that already exists.
+3. If the available notes are insufficient to confidently choose an implementation approach, perform
+   additional research before writing code.
+4. Compare Quor's current design with established tools and identify: how leading tools solve the
+   problem, common industry patterns, trade-offs, and why Quor should or should not adopt each
+   approach.
+5. Recommend the implementation that best fits Quor's architecture, ADRs, guardrails, simplicity
+   goals, portability, maintainability, and long-term roadmap. Do not copy another tool blindly.
+6. Present the recommendation for approval before implementation whenever a meaningful architectural
+   decision exists.
+7. After approval, implement the chosen approach and add tests (Rule 1) before considering the
+   feature complete.
+
+This rule applies to all Batch 5 work and every future feature unless explicitly overridden.
 
 ---
 

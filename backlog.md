@@ -6,6 +6,66 @@ outcome, Status. Add new entries at the top (most recent first).
 
 ---
 
+## QB-006A
+
+**Priority:** High
+**Category:** Feature
+
+**Title:** Generic Node.js ecosystem support (npm/npx/pnpm/yarn noise reduction)
+
+**Problem:**
+Split from QB-006 following the Batch 5 design review. `npm`, `npx`, `pnpm`, and `yarn` invocations
+currently pass through Quor unfiltered and untracked — `npm` is not in `_KNOWN_BASE_COMMANDS` at
+all, and `npx`/`pnpm`/`yarn` are only registered as transparent prefixes today, so nothing
+underneath them is recognized either. Even without any tool-specific intelligence, the npm/pnpm/yarn
+CLI wrapper itself produces a large amount of generic, low-signal noise on every invocation.
+
+**Desired outcome:**
+Rewrite rules and a built-in filter for `npm`/`npx`/`pnpm`/`yarn` that strip generic wrapper noise
+only: `npm WARN` deprecation spam, progress spinners/ANSI output, audit messages, install/update
+summaries ("added N packages in Xs", "up to date, audited N packages"), and other repeated
+boilerplate — using only existing stage types (`strip_lines`, `remove_ansi`, `group_repeated`,
+`max_tokens`, etc.), the same way every other built-in filter is built. No registry, dispatcher, or
+plugin API changes.
+
+**Explicitly out of scope for this item:** any tool-specific intelligence for what runs *underneath*
+npm/npx/pnpm/yarn — Jest, ESLint, TypeScript, Vitest, Webpack, Vite, or any other JS/TS toolchain
+output shape. That is tracked separately as QB-006B and must not be implemented as part of this item.
+
+**Status:** Approved for implementation — Batch 5, item 2. Not yet implemented.
+
+---
+
+## QB-006B
+
+**Priority:** Medium
+**Category:** Feature
+
+**Title:** Node.js ecosystem support — tool-aware filtering (Jest/ESLint/TypeScript/Vitest/Webpack/Vite)
+
+**Problem:**
+Split from QB-006 following the Batch 5 design review. `npm test` / `npm run build` / `npx <tool>` /
+`yarn build` are opaque wrappers — the actual underlying tool is defined in `package.json` and
+invisible to Quor's command-string-based filter matching (`FilterRegistry.find()` only ever matches
+on the command string, never on output content). Delivering pytest/mypy/ruff-level compression precision
+for JS/TS output requires either extending `quor/pipeline/content_type.py` with new content-shape
+heuristics (jest/eslint/tsc/vitest output), or reading `package.json` at filter-registration time to
+resolve the wrapped command — both are genuine architectural extensions, not filter-config-only
+additions.
+
+**Desired outcome:**
+Tool-aware compression for common JS/TS toolchain output (test failures, lint violations, type
+errors) with the same PROTECT/`preserve_patterns` precision as `pytest.toml`/`build.toml` today.
+
+**Prerequisite:** a short ADR deciding the content-type-driven stage-branching pattern (raised in
+the Batch 5 design review) before implementation begins — this should not be improvised per-filter,
+since it's a precedent other future filters would follow.
+
+**Status:** Backlog — deferred, not scheduled. Depends on QB-006A landing first and a design ADR
+for content-type-driven filter branching.
+
+---
+
 ## QB-016
 
 **Priority:** Low
@@ -237,7 +297,34 @@ function/method signatures, docstrings, constants, and file structure over full 
 reducing tokens while preserving developer/AI context. Primary objective is token reduction without
 losing the structural understanding needed to work with the file.
 
-**Status:** Backlog
+**Approved architecture (Batch 5 design review):**
+- **Python only in V1.** No multi-language parsing, no third-party parser — Python standard library
+  `ast` only. No new dependency.
+- **`StageHandler`'s interface is not modified.** Stages continue to receive only `ContentMask` +
+  config, never a filename or command string — the same contract every existing stage has.
+- **Python detection happens at the filter layer**, via command matching (e.g. `cat *.py`), not by
+  threading filenames into stages. A new `cat-python.toml` filter routes `.py` file reads to the new
+  AST-aware stage; the stage itself receives only file content, exactly like every existing stage.
+- **No new registry tie-break algorithm.** `FilterRegistry` keeps its existing "first matching filter
+  wins" behavior unchanged. Correctness comes entirely from **built-in filter load order**:
+  `cat-python.toml` must load (and therefore match) before the generic `cat.toml`. Document this
+  ordering rule so future extension-specific filters (e.g. a hypothetical `cat-javascript.toml`)
+  follow the same pattern rather than each inventing their own precedence mechanism.
+- **Fail-open on any parsing failure** (`SyntaxError` or otherwise) — falls back to full, unmodified
+  content, never a crash or partial/corrupt output.
+
+**Status:** Implemented (Batch 5, item 1). `quor/pipeline/stages/python_ast_summarize.py` compresses
+function/method bodies to signature + docstring using stdlib `ast` only, with fail-open behavior
+delegated entirely to the engine's existing per-stage exception handling (no local try/except).
+`cat-python.toml` routes `.py` file reads through it, then reuses `cat.toml`'s existing
+strip_lines/deduplicate_consecutive/max_tokens stack so comment-stripping and blank-line dedup
+(which `ast` cannot see, since comments have no AST node) are not lost for Python files — this
+combination is covered by a dedicated inline filter test. Comprehensive unit tests added to
+`tests/unit/test_stages.py::TestPythonAstSummarize` (valid file, syntax error at both the stage and
+pipeline fail-open level, empty file, null-byte input, decorators, nested classes/functions, async
+functions, a 300-function synthetic large file, non-ASCII identifiers/docstrings, single-line and
+docstring-only function bodies, and byte-identical-kept-line regression tests). Full `pytest`,
+`quor verify`, `ruff check`, and `mypy` all pass. Not yet committed — awaiting instruction.
 
 ---
 
@@ -257,7 +344,10 @@ passes through unfiltered and untracked.
 Rewrite rules and filters for `npm`/`npx`/`pnpm` invocations, prioritized by workflow: build, test,
 lint, and type-check first.
 
-**Status:** Backlog
+**Status:** Split following the Batch 5 design review — see QB-006A (generic Node ecosystem noise
+removal, approved for implementation next) and QB-006B (tool-aware Node ecosystem filtering,
+deferred to future backlog). This entry is kept for historical context; new work is tracked under
+QB-006A/QB-006B.
 
 ---
 
@@ -277,7 +367,14 @@ Token-efficient reading of DOCX, PDF, Markdown, and text documents by extracting
 headings, tables, numbered lists, requirements, decisions — instead of returning raw document text
 whenever possible.
 
-**Status:** Backlog
+**Status:** Blocked pending feasibility investigation into whether Claude Code can intercept native
+Read/File tool output. Implementation will begin only after this investigation is complete.
+
+**Context (Batch 5 design review):** Quor's only integration point today is the Claude Code
+`PreToolUse` hook registered for the Bash matcher (`quor/cli/commands/init.py`); most PDF/DOCX
+reading inside Claude Code uses native Read/File tools, not Bash, so Quor never receives those
+requests under the current architecture. The feasibility investigation is a prerequisite for this
+item, not separate product work — no backlog ID is tracked for it.
 
 ---
 
