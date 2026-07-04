@@ -291,7 +291,10 @@ stage does.
 A configurable regex replacement stage (with backreference support, chainable like existing stages)
 usable by any filter to normalize this kind of content.
 
-**Status:** Backlog
+**Status:** Resolved — implemented as the `regex_replace` stage (`quor/pipeline/stages/regex_replace.py`).
+Ordered list of `{pattern, replacement}` rules per filter, applied via `regex.sub()` (native
+backreference support, no extra handling needed). PROTECT lines and `preserve_patterns` matches are
+never modified, matching every other stage's invariant. Registered in `quor/filters/registry.py`.
 
 ---
 
@@ -310,7 +313,10 @@ paths) can dominate token cost even when the number of lines is otherwise under 
 A configurable max-line-length stage, similar to ZAP's `truncate_lines_at`, usable by any filter to
 reduce excessively long lines while preserving useful context.
 
-**Status:** Backlog
+**Status:** Resolved — implemented as the `truncate_lines` stage (`quor/pipeline/stages/truncate_lines.py`).
+Caps KEEP line length to `max_length`, appending a configurable `marker` so the cut is visible.
+Line count is never changed. PROTECT lines and `preserve_patterns` matches are exempt from truncation,
+matching `max_tokens`'s precedent that protected content is never reduced by any stage.
 
 ---
 
@@ -332,7 +338,13 @@ A pipeline stage that can short-circuit to an immediate compressed result when t
 matches a predefined pattern (e.g. clean git status, successful build summary), configurable per
 filter.
 
-**Status:** Backlog
+**Status:** Resolved — implemented as the `match_output` stage (`quor/pipeline/stages/match_output.py`).
+Explicit opt-in per filter (`pattern` + `summary`); fullmatches the current rendered output. Refuses
+to fire at all if any PROTECT line is already present, avoiding a class of index-collision bugs where
+a naive collapse could lose a protected line's original content — this was judged safer than relying
+on `Pipeline._enforce_protect` to paper over that case. Keeps the same LineMask count as input (no
+engine/dispatcher changes needed). Emits an explicit warning on every fire, in addition to the normal
+`quor explain` stage trace, so a short-circuit is never a silent event.
 
 ---
 
