@@ -2,8 +2,8 @@
 
 Mode is documented in ADR-009 (AUDIT / OPTIMIZE / SIMULATE) and is currently
 display-only — `quor doctor` and `quor gain` show it, but the dispatcher does
-not yet switch behavior based on it. Default is "optimize" since that matches
-the dispatcher's current (unconditional filtering) behavior.
+not yet switch behavior based on it. Default is "audit" per ADR-009: new
+users should see what filtering would do before opting into OPTIMIZE.
 """
 
 from __future__ import annotations

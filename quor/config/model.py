@@ -57,4 +57,4 @@ class QuorUserConfig(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    mode: str = "optimize"  # one of: audit, optimize, simulate
+    mode: str = "audit"  # one of: audit, optimize, simulate — see ADR-009

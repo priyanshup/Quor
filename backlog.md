@@ -399,7 +399,10 @@ finalized ADR, or an intentional change that was never written back into the doc
 A maintainer decides which side is correct — either fix the code default to match ADR-009, or update
 ADR-009 and the docs to reflect `optimize` as the intended default — and the two are reconciled.
 
-**Status:** Backlog
+**Status:** Resolved — implemented on `feature/qb-002-default-mode-audit`. Code default changed to
+`audit` to match ADR-009/PROJECT_BIBLE.md/CLAUDE.md/ROADMAP.md (`quor/config/model.py`,
+`quor/config/loader.py`), README example output and `tests/unit/test_cli.py` updated to match. ADR-009
+was not touched — it was already correct.
 
 ---
 
