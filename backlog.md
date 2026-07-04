@@ -6,6 +6,33 @@ outcome, Status. Add new entries at the top (most recent first).
 
 ---
 
+## QB-016
+
+**Priority:** Low
+**Category:** Documentation
+
+**Title:** Strengthen AI Git Workflow
+
+**Problem:**
+QB-015's Git workflow documentation didn't specify the exact sequence to follow when starting a new
+backlog item (ensuring the prior branch is resolved, pulling latest `main`, verifying a clean working
+tree, branching, and verifying the branch before editing), nor what to do if the working tree is
+unexpectedly dirty at that point. Without this, there's a real risk of starting new work from a stale
+or wrong branch, or of an AI assistant "helpfully" stashing/resetting/discarding a user's uncommitted
+work to get to a clean state.
+
+**Desired outcome:**
+`docs/final/CLAUDE.md` documents an explicit "Starting Any Backlog Item" sequence (checkout `main`,
+pull, verify clean, branch, verify branch, then implement), states that every backlog item gets its
+own feature branch (never reused, never branched from another feature branch), documents the
+post-merge cleanup sequence before starting the next item, and adds a rule that an unclean working
+tree at the start of a backlog item is a stop-and-ask condition — never resolved automatically via
+stash/reset/clean/discard.
+
+**Status:** Resolved — implemented on `feature/qb-016-strengthen-git-workflow` (docs/final/CLAUDE.md)
+
+---
+
 ## QB-015
 
 **Priority:** Low
