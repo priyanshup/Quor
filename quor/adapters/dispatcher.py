@@ -4,7 +4,11 @@ Called when Claude Code executes the rewritten command `quor git status`.
 sys.argv[1:] = ["git", "status"] → subprocess runs git status, output filtered.
 
 Execution order:
-  subprocess → PRE_FILTER plugins → ContentMask filter → POST_FILTER plugins → stdout
+  subprocess → PRE_FILTER plugins → ContentMask filter → POST_FILTER plugins
+    → tee (ADR-023, if enabled and output changed) → stdout
+
+Tee is a dispatcher-level concern only — it never touches ContentMask,
+Pipeline, or any StageHandler. See quor/pipeline/tee.py.
 """
 
 from __future__ import annotations
@@ -16,8 +20,10 @@ import uuid
 import warnings
 from pathlib import Path
 
+from quor.config.model import FilterConfig
 from quor.filters.registry import FilterRegistry
 from quor.pipeline.content_type import detect
+from quor.pipeline.tee import cleanup_tee, content_hash, write_tee
 from quor.tracking.db import InvocationRecord, TrackingDB, count_tokens
 
 
@@ -57,6 +63,9 @@ def run_dispatch(args: list[str], tracking: TrackingDB | None = None) -> int:
         return 127
 
     captured = proc.stdout or ""
+
+    # --- Tee cleanup: once per dispatch, throttled internally (ADR-023) ---
+    _cleanup_tee_safe()
 
     # --- Lookup filter ---
     filter_config = None
@@ -154,6 +163,9 @@ def run_dispatch(args: list[str], tracking: TrackingDB | None = None) -> int:
         except Exception as exc:  # noqa: BLE001
             warnings.warn(f"[quor] POST_FILTER plugin error: {exc}", stacklevel=1)
 
+    # --- Tee: cache raw output + append recovery footer if it changed (ADR-023) ---
+    filtered = _apply_tee(filter_config, captured=captured, final_output=filtered)
+
     _teardown_plugins(plugin_registry, plugin_ctx)
     _track(
         tracking,
@@ -168,6 +180,43 @@ def run_dispatch(args: list[str], tracking: TrackingDB | None = None) -> int:
     sys.stdout.write(filtered)
     sys.stdout.flush()
     return proc.returncode
+
+
+def _cleanup_tee_safe() -> None:
+    """Run tee cleanup, fail-open. cleanup_tee() throttles itself internally."""
+    try:
+        cleanup_tee()
+    except Exception as exc:  # noqa: BLE001
+        warnings.warn(f"[quor] tee cleanup error: {exc}", stacklevel=1)
+
+
+def _apply_tee(filter_config: FilterConfig, *, captured: str, final_output: str) -> str:
+    """Tee the raw output and append a recovery footer, if warranted. Fail-open.
+
+    Tee fires only when all of these hold:
+      - the global kill-switch (QuorUserConfig.tee_enabled) is on
+      - this filter has not opted out (FilterConfig.tee is not False)
+      - the final output actually differs from the true raw subprocess output
+        (nothing to recover otherwise — e.g. abort_unless/abort_if short-circuits)
+
+    On any error, returns `final_output` unchanged — tee must never affect
+    stdout or the exit code (ADR-018 fail-open).
+    """
+    try:
+        from quor.config.loader import load_user_config
+
+        user_config = load_user_config()
+        if not (user_config.tee_enabled and filter_config.tee):
+            return final_output
+
+        if content_hash(final_output) == content_hash(captured):
+            return final_output
+
+        path = write_tee(captured)
+        return f"{final_output}\n[full output: {path}]"
+    except Exception as exc:  # noqa: BLE001
+        warnings.warn(f"[quor] tee error: {exc}", stacklevel=1)
+        return final_output
 
 
 def _teardown_plugins(
