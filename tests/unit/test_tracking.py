@@ -359,6 +359,8 @@ class TestQueryGain:
         report = query_gain(tmp_path / "missing.db", tmp_path)
         assert report.total_invocations == 0
         assert report.tokens_saved == 0
+        assert report.tokens_before == 0
+        assert report.tokens_after == 0
         assert report.filter_hit_rate == 0.0
 
     def test_basic_totals(self, tmp_path: Path) -> None:
@@ -370,6 +372,20 @@ class TestQueryGain:
         report = query_gain(db_path, Path("/proj"))
         assert report.total_invocations == 2
         assert report.tokens_saved == (100 - 20) + (200 - 50)  # 230
+
+    def test_tokens_before_and_after(self, tmp_path: Path) -> None:
+        """tokens_before/tokens_after are the raw sums driving tokens_saved —
+        this must hold exactly (tokens_before - tokens_after == tokens_saved),
+        since they're read from the same original_tokens/final_tokens columns."""
+        db_path = tmp_path / "quor.db"
+        self._populate(db_path, [
+            {"original_tokens": 100, "final_tokens": 20, "project_path": "/proj"},
+            {"original_tokens": 200, "final_tokens": 50, "project_path": "/proj"},
+        ])
+        report = query_gain(db_path, Path("/proj"))
+        assert report.tokens_before == 300
+        assert report.tokens_after == 70
+        assert report.tokens_before - report.tokens_after == report.tokens_saved
 
     def test_glob_project_scoping(self, tmp_path: Path) -> None:
         db_path = tmp_path / "quor.db"

@@ -139,8 +139,46 @@ class TestGain:
             result = runner.invoke(app, ["gain", "--project", str(tmp_path), "--days", "30"])
 
         assert result.exit_code == 0
-        assert "Total invocations: 1" in result.output
-        assert "Tokens saved: ~80" in result.output
+        output = result.output
+        assert "Quor Gain (Last 30 days)" in output
+        assert "Commands processed" in output
+        assert "Filter hit rate" in output
+        assert "100%" in output  # single non-passthrough invocation -> 100% hit rate
+        assert "Tokens before" in output
+        assert "~100" in output
+        assert "Tokens after" in output
+        assert "~20" in output
+        assert "YOU SAVED" in output
+        assert "~80 tokens (80%)" in output
+        assert "Top savings" in output
+        assert "git-status" in output
+        assert "* Token estimates use the existing char/4 approximation." in output
+
+    def test_zero_saved_filter_hidden_from_top_savings(self, tmp_path: Path) -> None:
+        """A filter that saved nothing must not appear in Top savings."""
+        from quor.tracking.db import InvocationRecord, TrackingDB
+
+        db_path = tmp_path / "data" / "quor.db"
+        db = TrackingDB(db_path=db_path)
+        db.record(
+            InvocationRecord(
+                command="cat file.txt",
+                project_path=tmp_path.as_posix(),
+                original_tokens=50,
+                final_tokens=50,  # no reduction at all
+                filter_name="cat",
+                was_passthrough=False,
+                duration_ms=1.0,
+            )
+        )
+        db.flush()
+        db.close()
+
+        with patch("platformdirs.user_data_dir", return_value=str(tmp_path / "data")):
+            result = runner.invoke(app, ["gain", "--project", str(tmp_path), "--days", "30"])
+
+        assert result.exit_code == 0
+        assert "Top savings" not in result.output
 
 
 # ---------------------------------------------------------------------------
