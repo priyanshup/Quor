@@ -41,6 +41,14 @@ from pathlib import Path
 
 import platformdirs
 
+# os.O_BINARY only exists on Windows; getattr(..., 0) makes the OR below a
+# no-op on POSIX, where there is no text/binary distinction. Without this,
+# os.open() defaults to text mode on Windows and silently rewrites every
+# "\n" to "\r\n" on write — corrupting the tee file relative to the actual
+# raw output (violates ADR-023's "no modification" guarantee, and makes the
+# on-disk bytes no longer match the SHA256 used to name the file).
+_O_BINARY = getattr(os, "O_BINARY", 0)
+
 _TEE_SUBDIR = "tee"
 _STATE_DB_NAME = "tee_state.db"
 _DEFAULT_MAX_AGE_DAYS = 7
@@ -92,7 +100,7 @@ def write_tee(content: str) -> Path:
         # mode bits are ignored except the read-only flag, which 0o600 does
         # not set — effectively a no-op there, per the platform's own ACL
         # defaults.
-        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | _O_BINARY, 0o600)
     except FileExistsError:
         os.utime(path, None)
         return path

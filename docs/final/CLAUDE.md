@@ -142,6 +142,9 @@ class StageHandler(Protocol):
 - `deduplicate_consecutive` — COMPRESS consecutive duplicate lines (keep first)
 - `group_repeated` — COMPRESS repeated pattern matches, replace with first instance + `(×N)`
 - `max_tokens` — COMPRESS lines beyond budget (strategy: `head`, `tail`, or `both`)
+- `truncate_lines` — cap KEEP line length to `max_length`, appending `marker`; PROTECT exempt
+- `regex_replace` — apply ordered regex substitution `rules` (capture groups supported) to KEEP lines
+- `match_output` — if the whole rendered output fullmatches `pattern`, collapse to `summary`; refuses to fire if any PROTECT line is present
 
 ---
 
@@ -217,6 +220,39 @@ Every new filter must include at least 3 `[[filter.tests]]` entries.
 - Pipeline: given this input and filter config, what is the rendered output?
 - Classifier: given this command string, is it rewritten and how?
 - Trust: given this path, is git-tracked check correct?
+
+---
+
+## Mandatory Engineering Rules
+
+These formalize practice that was already mostly followed, after a retrospective test-coverage
+audit (QB test-hardening pass) found real gaps in otherwise-shipped features — including one actual
+production bug (tee's `write_tee()` silently corrupting output via Windows text-mode newline
+translation) that a boundary test caught. Non-negotiable going forward:
+
+**Rule 1 — Test requirement (non-optional).** Every new feature must include:
+- Unit tests covering core logic correctness.
+- Regression tests, if the feature introduces or changes behavior — a test that fails without the
+  change and passes with it.
+- Boundary cases: empty input, minimum/maximum valid values, and at least one large/unusual input
+  where a stage or feature's normal test fixtures wouldn't otherwise exercise it.
+
+A feature is not complete without these, regardless of how small it looks. `quor verify` passing is
+not a substitute — inline filter tests cover filter *configuration* behavior, not the underlying
+stage/module logic in isolation.
+
+**Rule 2 — Pre-PR validation gate.** In addition to the "Every PR must" list above (which already
+requires `quor verify` and the coverage/CI bar): `ruff check quor/ tests/` and `mypy quor/` must also
+both be clean before any PR, every time — not just on CI's final run. And no exceptions on any of
+these gates — a known-flaky test is not an acceptable reason to skip it silently. If a test is
+genuinely flaky, that is itself a bug to fix or an explicitly documented, reviewed exception (e.g. a
+`pytest.mark.skip(reason=...)` with the reason stated), never a silent re-run-until-green.
+
+**Rule 3 — Behavior lock principle.** Any bug fix, or any change to existing behavior:
+- Must add a regression test that fails on the pre-fix code and passes on the fix.
+- Must be written so a future, unrelated change cannot silently reintroduce the same bug — prefer
+  asserting the *observable* outcome (e.g. rendered output, on-disk bytes) over an internal
+  implementation detail that could be refactored around without re-breaking the real behavior.
 
 ---
 

@@ -481,3 +481,69 @@ class TestBuiltinFilterTests:
     def test_builtin_filter_inline_tests(self, filter_config: FilterConfig) -> None:
         failures = self.registry.run_tests(filter_config)
         assert failures == [], "\n".join(failures)
+
+
+# ---------------------------------------------------------------------------
+# QB-004 / ADR-031 regression: git-diff's max_tokens is best-effort, not hard
+# ---------------------------------------------------------------------------
+
+
+class TestGitDiffBestEffortBudget:
+    """Locks in QB-004's investigated finding using the real built-in
+    git-diff filter (git.toml: preserve_patterns for +/-/@@, max_tokens
+    limit=600) — not a synthetic stage composition — so a future edit to
+    git.toml's stage config would be caught here if it silently changed this
+    documented, decided behavior (ADR-031).
+    """
+
+    registry = FilterRegistry(skip_user=True, skip_project=True)
+
+    def _large_diff(self, changed_lines: int = 400) -> str:
+        header = (
+            "diff --git a/big_file.py b/big_file.py\n"
+            "index abc1234..def5678 100644\n"
+            "--- a/big_file.py\n"
+            "+++ b/big_file.py\n"
+            "@@ -1,400 +1,400 @@\n"
+        )
+        # Every changed line matches preserve_patterns ('^\+' or '^-'), so it
+        # is marked PROTECT before max_tokens ever runs — mirroring the real
+        # `git show` output QB-004 investigated (298/515 PROTECT lines).
+        body = "\n".join(f"+changed_line_{i}_with_some_realistic_content_padding" for i in range(changed_lines))
+        return header + body
+
+    def test_large_protect_heavy_diff_exceeds_configured_limit(self) -> None:
+        filter_config = self.registry.find("git diff")
+        assert filter_config is not None
+        assert filter_config.name == "git-diff"
+
+        diff = self._large_diff(changed_lines=400)
+        rendered = self.registry.apply(filter_config, diff)
+
+        # git-diff's max_tokens limit is 600 (git.toml) — a 400-line, all-"+"
+        # diff has far more than 600 tokens of PROTECT content alone, so the
+        # rendered output must exceed the limit. This is QB-004's confirmed,
+        # correct behavior (ADR-031), not a defect to "fix" later.
+        rendered_tokens = len(rendered) // 4
+        assert rendered_tokens > 600, (
+            "git-diff's preserve_patterns should mark added/removed lines PROTECT, "
+            "and max_tokens must never compress them to fit — if this fails, "
+            "either preserve_patterns or the best-effort budget semantics regressed"
+        )
+
+        # And the added lines themselves must genuinely still be present —
+        # confirming the overage is real protected content, not an unrelated bug.
+        assert "+changed_line_0_" in rendered
+        assert "+changed_line_399_" in rendered
+
+    def test_small_diff_stays_within_limit(self) -> None:
+        """Sanity check on the other side: a small diff well under the
+        budget is unaffected — the overage above is about volume, not a
+        universal property of the filter."""
+        filter_config = self.registry.find("git diff")
+        assert filter_config is not None
+
+        diff = self._large_diff(changed_lines=3)
+        rendered = self.registry.apply(filter_config, diff)
+        rendered_tokens = len(rendered) // 4
+        assert rendered_tokens <= 600
