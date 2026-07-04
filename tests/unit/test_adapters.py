@@ -562,6 +562,56 @@ class TestDispatcherTee:
         assert "FAILED" in captured.getvalue()
         assert "[full output:" not in captured.getvalue()
 
+    def test_footer_bypasses_the_filters_max_tokens_budget(self) -> None:
+        """End-to-end proof of the ADR-023 design claim: the footer is
+        appended after the full pipeline (including max_tokens) has already
+        run, so it is never itself subject to — or truncated by — the
+        filter's configured token limit.
+
+        Compares the dispatcher's real output against what the filter alone
+        (registry.apply(), no tee) produces for the identical input: the
+        footer must be appended verbatim on top, pushing the total past what
+        max_tokens would have permitted on its own — proof the budget was
+        enforced on the body only, before the footer ever entered the
+        picture.
+        """
+        from quor.filters.registry import FilterRegistry
+        from quor.tracking.db import count_tokens
+
+        # PASSED lines get stripped (guarantees tee actually triggers), while
+        # the 60 FAILED lines are protected by preserve_patterns and provide
+        # enough weight to matter for the max_tokens=500 budget comparison.
+        passed_noise = "".join(f"PASSED tests/test_{i}.py::test_ok\n" for i in range(5))
+        many_failures = "".join(f"FAILED tests/test_{i}.py::test_case\n" for i in range(60))
+        raw_output = passed_noise + many_failures
+        proc = _make_proc(stdout=raw_output)
+
+        registry = FilterRegistry(project_root=Path.cwd())
+        filter_config = registry.find("pytest tests/")
+        assert filter_config is not None
+        filter_only_output = registry.apply(filter_config, raw_output)
+
+        captured = io.StringIO()
+        with (
+            patch("subprocess.run", return_value=proc),
+            patch("sys.stdout", captured),
+        ):
+            run_dispatch(["pytest", "tests/"])
+        dispatcher_output = captured.getvalue()
+
+        # Dispatcher output is exactly "filter's own output" + footer —
+        # nothing about the body itself changed because tee ran afterward.
+        assert dispatcher_output.startswith(filter_only_output)
+        footer = dispatcher_output[len(filter_only_output) :]
+        assert footer.startswith("\n[full output:")
+
+        # The filter alone already respects its own max_tokens=500 budget
+        # (±20% char/4 estimate, so allow slack); adding the footer pushes
+        # the dispatcher's total past that budget, proving the footer was
+        # never subject to it.
+        assert count_tokens(filter_only_output) <= 500 * 1.25
+        assert count_tokens(dispatcher_output) > count_tokens(filter_only_output)
+
 
 # ---------------------------------------------------------------------------
 # __main__ routing tests

@@ -53,6 +53,22 @@ class TestTeePath:
     def test_different_content_different_path(self) -> None:
         assert tee_path("abc") != tee_path("xyz")
 
+    def test_empty_content_boundary(self) -> None:
+        """Empty string is a valid, hashable content value — no crash, and
+        it resolves to a distinct, deterministic path like any other input."""
+        path = tee_path("")
+        assert path.parent == tee_dir()
+        assert path.name == f"{content_hash('')}.txt"
+
+
+class TestTeeDir:
+    def test_tee_dir_is_under_user_data_dir(self) -> None:
+        expected = Path(platformdirs.user_data_dir("quor")) / "tee"
+        assert tee_dir() == expected
+
+    def test_tee_dir_stable_across_calls(self) -> None:
+        assert tee_dir() == tee_dir()
+
 
 # ---------------------------------------------------------------------------
 # write_tee
@@ -77,6 +93,34 @@ class TestWriteTee:
         assert path1 != path2
         assert path1.exists()
         assert path2.exists()
+
+    def test_empty_content_boundary(self) -> None:
+        """Writing empty-string content must not crash — it's a legitimate,
+        if unusual, value for the dispatcher to pass through."""
+        path = write_tee("")
+        assert path.exists()
+        assert path.read_text(encoding="utf-8") == ""
+
+    def test_large_content_boundary(self) -> None:
+        """Multi-MB content (a large diff/log) must write correctly, not
+        just small test-fixture-sized strings."""
+        large = "line of realistic log output\n" * 100_000
+        path = write_tee(large)
+        assert path.exists()
+        assert path.stat().st_size == len(large.encode("utf-8"))
+
+    def test_no_newline_translation_regression(self) -> None:
+        """Regression guard: os.open() must be opened in binary mode. On
+        Windows, os.open() defaults to text mode and silently rewrites every
+        "\\n" to "\\r\\n" on write, which both violates ADR-023's "no
+        modification" guarantee and makes the on-disk bytes no longer match
+        the SHA256 used to name the file. Found during the QB test-hardening
+        pass; fixed by OR-ing in os.O_BINARY (a no-op on POSIX)."""
+        content = "line one\nline two\nline three\n"
+        path = write_tee(content)
+        raw_bytes = path.read_bytes()
+        assert raw_bytes == content.encode("utf-8")
+        assert b"\r\n" not in raw_bytes
 
     def test_cache_hit_refreshes_mtime(self) -> None:
         path = write_tee("content to refresh")

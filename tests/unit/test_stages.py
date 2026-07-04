@@ -15,7 +15,9 @@ import warnings
 from unittest.mock import patch
 
 import pytest
+from pydantic import ValidationError
 
+from quor.pipeline.engine import Pipeline, StageEntry
 from quor.pipeline.mask import ContentMask, Decision, LineMask
 from quor.pipeline.stages import _utils
 from quor.pipeline.stages.deduplicate_consecutive import (
@@ -23,9 +25,16 @@ from quor.pipeline.stages.deduplicate_consecutive import (
     DeduplicateConsecutiveStage,
 )
 from quor.pipeline.stages.group_repeated import GroupRepeatedConfig, GroupRepeatedStage
+from quor.pipeline.stages.match_output import MatchOutputConfig, MatchOutputStage
 from quor.pipeline.stages.max_tokens import MaxTokensConfig, MaxTokensStage
+from quor.pipeline.stages.regex_replace import (
+    RegexReplaceConfig,
+    RegexReplaceRule,
+    RegexReplaceStage,
+)
 from quor.pipeline.stages.remove_ansi import RemoveAnsiConfig, RemoveAnsiStage
 from quor.pipeline.stages.strip_lines import StripLinesConfig, StripLinesStage
+from quor.pipeline.stages.truncate_lines import TruncateLinesConfig, TruncateLinesStage
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -301,6 +310,23 @@ class TestGroupRepeated:
         assert "×2" in result.lines[0].line  # noqa: RUF001
         assert result.lines[1].decision is Decision.COMPRESS
 
+    def test_min_count_boundary_one_below_threshold_not_collapsed(self) -> None:
+        """min_count=3 with exactly 2 occurrences must NOT collapse — the run
+        length must be strictly >= min_count, not off-by-one either way."""
+        mask = ContentMask.from_text("WARNING: foo\nWARNING: foo")
+        result = self.stage.apply(mask, self._config(patterns=["^WARNING:"], min_count=3))
+        assert all(lm.decision is Decision.KEEP for lm in result.lines)
+        assert "(×" not in result.lines[0].line  # noqa: RUF001
+
+    def test_min_count_boundary_exact_threshold_collapsed(self) -> None:
+        """min_count=3 with exactly 3 occurrences must collapse — the other
+        side of the same boundary as the test above."""
+        mask = ContentMask.from_text("WARNING: foo\nWARNING: foo\nWARNING: foo")
+        result = self.stage.apply(mask, self._config(patterns=["^WARNING:"], min_count=3))
+        assert "×3" in result.lines[0].line  # noqa: RUF001
+        assert result.lines[1].decision is Decision.COMPRESS
+        assert result.lines[2].decision is Decision.COMPRESS
+
     def test_five_occurrences_suffix(self) -> None:
         text = "\n".join(["WARNING: disk low"] * 5)
         mask = ContentMask.from_text(text)
@@ -474,6 +500,56 @@ class TestMaxTokens:
         with pytest.raises(TypeError, match="MaxTokensConfig"):
             self.stage.apply(ContentMask.from_text("x"), RemoveAnsiConfig(type="remove_ansi"))
 
+    # -- ADR-031 / QB-012: best-effort budget regression guards --------------
+    # These lock in the *decided, observable* semantics: max_tokens is a
+    # target, never a hard guarantee, and PROTECT content pushing the
+    # rendered output over the configured limit is correct, not a bug. If a
+    # future change made this a hard budget (compressing PROTECT to fit),
+    # these tests would fail.
+
+    def test_rendered_output_exceeds_limit_when_protect_heavy(self) -> None:
+        """ADR-031's core claim, asserted end-to-end on rendered output size,
+        not just per-line decisions: when PROTECT content alone exceeds the
+        configured limit, the stage must not compress it to comply — the
+        final render is allowed to exceed `limit`."""
+        # 50 PROTECT lines of 100 chars each ~= 1250 estimated tokens, well
+        # over a limit of 100.
+        protect_lines = tuple(
+            LineMask(line="ERROR: " + ("x" * 100), decision=Decision.PROTECT, reason="preserved")
+            for _ in range(50)
+        )
+        mask = ContentMask(lines=protect_lines)
+        result = self.stage.apply(mask, self._config(limit=100, strategy="tail"))
+
+        assert all(lm.decision is Decision.PROTECT for lm in result.lines)
+        rendered_tokens = len(result.render()) // 4
+        assert rendered_tokens > 100, (
+            "best-effort budget must not compress PROTECT content to fit — "
+            "rendered output should exceed the configured limit here"
+        )
+
+    def test_keep_lines_still_compressed_around_oversized_protect_block(self) -> None:
+        """Best-effort applies only to PROTECT; ordinary KEEP lines around an
+        oversized PROTECT block are still compressed as normal."""
+        lines = (
+            LineMask(line="ERROR: " + ("x" * 500), decision=Decision.PROTECT),
+            LineMask(line="noise " * 50, decision=Decision.KEEP),
+        )
+        mask = ContentMask(lines=lines)
+        result = self.stage.apply(mask, self._config(limit=10, strategy="tail"))
+        assert result.lines[0].decision is Decision.PROTECT
+        assert result.lines[1].decision is Decision.COMPRESS
+
+    def test_limit_zero_rejected(self) -> None:
+        """MaxTokensConfig.limit has gt=0 — a zero budget is a config error,
+        not a silently-accepted "compress everything" degenerate case."""
+        with pytest.raises(ValidationError):
+            self._config(limit=0)
+
+    def test_limit_negative_rejected(self) -> None:
+        with pytest.raises(ValidationError):
+            self._config(limit=-5)
+
 
 # ---------------------------------------------------------------------------
 # Cross-stage: preserve_patterns in base config
@@ -507,3 +583,342 @@ class TestPreservePatternsAcrossStages:
         # Both lines should be PROTECT, neither grouped
         for lm in result.lines:
             assert lm.decision is Decision.PROTECT
+
+
+# ---------------------------------------------------------------------------
+# QB-014 regression: group_repeated vs strip_lines ordering (PROTECT
+# run-breaker interaction). Deliberately independent of build.toml's mypy
+# filter — this locks in the *general* principle via the real Pipeline
+# engine and synthetic stages, so the coverage survives even if build.toml
+# is edited or removed later.
+# ---------------------------------------------------------------------------
+
+
+class TestGroupRepeatedStripLinesOrdering:
+    _INPUT = "error: boom\n" * 3 + "note: unrelated\n"
+
+    def _pipeline(self, *stage_order: str) -> Pipeline:
+        entries = []
+        for stage_type in stage_order:
+            if stage_type == "group_repeated":
+                entries.append(
+                    StageEntry(
+                        handler=GroupRepeatedStage(),
+                        config=GroupRepeatedConfig(
+                            type="group_repeated", patterns=["^error: "], min_count=3
+                        ),
+                    )
+                )
+            else:
+                entries.append(
+                    StageEntry(
+                        handler=StripLinesStage(),
+                        config=StripLinesConfig(
+                            type="strip_lines", preserve_patterns=["error:", "note:"]
+                        ),
+                    )
+                )
+        return Pipeline(entries)
+
+    def test_strip_lines_before_group_repeated_is_a_noop(self) -> None:
+        """The pre-QB-014 (buggy) order: strip_lines' preserve_patterns marks
+        every "error:" line PROTECT before group_repeated ever runs, and
+        group_repeated treats PROTECT as a run-breaker — so nothing collapses.
+        This test documents the bug's mechanism; it must keep failing to
+        collapse in this order, since that's what QB-014's fix moved away from.
+        """
+        mask = ContentMask.from_text(self._INPUT)
+        result = self._pipeline("strip_lines", "group_repeated").execute(mask).mask
+        assert "(×3)" not in result.render()  # noqa: RUF001
+        # All three "error:" lines survive individually, ungrouped, as PROTECT
+        error_lines = [lm for lm in result.lines if lm.line == "error: boom"]
+        assert len(error_lines) == 3
+        assert all(lm.decision is Decision.PROTECT for lm in error_lines)
+
+    def test_group_repeated_before_strip_lines_collapses_correctly(self) -> None:
+        """QB-014's fix: group_repeated runs first, while lines are still
+        plain KEEP, so it can collapse them. strip_lines then must not
+        resurrect the compressed duplicates via preserve_patterns — the
+        COMPRESS-skip guard added in the QB-014 fix is what prevents that."""
+        mask = ContentMask.from_text(self._INPUT)
+        result = self._pipeline("group_repeated", "strip_lines").execute(mask).mask
+        rendered = result.render()
+        assert "(×3)" in rendered  # noqa: RUF001
+        assert "note: unrelated" in rendered
+        # Exactly one visible "error:" line (the collapsed summary) — the two
+        # duplicates must stay COMPRESS, not be resurrected as PROTECT.
+        assert rendered.count("error: boom") == 1
+
+
+# ---------------------------------------------------------------------------
+# truncate_lines (QB-009)
+# ---------------------------------------------------------------------------
+
+class TestTruncateLines:
+    stage = TruncateLinesStage()
+
+    def _config(
+        self,
+        max_length: int = 20,
+        marker: str = "…[truncated]",
+        preserve: list[str] | None = None,
+    ) -> TruncateLinesConfig:
+        return TruncateLinesConfig(
+            type="truncate_lines",
+            max_length=max_length,
+            marker=marker,
+            preserve_patterns=preserve or [],
+        )
+
+    def test_empty_input(self) -> None:
+        result = self.stage.apply(ContentMask.from_text(""), self._config())
+        assert result.render() == ""
+
+    def test_short_line_unchanged(self) -> None:
+        mask = ContentMask.from_text("short")
+        result = self.stage.apply(mask, self._config(max_length=20))
+        assert result.lines[0].line == "short"
+        assert result.lines[0].decision is Decision.KEEP
+
+    def test_long_line_truncated_with_marker(self) -> None:
+        mask = ContentMask.from_text("a" * 100)
+        result = self.stage.apply(mask, self._config(max_length=20, marker="…[truncated]"))
+        assert len(result.lines[0].line) == 20
+        assert result.lines[0].line.endswith("…[truncated]")
+        assert result.lines[0].decision is Decision.KEEP
+
+    def test_line_count_never_changes(self) -> None:
+        mask = ContentMask.from_text("short\n" + "x" * 200 + "\nshort again")
+        result = self.stage.apply(mask, self._config(max_length=10))
+        assert len(result.lines) == len(mask.lines) == 3
+
+    def test_protect_line_never_truncated(self) -> None:
+        lm = _protect("x" * 500)
+        mask = ContentMask(lines=(lm,))
+        result = self.stage.apply(mask, self._config(max_length=10))
+        assert result.lines[0].decision is Decision.PROTECT
+        assert result.lines[0].line == "x" * 500
+
+    def test_preserve_pattern_creates_protect_and_skips_truncation(self) -> None:
+        mask = ContentMask.from_text("CRITICAL: " + "x" * 200)
+        config = self._config(max_length=10, preserve=["^CRITICAL"])
+        result = self.stage.apply(mask, config)
+        assert result.lines[0].decision is Decision.PROTECT
+        assert len(result.lines[0].line) > 10
+
+    def test_already_compressed_line_passthrough(self) -> None:
+        lm = _compress("x" * 500)
+        mask = ContentMask(lines=(lm,))
+        result = self.stage.apply(mask, self._config(max_length=10))
+        assert result.lines[0].decision is Decision.COMPRESS
+        assert result.lines[0].line == "x" * 500
+
+    def test_marker_longer_than_max_length_falls_back_to_hard_cut(self) -> None:
+        mask = ContentMask.from_text("a" * 100)
+        result = self.stage.apply(mask, self._config(max_length=5, marker="…[a long marker]"))
+        assert result.lines[0].line == "aaaaa"
+        assert len(result.lines[0].line) == 5
+
+    def test_wrong_config_type_raises(self) -> None:
+        with pytest.raises(TypeError, match="TruncateLinesConfig"):
+            self.stage.apply(ContentMask.from_text("x"), RemoveAnsiConfig(type="remove_ansi"))
+
+
+# ---------------------------------------------------------------------------
+# regex_replace (QB-008)
+# ---------------------------------------------------------------------------
+
+class TestRegexReplace:
+    stage = RegexReplaceStage()
+
+    def _config(
+        self,
+        rules: list[tuple[str, str]] | None = None,
+        preserve: list[str] | None = None,
+    ) -> RegexReplaceConfig:
+        return RegexReplaceConfig(
+            type="regex_replace",
+            rules=[RegexReplaceRule(pattern=p, replacement=r) for p, r in (rules or [])],
+            preserve_patterns=preserve or [],
+        )
+
+    def test_empty_input(self) -> None:
+        result = self.stage.apply(ContentMask.from_text(""), self._config(rules=[(r"x", "y")]))
+        assert result.render() == ""
+
+    def test_no_rules_returns_mask_unchanged(self) -> None:
+        mask = ContentMask.from_text("hello world")
+        result = self.stage.apply(mask, self._config(rules=[]))
+        assert result is mask
+
+    def test_single_rule_substitution(self) -> None:
+        mask = ContentMask.from_text("request id=123e4567-e89b-12d3-a456-426614174000 ok")
+        config = self._config(
+            rules=[
+                (r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", "<uuid>"),
+            ]
+        )
+        result = self.stage.apply(mask, config)
+        assert result.lines[0].line == "request id=<uuid> ok"
+        assert result.lines[0].decision is Decision.KEEP
+
+    def test_multiple_rules_applied_in_order(self) -> None:
+        mask = ContentMask.from_text("2026-07-05T12:00:00Z host-abc123 event")
+        config = self._config(
+            rules=[
+                (r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z", "<timestamp>"),
+                (r"host-[a-z0-9]+", "<host>"),
+            ]
+        )
+        result = self.stage.apply(mask, config)
+        assert result.lines[0].line == "<timestamp> <host> event"
+
+    def test_capture_group_backreference(self) -> None:
+        mask = ContentMask.from_text("name=Alice age=30")
+        config = self._config(rules=[(r"name=(\w+)", r"user=\1")])
+        result = self.stage.apply(mask, config)
+        assert result.lines[0].line == "user=Alice age=30"
+
+    def test_no_match_leaves_line_unchanged(self) -> None:
+        mask = ContentMask.from_text("nothing to replace here")
+        config = self._config(rules=[(r"UUID-\d+", "<id>")])
+        result = self.stage.apply(mask, config)
+        assert result.lines[0] is mask.lines[0]
+
+    def test_protect_line_never_modified(self) -> None:
+        lm = _protect("id=123e4567-e89b-12d3-a456-426614174000")
+        mask = ContentMask(lines=(lm,))
+        config = self._config(rules=[(r"[0-9a-f-]{36}", "<uuid>")])
+        result = self.stage.apply(mask, config)
+        assert result.lines[0].decision is Decision.PROTECT
+        assert result.lines[0].line == lm.line
+
+    def test_preserve_pattern_creates_protect_and_skips_substitution(self) -> None:
+        mask = ContentMask.from_text("CRITICAL id=123e4567-e89b-12d3-a456-426614174000")
+        config = self._config(
+            rules=[(r"[0-9a-f-]{36}", "<uuid>")],
+            preserve=["^CRITICAL"],
+        )
+        result = self.stage.apply(mask, config)
+        assert result.lines[0].decision is Decision.PROTECT
+        assert "123e4567" in result.lines[0].line
+
+    def test_already_compressed_line_passthrough(self) -> None:
+        lm = _compress("id=123e4567-e89b-12d3-a456-426614174000")
+        mask = ContentMask(lines=(lm,))
+        config = self._config(rules=[(r"[0-9a-f-]{36}", "<uuid>")])
+        result = self.stage.apply(mask, config)
+        assert result.lines[0].decision is Decision.COMPRESS
+        assert result.lines[0].line == lm.line
+
+    def test_wrong_config_type_raises(self) -> None:
+        with pytest.raises(TypeError, match="RegexReplaceConfig"):
+            self.stage.apply(ContentMask.from_text("x"), RemoveAnsiConfig(type="remove_ansi"))
+
+    def test_timeout_warns_and_skips_rule(self) -> None:
+        from quor.pipeline.stages import regex_replace as _rr_mod
+
+        config = self._config(rules=[(r".*", "y")])
+        mask = ContentMask.from_text("any content")
+
+        with (
+            patch.object(_rr_mod, "_sub", side_effect=TimeoutError("timed out")),
+            warnings.catch_warnings(record=True) as caught,
+        ):
+            warnings.simplefilter("always")
+            result = self.stage.apply(mask, config)
+
+        assert result.lines[0].line == "any content"
+        assert any("timed out" in str(w.message).lower() for w in caught)
+
+
+# ---------------------------------------------------------------------------
+# match_output (QB-010)
+# ---------------------------------------------------------------------------
+
+class TestMatchOutput:
+    stage = MatchOutputStage()
+
+    def _config(self, pattern: str, summary: str = "OK") -> MatchOutputConfig:
+        return MatchOutputConfig(type="match_output", pattern=pattern, summary=summary)
+
+    def test_empty_input_no_match_unchanged(self) -> None:
+        # ContentMask.from_text("") yields one empty-string KEEP line, not zero
+        # lines — a pattern that doesn't match empty content must leave it as-is.
+        result = self.stage.apply(ContentMask.from_text(""), self._config(pattern=r"nonmatching"))
+        assert result.render() == ""
+
+    def test_empty_input_matching_pattern_fires(self) -> None:
+        # `.*` legitimately matches empty output too — firing here is correct,
+        # not a bug (this is what distinguishes match_output from a no-op).
+        result = self.stage.apply(ContentMask.from_text(""), self._config(pattern=r".*"))
+        assert result.render() == "OK"
+
+    def test_full_match_collapses_to_summary(self) -> None:
+        mask = ContentMask.from_text("nothing to commit, working tree clean")
+        config = self._config(
+            pattern=r"nothing to commit, working tree clean", summary="clean working tree"
+        )
+        result = self.stage.apply(mask, config)
+        assert result.lines[0].line == "clean working tree"
+        assert result.lines[0].decision is Decision.KEEP
+
+    def test_line_count_never_changes_on_fire(self) -> None:
+        mask = ContentMask.from_text("line one\nline two\nline three")
+        config = self._config(pattern=r"line one\nline two\nline three")
+        result = self.stage.apply(mask, config)
+        assert len(result.lines) == len(mask.lines) == 3
+        assert result.lines[0].decision is Decision.KEEP
+        assert result.lines[1].decision is Decision.COMPRESS
+        assert result.lines[2].decision is Decision.COMPRESS
+
+    def test_partial_match_does_not_fire(self) -> None:
+        mask = ContentMask.from_text("nothing to commit, working tree clean\nextra line")
+        config = self._config(pattern=r"nothing to commit, working tree clean")
+        result = self.stage.apply(mask, config)
+        assert all(lm.decision is Decision.KEEP for lm in result.lines)
+
+    def test_no_match_leaves_mask_unchanged(self) -> None:
+        mask = ContentMask.from_text("some unrelated output")
+        config = self._config(pattern=r"completely different pattern")
+        result = self.stage.apply(mask, config)
+        assert result.lines[0].decision is Decision.KEEP
+        assert result.lines[0].line == "some unrelated output"
+
+    def test_protect_line_present_prevents_firing(self) -> None:
+        lm = _protect("clean output")
+        mask = ContentMask(lines=(lm,))
+        config = self._config(pattern=r"clean output")
+        result = self.stage.apply(mask, config)
+        # Would otherwise fullmatch and fire, but PROTECT presence blocks it.
+        assert result.lines[0].decision is Decision.PROTECT
+        assert result.lines[0].line == "clean output"
+
+    def test_fire_emits_observable_warning(self) -> None:
+        mask = ContentMask.from_text("clean output")
+        config = self._config(pattern=r"clean output")
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            self.stage.apply(mask, config)
+        assert any("match_output" in str(w.message) for w in caught)
+
+    def test_wrong_config_type_raises(self) -> None:
+        with pytest.raises(TypeError, match="MatchOutputConfig"):
+            self.stage.apply(ContentMask.from_text("x"), RemoveAnsiConfig(type="remove_ansi"))
+
+    def test_timeout_warns_and_leaves_mask_unchanged(self) -> None:
+        from quor.pipeline.stages import match_output as _mo_mod
+
+        config = self._config(pattern=r".*")
+        mask = ContentMask.from_text("any content")
+
+        with (
+            patch.object(_mo_mod, "_fullmatch", side_effect=TimeoutError("timed out")),
+            warnings.catch_warnings(record=True) as caught,
+        ):
+            warnings.simplefilter("always")
+            result = self.stage.apply(mask, config)
+
+        assert result.lines[0].decision is Decision.KEEP
+        assert result.lines[0].line == "any content"
+        assert any("timed out" in str(w.message).lower() for w in caught)
