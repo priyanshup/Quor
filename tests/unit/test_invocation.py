@@ -59,7 +59,9 @@ class TestRewriteNoLongerUsesLauncher:
     def test_existing_functionality_unchanged(self) -> None:
         # Same classification/rewrite behavior as before — only the prefix
         # used to reach Quor changed, not which commands get rewritten.
-        assert rewrite_command("npm install") is None
+        # (npm is no longer a good "still unknown" example post-QB-006A —
+        # see test_rewrite.py for npm/npx/pnpm/yarn classification coverage.)
+        assert rewrite_command("cargo build") is None
         assert rewrite_command("git status --porcelain") is None
         rewritten = rewrite_command("git status && git diff")
         assert rewritten is not None

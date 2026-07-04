@@ -32,7 +32,48 @@ plugin API changes.
 npm/npx/pnpm/yarn — Jest, ESLint, TypeScript, Vitest, Webpack, Vite, or any other JS/TS toolchain
 output shape. That is tracked separately as QB-006B and must not be implemented as part of this item.
 
-**Status:** Approved for implementation — Batch 5, item 2. Not yet implemented.
+**Status:** Implemented (Batch 5, item 2). `quor/filters/builtin/node.toml` adds four `[[filter]]`
+blocks (npm, npx, pnpm, yarn), each composed only from existing stage types: `remove_ansi`,
+`group_repeated` (collapses deprecation/warning spam to one visible instance + count rather than
+deleting it — preserves warnings while cutting repetition), `strip_lines` (targeted noise patterns
+with a `preserve_patterns` safety net for errors/vulnerabilities/summaries), and
+`deduplicate_consecutive`. No new stage type; no Pipeline/ContentMask/Engine/Dispatcher/StageHandler
+change.
+
+Deliberately **no `max_tokens` stage** in any of the four filters, unlike most other built-in
+filters — npm/npx/pnpm/yarn can all wrap an arbitrary underlying command (`npm test`, `npx jest`,
+`pnpm run build`, `yarn build`), and a token-budget stage risked truncating that wrapped tool's real
+output, which conflicts with "preserve actionable output."
+
+**Required, in-scope classifier change:** `npm` was not in `_KNOWN_BASE_COMMANDS` at all, and
+`npx`/`pnpm`/`yarn` were only registered as `TRANSPARENT_PREFIXES` (stripped before the classifier
+ever looks at them) — so without a change here, none of these commands would ever reach
+`FilterRegistry` regardless of how good the TOML filter was. `quor/rewrite/rules.py` now lists
+`npm`/`npx`/`pnpm`/`yarn` in `_KNOWN_BASE_COMMANDS` (unconditionally, like `git` — not subcommand-
+gated like `python -m X`) and removes `npx`/`pnpm`/`yarn` from `TRANSPARENT_PREFIXES` (`bunx` is
+unaffected; Bun is out of scope). This is a `quor/rewrite/` change, not a Pipeline/ContentMask/
+Engine/Dispatcher/StageHandler change, so it stays within the item's constraints — but see the
+architectural concern below.
+
+**Architectural concern surfaced during implementation:** npm/npx/pnpm/yarn were previously used
+throughout the existing classifier test suite as the canonical "definitely unknown, definitely
+passes through" example command (compound commands, env-prefix commands, sudo/docker-exec prefix
+commands, pipe chains) — a change here has a wide test blast radius even though it's scoped entirely
+to the Node ecosystem. Updated 7 test files (`test_rewrite.py`, `test_invocation.py`,
+`test_adapters.py`, and the `simple`/`compound`/`env_prefix`/`transparent_prefix` command fixtures):
+swapped the generic "unknown command" example to `cargo build` where a test's actual purpose was
+unrelated to Node (preserving its original intent), and added explicit new cases/assertions
+verifying the new npm/npx/pnpm/yarn behavior where a test was specifically about them. Also: because
+`npm`/`pnpm`/`yarn` are not subcommand-gated, `npm test`/`pnpm run build`/`yarn build` are now routed
+through Quor too — the wrapped tool's actual output rides through this filter mostly unfiltered
+(by design, no tool-aware routing), which is the intended, minimal-risk generic behavior for this
+item.
+
+Comprehensive tests added: `tests/unit/test_filter_safety.py` (`TestNpmFilterSafety`,
+`TestNpxFilterSafety`, `TestPnpmFilterSafety`, `TestYarnFilterSafety` — realistic install/audit/
+failure output per tool, asserting errors/warnings/package counts/audit summaries/success-failure
+summaries are never compressed) plus inline filter tests in `node.toml` and new/updated classifier
+unit tests and fixture cases. Full `pytest`, `quor verify`, `ruff check`, and `mypy` all pass.
 
 ---
 

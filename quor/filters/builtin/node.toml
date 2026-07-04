@@ -1,0 +1,222 @@
+# quor built-in filter: Node.js ecosystem wrapper noise (QB-006A)
+#
+# Generic-only: strips noise that npm/npx/pnpm/yarn themselves print on every
+# invocation (progress ticks, funding/audit nags, deprecation warning spam,
+# step banners) regardless of what subcommand or wrapped script is running.
+# Deliberately NOT tool-aware — the underlying test runner/bundler/linter
+# output (Jest, ESLint, tsc, Webpack, Vite, ...) passes through unfiltered
+# except for these same generic patterns; tool-specific intelligence for what
+# runs *underneath* these wrappers is QB-006B, not this filter.
+#
+# No max_tokens stage in any of these four filters, unlike most other
+# built-in filters: npm/npx/pnpm/yarn can all wrap an arbitrary-length
+# underlying command (`npm test`, `npm run build`, `npx jest`, `pnpm run x`,
+# `yarn build`), and a token-budget stage would risk truncating that wrapped
+# tool's real, actionable output — which QB-006A must not do. Compression
+# here comes only from stripping known noise shapes and collapsing warning
+# spam, never from a blanket length cap.
+#
+# Composed entirely from existing stage types (remove_ansi, group_repeated,
+# strip_lines, deduplicate_consecutive) — no new stage, no registry/dispatcher
+# change. Requires npm/npx/pnpm/yarn to be known base commands rather than
+# transparent prefixes (see quor/rewrite/rules.py) so their own output is
+# ever routed through Quor at all.
+schema_version = 1
+
+# ---------------------------------------------------------------------------
+# npm — install/ci/update/audit/etc. wrapper noise
+# ---------------------------------------------------------------------------
+
+[[filter]]
+name = "npm"
+match_command = '^npm\b'
+
+[[filter.stages]]
+type = "remove_ansi"
+
+[[filter.stages]]
+type = "group_repeated"
+patterns = ['(?i)^npm (warn|WARN) deprecated\b']
+min_count = 2
+
+[[filter.stages]]
+type = "strip_lines"
+patterns = [
+    '(?i)^\d+ packages? (is|are) looking for funding$',
+    '(?i)run `npm fund` for details',
+    '(?i)^to address (all|\d+) (issues?|vulnerabilit)',
+    '(?i)^\s*npm audit fix( --force)?\s*$',
+    '(?i)^run `npm audit` for details\.?$',
+]
+preserve_patterns = [
+    '(?i)\berror\b',
+    '(?i)npm err!',
+    '(?i)\bvulnerabilit',
+    '(?i)^severity:',
+    '(?i)fix available',
+    'advisories/',
+    '(?i)^added \d+ package',
+    '(?i)^up to date, audited \d+ package',
+    '(?i)^changed \d+ package',
+    '(?i)^removed \d+ package',
+    '(?i)^npm (warn|WARN)\b',
+]
+
+[[filter.stages]]
+type = "deduplicate_consecutive"
+
+[[filter.tests]]
+description = "Repeated deprecation warnings collapse; install summary and clean audit result preserved"
+input = "npm warn deprecated inflight@1.0.6: This module is not supported, and leaks memory.\nnpm warn deprecated glob@7.2.3: Glob versions prior to v9 are no longer supported\nnpm warn deprecated rimraf@2.7.1: Rimraf versions prior to v4 are no longer supported\n\nadded 152 packages, and audited 153 packages in 4s\n\n23 packages are looking for funding\n  run `npm fund` for details\n\nfound 0 vulnerabilities\n"
+must_contain = ["deprecated inflight", "(×3)", "added 152 packages, and audited 153 packages in 4s", "found 0 vulnerabilities"]
+must_not_contain = ["glob@7.2.3", "rimraf@2.7.1", "looking for funding", "npm fund"]
+
+[[filter.tests]]
+description = "Audit findings and severity preserved; address/CTA nag stripped"
+input = "# npm audit report\n\nsemver  <5.7.2\nSeverity: moderate\nRegular Expression Denial of Service - https://github.com/advisories/GHSA-c2qf-rxjj-qqgw\nfix available via `npm audit fix`\nnode_modules/semver\n  1 vulnerability moderate\n\n3 vulnerabilities (2 moderate, 1 high)\n\nTo address all issues, run:\n  npm audit fix\n\nRun `npm audit` for details.\n"
+must_contain = ["Severity: moderate", "advisories/GHSA-c2qf-rxjj-qqgw", "fix available via", "3 vulnerabilities (2 moderate, 1 high)"]
+must_not_contain = ["To address all issues, run", "Run `npm audit` for details"]
+
+[[filter.tests]]
+description = "npm ERR! failure output never touched"
+input = "npm warn deprecated foo@1.0.0: old\nnpm ERR! code ENOENT\nnpm ERR! syscall open\nnpm ERR! path /some/path/package.json\nnpm ERR! errno -4058\n"
+must_contain = ["npm ERR! code ENOENT", "npm ERR! errno -4058"]
+
+# ---------------------------------------------------------------------------
+# npx — package resolution/auto-install preamble only
+# ---------------------------------------------------------------------------
+
+[[filter]]
+name = "npx"
+match_command = '^npx\b'
+
+[[filter.stages]]
+type = "remove_ansi"
+
+[[filter.stages]]
+type = "group_repeated"
+patterns = ['(?i)^npm (warn|WARN) deprecated\b']
+min_count = 2
+
+[[filter.stages]]
+type = "strip_lines"
+patterns = [
+    '(?i)^npm (warn|WARN) exec\b',
+    '(?i)^need to install the following packages:$',
+    '(?i)^ok to proceed\b',
+]
+preserve_patterns = [
+    '(?i)\berror\b',
+    '(?i)npm err!',
+    '(?i)\bwarning\b',
+    '(?i)\bfailed\b',
+]
+
+[[filter.stages]]
+type = "deduplicate_consecutive"
+
+[[filter.tests]]
+description = "Auto-install resolution preamble stripped; wrapped tool's own output untouched"
+input = "npm warn exec The following package was not found and will be installed: cowsay@1.6.0\nMoo says hello\n"
+must_contain = ["Moo says hello"]
+must_not_contain = ["npm warn exec"]
+
+[[filter.tests]]
+description = "Wrapped tool's error output survives despite resolution preamble"
+input = "npm warn exec The following package was not found and will be installed: foo@1.0.0\nError: something broke\n"
+must_contain = ["Error: something broke"]
+must_not_contain = ["npm warn exec"]
+
+# ---------------------------------------------------------------------------
+# pnpm — install/add/update/audit wrapper noise
+# ---------------------------------------------------------------------------
+
+[[filter]]
+name = "pnpm"
+match_command = '^pnpm\b'
+
+[[filter.stages]]
+type = "remove_ansi"
+
+[[filter.stages]]
+type = "group_repeated"
+patterns = ['(?i)^\s*warn\b']
+min_count = 2
+
+[[filter.stages]]
+type = "strip_lines"
+patterns = [
+    '(?i)^lockfile is up to date, resolution step is skipped$',
+    '(?i)^progress: resolved \d+, reused \d+, downloaded \d+',
+    '^\s*\++\s*$',
+]
+preserve_patterns = [
+    '(?i)\berror\b',
+    '(?i)err_pnpm',
+    '(?i)^packages: [+-]\d',
+    '(?i)^done in \d',
+    '(?i)^dependencies:$',
+    '(?i)\bvulnerabilit',
+    '(?i)^severity:',
+]
+
+[[filter.stages]]
+type = "deduplicate_consecutive"
+
+[[filter.tests]]
+description = "Lockfile/progress noise and plus-sign progress bar stripped; package count and deps preserved"
+input = "Lockfile is up to date, resolution step is skipped\nProgress: resolved 1, reused 0, downloaded 0, added 0\nProgress: resolved 152, reused 140, downloaded 12, added 152, done\nPackages: +152\n++++++++++++++++++++++++++++++++++++++++++++++++++++\n\ndependencies:\n+ express 4.18.2\n\nDone in 3.2s\n"
+must_contain = ["Packages: +152", "dependencies:", "+ express 4.18.2", "Done in 3.2s"]
+must_not_contain = ["Lockfile is up to date", "Progress: resolved", "++++++++++++++++++++++++++++++++++++++++++++++++++++"]
+
+[[filter.tests]]
+description = "pnpm structured fetch error preserved despite progress noise"
+input = "Progress: resolved 10, reused 0, downloaded 0\nERR_PNPM_FETCH_404  GET https://registry.npmjs.org/nonexistent-pkg: Not Found - 404\n"
+must_contain = ["ERR_PNPM_FETCH_404"]
+must_not_contain = ["Progress: resolved"]
+
+# ---------------------------------------------------------------------------
+# yarn — install/add/upgrade wrapper noise (classic + Berry step banners)
+# ---------------------------------------------------------------------------
+
+[[filter]]
+name = "yarn"
+match_command = '^yarn\b'
+
+[[filter.stages]]
+type = "remove_ansi"
+
+[[filter.stages]]
+type = "group_repeated"
+patterns = ['(?i)^warning\b']
+min_count = 2
+
+[[filter.stages]]
+type = "strip_lines"
+patterns = [
+    '^\[\d+/\d+\] (Resolving|Fetching|Linking|Building)',
+    '^➤ YN0000:',
+    '(?i)^info visit http',
+]
+preserve_patterns = [
+    '(?i)\berror\b',
+    '(?i)^success\b',
+    '(?i)^done in \d',
+    '(?i)\bvulnerabilit',
+    '(?i)^severity:',
+]
+
+[[filter.stages]]
+type = "deduplicate_consecutive"
+
+[[filter.tests]]
+description = "Classic yarn step banners stripped; success/timing summary preserved"
+input = "yarn install v1.22.19\n[1/4] Resolving packages...\n[2/4] Fetching packages...\n[3/4] Linking dependencies...\n[4/4] Building fresh packages...\nsuccess Saved lockfile.\nDone in 12.34s.\n"
+must_contain = ["success Saved lockfile.", "Done in 12.34s."]
+must_not_contain = ["Resolving packages", "Fetching packages", "Linking dependencies", "Building fresh packages"]
+
+[[filter.tests]]
+description = "Repeated peer-dependency warnings collapse; command failure preserved"
+input = "warning \"eslint > file-entry-cache@6.0.1\" has unmet peer dependency \"flat-cache@^3.0.4\".\nwarning \"eslint > table@6.8.1\" has unmet peer dependency \"ajv@^8.0.1\".\nerror Command failed with exit code 1.\n"
+must_contain = ["unmet peer dependency", "(×2)", "error Command failed with exit code 1."]
+must_not_contain = ["table@6.8.1"]

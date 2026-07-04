@@ -20,6 +20,11 @@ _KNOWN_BASE_COMMANDS: frozenset[str] = frozenset(
         "cat",
         "python",   # gated further: only -m <known> subcommand
         "python3",  # same
+        "npm",      # QB-006A: generic Node.js package-manager wrapper noise
+        "npx",      # same — npx always wraps another tool, but its own
+                    # resolution/install preamble is generic, tool-agnostic noise
+        "pnpm",     # same
+        "yarn",     # same
     }
 )
 
@@ -34,12 +39,14 @@ _KNOWN_PYTHON_SUBCOMMANDS: frozenset[str] = frozenset(
 
 # Commands that always pass through unchanged as transparent prefixes —
 # Quor inserts itself AFTER these, before the real command.
+#
+# npx/yarn/pnpm are deliberately NOT here (QB-006A): they are now known base
+# commands in their own right (see _KNOWN_BASE_COMMANDS above) so their own
+# generic wrapper noise gets filtered, regardless of what they wrap underneath.
+# bunx stays a transparent prefix — Bun is out of scope for QB-006A.
 TRANSPARENT_PREFIXES: tuple[str, ...] = (
     "sudo",
     "doas",
-    "npx",
-    "yarn",
-    "pnpm",
     "bunx",
     "deno",
     "time",

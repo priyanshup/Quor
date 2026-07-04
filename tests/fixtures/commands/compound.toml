@@ -36,13 +36,16 @@ expected_rewrite = "quor git status || quor git status"
 should_rewrite = true
 
 [[case]]
-input = "npm install && git status"
-expected_rewrite = "npm install && quor git status"
+input = "cargo build && git status"
+expected_rewrite = "cargo build && quor git status"
 should_rewrite = true
 
+# QB-006A: npm is a known base command now (not subcommand-gated), so both
+# sides of this compound command are rewritten.
 [[case]]
 input = "npm install && npm test"
-should_rewrite = false
+expected_rewrite = "quor npm install && quor npm test"
+should_rewrite = true
 
 # Three-way compound
 [[case]]
@@ -77,6 +80,8 @@ should_rewrite = true
 input = "make clean && make build"
 should_rewrite = false
 
+# QB-006A: npm is not subcommand-gated — "npm run build" is still base "npm".
 [[case]]
 input = "npm install && npm run build"
-should_rewrite = false
+expected_rewrite = "quor npm install && quor npm run build"
+should_rewrite = true

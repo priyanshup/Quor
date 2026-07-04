@@ -120,11 +120,38 @@ input = "python3 -m pytest tests/"
 expected_rewrite = "quor python3 -m pytest tests/"
 should_rewrite = true
 
-# Unknown commands pass through
+# Node.js ecosystem (QB-006A): npm/npx/pnpm/yarn are known base commands
 [[case]]
 input = "npm install"
-should_rewrite = false
+expected_rewrite = "quor npm install"
+should_rewrite = true
 
+[[case]]
+input = "npm ci"
+expected_rewrite = "quor npm ci"
+should_rewrite = true
+
+[[case]]
+input = "npm audit"
+expected_rewrite = "quor npm audit"
+should_rewrite = true
+
+[[case]]
+input = "npx eslint ."
+expected_rewrite = "quor npx eslint ."
+should_rewrite = true
+
+[[case]]
+input = "pnpm install"
+expected_rewrite = "quor pnpm install"
+should_rewrite = true
+
+[[case]]
+input = "yarn add lodash"
+expected_rewrite = "quor yarn add lodash"
+should_rewrite = true
+
+# Unknown commands pass through
 [[case]]
 input = "ls -la"
 should_rewrite = false

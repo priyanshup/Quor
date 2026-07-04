@@ -141,7 +141,7 @@ class TestRunHookRewrite:
 
     def test_unknown_command_unchanged(self) -> None:
         """No rewrite → updatedInput is omitted so Claude Code runs the original command."""
-        payload = _make_hook_payload("npm install")
+        payload = _make_hook_payload("cargo build")
         result = _run_hook_with(payload)
         assert "updatedInput" not in result["hookSpecificOutput"]
 
