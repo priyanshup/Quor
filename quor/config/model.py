@@ -36,6 +36,7 @@ class FilterConfig(BaseModel):
     abort_unless: list[str] = Field(default_factory=list)
     abort_if: list[str] = Field(default_factory=list)
     on_empty: str = ""
+    tee: bool = True  # see ADR-023 — per-filter opt-out for the tee mechanism
     stages: list[dict[str, Any]] = Field(default_factory=list)
     tests: list[FilterTest] = Field(default_factory=list)
 
@@ -58,3 +59,4 @@ class QuorUserConfig(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     mode: str = "audit"  # one of: audit, optimize, simulate — see ADR-009
+    tee_enabled: bool = True  # global kill-switch for the tee mechanism — see ADR-023
