@@ -57,14 +57,25 @@ All four must pass before you start.
 3. For bug fixes: open an issue with reproduction steps. Confirm the fix approach before a large PR.
 4. For anything that touches `docs/final/DECISIONS.md` ADRs: those decisions are final. Do not reopen them in a PR. If you believe an ADR should be revisited, open a discussion issue.
 
+### Branching model
+
+- **Never develop directly on `main`.** Always branch first.
+- Branch from `main`: `git checkout main && git pull && git checkout -b feature/qb-XXX-short-description`
+- **Branch naming:** `feature/qb-XXX-short-description`, where `XXX` is the `backlog.md` item ID (e.g. `feature/qb-014-mypy-group-repeated-fix`). For work with no backlog item yet, open one first — see "Before writing code" above.
+- **One backlog item per branch.** Don't bundle unrelated QB items into the same branch/PR; it makes review and revert harder.
+- `main` is always releasable. Nothing lands there except via a reviewed, merged PR.
+
 ### The coding loop
 
 ```bash
-# Create a branch
-git checkout -b feature/your-thing
+# 1. Branch from main — one backlog item per branch
+git checkout main
+git pull origin main
+git checkout -b feature/qb-XXX-short-description
 
-# Make changes
-# Run tests frequently
+# 2. Implement the change
+
+# 3. Run tests frequently while iterating
 pytest tests/unit/ -x  # stop at first failure
 
 # Type check
@@ -73,12 +84,47 @@ mypy quor/your_changed_module.py
 # Lint
 ruff check quor/ tests/
 
-# Test all inline filter tests
+# 4. Before committing: run quor verify AND the full test suite
 quor verify
-
-# Full suite before PR
 pytest
+
+# 5. Commit with a clear, conventional message (see "Commit Message Convention" below)
+git add <files>
+git commit -m "Fix QB-XXX: <short description>"
+
+# 6. Push the feature branch
+git push -u origin feature/qb-XXX-short-description
+
+# 7. Open a Pull Request (see "Pull Requests" below for title/body/checklist)
+
+# 8. Merge into main only after review and a green CI run (quor verify + full suite)
+
+# 9. Delete the feature branch after merge
+git checkout main
+git pull origin main
+git branch -d feature/qb-XXX-short-description
+git push origin --delete feature/qb-XXX-short-description
 ```
+
+### Commit message convention
+
+Prefix every commit subject line with one of these tags, followed by a colon and a short imperative description:
+
+| Prefix | When to use |
+|---|---|
+| `Fix QB-XXX: ...` | A bug fix tied to a specific backlog item |
+| `Feat: ...` | A new feature or capability |
+| `Docs: ...` | Documentation-only changes (README, ADRs, CLAUDE.md, backlog, etc.) |
+| `Refactor: ...` | Internal restructuring with no behavior change |
+| `Test: ...` | Test-only additions or fixes |
+| `Chore: ...` | Tooling, CI, dependency, or packaging changes |
+
+Examples:
+- `Fix QB-014: group_repeated no longer resurrected by strip_lines preserve check`
+- `Feat: add terraform built-in filter`
+- `Docs: document max_tokens best-effort budget semantics (ADR-031)`
+
+Keep the subject line under ~72 characters. Use the commit body to explain *why*, not *what* — the diff already shows what changed.
 
 ### Before submitting a PR
 
@@ -211,12 +257,13 @@ Examples:
 
 ### PR checklist
 
-- [ ] `pytest tests/` passes
-- [ ] `mypy quor/` passes
-- [ ] `ruff check quor/ tests/` passes
-- [ ] `quor verify` passes (if filter files changed)
+- [ ] Tests pass: `pytest tests/`, `mypy quor/`, `ruff check quor/ tests/`, and `quor verify` (if filter files changed)
 - [ ] Coverage on changed modules ≥80%
 - [ ] Windows CI passes (check the Actions tab)
+- [ ] No unrelated changes — this PR touches only what the linked backlog item / issue requires
+- [ ] Backlog updated (if applicable) — `backlog.md` entry's Status reflects the outcome (Resolved/Closed/etc.), and any follow-up items spun out during the work are added
+- [ ] Documentation updated (if applicable) — README, ADRs (`docs/final/DECISIONS.md`), `docs/final/CLAUDE.md`, or other `docs/final/*.md` files reflect the change
+- [ ] Release notes required? **Yes / No** — if Yes, note what should go in `CHANGELOG.md` for the next release
 - [ ] No hardcoded paths, no bare `except:`, no `assert` for validation
 - [ ] PR title follows `[component] description` format
 

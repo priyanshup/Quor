@@ -235,6 +235,20 @@ Every new filter must include at least 3 `[[filter.tests]]` entries.
 
 ---
 
+## Git Workflow — Rules for AI-Assisted Development
+
+See `CONTRIBUTING.md`'s "Branching model" and "Commit message convention" for the full contributor-facing workflow. These are the rules specific to AI-assisted (Claude Code) sessions:
+
+1. **Never develop directly on `main`.** All code changes happen on a `feature/qb-XXX-short-description` branch.
+2. **Before making any code changes, check the current branch** (`git branch --show-current` or `git status`). Do this at the start of a session and again before the first edit if time has passed.
+3. **If the current branch is `main`:** tell the user and either (a) ask them how they'd like to proceed, or (b) if the user has clearly asked for the change to be made (not just discussed), create a feature branch — this is a safe, local, reversible operation and does not require a separate confirmation. Never leave uncommitted work sitting on `main` past the point where you know it should be branched.
+4. **Never commit automatically.** Only create a commit when the user has explicitly asked for one in this conversation. If unclear whether "make the change" also means "commit it," ask.
+5. **Never merge automatically.** Merging into `main` happens via a reviewed Pull Request on GitHub, not via a local `git merge` run by the assistant.
+6. **Always ask for explicit confirmation before any Git operation that changes history or shared state:** `commit`, `merge`, `rebase`, `push`, `tag`, or anything that triggers a release. Showing the exact commands for the user to review (or to run themselves) is preferred over executing them silently.
+7. **Destructive operations** (`git reset --hard`, `git push --force`, `git branch -D`, deleting a remote branch) require explicit, scoped confirmation every time — a prior approval for one push/branch does not carry over to another.
+
+---
+
 ## Plugin Conventions
 
 Plugins declare entry points in `pyproject.toml`:
