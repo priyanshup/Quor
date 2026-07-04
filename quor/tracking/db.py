@@ -72,6 +72,8 @@ class GainReport:
 
     total_invocations: int
     tokens_saved: int              # sum(original_tokens - final_tokens)
+    tokens_before: int             # sum(original_tokens) — for display only
+    tokens_after: int              # sum(final_tokens) — for display only
     passthrough_count: int
     filter_hit_rate: float         # (total - passthroughs) / total, or 0 if empty
     top_filters: list[tuple[str, int]]  # [(filter_name, tokens_saved)] top 5
@@ -238,6 +240,8 @@ def query_gain(
         return GainReport(
             total_invocations=0,
             tokens_saved=0,
+            tokens_before=0,
+            tokens_after=0,
             passthrough_count=0,
             filter_hit_rate=0.0,
             top_filters=[],
@@ -256,6 +260,8 @@ def query_gain(
             """SELECT
                  COUNT(*)                              AS total,
                  COALESCE(SUM(original_tokens - final_tokens), 0) AS saved,
+                 COALESCE(SUM(original_tokens), 0)     AS before_sum,
+                 COALESCE(SUM(final_tokens), 0)         AS after_sum,
                  SUM(was_passthrough)                  AS passthroughs
                FROM invocations
                WHERE project_path GLOB ?
@@ -266,6 +272,8 @@ def query_gain(
 
         total = int(row["total"])
         saved = int(row["saved"])
+        tokens_before = int(row["before_sum"])
+        tokens_after = int(row["after_sum"])
         passthroughs = int(row["passthroughs"] or 0)
         hit_rate = (total - passthroughs) / total if total else 0.0
 
@@ -288,6 +296,8 @@ def query_gain(
     return GainReport(
         total_invocations=total,
         tokens_saved=saved,
+        tokens_before=tokens_before,
+        tokens_after=tokens_after,
         passthrough_count=passthroughs,
         filter_hit_rate=hit_rate,
         top_filters=top_filters,

@@ -1,4 +1,10 @@
-"""quor gain — token savings summary for a project, read from SQLite."""
+"""quor gain — token savings summary for a project, read from SQLite.
+
+Presentation only: all numbers come straight from GainReport (quor/tracking/
+db.py). This module never computes a metric — it only formats and lays out
+ones that already exist. See quor/cli/format_utils.py for the (also
+presentation-only) number/percentage formatting helpers.
+"""
 
 from __future__ import annotations
 
@@ -9,8 +15,9 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
+from quor.cli.format_utils import format_count, format_percentage
 from quor.config.loader import load_user_config
-from quor.tracking.db import query_gain
+from quor.tracking.db import GainReport, query_gain
 
 console = Console()
 
@@ -30,25 +37,74 @@ def gain(
     report = query_gain(db_path, project_path, days=days)
     mode = load_user_config().mode
 
-    console.print(f"[bold]Quor gain[/bold] — last {report.days} day(s)")
-    console.print(f"Project: {project_path}")
-    console.print(f"Mode: {mode}")
+    _print_header(report, project_path=project_path, mode=mode)
 
     if report.total_invocations == 0:
+        console.print()
         console.print(
             f"[yellow]No invocations recorded for this project in the last {days} day(s).[/yellow]"
         )
         raise typer.Exit()
 
-    console.print(f"Total invocations: {report.total_invocations}")
-    console.print(f"Tokens saved: ~{report.tokens_saved} (±20% — char/4 approximation)")
-    console.print(f"Filter hit rate: {report.filter_hit_rate:.0%}")
-    console.print(f"Passthrough count: {report.passthrough_count}")
+    _print_body(report)
 
-    if report.top_filters:
-        table = Table(title="Top filters by tokens saved")
-        table.add_column("Filter")
-        table.add_column("Tokens saved", justify="right")
-        for name, saved in report.top_filters:
-            table.add_row(name, str(saved))
-        console.print(table)
+
+def _print_header(report: GainReport, *, project_path: Path, mode: str) -> None:
+    console.print(f"[bold]Quor Gain[/bold] (Last {report.days} days)")
+    console.print()
+    console.print(f"Project: {project_path}")
+    console.print(f"Mode: {mode}")
+
+
+def _stat_table() -> Table:
+    """A borderless, headerless two-column table: label left, value right."""
+    table = Table(show_header=False, box=None, padding=(0, 2, 0, 0))
+    table.add_column("label")
+    table.add_column("value", justify="right")
+    return table
+
+
+def _print_body(report: GainReport) -> None:
+    console.print()
+    console.rule(style="dim")
+
+    usage = _stat_table()
+    usage.add_row("Commands processed", format_count(report.total_invocations))
+    usage.add_row("Filter hit rate", format_percentage(report.filter_hit_rate))
+    usage.add_row("Passthrough", format_count(report.passthrough_count))
+    console.print(usage)
+    console.print()
+
+    tokens = _stat_table()
+    tokens.add_row("Tokens before", f"~{format_count(report.tokens_before)}")
+    tokens.add_row("Tokens after", f"~{format_count(report.tokens_after)}")
+    console.print(tokens)
+    console.print()
+
+    saved_fraction = (
+        report.tokens_saved / report.tokens_before if report.tokens_before else 0.0
+    )
+    console.print("[bold]YOU SAVED[/bold]")
+    console.print(
+        f"[bold green]~{format_count(report.tokens_saved)} tokens "
+        f"({format_percentage(saved_fraction)})[/bold green]"
+    )
+    console.print()
+    console.rule(style="dim")
+
+    visible_filters = [(name, saved) for name, saved in report.top_filters if saved > 0]
+    if visible_filters:
+        console.print()
+        console.print("[bold]Top savings[/bold]")
+        console.print()
+        filters_table = _stat_table()
+        filters_table.add_column("pct", justify="right")
+        for name, saved in visible_filters:
+            filter_fraction = saved / report.tokens_saved if report.tokens_saved else 0.0
+            filters_table.add_row(name, format_count(saved), f"({format_percentage(filter_fraction)})")
+        console.print(filters_table)
+        console.print()
+        console.rule(style="dim")
+
+    console.print()
+    console.print("[dim]* Token estimates use the existing char/4 approximation.[/dim]")
