@@ -1,7 +1,7 @@
 ﻿# PROJECT STATUS
 ## Quor — Current State Snapshot
 
-> Last updated: 2026-07-04 (PreToolUse hook protocol fix, ADR-030 — see below; v0.1.0 remains the last published release)
+> Last updated: 2026-07-04 (PreToolUse hook protocol fix, ADR-030 — see below; v0.2.1 is the latest published release)
 > Update this document at the start of every implementation session.
 
 ---
@@ -14,8 +14,8 @@
 | Architecture | COMPLETE | 100% | All decisions made. Documented in DECISIONS.md (29 ADRs). |
 | Documentation | COMPLETE | 100% | 10 canonical docs + README, CHANGELOG, LICENSE, CONTRIBUTING, CODE_OF_CONDUCT, SECURITY all written and reconciled against the released package (see Release Notes below). |
 | Implementation | COMPLETE | 100% | All 10 phases complete, including packaging. |
-| Testing | COMPLETE | 100% | 613 tests, ruff+mypy clean on `quor/` and `tests/`. All passing, fully machine-isolated. Verified on Python 3.11, 3.13, 3.14. |
-| Packaging | COMPLETE | 100% | v0.1.0 published to both TestPyPI and PyPI on 2026-07-01. Installed and verified from a real PyPI/TestPyPI index on three separate machines (Python 3.11 and 3.14). |
+| Testing | COMPLETE | 100% | 614 tests, ruff+mypy clean on `quor/` and `tests/`. All passing, fully machine-isolated. Verified on Python 3.11, 3.13, 3.14. |
+| Packaging | COMPLETE | 100% | v0.1.0 published to both TestPyPI and PyPI on 2026-07-01; v0.2.0 and v0.2.1 released since (2026-07-04). v0.2.1 installed and verified from the real PyPI index in a fresh virtual environment. |
 
 ---
 
@@ -183,7 +183,7 @@ against the actual released package and CLI behavior.
 
 ## Known Blockers
 
-None. v0.1.0 is published to PyPI and TestPyPI (2026-07-01).
+None. v0.2.1 is the latest published release on PyPI (2026-07-04); v0.1.0 was the first, published 2026-07-01.
 
 ---
 
@@ -263,7 +263,7 @@ The mode system (ADR-009: AUDIT/OPTIMIZE/SIMULATE) remains **display-only** — 
 
 ## Immediate Next Milestone
 
-**v0.1.0 is released.** `pyproject.toml` entry-points, PyPI registration, README, and the release workflow are all done and published. The next milestone is **v0.5 — Public Alpha** (see ROADMAP.md): Windows + Linux CI already exist from v0.1, so the remaining gap is broader real-world usage (multiple non-builder developers) and the additional Public Alpha gates in RELEASE_CRITERIA.md.
+**v0.2.1 is released** (v0.1.0 was the first release, 2026-07-01; v0.2.0 and v0.2.1 followed on 2026-07-04). `pyproject.toml` entry-points, PyPI registration, README, and the release workflow are all done and published. The next milestone is **v0.5 — Public Alpha** (see ROADMAP.md): Windows + Linux CI already exist from v0.1, so the remaining gap is broader real-world usage (multiple non-builder developers) and the additional Public Alpha gates in RELEASE_CRITERIA.md.
 
 ---
 
@@ -434,6 +434,42 @@ the automatic path.
   recommendation made when the change was implemented. Not yet applied to
   `pyproject.toml`/`CHANGELOG.md` — that's a release-process step, deferred
   until the change is reviewed.
+
+**Update (2026-07-04):** This entry's version bump is no longer pending — it
+shipped as v0.2.0. This entry is left as originally written for historical
+accuracy of what was true when it was written.
+
+---
+
+## PreToolUse Hook Protocol Fix — v0.2.1 (2026-07-04)
+
+A follow-up bug, distinct from the rewrite-invocation fix above: the hook
+adapter's *response shape*, not the rewritten command string, was wrong.
+`quor/adapters/claude.py::run_hook` echoed the whole mutated input payload
+back to stdout as a top-level `tool_input` key. Claude Code only honors
+`hookSpecificOutput.updatedInput` for overriding tool arguments — a bare
+top-level `tool_input` key is silently ignored — so the rewrite never
+reached execution, and `quor gain` never recorded real invocations. Every
+unit test still passed, because they all called `run_hook()` directly and
+asserted against its own (self-consistent but wrong) output shape; none
+drove the output through the real Claude Code binary.
+
+- Fixed in `quor/adapters/claude.py`, `quor/adapters/base.py`
+  (`HookOutput`/new `HookSpecificOutput` models), and
+  `quor/cli/commands/doctor.py::_check_hook_roundtrip`. See DECISIONS.md
+  ADR-030 for the full option comparison and rationale.
+- Verified end-to-end against the real Claude Code binary (not just
+  in-process unit tests): a live `git status` Bash tool call was correctly
+  rewritten and dispatched, and `quor gain` recorded the invocation.
+- A release audit (same day) caught a related, previously-shipped-adjacent
+  gap: `.github/workflows/canary.yml` still asserted the pre-fix shape and
+  would have falsely reported a Claude Code protocol change on its next
+  scheduled run. Fixed alongside the adapter.
+- **Released as v0.2.1** (2026-07-04): version bumped in `pyproject.toml`
+  and `quor/__init__.py`, tagged, and published to PyPI via
+  `.github/workflows/release.yml`. Installed and verified end-to-end
+  (version, `quor doctor`, `quor explain`, hook protocol output, and
+  tracking) from the real PyPI index in a fresh virtual environment.
 
 ---
 
