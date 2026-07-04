@@ -811,3 +811,9 @@ QB-004 investigated why `git-diff`'s `max_tokens` stage (`limit = 600`) rendered
 - `README.md`'s `max_tokens` description now states that `PROTECT` lines take precedence and the budget can be exceeded.
 - The existing tee mechanism (ADR-023) remains the correct complementary safety net for cases where best-effort compression still leaves large output — but ADR-023 is `Decided` and not yet implemented (no `tee.py` module, no `tee` field read by any built-in filter). Tracked as QB-013.
 - A related but separate finding from the QB-012 investigation: `build.toml`'s `mypy` filter runs `group_repeated` after `strip_lines` has already marked every `error:`/`warning:`/`note:` line `PROTECT` via `preserve_patterns` — since `group_repeated` treats `PROTECT` as a run-breaker, it is currently a no-op for `mypy`. This is a stage-ordering question, not a budget-semantics question, and is out of scope for this ADR. Tracked as QB-014.
+
+**Implementation Update (QB-014):**
+This ADR's Consequences section above describes the state of the `mypy` filter as observed at the time this ADR was written. It is preserved as-is for historical accuracy. QB-014 has since been implemented:
+- The `mypy` pipeline now executes `group_repeated` → `strip_lines` → `max_tokens` (reordered from the sequence described above).
+- `strip_lines` now skips its `preserve_patterns` check for lines already marked `COMPRESS`, so the reorder doesn't resurrect duplicates `group_repeated` already collapsed.
+- The fix was validated with a new regression test and full project verification (`quor verify`, full `pytest` suite, dependency review across all built-in filters, byte-for-byte before/after comparison). See `backlog.md`'s `QB-014` entry for full details.
