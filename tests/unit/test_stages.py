@@ -27,6 +27,10 @@ from quor.pipeline.stages.deduplicate_consecutive import (
 from quor.pipeline.stages.group_repeated import GroupRepeatedConfig, GroupRepeatedStage
 from quor.pipeline.stages.match_output import MatchOutputConfig, MatchOutputStage
 from quor.pipeline.stages.max_tokens import MaxTokensConfig, MaxTokensStage
+from quor.pipeline.stages.python_ast_summarize import (
+    PythonAstSummarizeConfig,
+    PythonAstSummarizeStage,
+)
 from quor.pipeline.stages.regex_replace import (
     RegexReplaceConfig,
     RegexReplaceRule,
@@ -922,3 +926,258 @@ class TestMatchOutput:
         assert result.lines[0].decision is Decision.KEEP
         assert result.lines[0].line == "any content"
         assert any("timed out" in str(w.message).lower() for w in caught)
+
+
+# ---------------------------------------------------------------------------
+# python_ast_summarize (QB-005)
+# ---------------------------------------------------------------------------
+
+
+class TestPythonAstSummarize:
+    stage = PythonAstSummarizeStage()
+
+    def _config(self, preserve: list[str] | None = None) -> PythonAstSummarizeConfig:
+        return PythonAstSummarizeConfig(
+            type="python_ast_summarize",
+            preserve_patterns=preserve or [],
+        )
+
+    def test_empty_input(self) -> None:
+        result = self.stage.apply(ContentMask.from_text(""), self._config())
+        assert result.render() == ""
+
+    def test_wrong_config_type_raises(self) -> None:
+        with pytest.raises(TypeError, match="PythonAstSummarizeConfig"):
+            self.stage.apply(ContentMask.from_text("x = 1"), RemoveAnsiConfig(type="remove_ansi"))
+
+    def test_valid_file_compresses_body_keeps_signature_and_docstring(self) -> None:
+        source = (
+            "def add(x, y):\n"
+            '    """Add two numbers."""\n'
+            "    total = x + y\n"
+            "    return total\n"
+        )
+        mask = ContentMask.from_text(source)
+        result = self.stage.apply(mask, self._config())
+        assert result.lines[0].decision is Decision.KEEP  # def add(x, y):
+        assert result.lines[1].decision is Decision.KEEP  # docstring
+        assert result.lines[2].decision is Decision.COMPRESS  # total = x + y
+        assert result.lines[3].decision is Decision.COMPRESS  # return total
+        assert result.lines[4].decision is Decision.KEEP  # trailing blank
+
+    def test_imports_and_module_constants_never_touched(self) -> None:
+        source = "import os\n\nDEFAULT_TIMEOUT = 30\n\n\ndef run():\n    do_work()\n    return True\n"
+        mask = ContentMask.from_text(source)
+        result = self.stage.apply(mask, self._config())
+        assert result.lines[0].decision is Decision.KEEP  # import os
+        assert result.lines[2].decision is Decision.KEEP  # DEFAULT_TIMEOUT = 30
+        assert result.lines[6].decision is Decision.COMPRESS  # do_work()
+        assert result.lines[7].decision is Decision.COMPRESS  # return True
+
+    def test_syntax_error_propagates_for_engine_fail_open(self) -> None:
+        """apply() deliberately does not catch parse failures itself — the
+        engine's existing per-stage fail-open (Pipeline.execute) is what
+        keeps the original content on a real syntax error; see the
+        cat-python.toml inline test for the end-to-end behaviour."""
+        mask = ContentMask.from_text("def broken(:\n    pass\n")
+        with pytest.raises(SyntaxError):
+            self.stage.apply(mask, self._config())
+
+    def test_syntax_error_via_pipeline_fails_open_to_original(self) -> None:
+        source = "def broken(:\n    pass\n"
+        mask = ContentMask.from_text(source)
+        entry = StageEntry(handler=self.stage, config=self._config())
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            result = Pipeline([entry]).execute(mask)
+        assert result.mask.render() == source
+        assert any("python_ast_summarize" in str(w.message) for w in caught)
+
+    def test_null_byte_content_fails_open(self) -> None:
+        """A null byte is rejected by ast.parse() before any syntax checking
+        (as SyntaxError or ValueError, depending on Python version) — not
+        caught here, same fail-open contract as a real syntax error."""
+        mask = ContentMask.from_text("def f():\n    pass\n\x00")
+        with pytest.raises((SyntaxError, ValueError), match="null byte"):
+            self.stage.apply(mask, self._config())
+
+    def test_decorators_preserved(self) -> None:
+        source = (
+            "class Foo:\n"
+            "    @staticmethod\n"
+            "    @cached\n"
+            "    def bar(x):\n"
+            '        """Bar docstring."""\n'
+            "        y = x * 2\n"
+            "        return y\n"
+        )
+        mask = ContentMask.from_text(source)
+        result = self.stage.apply(mask, self._config())
+        for idx in range(5):  # class, both decorators, def, docstring
+            assert result.lines[idx].decision is Decision.KEEP, f"line {idx}"
+        assert result.lines[5].decision is Decision.COMPRESS  # y = x * 2
+        assert result.lines[6].decision is Decision.COMPRESS  # return y
+
+    def test_nested_classes_and_functions(self) -> None:
+        source = (
+            "class Outer:\n"  # 1
+            "    class Inner:\n"  # 2
+            "        def method(self):\n"  # 3
+            '            """Inner method."""\n'  # 4
+            "            do_something()\n"  # 5
+            "            return 1\n"  # 6
+            "\n"  # 7
+            "    def outer_method(self):\n"  # 8
+            "        def helper():\n"  # 9
+            "            return 2\n"  # 10
+            "        return helper()\n"  # 11
+        )
+        mask = ContentMask.from_text(source)
+        result = self.stage.apply(mask, self._config())
+        expected = {
+            0: Decision.KEEP,  # class Outer:
+            1: Decision.KEEP,  # class Inner:
+            2: Decision.KEEP,  # def method(self):
+            3: Decision.KEEP,  # docstring
+            4: Decision.COMPRESS,  # do_something()
+            5: Decision.COMPRESS,  # return 1
+            6: Decision.KEEP,  # blank line between methods
+            7: Decision.KEEP,  # def outer_method(self):
+            8: Decision.COMPRESS,  # def helper(): (nested — swallowed by outer_method)
+            9: Decision.COMPRESS,  # return 2
+            10: Decision.COMPRESS,  # return helper()
+        }
+        for idx, decision in expected.items():
+            assert result.lines[idx].decision is decision, f"line {idx}"
+
+    def test_async_functions(self) -> None:
+        source = (
+            "async def fetch(url):\n"
+            '    """Fetch a URL."""\n'
+            "    response = await client.get(url)\n"
+            "    return response\n"
+        )
+        mask = ContentMask.from_text(source)
+        result = self.stage.apply(mask, self._config())
+        assert result.lines[0].decision is Decision.KEEP  # async def fetch(url):
+        assert result.lines[1].decision is Decision.KEEP  # docstring
+        assert result.lines[2].decision is Decision.COMPRESS  # response = await ...
+        assert result.lines[3].decision is Decision.COMPRESS  # return response
+
+    def test_single_line_function_body_left_untouched(self) -> None:
+        """Regression: a same-line body (`def f(): return 1`) shares its
+        line with the signature. ContentMask can't compress half a line, so
+        this must stay fully KEEP rather than deleting the signature."""
+        source = "def f(): return 1\nx = f()\n"
+        mask = ContentMask.from_text(source)
+        result = self.stage.apply(mask, self._config())
+        assert result.lines[0].decision is Decision.KEEP
+        assert result.lines[0].line == "def f(): return 1"
+        assert result.lines[1].decision is Decision.KEEP
+
+    def test_docstring_only_body_left_untouched(self) -> None:
+        source = 'def f():\n    """Just a docstring."""\n'
+        mask = ContentMask.from_text(source)
+        result = self.stage.apply(mask, self._config())
+        assert result.lines[0].decision is Decision.KEEP
+        assert result.lines[1].decision is Decision.KEEP
+
+    def test_large_file_compresses_every_function_body(self) -> None:
+        n = 300
+        chunks = [
+            f"def func_{i}(x):\n    \"\"\"Docstring {i}.\"\"\"\n    y = x + {i}\n    return y\n"
+            for i in range(n)
+        ]
+        source = "".join(chunks)
+        mask = ContentMask.from_text(source)
+        result = self.stage.apply(mask, self._config())
+        kept = sum(1 for lm in result.lines if lm.decision is Decision.KEEP)
+        compressed = sum(1 for lm in result.lines if lm.decision is Decision.COMPRESS)
+        # Each function: 2 kept lines (signature + docstring), 2 compressed (body),
+        # plus one trailing blank line from the final chunk's terminating "\n".
+        assert kept == n * 2 + 1
+        assert compressed == n * 2
+
+    def test_unicode_identifiers_and_docstrings_preserved(self) -> None:
+        source = (
+            "def café(x):\n"
+            '    """Résumé: 日本語のコメント."""\n'
+            "    y = x\n"
+            "    return y\n"
+        )
+        mask = ContentMask.from_text(source)
+        result = self.stage.apply(mask, self._config())
+        assert result.lines[0].decision is Decision.KEEP
+        assert result.lines[0].line == "def café(x):"
+        assert result.lines[1].decision is Decision.KEEP
+        assert result.lines[1].line == '    """Résumé: 日本語のコメント."""'
+        assert result.lines[2].decision is Decision.COMPRESS
+        assert result.lines[3].decision is Decision.COMPRESS
+
+    def test_kept_lines_are_byte_identical_to_source(self) -> None:
+        """No rewriting/reformatting ever happens: every non-COMPRESS line
+        must match the original source line exactly, including a
+        multi-line docstring's internal blank line."""
+        source = (
+            "import os\n"
+            "\n"
+            "CONST = 1\n"
+            "\n"
+            "\n"
+            "def process(data, *, flag=False):\n"
+            '    """Process data.\n'
+            "\n"
+            "    Multi-line docstring.\n"
+            '    """\n'
+            "    result = []\n"
+            "    for item in data:\n"
+            "        result.append(item)\n"
+            "    return result\n"
+        )
+        original_lines = source.split("\n")
+        mask = ContentMask.from_text(source)
+        result = self.stage.apply(mask, self._config())
+        for idx, lm in enumerate(result.lines):
+            if lm.decision is not Decision.COMPRESS:
+                assert lm.line == original_lines[idx], f"line {idx} was modified"
+        # The multi-line docstring (including its internal blank line) is
+        # fully preserved; only the loop body afterward is compressed.
+        for idx in range(6, 10):
+            assert result.lines[idx].decision is Decision.KEEP
+        for idx in range(10, 14):
+            assert result.lines[idx].decision is Decision.COMPRESS
+
+    def test_protect_line_never_compressed(self) -> None:
+        lines = (
+            LineMask(line="def foo():", decision=Decision.KEEP),
+            _protect("    critical_body_line()"),
+            LineMask(line="    return 1", decision=Decision.KEEP),
+        )
+        mask = ContentMask(lines=lines)
+        result = self.stage.apply(mask, self._config())
+        assert result.lines[1].decision is Decision.PROTECT
+        assert result.lines[1].line == "    critical_body_line()"
+        assert result.lines[2].decision is Decision.COMPRESS
+
+    def test_already_compressed_line_passthrough(self) -> None:
+        """Line numbering must stay aligned to mask.lines even when an
+        earlier stage already compressed a line (mask.render() would have
+        dropped it and shifted every subsequent ast line number)."""
+        lines = (
+            LineMask(line="def foo():", decision=Decision.KEEP),
+            _compress("    noise()"),
+            LineMask(line="    return 1", decision=Decision.KEEP),
+        )
+        mask = ContentMask(lines=lines)
+        result = self.stage.apply(mask, self._config())
+        assert result.lines[1].decision is Decision.COMPRESS
+        assert result.lines[1].line == "    noise()"
+        assert result.lines[2].decision is Decision.COMPRESS  # return 1: real body line
+
+    def test_preserve_pattern_protects_body_line(self) -> None:
+        source = "def foo():\n    CRITICAL_MARKER = True\n    return 1\n"
+        mask = ContentMask.from_text(source)
+        config = self._config(preserve=["CRITICAL_MARKER"])
+        result = self.stage.apply(mask, config)
+        assert result.lines[1].decision is Decision.PROTECT
+        assert result.lines[2].decision is Decision.COMPRESS

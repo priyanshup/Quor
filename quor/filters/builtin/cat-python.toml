@@ -1,0 +1,80 @@
+# quor built-in filter: cat (Python files) — QB-005 structural extraction
+#
+# Compresses function/method bodies to their signature + docstring, keeping
+# imports, top-level constants, class/function signatures, decorators, and
+# docstrings untouched. Must be loaded before the generic `cat.toml` filter
+# so `.py` files match here first. Built-in filters load in sorted filename
+# order (quor/filters/registry.py::_load_builtin uses sorted(glob(...))),
+# and "cat-python.toml" sorts before "cat.toml" lexicographically ('-' is
+# 0x2D, '.' is 0x2E). No registry tie-break change was introduced for this —
+# see QB-005 in backlog.md. Any future extension-specific filter (e.g. a
+# hypothetical cat-javascript.toml) should follow this same naming
+# convention to load ahead of its generic counterpart.
+#
+# python_ast_summarize runs first (structural body compression via `ast`),
+# then the same strip_lines / deduplicate_consecutive / max_tokens stack as
+# the generic cat.toml — otherwise `.py` files would win the more specific
+# filter but lose cat.toml's comment-stripping and blank-line dedup, which
+# is a regression, not a trade-off. python_ast_summarize never touches
+# comment lines at all (Python's `ast` module discards comments entirely,
+# they have no node), so strip_lines still does real, needed work here:
+# it strips ordinary `#` comments and blank-line noise while preserving
+# shebang/TODO/FIXME/HACK/XXX/NOTE/WARN, exactly as it does for every other
+# file cat'd through the generic filter.
+schema_version = 1
+
+[[filter]]
+name = "cat-python"
+match_command = '^cat\s+(-\S+\s+)*\S*\.py\b'
+
+[[filter.stages]]
+type = "python_ast_summarize"
+
+[[filter.stages]]
+type = "strip_lines"
+patterns = [
+    '^\s*#[^!]',
+    '^\s*//\s',
+    '^\s*--\s',
+    '^\s*;\s',
+]
+preserve_patterns = [
+    '^#!/',
+    'TODO',
+    'FIXME',
+    'HACK',
+    'XXX',
+    'NOTE',
+    'WARN',
+]
+
+[[filter.stages]]
+type = "deduplicate_consecutive"
+
+[[filter.stages]]
+type = "max_tokens"
+limit = 800
+strategy = "both"
+
+[[filter.tests]]
+description = "Function body compressed; signature and docstring preserved"
+input = "def foo(x, y):\n    \"\"\"Add two numbers.\"\"\"\n    total = x + y\n    return total\n"
+must_contain = ["def foo(x, y):", "Add two numbers."]
+must_not_contain = ["total = x + y"]
+
+[[filter.tests]]
+description = "Imports and module-level constants are never touched"
+input = "import os\n\nDEFAULT_TIMEOUT = 30\n\n\ndef run():\n    do_work()\n    return True\n"
+must_contain = ["import os", "DEFAULT_TIMEOUT = 30"]
+must_not_contain = ["do_work()"]
+
+[[filter.tests]]
+description = "Invalid Python fails open — original content returned unchanged"
+input = "def broken(:\n    pass\n"
+must_contain = ["def broken(:", "pass"]
+
+[[filter.tests]]
+description = "Shebang and TODO/FIXME preserved; regular comments stripped; body compressed"
+input = "#!/usr/bin/env python3\n# just a regular comment\n# TODO: revisit this\ndef broken_function(data):\n    # internal note\n    if not data:\n        raise RuntimeError('empty')\n    return data\n"
+must_contain = ["#!/usr/bin/env python3", "TODO", "def broken_function(data):"]
+must_not_contain = ["just a regular comment", "internal note", "raise RuntimeError", "return data"]

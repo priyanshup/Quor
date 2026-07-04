@@ -98,6 +98,12 @@
 - `quor-docker`: Docker build and run output filtering (separate package)
 - Filter contribution process in CONTRIBUTING.md
 - Official `quor-*` namespace guidelines published
+- Built-in filter ecosystem expansion (Batch 5 design review): Python structural code extraction
+  for `cat` (`cat-python.toml`, stdlib `ast` only — QB-005) and generic Node.js CLI noise removal
+  for `npm`/`npx`/`pnpm`/`yarn` (QB-006A). Tool-aware Node.js filtering (Jest/ESLint/TypeScript/
+  Vitest/Webpack/Vite — QB-006B) is deferred pending an ADR; document compression (QB-007) is
+  blocked pending a feasibility investigation into native Read/File tool interception — see
+  backlog.md for both.
 
 **What does NOT ship:**
 - Cursor / Copilot adapters (v2)
