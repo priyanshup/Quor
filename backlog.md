@@ -152,7 +152,36 @@ error lines), then decide the correct fix: reorder stages so `group_repeated` ru
 cover the exact lines `group_repeated` is meant to collapse, or confirm current behavior is
 acceptable and document why. No fix implemented yet — investigation only.
 
-**Status:** Backlog
+**Resolution:**
+Confirmed and fixed. Merged to `main` via PR #2 (`feature/qb-014`, merge commit `c6107ae`, fix
+commit `19ec7a7`).
+
+*Root cause:* `strip_lines` ran before `group_repeated` in `build.toml`'s `mypy` filter.
+`preserve_patterns` (`error:`/`warning:`/`note:`/`Error`) marked every matching line `PROTECT`
+before `group_repeated` ever saw them, and `group_repeated` treats `PROTECT` lines as run
+breakers — so repeated identical errors were never collapsed. A naive reorder alone was
+insufficient: `strip_lines`'s preserve-pattern check re-evaluated every line regardless of an
+existing `COMPRESS` decision (unlike its own strip-pattern check, which already skipped
+already-`COMPRESS` lines), so it resurrected the duplicates `group_repeated` had just compressed.
+
+*Final solution:*
+- Reordered the `mypy` filter's pipeline to `group_repeated` → `strip_lines` → `max_tokens`.
+- Updated `quor/pipeline/stages/strip_lines.py` so the preserve-pattern check skips lines already
+  marked `COMPRESS`, mirroring the guard already used by the strip-pattern check.
+
+*Validation performed:*
+- Regression test added to `build.toml`'s `mypy` filter (3+ consecutive identical errors collapse
+  to `(×N)`, duplicates do not reappear, a non-adjacent singleton error and warning/note lines
+  remain protected).
+- Dependency review confirmed `strip_lines` runs first (or is absent) in every other built-in
+  filter, so the `strip_lines.py` guard change was dead code everywhere except `mypy` prior to
+  this fix.
+- Byte-for-byte before/after comparison (via `git stash`) confirmed identical output for
+  `git-status`, `git-log`, `git-diff`, `pytest`, `ruff`, `cat`, and `generic`.
+- Full test suite: `quor verify` 25/25, `pytest tests/` 612 passed (1 pre-existing, unrelated
+  plugin-discovery failure confirmed present independent of this change).
+
+**Status:** Resolved
 
 ---
 
