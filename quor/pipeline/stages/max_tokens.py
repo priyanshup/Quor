@@ -1,5 +1,11 @@
 """max_tokens stage: COMPRESS lines beyond an estimated token budget.
 
+`limit` is a best-effort target, not a guaranteed upper bound on rendered
+output size (see ADR-031). PROTECT always takes precedence over the budget:
+this stage only ever compresses KEEP lines. If PROTECT lines alone exceed
+`limit`, the final rendered output will exceed `limit` — that is expected,
+not a bug (see QB-004 in backlog.md for the investigation that confirmed this).
+
 Token estimation: ceil(len(line) / 4) — the same char/4 approximation used
 throughout Quor. This is labeled as an estimate (±20%) everywhere it appears.
 
@@ -28,7 +34,13 @@ from quor.pipeline.stages.base import StageConfig
 class MaxTokensConfig(StageConfig):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    limit: int = Field(gt=0, description="Maximum estimated tokens in rendered output.")
+    limit: int = Field(
+        gt=0,
+        description=(
+            "Best-effort target for estimated tokens in rendered output. "
+            "Not a guarantee — PROTECT lines are never compressed to meet it."
+        ),
+    )
     strategy: Literal["head", "tail", "both"] = "tail"
 
 

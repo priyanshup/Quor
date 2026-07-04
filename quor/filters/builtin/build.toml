@@ -9,6 +9,11 @@ abort_unless = ["error", "Error", "warning", "Warning", "note"]
 on_empty = "mypy: no issues found."
 
 [[filter.stages]]
+type = "group_repeated"
+patterns = ['^.*: error: ']
+min_count = 3
+
+[[filter.stages]]
 type = "strip_lines"
 patterns = [
     '^Success: no issues found',
@@ -21,11 +26,6 @@ preserve_patterns = [
     'note:',
     'Error',
 ]
-
-[[filter.stages]]
-type = "group_repeated"
-patterns = ['^.*: error: ']
-min_count = 3
 
 [[filter.stages]]
 type = "max_tokens"
@@ -47,6 +47,12 @@ must_contain = ["Success"]
 description = "Multiple error lines preserved"
 input = "src/a.py:1: error: Missing return\nsrc/b.py:5: error: Argument type"
 must_contain = ["src/a.py:1: error", "src/b.py:5: error"]
+
+[[filter.tests]]
+description = "Repeated identical errors collapse to (xN); duplicates do not reappear; warning/note/single-error lines stay protected"
+input = "src/handlers/user.py:12: error: Argument 1 to \"save\" has incompatible type \"int\"; expected \"str\"\nsrc/handlers/user.py:34: error: Argument 1 to \"save\" has incompatible type \"int\"; expected \"str\"\nsrc/handlers/user.py:58: error: Argument 1 to \"save\" has incompatible type \"int\"; expected \"str\"\nsrc/handlers/order.py:5: warning: Unused \"type: ignore\" comment\nsrc/handlers/order.py:6: note: Consider removing the comment\nsrc/other.py:9: error: Standalone singleton error\nFound 4 errors in 2 files (checked 12 source files)"
+must_contain = ["(×3)", "src/other.py:9: error: Standalone singleton error", "warning: Unused", "note: Consider removing"]
+must_not_contain = ["Found 4 error", "user.py:34: error", "user.py:58: error"]
 
 [[filter]]
 name = "ruff"

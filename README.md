@@ -60,7 +60,7 @@ truncating the meaning of the lines that remain.
 - `strip_lines` — removes lines matching configured noise patterns (e.g. `PASSED` lines, dot-progress output), while `preserve_patterns` marks matching lines `PROTECT` unconditionally.
 - `deduplicate_consecutive` — collapses runs of identical adjacent lines to the first occurrence.
 - `group_repeated` — collapses N repetitions of a matched pattern into the first instance plus a `(×N)` count.
-- `max_tokens` — truncates beyond a configured budget using a `head`, `tail`, or `both` strategy, only after the above stages have already removed redundant content.
+- `max_tokens` — truncates beyond a configured budget using a `head`, `tail`, or `both` strategy, only after the above stages have already removed redundant content. The budget is a **best-effort target, not a guarantee**: `PROTECT` lines (see below) always take precedence and are never truncated to meet it, so rendered output can exceed the configured limit when protected content alone is large (e.g. a `git diff` with many changed lines — see "Why reduction varies by content" below).
 
 ### Why reduction varies by content
 

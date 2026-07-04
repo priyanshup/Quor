@@ -359,8 +359,15 @@ quor/
 - Error messages, assertion failures, exception lines (should be in preserve_patterns)
 - Any content where the removal could cause the AI to make a wrong decision
 
+**`max_tokens` is a best-effort target, not a guarantee (ADR-031):**
+`max_tokens` only ever compresses KEEP lines. PROTECT always takes precedence over the configured
+limit, so rendered output can exceed it when protected content alone is large (e.g. a `git diff`
+with many changed lines). This is the same "meaning preservation is non-negotiable" principle
+applied specifically to the token-budget stage — a stage is not permitted to trade away protected
+content just because it is over budget.
+
 **The tee mechanism makes aggressive compression safe:**
-Originals are cached to `~/.local/share/quor/tee/{hash}.txt`. The compressed output includes `[full output: ~/.local/share/quor/tee/abc123.txt]`. The AI can request the full output if the compressed version lacks necessary detail. This means Quor can be aggressive — nothing is irrecoverably lost.
+Originals are cached to `~/.local/share/quor/tee/{hash}.txt`. The compressed output includes `[full output: ~/.local/share/quor/tee/abc123.txt]`. The AI can request the full output if the compressed version lacks necessary detail. This means Quor can be aggressive — nothing is irrecoverably lost. **Status: this mechanism is decided (ADR-023) but not yet implemented** — no `tee.py` module exists and no built-in filter reads a `tee` field. Until it lands, "nothing is irrecoverably lost" describes the intended design, not current behavior. Tracked as QB-013.
 
 **Token estimation:**
 `ceil(len(text) / 4)` — char/4 approximation. Always labeled as an estimate with ±20% uncertainty. Never presented as exact. This is a known limitation and must be documented, not hidden.
