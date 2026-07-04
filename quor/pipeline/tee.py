@@ -22,7 +22,19 @@ quor.db directly — which would contend with TrackingDB's own connection
 instead of avoiding contention. Tee also has to work when the caller passes
 tracking=None (a supported state in run_dispatch()), so it cannot depend on
 a TrackingDB instance existing at all. A second, single-table SQLite file
-is the smaller and more decoupled option.
+is the smaller and more decoupled option. The adaptive-fallback state below
+(tee_status table) reuses this same tee_state.db file for the same reasons.
+
+Adaptive fallback: if write_tee() fails with an OSError (permission denied,
+corporate filesystem policy, disk full, etc.) MAX_CONSECUTIVE_TEE_FAILURES
+times in a row, tee is persisted as disabled and no further write attempts
+are made — retrying a persistent filesystem restriction on every single
+invocation forever would just generate repeated noise (and, on some
+corporate machines, repeated security-software log entries) for no
+benefit. There is no automatic retry/cooldown: the assumption is that a
+persistent restriction will not disappear on its own. Tee stays disabled
+until reset_tee_state() is called explicitly (wired to
+`quor doctor --reset-tee`).
 
 All functions here may raise (OSError, sqlite3.Error) — callers are
 responsible for fail-open handling, matching the pattern already used by
@@ -36,6 +48,7 @@ import os
 import sqlite3
 import time
 import warnings
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -60,6 +73,36 @@ CREATE TABLE IF NOT EXISTS tee_cleanup (
     last_cleanup_at TEXT NOT NULL
 )
 """
+
+_CREATE_STATUS_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS tee_status (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    consecutive_failures INTEGER NOT NULL DEFAULT 0,
+    disabled INTEGER NOT NULL DEFAULT 0,
+    disabled_reason TEXT
+)
+"""
+
+# Named constant, not a magic number: the single source of truth for how
+# many consecutive filesystem failures trigger adaptive disable. Referenced
+# from here, from tests (so they stay correct if this changes), and named
+# in docstrings elsewhere (quor/adapters/dispatcher.py's _apply_tee) rather
+# than restating the number.
+MAX_CONSECUTIVE_TEE_FAILURES = 2
+
+
+@dataclass(frozen=True)
+class TeeStatus:
+    """Persisted adaptive-fallback status.
+
+    Separate from the user's own on/off preference (QuorUserConfig.tee_enabled
+    / FilterConfig.tee) — this tracks whether tee has disabled *itself* after
+    repeated filesystem failures, independent of what the user has configured.
+    """
+
+    disabled: bool
+    consecutive_failures: int
+    disabled_reason: str | None
 
 
 def content_hash(content: str) -> str:
@@ -110,6 +153,118 @@ def write_tee(content: str) -> Path:
     finally:
         os.close(fd)
     return path
+
+
+def get_tee_status() -> TeeStatus:
+    """Read the persisted adaptive-fallback state.
+
+    Defaults to enabled/0 failures if the state file or row doesn't exist
+    yet — i.e. nothing has ever failed.
+    """
+    state_path = Path(platformdirs.user_data_dir("quor")) / _STATE_DB_NAME
+    if not state_path.exists():
+        return TeeStatus(disabled=False, consecutive_failures=0, disabled_reason=None)
+
+    conn = _connect_state_db(state_path)
+    try:
+        conn.execute(_CREATE_STATUS_TABLE_SQL)
+        row = conn.execute(
+            "SELECT consecutive_failures, disabled, disabled_reason FROM tee_status WHERE id = 1"
+        ).fetchone()
+    finally:
+        conn.close()
+
+    if row is None:
+        return TeeStatus(disabled=False, consecutive_failures=0, disabled_reason=None)
+    return TeeStatus(
+        disabled=bool(row[1]),
+        consecutive_failures=int(row[0]),
+        disabled_reason=row[2],
+    )
+
+
+def record_tee_failure(reason: str) -> None:
+    """Record a filesystem-caused write_tee() failure.
+
+    After MAX_CONSECUTIVE_TEE_FAILURES in a row, persists tee as disabled.
+    No automatic retry/cooldown — see module docstring "Adaptive fallback".
+    """
+    state_path = Path(platformdirs.user_data_dir("quor")) / _STATE_DB_NAME
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+
+    conn = _connect_state_db(state_path)
+    try:
+        conn.execute(_CREATE_STATUS_TABLE_SQL)
+        row = conn.execute(
+            "SELECT consecutive_failures FROM tee_status WHERE id = 1"
+        ).fetchone()
+        updated = (int(row[0]) if row is not None else 0) + 1
+        disabled = updated >= MAX_CONSECUTIVE_TEE_FAILURES
+
+        conn.execute(
+            """INSERT INTO tee_status (id, consecutive_failures, disabled, disabled_reason)
+               VALUES (1, ?, ?, ?)
+               ON CONFLICT(id) DO UPDATE SET
+                 consecutive_failures = excluded.consecutive_failures,
+                 disabled = excluded.disabled,
+                 disabled_reason = excluded.disabled_reason
+            """,
+            (updated, int(disabled), reason if disabled else None),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def record_tee_success() -> None:
+    """Reset the consecutive-failure counter after a successful write_tee().
+
+    Only ever called while tee is still enabled — once disabled, no write
+    is attempted at all (callers check get_tee_status().disabled first), so
+    this never runs while disabled and never needs to touch that flag.
+    """
+    state_path = Path(platformdirs.user_data_dir("quor")) / _STATE_DB_NAME
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+
+    conn = _connect_state_db(state_path)
+    try:
+        conn.execute(_CREATE_STATUS_TABLE_SQL)
+        conn.execute(
+            """INSERT INTO tee_status (id, consecutive_failures, disabled, disabled_reason)
+               VALUES (1, 0, 0, NULL)
+               ON CONFLICT(id) DO UPDATE SET consecutive_failures = 0
+            """
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def reset_tee_state() -> None:
+    """Explicitly clear the adaptive-disable state and failure counter.
+
+    The only way tee re-enables after an adaptive disable — there is no
+    automatic retry (see record_tee_failure()). Wired to the CLI via
+    `quor doctor --reset-tee`.
+    """
+    state_path = Path(platformdirs.user_data_dir("quor")) / _STATE_DB_NAME
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+
+    conn = _connect_state_db(state_path)
+    try:
+        conn.execute(_CREATE_STATUS_TABLE_SQL)
+        conn.execute(
+            """INSERT INTO tee_status (id, consecutive_failures, disabled, disabled_reason)
+               VALUES (1, 0, 0, NULL)
+               ON CONFLICT(id) DO UPDATE SET
+                 consecutive_failures = 0,
+                 disabled = 0,
+                 disabled_reason = NULL
+            """
+        )
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def cleanup_tee(
