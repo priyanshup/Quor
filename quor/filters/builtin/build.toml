@@ -10,6 +10,12 @@ on_empty = "mypy: no issues found."
 
 [[filter.stages]]
 type = "group_repeated"
+# exact_match left at its default (false, shape-based): intentional — this
+# collapses the *same error message* recurring at different line numbers in
+# one file (three different strings, same shape), which is the whole point
+# here. Do not set exact_match=true for this filter; it would stop mypy's
+# repeated-error collapsing from working at all, since line numbers make
+# every occurrence byte-different.
 patterns = ['^.*: error: ']
 min_count = 3
 

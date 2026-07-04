@@ -102,8 +102,85 @@ errors) with the same PROTECT/`preserve_patterns` precision as `pytest.toml`/`bu
 the Batch 5 design review) before implementation begins — this should not be improvised per-filter,
 since it's a precedent other future filters would follow.
 
-**Status:** Backlog — deferred, not scheduled. Depends on QB-006A landing first and a design ADR
-for content-type-driven filter branching.
+**Status:** Implemented, at a deliberately narrower scope than originally framed above. The
+prerequisite ADR turned out to be unnecessary: the original problem statement assumed resolving the
+wrapped tool required either `package.json` inspection or new content-type heuristics, but the
+actual requirement only asked for routing invocation shapes where the real tool name is **already
+present in the command string** — `npx eslint`, `npm exec eslint`, `pnpm exec/dlx eslint`, `yarn exec
+eslint`, and yarn classic's bare `yarn eslint` shorthand. `npm test` / `npm run build` / `npm run
+lint` / any `<wrapper> run <script>` form is explicitly and permanently excluded — the script name is
+a `package.json` alias, and resolving it would require reading `package.json`, which stays out of
+scope by requirement. This means routing is pure command-string pattern matching in
+`FilterRegistry`, with **no new stage, no content-type change, no `package.json` read, and no
+Pipeline/ContentMask/Engine/Dispatcher/StageHandler change** — `quor/rewrite/` (the classifier) is
+also untouched; QB-006A's classifier change (npm/npx/pnpm/yarn as known base commands) is the only
+prerequisite, already satisfied.
+
+**Implementation:** `quor/filters/builtin/node.toml` gained a new `eslint` `[[filter]]` block, placed
+*before* the generic npm/npx/pnpm/yarn blocks in the same file (TOML array order is preserved by the
+loader, so this is the same specificity-via-ordering idiom as `cat-python.toml`/`cat.toml` in QB-005,
+just within one file). `match_command = '^(npx|npm exec|pnpm exec|pnpm dlx|yarn exec|yarn)\s+
+(-\S+\s+)*(--\s+)?eslint(?=\s|$)'` — tolerates leading flags (matching the existing
+`cat-python.toml` flag-tolerance idiom) and requires whitespace-or-end after the tool name (a bare
+`\b` was tried first and incorrectly matched `eslint-plugin-foo`; fixed to a lookahead). Stages:
+`remove_ansi`, `group_repeated` (collapses repeated `L:C  error|warning  ...` lines — same shape-only
+matching limitation as mypy's existing `group_repeated` config, not a new one), `strip_lines`
+(minimal — ESLint's default output has little to strip, unlike npm/mypy/ruff which have a distinct
+"success" sentinel to remove), and `max_tokens` (safe here, unlike the generic npm/npx/pnpm/yarn
+filters, because once routed to `eslint` the wrapped tool's output shape is actually known).
+
+**Only `eslint` gets a real filter.** `prettier`/`jest`/`tsc` (all explicitly listed as "if one
+exists" in the request) do not have filters yet — deliberately not built speculatively — so
+`npx prettier`/`npx jest`/`npx tsc` correctly fall through to the generic npm/npx/pnpm/yarn filter
+(QB-006A behavior). No fallback code was needed for this: it's an emergent property of
+`FilterRegistry.find()`'s existing first-match-wins behavior. Adding `prettier`/`jest`/`tsc`
+filters, if wanted later, is now a pure filter-config addition following the exact same pattern.
+
+**Known, accepted trade-off:** routing is based on the literal tool/package name in the command
+string, not on what actually executes. A `package.json` script named exactly `"eslint"` that runs
+something else entirely, invoked via `npm run eslint`, is *not* routed (explicitly excluded, correct
+per requirement); but a global binary or `npx`-resolved package that happens to be named `eslint`
+but isn't actually ESLint would be misrouted. This is inherent to "no `package.json` inspection,
+no content-based routing" and was called out as a known limitation, not fixed.
+
+Comprehensive tests added: `tests/unit/test_node_tool_routing.py` (new — successful routing across
+all six invocation shapes, fallback routing for prettier/jest/tsc/unknown tools, `<wrapper> run
+<script>` exclusions including the same-named-script edge case, regression tests proving the
+classifier boundary — transparent prefixes, pipe safety, structured-output exclusion, `bunx`
+non-involvement — is unaffected by this change since `quor/rewrite/` was not touched, and boundary
+cases including the `eslint-plugin-foo` word-boundary bug found and fixed during implementation) plus
+`TestEslintFilterSafety` in `test_filter_safety.py` (realistic ESLint stylish-formatter output:
+violations/rule names/problem summaries never compressed, repeated-violation collapsing, parse
+errors, clean-run passthrough) and 3 new inline filter tests. Full `pytest`, `quor verify`, `ruff
+check`, and `mypy` all pass.
+
+**Follow-up refinement (before commit):** the initial `eslint` filter's `group_repeated` config
+(shape-only pattern matching, `'^\s*\d+:\d+\s+(error|warning)\s'`) collapsed *any* consecutive
+violation-shaped lines together regardless of message — meaning two genuinely different rule
+violations sitting on adjacent lines (e.g. a `semi` error followed by a `no-console` error) would
+have merged into one collapsed count, silently losing the second rule's identity. This was flagged
+before commit and fixed with a minimal, additive, backward-compatible enhancement rather than
+changing `group_repeated`'s existing behavior:
+
+- Added an opt-in `exact_match: bool = False` field to `GroupRepeatedConfig`
+  (`quor/pipeline/stages/group_repeated.py`). Default `False` preserves the exact behavior every
+  existing filter already depends on — mypy's `build.toml` config intentionally collapses the *same
+  error message* recurring at *different line numbers* in one file (three different strings, one
+  shape), and changing the default would have silently broken that already-tested, desired behavior.
+  This is exactly the "cannot force it without affecting mypy" case the requirement anticipated —
+  the safe fix was a new opt-in field, not a change to the default matching semantic.
+- `exact_match=True` adds one condition to run continuation: the candidate line must be byte-identical
+  to the run's first line, in addition to matching the pattern. Only the `eslint` filter sets it
+  (`min_count` also lowered from 3 to 2, since exact-match false positives are structurally
+  impossible, unlike shape-only matching which needed a higher bar to stay conservative).
+- Regression tests added to `tests/unit/test_stages.py::TestGroupRepeated` (default-off behavior
+  unchanged; exact-match collapses byte-identical lines; does not collapse same-shape-different-text
+  for both a differing line number and a differing rule name; a differing line in the middle of two
+  identical pairs correctly splits into two separate collapses) and to
+  `TestEslintFilterSafety` in `test_filter_safety.py` (identical repeated messages collapse;
+  different rule names, different line numbers, and different file paths — the last via the natural
+  file-path-header run-break, unaffected by this change — all correctly stay uncollapsed). Full
+  `pytest`, `quor verify` (42/42), `ruff check`, and `mypy` all re-verified clean after this change.
 
 ---
 

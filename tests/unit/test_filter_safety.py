@@ -508,6 +508,163 @@ class TestGenericFilterSafety:
 
 
 # ---------------------------------------------------------------------------
+# eslint filter (QB-006B — tool-aware routing through npm/npx/pnpm/yarn)
+# ---------------------------------------------------------------------------
+
+
+class TestEslintFilterSafety:
+    """Real ESLint stylish-formatter output, reached via npx/pnpm/yarn
+    wrapper routing: violations, rule names, and problem summaries must
+    never be compressed."""
+
+    VIOLATIONS_OUTPUT = (
+        "/Users/dev/project/src/index.js\n"
+        "  12:5   error    'foo' is defined but never used  no-unused-vars\n"
+        "  34:10  warning  Missing return type on function  @typescript-eslint/explicit-function-return-type\n"
+        "\n"
+        "/Users/dev/project/src/utils.js\n"
+        "  5:1  error  Unexpected console statement  no-console\n"
+        "\n"
+        "✖ 3 problems (2 errors, 1 warning)\n"
+        "  1 error and 0 warnings potentially fixable with the `--fix` option.\n"
+    )
+
+    IDENTICAL_REPEATED_OUTPUT = (
+        "/src/a.js\n"
+        "  1:1  error  Missing semicolon  semi\n"
+        "  1:1  error  Missing semicolon  semi\n"
+        "  1:1  error  Missing semicolon  semi\n"
+        "\n"
+        "✖ 3 problems (3 errors, 0 warnings)\n"
+    )
+
+    DIFFERENT_LINE_NUMBERS_OUTPUT = (
+        "/src/a.js\n"
+        "  1:1  error  Missing semicolon  semi\n"
+        "  2:1  error  Missing semicolon  semi\n"
+        "  3:1  error  Missing semicolon  semi\n"
+        "\n"
+        "✖ 3 problems (3 errors, 0 warnings)\n"
+    )
+
+    DIFFERENT_RULE_NAMES_OUTPUT = (
+        "/src/a.js\n"
+        "  1:1  error  Missing semicolon  semi\n"
+        "  1:2  error  Unexpected console statement  no-console\n"
+        "  1:3  error  'foo' is defined but never used  no-unused-vars\n"
+        "\n"
+        "✖ 3 problems (3 errors, 0 warnings)\n"
+    )
+
+    DIFFERENT_FILE_PATHS_OUTPUT = (
+        "/src/a.js\n"
+        "  1:1  error  Missing semicolon  semi\n"
+        "\n"
+        "/src/b.js\n"
+        "  1:1  error  Missing semicolon  semi\n"
+        "\n"
+        "✖ 2 problems (2 errors, 0 warnings)\n"
+    )
+
+    PARSE_ERROR_OUTPUT = (
+        "/src/broken.js\n"
+        "  0:0  error  Parsing error: Unexpected token }\n"
+        "\n"
+        "✖ 1 problem (1 error, 0 warnings)\n"
+    )
+
+    def test_rule_violations_are_not_compress(self) -> None:
+        result = _trace("npx eslint .", self.VIOLATIONS_OUTPUT)
+        for fragment in ("no-unused-vars", "no-console", "explicit-function-return-type"):
+            decisions = _decisions_for(result, fragment)
+            assert decisions, f"Expected line with {fragment!r} in mask"
+            assert Decision.COMPRESS not in decisions
+
+    def test_problem_summary_is_not_compress(self) -> None:
+        result = _trace("npx eslint .", self.VIOLATIONS_OUTPUT)
+        decisions = _decisions_for(result, "✖ 3 problems")
+        assert decisions
+        assert Decision.COMPRESS not in decisions
+
+    def test_fixable_note_is_not_compress(self) -> None:
+        result = _trace("npx eslint .", self.VIOLATIONS_OUTPUT)
+        decisions = _decisions_for(result, "potentially fixable")
+        assert decisions
+        assert Decision.COMPRESS not in decisions
+
+    def test_rendered_output_via_pnpm_exec_preserves_all_violations(self) -> None:
+        rendered = _apply("pnpm exec eslint .", self.VIOLATIONS_OUTPUT)
+        assert "no-unused-vars" in rendered
+        assert "no-console" in rendered
+        assert "✖ 3 problems (2 errors, 1 warning)" in rendered
+
+    def test_rendered_output_via_yarn_bare_shorthand_preserves_all_violations(self) -> None:
+        rendered = _apply("yarn eslint .", self.VIOLATIONS_OUTPUT)
+        assert "no-unused-vars" in rendered
+        assert "✖ 3 problems (2 errors, 1 warning)" in rendered
+
+    def test_identical_repeated_messages_collapse(self) -> None:
+        """QB-006B follow-up: exact_match=true — only byte-identical repeated
+        diagnostics collapse."""
+        result = _trace("npx eslint .", self.IDENTICAL_REPEATED_OUTPUT)
+        decisions = _decisions_for(result, "Missing semicolon")
+        # One instance survives (as KEEP or, once strip_lines' preserve_patterns
+        # upgrades it for containing "error", PROTECT) and the rest compress.
+        assert Decision.COMPRESS in decisions
+        assert decisions - {Decision.COMPRESS}, "Expected at least one surviving instance"
+        rendered = _apply("npx eslint .", self.IDENTICAL_REPEATED_OUTPUT)
+        assert "(×3)" in rendered  # noqa: RUF001
+        assert rendered.count("1:1") == 1
+        assert "✖ 3 problems (3 errors, 0 warnings)" in rendered
+
+    def test_different_line_numbers_do_not_collapse(self) -> None:
+        """Same rule/message, different location — must NOT merge, unlike
+        mypy's group_repeated config which intentionally does merge this case."""
+        result = _trace("npx eslint .", self.DIFFERENT_LINE_NUMBERS_OUTPUT)
+        for fragment in ("1:1", "2:1", "3:1"):
+            decisions = _decisions_for(result, fragment)
+            assert decisions, f"Expected line {fragment!r} in mask"
+            assert Decision.COMPRESS not in decisions
+        rendered = _apply("npx eslint .", self.DIFFERENT_LINE_NUMBERS_OUTPUT)
+        assert "(×" not in rendered  # noqa: RUF001
+
+    def test_different_rule_names_do_not_collapse(self) -> None:
+        result = _trace("npx eslint .", self.DIFFERENT_RULE_NAMES_OUTPUT)
+        for fragment in ("semi", "no-console", "no-unused-vars"):
+            decisions = _decisions_for(result, fragment)
+            assert decisions, f"Expected rule {fragment!r} in mask"
+            assert Decision.COMPRESS not in decisions
+        rendered = _apply("npx eslint .", self.DIFFERENT_RULE_NAMES_OUTPUT)
+        assert "(×" not in rendered  # noqa: RUF001
+
+    def test_different_file_paths_do_not_collapse(self) -> None:
+        """Two files with the textually-identical violation on their own
+        first line — the file-path header naturally breaks the run, so this
+        must never merge across files."""
+        result = _trace("npx eslint .", self.DIFFERENT_FILE_PATHS_OUTPUT)
+        decisions = _decisions_for(result, "Missing semicolon")
+        assert decisions
+        assert Decision.COMPRESS not in decisions
+        rendered = _apply("npx eslint .", self.DIFFERENT_FILE_PATHS_OUTPUT)
+        assert rendered.count("Missing semicolon") == 2
+        assert "/src/a.js" in rendered
+        assert "/src/b.js" in rendered
+        assert "(×" not in rendered  # noqa: RUF001
+
+    def test_parse_error_never_compressed(self) -> None:
+        result = _trace("npx eslint .", self.PARSE_ERROR_OUTPUT)
+        decisions = _decisions_for(result, "Parsing error: Unexpected token }")
+        assert decisions
+        assert Decision.COMPRESS not in decisions
+
+    def test_clean_run_with_no_issues_passes_through_unchanged(self) -> None:
+        """Real ESLint prints nothing at all on a clean run (unlike mypy's
+        'Success: no issues found' sentinel) — abort_unless must no-op."""
+        rendered = _apply("npx eslint .", "")
+        assert rendered == ""
+
+
+# ---------------------------------------------------------------------------
 # npm filter (QB-006A)
 # ---------------------------------------------------------------------------
 

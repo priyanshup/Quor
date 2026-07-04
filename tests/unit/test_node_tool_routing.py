@@ -1,0 +1,210 @@
+"""QB-006B: tool-aware routing through npm/npx/pnpm/yarn wrappers.
+
+Routing is pure command-string matching in FilterRegistry — no new stage,
+no classifier change, no package.json inspection, no content-based
+decisions. These tests cover:
+  - successful routing: a wrapped, literally-named tool (eslint) resolves
+    to its own filter regardless of which wrapper/shape invoked it.
+  - fallback routing: a wrapped tool with no specific filter (prettier,
+    jest, tsc) falls through to the generic npm/npx/pnpm/yarn filter —
+    an emergent property of "first match wins", not special-cased code.
+  - exclusions: `<wrapper> run <script>` never routes, even when the
+    script happens to be named after a known tool — resolving that would
+    require reading package.json, which is out of scope by requirement.
+  - interaction with the classifier: transparent prefixes (sudo, docker
+    exec, env vars), pipe safety, and structured-output exclusion are all
+    decided by quor/rewrite/ before FilterRegistry ever sees the command,
+    and QB-006B does not touch quor/rewrite/ at all — these are regression
+    checks proving that boundary is intact.
+  - boundary cases: word-boundary precision (eslint-plugin-foo must not
+    match), case sensitivity, flags before the tool name.
+"""
+
+from __future__ import annotations
+
+from quor.filters.registry import FilterRegistry
+from quor.rewrite.classifier import classify_command
+from quor.rewrite.invocation import get_quor_invocation
+
+Q = get_quor_invocation()
+
+
+def _builtin_only() -> FilterRegistry:
+    return FilterRegistry(skip_user=True, skip_project=True)
+
+
+def _matched_filter_name(command: str) -> str | None:
+    registry = _builtin_only()
+    fc = registry.find(command)
+    return fc.name if fc else None
+
+
+# ---------------------------------------------------------------------------
+# Successful routing: eslint, across every documented wrapper shape
+# ---------------------------------------------------------------------------
+
+
+class TestSuccessfulRouting:
+    def test_npx_eslint(self) -> None:
+        assert _matched_filter_name("npx eslint") == "eslint"
+
+    def test_npx_eslint_with_args(self) -> None:
+        assert _matched_filter_name("npx eslint .") == "eslint"
+
+    def test_npx_eslint_with_leading_flag(self) -> None:
+        assert _matched_filter_name("npx -y eslint .") == "eslint"
+
+    def test_npm_exec_eslint(self) -> None:
+        assert _matched_filter_name("npm exec eslint") == "eslint"
+
+    def test_npm_exec_double_dash_eslint(self) -> None:
+        assert _matched_filter_name("npm exec -- eslint .") == "eslint"
+
+    def test_pnpm_exec_eslint(self) -> None:
+        assert _matched_filter_name("pnpm exec eslint") == "eslint"
+
+    def test_pnpm_dlx_eslint(self) -> None:
+        assert _matched_filter_name("pnpm dlx eslint") == "eslint"
+
+    def test_yarn_exec_eslint(self) -> None:
+        assert _matched_filter_name("yarn exec eslint") == "eslint"
+
+    def test_yarn_bare_eslint_shorthand(self) -> None:
+        """Yarn classic's implicit `yarn <binary>` shorthand for a locally
+        installed package binary — must route, unlike yarn's own subcommands."""
+        assert _matched_filter_name("yarn eslint") == "eslint"
+
+    def test_yarn_bare_eslint_with_args(self) -> None:
+        assert _matched_filter_name("yarn eslint src/ --fix") == "eslint"
+
+
+# ---------------------------------------------------------------------------
+# Fallback routing: no specific filter exists yet for these tools
+# ---------------------------------------------------------------------------
+
+
+class TestFallbackRouting:
+    def test_npx_prettier_falls_back_to_generic_npx(self) -> None:
+        assert _matched_filter_name("npx prettier .") == "npx"
+
+    def test_npx_jest_falls_back_to_generic_npx(self) -> None:
+        assert _matched_filter_name("npx jest") == "npx"
+
+    def test_npx_tsc_falls_back_to_generic_npx(self) -> None:
+        assert _matched_filter_name("npx tsc") == "npx"
+
+    def test_pnpm_exec_jest_falls_back_to_generic_pnpm(self) -> None:
+        assert _matched_filter_name("pnpm exec jest") == "pnpm"
+
+    def test_yarn_bare_prettier_falls_back_to_generic_yarn(self) -> None:
+        assert _matched_filter_name("yarn prettier --write .") == "yarn"
+
+    def test_unrecognized_wrapped_tool_falls_back(self) -> None:
+        assert _matched_filter_name("npx some-random-cli-tool") == "npx"
+
+
+# ---------------------------------------------------------------------------
+# Exclusions: package.json-mediated scripts never route, by requirement
+# ---------------------------------------------------------------------------
+
+
+class TestScriptInvocationsNeverRoute:
+    def test_npm_test_stays_generic(self) -> None:
+        assert _matched_filter_name("npm test") == "npm"
+
+    def test_npm_run_build_stays_generic(self) -> None:
+        assert _matched_filter_name("npm run build") == "npm"
+
+    def test_npm_run_lint_stays_generic(self) -> None:
+        assert _matched_filter_name("npm run lint") == "npm"
+
+    def test_npm_run_script_literally_named_eslint_still_excluded(self) -> None:
+        """The script *name* happens to be 'eslint', but `npm run` always
+        goes through package.json — resolving what it really runs would
+        require reading package.json, which is out of scope. Must stay generic."""
+        assert _matched_filter_name("npm run eslint") == "npm"
+
+    def test_yarn_run_eslint_still_excluded(self) -> None:
+        assert _matched_filter_name("yarn run eslint") == "yarn"
+
+    def test_pnpm_run_eslint_still_excluded(self) -> None:
+        assert _matched_filter_name("pnpm run eslint") == "pnpm"
+
+
+# ---------------------------------------------------------------------------
+# Regression: classifier boundary (transparent prefixes, pipes, structured
+# output) is untouched by QB-006B — these all resolve before FilterRegistry
+# ever sees the command, and quor/rewrite/ was not modified for this item.
+# ---------------------------------------------------------------------------
+
+
+class TestClassifierBoundaryUnaffected:
+    def test_sudo_npx_eslint_rewrites_and_preserves_wrapped_command(self) -> None:
+        r = classify_command("sudo npx eslint .")
+        assert r.should_rewrite is True
+        assert r.rewritten == f"sudo {Q} npx eslint ."
+        # The portion FilterRegistry will see is exactly "npx eslint .".
+        assert _matched_filter_name("npx eslint .") == "eslint"
+
+    def test_docker_exec_npx_eslint_rewrites_and_preserves_wrapped_command(self) -> None:
+        r = classify_command("docker exec mycontainer npx eslint .")
+        assert r.should_rewrite is True
+        assert r.rewritten == f"docker exec mycontainer {Q} npx eslint ."
+
+    def test_env_prefix_npx_eslint_rewrites_and_preserves_wrapped_command(self) -> None:
+        r = classify_command("CI=true npx eslint .")
+        assert r.should_rewrite is True
+        assert r.rewritten == f"CI=true {Q} npx eslint ."
+
+    def test_pipe_to_safe_target_rewrites_first_segment_only(self) -> None:
+        r = classify_command("npx eslint . | grep error")
+        assert r.should_rewrite is True
+        assert r.rewritten == f"{Q} npx eslint . | grep error"
+
+    def test_pipe_to_unsafe_target_excluded(self) -> None:
+        r = classify_command("npx eslint . | xargs echo")
+        assert r.should_rewrite is False
+        assert r.rewritten is None
+
+    def test_structured_output_flag_excludes_rewrite(self) -> None:
+        r = classify_command("npx eslint --format=json .")
+        assert r.should_rewrite is False
+        assert r.rewritten is None
+
+    def test_bunx_still_transparent_and_unrelated_to_routing(self) -> None:
+        """bunx stays out of scope entirely (QB-006A decision) — confirms
+        QB-006B didn't accidentally widen Node-tool routing to Bun."""
+        r = classify_command("bunx eslint .")
+        assert r.should_rewrite is False
+
+
+# ---------------------------------------------------------------------------
+# Boundary cases
+# ---------------------------------------------------------------------------
+
+
+class TestRoutingBoundaryCases:
+    def test_eslint_plugin_package_name_does_not_match(self) -> None:
+        """Word-boundary precision: a package name that merely starts with
+        'eslint' (a real, common npm naming convention) must not misroute."""
+        assert _matched_filter_name("npx eslint-plugin-foo") == "npx"
+
+    def test_eslint_config_package_name_does_not_match(self) -> None:
+        assert _matched_filter_name("npx eslintconfig-check") == "npx"
+
+    def test_yarn_eslintcache_binary_does_not_match(self) -> None:
+        assert _matched_filter_name("yarn eslintcache") == "yarn"
+
+    def test_yarn_own_subcommands_are_not_shadowed(self) -> None:
+        """Regression: the bare-yarn-shorthand pattern must never capture
+        yarn's own first-class subcommands."""
+        for cmd in ("yarn add lodash", "yarn install", "yarn upgrade", "yarn remove lodash"):
+            assert _matched_filter_name(cmd) == "yarn", cmd
+
+    def test_multiple_flags_before_tool_name(self) -> None:
+        assert _matched_filter_name("npx -y --no-install eslint .") == "eslint"
+
+    def test_case_sensitivity_uppercase_tool_name_does_not_match(self) -> None:
+        """Real npm/npx/yarn package names are case-sensitive and lowercase
+        by convention; an uppercase invocation is not a real eslint call."""
+        assert _matched_filter_name("npx ESLint") == "npx"
