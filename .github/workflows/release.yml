@@ -2,12 +2,28 @@ name: Release
 
 # Triggered by pushing a version tag, e.g.: git tag v0.1.0 && git push origin v0.1.0
 #
-# Builds wheel + sdist, verifies them, attaches them to a GitHub Release,
-# and (only if a PYPI_API_TOKEN secret is configured for the `pypi` GitHub
-# environment) publishes to PyPI. Without that secret configured, the
-# publish job runs and fails fast at the "Check PyPI token is configured"
-# step rather than silently skipping — so a maintainer always gets a clear
-# signal instead of a false "success".
+# Pipeline: build -> publish to TestPyPI -> validate the TestPyPI install ->
+# manual approval gate -> publish to production PyPI (+ create GitHub Release).
+#
+# `publish-pypi` needs both `build` and `release-approval`, and
+# `release-approval` needs `validate-testpypi`, which needs `publish-testpypi`
+# — so production publish is unreachable unless the TestPyPI publish and its
+# install/smoke-test validation both succeeded in this same run, and a
+# reviewer then approves the `release-approval` environment. Configure
+# required reviewers for `release-approval` under Settings > Environments;
+# without that configured, the gate is a no-op, same caveat as the
+# `pypi`/`testpypi` environments' secrets below.
+#
+# This workflow has no workflow_dispatch trigger, so there is no manual-run
+# path that skips the gate. The separate `publish-testpypi.yml` workflow is
+# an independent pre-tag dry run — it only ever publishes to TestPyPI and
+# never touches PYPI_API_TOKEN or the `pypi` environment, so it cannot reach
+# production either.
+#
+# Without a PYPI_API_TOKEN secret configured for the `pypi` GitHub
+# environment, the publish-pypi job fails fast at the "Check PyPI token is
+# configured" step rather than silently skipping — so a maintainer always
+# gets a clear signal instead of a false "success".
 
 on:
   push:
@@ -55,6 +71,78 @@ jobs:
           path: dist/
           retention-days: 30
 
+  publish-testpypi:
+    name: Publish to TestPyPI
+    needs: build
+    runs-on: ubuntu-latest
+    environment: testpypi
+    steps:
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - name: Check TestPyPI token is configured
+        run: |
+          if [ -z "${{ secrets.TEST_PYPI_API_TOKEN }}" ]; then
+            echo "::error::TEST_PYPI_API_TOKEN is not set for the 'testpypi' environment. Configure it under Settings > Environments > testpypi — production publish is gated on this step succeeding."
+            exit 1
+          fi
+
+      - name: Publish to TestPyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          password: ${{ secrets.TEST_PYPI_API_TOKEN }}
+          repository-url: https://test.pypi.org/legacy/
+
+  validate-testpypi:
+    name: Validate TestPyPI install
+    needs: publish-testpypi
+    runs-on: ubuntu-latest
+    steps:
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install from TestPyPI and smoke-test
+        # TestPyPI indexing can lag a few seconds after publish, so retry.
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          for attempt in 1 2 3 4 5 6; do
+            if pip install --no-cache-dir \
+                --index-url https://test.pypi.org/simple/ \
+                --extra-index-url https://pypi.org/simple/ \
+                "quor==$VERSION"; then
+              break
+            fi
+            if [ "$attempt" -eq 6 ]; then
+              echo "::error::Failed to install quor==$VERSION from TestPyPI after 6 attempts"
+              exit 1
+            fi
+            echo "Install attempt $attempt failed, retrying in 10s..."
+            sleep 10
+          done
+
+          python -c "import quor; assert quor.__version__ == '$VERSION', quor.__version__"
+
+          INSTALLED_VERSION=$(quor | awk '{print $2}')
+          if [ "$INSTALLED_VERSION" != "$VERSION" ]; then
+            echo "::error::Installed quor reports version $INSTALLED_VERSION, expected $VERSION"
+            exit 1
+          fi
+          echo "OK: quor $INSTALLED_VERSION installed and importable from TestPyPI"
+
+  release-approval:
+    name: Manual approval for production PyPI publish
+    needs: validate-testpypi
+    runs-on: ubuntu-latest
+    environment: release-approval
+    steps:
+      - name: Approved
+        run: echo "TestPyPI publish validated — proceeding to production PyPI publish."
+
   github-release:
     name: Create GitHub Release
     needs: build
@@ -78,7 +166,7 @@ jobs:
 
   publish-pypi:
     name: Publish to PyPI
-    needs: build
+    needs: [build, release-approval]
     runs-on: ubuntu-latest
     environment: pypi
     steps:
