@@ -285,12 +285,14 @@ class TestGroupRepeated:
         patterns: list[str] | None = None,
         min_count: int = 2,
         preserve: list[str] | None = None,
+        exact_match: bool = False,
     ) -> GroupRepeatedConfig:
         return GroupRepeatedConfig(
             type="group_repeated",
             patterns=patterns or [],
             min_count=min_count,
             preserve_patterns=preserve or [],
+            exact_match=exact_match,
         )
 
     def test_empty_input(self) -> None:
@@ -403,6 +405,76 @@ class TestGroupRepeated:
         # No lines should be compressed on timeout
         for lm in result.lines:
             assert lm.decision is not Decision.COMPRESS
+
+    # -- exact_match (QB-006B): opt-in strict mode, default-off ---------------
+
+    def test_exact_match_default_false_preserves_shape_only_behavior(self) -> None:
+        """Regression: not passing exact_match must behave exactly as before
+        this field existed — this is what mypy's build.toml config relies on
+        (same error message, different line numbers, still collapses)."""
+        mask = ContentMask.from_text(
+            "file.py:12: error: incompatible type\nfile.py:34: error: incompatible type"
+        )
+        result = self.stage.apply(mask, self._config(patterns=[r"^.*: error: "], min_count=2))
+        assert "×2" in result.lines[0].line  # noqa: RUF001
+        assert result.lines[1].decision is Decision.COMPRESS
+
+    def test_exact_match_true_collapses_byte_identical_lines(self) -> None:
+        mask = ContentMask.from_text("  1:1  error  Missing semicolon  semi\n" * 2)
+        result = self.stage.apply(
+            mask, self._config(patterns=[r"^\s*\d+:\d+\s+error\s"], min_count=2, exact_match=True)
+        )
+        assert "×2" in result.lines[0].line  # noqa: RUF001
+        assert result.lines[1].decision is Decision.COMPRESS
+
+    def test_exact_match_true_does_not_collapse_different_line_numbers(self) -> None:
+        """Same rule/message, different line:col — same shape, different text.
+        With exact_match, this must NOT collapse."""
+        text = (
+            "  1:1  error  Missing semicolon  semi\n"
+            "  2:1  error  Missing semicolon  semi\n"
+        )
+        mask = ContentMask.from_text(text)
+        result = self.stage.apply(
+            mask, self._config(patterns=[r"^\s*\d+:\d+\s+error\s"], min_count=2, exact_match=True)
+        )
+        assert all(lm.decision is Decision.KEEP for lm in result.lines)
+        assert "(×" not in result.lines[0].line  # noqa: RUF001
+        assert "(×" not in result.lines[1].line  # noqa: RUF001
+
+    def test_exact_match_true_does_not_collapse_different_rule_names(self) -> None:
+        """Same shape, different rule/message entirely — must stay separate."""
+        text = (
+            "  1:1  error  Missing semicolon  semi\n"
+            "  1:2  error  Unexpected console statement  no-console\n"
+        )
+        mask = ContentMask.from_text(text)
+        result = self.stage.apply(
+            mask, self._config(patterns=[r"^\s*\d+:\d+\s+error\s"], min_count=2, exact_match=True)
+        )
+        assert all(lm.decision is Decision.KEEP for lm in result.lines)
+
+    def test_exact_match_true_run_partially_collapses_around_a_different_line(self) -> None:
+        """Two identical lines, then a different one, then two more identical
+        (matching the first pair's text) must form two separate collapses,
+        not one — the differing line in the middle must break the run."""
+        text = (
+            "  1:1  error  Missing semicolon  semi\n"
+            "  1:1  error  Missing semicolon  semi\n"
+            "  2:5  error  Unexpected console statement  no-console\n"
+            "  1:1  error  Missing semicolon  semi\n"
+            "  1:1  error  Missing semicolon  semi\n"
+        )
+        mask = ContentMask.from_text(text)
+        result = self.stage.apply(
+            mask, self._config(patterns=[r"^\s*\d+:\d+\s+error\s"], min_count=2, exact_match=True)
+        )
+        assert "×2" in result.lines[0].line  # noqa: RUF001
+        assert result.lines[1].decision is Decision.COMPRESS
+        assert result.lines[2].decision is Decision.KEEP
+        assert "no-console" in result.lines[2].line
+        assert "×2" in result.lines[3].line  # noqa: RUF001
+        assert result.lines[4].decision is Decision.COMPRESS
 
 
 # ---------------------------------------------------------------------------

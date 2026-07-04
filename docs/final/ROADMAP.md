@@ -99,11 +99,13 @@
 - Filter contribution process in CONTRIBUTING.md
 - Official `quor-*` namespace guidelines published
 - Built-in filter ecosystem expansion (Batch 5 design review): Python structural code extraction
-  for `cat` (`cat-python.toml`, stdlib `ast` only — QB-005) and generic Node.js CLI noise removal
-  for `npm`/`npx`/`pnpm`/`yarn` (QB-006A). Tool-aware Node.js filtering (Jest/ESLint/TypeScript/
-  Vitest/Webpack/Vite — QB-006B) is deferred pending an ADR; document compression (QB-007) is
-  blocked pending a feasibility investigation into native Read/File tool interception — see
-  backlog.md for both.
+  for `cat` (`cat-python.toml`, stdlib `ast` only — QB-005), generic Node.js CLI noise removal for
+  `npm`/`npx`/`pnpm`/`yarn` (QB-006A), and command-string-only tool-aware routing through those
+  wrappers to an `eslint` filter where the real tool name is directly visible (`npx eslint`,
+  `pnpm exec/dlx eslint`, `yarn eslint`, etc. — QB-006B; no `package.json` inspection, no
+  content-based routing; `npm test`/`npm run <script>` stay generic). Document compression (QB-007)
+  is blocked pending a feasibility investigation into native Read/File tool interception — see
+  backlog.md for all three.
 
 **What does NOT ship:**
 - Cursor / Copilot adapters (v2)

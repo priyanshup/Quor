@@ -1,27 +1,110 @@
-# quor built-in filter: Node.js ecosystem wrapper noise (QB-006A)
+# quor built-in filter: Node.js ecosystem wrapper noise (QB-006A) and
+# tool-aware routing through the wrapper (QB-006B)
 #
-# Generic-only: strips noise that npm/npx/pnpm/yarn themselves print on every
-# invocation (progress ticks, funding/audit nags, deprecation warning spam,
-# step banners) regardless of what subcommand or wrapped script is running.
-# Deliberately NOT tool-aware — the underlying test runner/bundler/linter
-# output (Jest, ESLint, tsc, Webpack, Vite, ...) passes through unfiltered
-# except for these same generic patterns; tool-specific intelligence for what
-# runs *underneath* these wrappers is QB-006B, not this filter.
+# Generic-only for the npm/npx/pnpm/yarn blocks: strips noise that these
+# wrappers themselves print on every invocation (progress ticks, funding/audit
+# nags, deprecation warning spam, step banners) regardless of what subcommand
+# or wrapped script is running.
 #
-# No max_tokens stage in any of these four filters, unlike most other
-# built-in filters: npm/npx/pnpm/yarn can all wrap an arbitrary-length
-# underlying command (`npm test`, `npm run build`, `npx jest`, `pnpm run x`,
-# `yarn build`), and a token-budget stage would risk truncating that wrapped
-# tool's real, actionable output — which QB-006A must not do. Compression
-# here comes only from stripping known noise shapes and collapsing warning
-# spam, never from a blanket length cap.
+# QB-006B (this file's FIRST filter block, "eslint"): when the wrapped tool's
+# name is *literally present in the command string* (`npx eslint`, `npm exec
+# eslint`, `pnpm exec/dlx eslint`, `yarn exec eslint`, bare `yarn eslint`),
+# route to that tool's own filter instead of the generic wrapper filter — pure
+# command-string pattern matching, no content-based routing, no package.json
+# inspection. `[[filter]]` blocks in a TOML file are tried in declaration
+# order (see FilterRegistry.find()'s first-match-wins semantics), so the
+# eslint block MUST stay before the generic npm/npx/pnpm/yarn blocks below —
+# the same specificity-via-ordering idiom used for cat-python.toml vs cat.toml
+# in QB-005, just within one file instead of across two.
+#
+# `npm test` / `npm run build` / `npm run lint` / any `<wrapper> run <script>`
+# form is deliberately NOT matched here and never will be: the script name is
+# an alias defined in package.json, and resolving what it actually runs would
+# require reading package.json, which is out of scope by requirement. Only
+# invocation shapes where the real tool name appears directly in the command
+# (exec/dlx/npx forms, or yarn's bare-binary shorthand) are eligible for
+# routing. If no specific filter matches, these commands fall through
+# unchanged to the generic npm/npx/pnpm/yarn filters below — fallback needs no
+# special-case code, it's the existing "first match wins" registry behavior.
+#
+# No max_tokens stage in the generic npm/npx/pnpm/yarn filters, unlike most
+# other built-in filters: they can all wrap an arbitrary-length underlying
+# command (`npm test`, `npm run build`, `npx jest`, `pnpm run x`, `yarn
+# build`), and a token-budget stage would risk truncating that wrapped tool's
+# real, actionable output. The eslint filter below DOES use max_tokens,
+# because once routed there the wrapped tool is *known* (ESLint's own output
+# shape), matching the same precedent as mypy/ruff in build.toml.
 #
 # Composed entirely from existing stage types (remove_ansi, group_repeated,
-# strip_lines, deduplicate_consecutive) — no new stage, no registry/dispatcher
-# change. Requires npm/npx/pnpm/yarn to be known base commands rather than
-# transparent prefixes (see quor/rewrite/rules.py) so their own output is
-# ever routed through Quor at all.
+# strip_lines, deduplicate_consecutive, max_tokens) — no new stage, no
+# registry/dispatcher/Pipeline/Engine/ContentMask/StageHandler change.
+# Requires npm/npx/pnpm/yarn to be known base commands rather than
+# transparent prefixes (see quor/rewrite/rules.py, QB-006A) so their output is
+# ever routed through Quor at all; QB-006B adds no further classifier change.
 schema_version = 1
+
+# ---------------------------------------------------------------------------
+# eslint — tool-aware routing (QB-006B)
+# ---------------------------------------------------------------------------
+
+[[filter]]
+name = "eslint"
+match_command = '^(npx|npm exec|pnpm exec|pnpm dlx|yarn exec|yarn)\s+(-\S+\s+)*(--\s+)?eslint(?=\s|$)'
+abort_unless = ["error", "warning", "problem"]
+on_empty = "eslint: no issues found."
+
+[[filter.stages]]
+type = "remove_ansi"
+
+[[filter.stages]]
+type = "group_repeated"
+# exact_match=true (QB-006B follow-up): shape-only matching (mypy's default
+# in build.toml) would merge different rule violations that merely share the
+# "L:C  error|warning  ..." shape — wrong for ESLint, where each line is a
+# distinct diagnostic. exact_match requires the full line to be byte-identical
+# before it's folded into a run, so only genuinely repeated diagnostics
+# collapse; different rules, messages, or locations always stay separate.
+patterns = ['^\s*\d+:\d+\s+(error|warning)\s']
+min_count = 2
+exact_match = true
+
+[[filter.stages]]
+type = "strip_lines"
+patterns = [
+    '^\s*$',
+]
+preserve_patterns = [
+    '(?i)error',
+    '(?i)warning',
+    '✖',
+    '(?i)problem',
+    '(?i)fixable',
+]
+
+[[filter.stages]]
+type = "max_tokens"
+limit = 400
+strategy = "tail"
+
+[[filter.tests]]
+description = "Violations and problem summary preserved for npx eslint"
+input = "/Users/dev/project/src/index.js\n  12:5   error    'foo' is defined but never used  no-unused-vars\n  34:10  warning  Missing semicolon  semi\n\n✖ 2 problems (1 error, 1 warning)\n"
+must_contain = ["no-unused-vars", "✖ 2 problems (1 error, 1 warning)"]
+
+[[filter.tests]]
+description = "Byte-identical repeated diagnostics collapse to (×N)"
+input = "/src/a.js\n  1:1  error  Missing semicolon  semi\n  1:1  error  Missing semicolon  semi\n\n✖ 2 problems (2 errors, 0 warnings)\n"
+must_contain = ["(×2)", "✖ 2 problems (2 errors, 0 warnings)"]
+
+[[filter.tests]]
+description = "Same rule at different line numbers must NOT collapse — each is a distinct diagnostic"
+input = "/src/a.js\n  1:1  error  Missing semicolon  semi\n  2:1  error  Missing semicolon  semi\n  3:1  error  Missing semicolon  semi\n  4:1  error  Missing semicolon  semi\n\n✖ 4 problems (4 errors, 0 warnings)\n"
+must_contain = ["1:1", "2:1", "3:1", "4:1", "✖ 4 problems (4 errors, 0 warnings)"]
+
+[[filter.tests]]
+description = "Fixable-with-fix note and single violation preserved"
+input = "/src/b.js\n  5:10  error  Unexpected console statement  no-console\n\n✖ 1 problem (1 error, 0 warnings)\n  1 error and 0 warnings potentially fixable with the `--fix` option.\n"
+must_contain = ["no-console", "✖ 1 problem", "potentially fixable"]
 
 # ---------------------------------------------------------------------------
 # npm — install/ci/update/audit/etc. wrapper noise
@@ -36,6 +119,12 @@ type = "remove_ansi"
 
 [[filter.stages]]
 type = "group_repeated"
+# exact_match left at its default (false, shape-based): intentional — this is
+# generic wrapper-noise reduction (QB-006A), not diagnostics. We don't care
+# which specific package triggered each deprecation warning, only that N
+# deprecation warnings happened; one representative example + count is the
+# desired summary, unlike eslint below where every line is a distinct,
+# individually meaningful diagnostic.
 patterns = ['(?i)^npm (warn|WARN) deprecated\b']
 min_count = 2
 
@@ -95,6 +184,10 @@ type = "remove_ansi"
 
 [[filter.stages]]
 type = "group_repeated"
+# exact_match left at its default (false, shape-based) — same reasoning as
+# the npm filter above: npx delegates to npm's own install machinery, so its
+# deprecation spam has the same shape and the same "N happened, show one
+# example" intent, not per-package precision.
 patterns = ['(?i)^npm (warn|WARN) deprecated\b']
 min_count = 2
 
@@ -140,6 +233,10 @@ type = "remove_ansi"
 
 [[filter.stages]]
 type = "group_repeated"
+# exact_match left at its default (false, shape-based): intentional, same
+# generic-noise rationale as npm/npx above — pnpm's WARN lines cover varied
+# deprecated/peer-dependency notices, and we only want "N warnings occurred,
+# here's one" rather than preserving every distinct package name.
 patterns = ['(?i)^\s*warn\b']
 min_count = 2
 
@@ -188,6 +285,10 @@ type = "remove_ansi"
 
 [[filter.stages]]
 type = "group_repeated"
+# exact_match left at its default (false, shape-based): intentional and
+# tested below — two different peer-dependency warnings (different package
+# names) are expected to collapse together into one example + count, the
+# same generic-noise rationale as npm/npx/pnpm above.
 patterns = ['(?i)^warning\b']
 min_count = 2
 

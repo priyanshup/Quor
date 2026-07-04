@@ -140,7 +140,7 @@ class StageHandler(Protocol):
 - `remove_ansi` — COMPRESS lines that are pure ANSI escape codes after stripping
 - `strip_lines` — COMPRESS lines matching `patterns`; PROTECT lines matching `preserve_patterns`
 - `deduplicate_consecutive` — COMPRESS consecutive duplicate lines (keep first)
-- `group_repeated` — COMPRESS repeated pattern matches, replace with first instance + `(×N)`
+- `group_repeated` — COMPRESS repeated pattern matches, replace with first instance + `(×N)`; default matches by *shape* (same pattern, e.g. mypy's same-message-different-line-number collapsing) — opt-in `exact_match: true` requires the full line to be byte-identical before it joins a run (QB-006B, used by the `eslint` filter so different rule violations never merge)
 - `max_tokens` — COMPRESS lines beyond budget (strategy: `head`, `tail`, or `both`)
 - `truncate_lines` — cap KEEP line length to `max_length`, appending `marker`; PROTECT exempt
 - `regex_replace` — apply ordered regex substitution `rules` (capture groups supported) to KEEP lines
