@@ -12,6 +12,18 @@ file. Cleanup deletes files whose mtime is older than `max_age_days`, and is
 throttled via a tiny SQLite state file so the directory is not swept on
 every single dispatch (see cleanup_tee).
 
+Why a separate tee_state.db instead of reusing tracking/db.py's TrackingDB:
+TrackingDB is an async, queue-based writer (record() enqueues and returns;
+a background thread does the actual write) with no synchronous
+read-then-conditionally-write API, which is what the cleanup throttle check
+needs. Routing the throttle check through TrackingDB would mean either
+changing its public API to add one, or opening a second raw connection to
+quor.db directly — which would contend with TrackingDB's own connection
+instead of avoiding contention. Tee also has to work when the caller passes
+tracking=None (a supported state in run_dispatch()), so it cannot depend on
+a TrackingDB instance existing at all. A second, single-table SQLite file
+is the smaller and more decoupled option.
+
 All functions here may raise (OSError, sqlite3.Error) — callers are
 responsible for fail-open handling, matching the pattern already used by
 quor/adapters/dispatcher.py's _track() and _teardown_plugins().
@@ -22,6 +34,8 @@ from __future__ import annotations
 import hashlib
 import os
 import sqlite3
+import time
+import warnings
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -108,7 +122,7 @@ def cleanup_tee(
     state_path = Path(platformdirs.user_data_dir("quor")) / _STATE_DB_NAME
     state_path.parent.mkdir(parents=True, exist_ok=True)
 
-    conn = sqlite3.connect(str(state_path))
+    conn = _connect_state_db(state_path)
     try:
         conn.execute(_CREATE_STATE_TABLE_SQL)
         row = conn.execute(
@@ -131,6 +145,32 @@ def cleanup_tee(
         conn.commit()
     finally:
         conn.close()
+
+
+def _connect_state_db(state_path: Path) -> sqlite3.Connection:
+    """Open the tee state DB with WAL mode, retrying under lock contention.
+
+    Mirrors TrackingDB._connect()'s retry pattern (quor/tracking/db.py):
+    PRAGMA journal_mode=WAL requires a brief exclusive lock, which can
+    transiently fail if two quor processes race to open this file for the
+    first time concurrently. Retry a few times before giving up — the
+    throttle check/upsert below still works correctly without WAL, just
+    with less concurrent-writer headroom.
+    """
+    conn = sqlite3.connect(str(state_path))
+    for attempt in range(5):
+        try:
+            conn.execute("PRAGMA journal_mode=WAL")
+            break
+        except sqlite3.OperationalError:
+            if attempt == 4:
+                warnings.warn(
+                    "[quor] could not set WAL mode on tee state db (database locked)",
+                    stacklevel=2,
+                )
+            else:
+                time.sleep(0.05 * (attempt + 1))
+    return conn
 
 
 def _sweep(directory: Path, *, max_age_days: int, now: datetime) -> None:

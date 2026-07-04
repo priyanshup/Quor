@@ -7,8 +7,11 @@ tests/conftest.py (patches platformdirs.user_data_dir to a per-test tmp dir).
 from __future__ import annotations
 
 import os
+import sqlite3
 import time
+from pathlib import Path
 
+import platformdirs
 import pytest
 
 from quor.pipeline.tee import cleanup_tee, content_hash, tee_dir, tee_path, write_tee
@@ -145,3 +148,19 @@ class TestCleanupTee:
         os.utime(path2, (stale_time, stale_time))
         cleanup_tee(max_age_days=7, throttle_hours=0)
         assert not path2.exists()
+
+    def test_state_db_uses_wal_mode(self) -> None:
+        """Regression guard: concurrent first-opens of tee_state.db must not
+        hit the same "PRAGMA journal_mode=WAL requires exclusive lock" bug
+        TrackingDB hit in Phase 7 — the connection must actually be in WAL
+        mode after cleanup_tee() runs."""
+        cleanup_tee(max_age_days=7, throttle_hours=0)
+
+        state_path = Path(platformdirs.user_data_dir("quor")) / "tee_state.db"
+        assert state_path.exists()
+        conn = sqlite3.connect(str(state_path))
+        try:
+            mode = conn.execute("PRAGMA journal_mode").fetchone()[0]
+        finally:
+            conn.close()
+        assert mode.lower() == "wal"
