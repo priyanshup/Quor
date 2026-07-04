@@ -241,11 +241,35 @@ See `CONTRIBUTING.md`'s "Branching model" and "Commit message convention" for th
 
 1. **Never develop directly on `main`.** All code changes happen on a `feature/qb-XXX-short-description` branch.
 2. **Before making any code changes, check the current branch** (`git branch --show-current` or `git status`). Do this at the start of a session and again before the first edit if time has passed.
-3. **If the current branch is `main`:** tell the user and either (a) ask them how they'd like to proceed, or (b) if the user has clearly asked for the change to be made (not just discussed), create a feature branch — this is a safe, local, reversible operation and does not require a separate confirmation. Never leave uncommitted work sitting on `main` past the point where you know it should be branched.
+3. **If the current branch is `main`:** tell the user and either (a) ask them how they'd like to proceed, or (b) if the user has clearly asked for the change to be made (not just discussed) *and the working tree is clean*, create a feature branch — this is a safe, local, reversible operation and does not require a separate confirmation. If the working tree is **not** clean, rule 8 governs instead: stop and ask, don't branch around uncommitted changes silently. Never leave uncommitted work sitting on `main` past the point where you know it should be branched.
 4. **Never commit automatically.** Only create a commit when the user has explicitly asked for one in this conversation. If unclear whether "make the change" also means "commit it," ask.
 5. **Never merge automatically.** Merging into `main` happens via a reviewed Pull Request on GitHub, not via a local `git merge` run by the assistant.
 6. **Always ask for explicit confirmation before any Git operation that changes history or shared state:** `commit`, `merge`, `rebase`, `push`, `tag`, or anything that triggers a release. Showing the exact commands for the user to review (or to run themselves) is preferred over executing them silently.
 7. **Destructive operations** (`git reset --hard`, `git push --force`, `git branch -D`, deleting a remote branch) require explicit, scoped confirmation every time — a prior approval for one push/branch does not carry over to another.
+8. **If the working tree is not clean before starting a backlog item, stop and ask the user for guidance.** Never automatically stash, reset, clean, or discard changes to force a clean state — those changes may be in-progress work the user hasn't told you about yet.
+
+### Starting Any Backlog Item
+
+Before making any code or documentation changes for a new backlog item, always follow this sequence — do not skip steps or start implementing first and branch afterward:
+
+1. Ensure any previous feature branch has already been merged or intentionally abandoned. Don't start new work while a prior branch is still open and unresolved.
+2. Checkout `main`: `git checkout main`
+3. Pull the latest `origin/main`: `git pull origin main`
+4. Verify the working tree is clean: `git status`. If it is not, stop — see rule 8 above.
+5. Create a new feature branch: `git checkout -b feature/qb-XXX-short-description`
+6. Verify the current branch before making any modifications: `git branch --show-current`
+7. Only then begin implementation.
+
+**Additional rules:**
+- **Every backlog item gets its own feature branch.** One QB item, one branch.
+- **Never reuse an old feature branch.** Even a branch you created earlier in the same session, for a different item, must not be repurposed — create a new one following the sequence above.
+- **Never begin new work from an existing feature branch.** Always branch from `main`, not from another feature branch. If a new item genuinely depends on an unmerged item's changes, stop and flag the dependency to the user rather than silently stacking branches.
+- **After a PR is merged**, before starting the next backlog item:
+  1. `git checkout main`
+  2. `git pull origin main`
+  3. Delete the local feature branch: `git branch -d feature/qb-XXX-short-description`
+  4. Delete the remote feature branch: `git push origin --delete feature/qb-XXX-short-description`
+  5. Only then start the next backlog item — re-enter this section at step 1.
 
 ---
 
