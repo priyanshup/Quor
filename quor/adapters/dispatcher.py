@@ -23,7 +23,14 @@ from pathlib import Path
 from quor.config.model import FilterConfig
 from quor.filters.registry import FilterRegistry
 from quor.pipeline.content_type import detect
-from quor.pipeline.tee import cleanup_tee, content_hash, write_tee
+from quor.pipeline.tee import (
+    cleanup_tee,
+    content_hash,
+    get_tee_status,
+    record_tee_failure,
+    record_tee_success,
+    write_tee,
+)
 from quor.tracking.db import InvocationRecord, TrackingDB, count_tokens
 
 
@@ -198,6 +205,14 @@ def _apply_tee(filter_config: FilterConfig, *, captured: str, final_output: str)
       - this filter has not opted out (FilterConfig.tee is not False)
       - the final output actually differs from the true raw subprocess output
         (nothing to recover otherwise — e.g. abort_unless/abort_if short-circuits)
+      - tee has not adaptively disabled itself after repeated filesystem
+        write failures (see quor/pipeline/tee.py's "Adaptive fallback")
+
+    A write_tee() failure caused by the filesystem (OSError — permission
+    denied, corporate policy, disk full, etc.) is recorded; after
+    MAX_CONSECUTIVE_TEE_FAILURES (quor.pipeline.tee) in a row, tee persists
+    itself as disabled and stops attempting writes entirely until
+    `quor doctor --reset-tee` — no automatic retry.
 
     On any error, returns `final_output` unchanged — tee must never affect
     stdout or the exit code (ADR-018 fail-open).
@@ -212,7 +227,16 @@ def _apply_tee(filter_config: FilterConfig, *, captured: str, final_output: str)
         if content_hash(final_output) == content_hash(captured):
             return final_output
 
-        path = write_tee(captured)
+        if get_tee_status().disabled:
+            return final_output
+
+        try:
+            path = write_tee(captured)
+        except OSError as exc:
+            record_tee_failure(str(exc))
+            return final_output
+
+        record_tee_success()
         return f"{final_output}\n[full output: {path}]"
     except Exception as exc:  # noqa: BLE001
         warnings.warn(f"[quor] tee error: {exc}", stacklevel=1)

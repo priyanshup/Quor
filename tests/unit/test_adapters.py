@@ -562,6 +562,99 @@ class TestDispatcherTee:
         assert "FAILED" in captured.getvalue()
         assert "[full output:" not in captured.getvalue()
 
+    def test_first_dispatcher_failure_leaves_tee_enabled(self) -> None:
+        """QB-013 adaptive fallback: one filesystem failure alone must not
+        disable tee — only MAX_CONSECUTIVE_TEE_FAILURES consecutive ones."""
+        from quor.pipeline.tee import MAX_CONSECUTIVE_TEE_FAILURES, get_tee_status
+
+        proc = _make_proc(stdout=self._CHANGED_OUTPUT)
+        with (
+            patch("subprocess.run", return_value=proc),
+            patch("sys.stdout", io.StringIO()),
+            patch("quor.adapters.dispatcher.write_tee", side_effect=OSError("Access is denied")),
+        ):
+            run_dispatch(["pytest", "tests/"])
+
+        status = get_tee_status()
+        assert MAX_CONSECUTIVE_TEE_FAILURES > 1, "test assumes threshold isn't 1"
+        assert status.disabled is False
+        assert status.consecutive_failures == 1
+
+    def test_reaching_threshold_disables_tee(self) -> None:
+        from quor.pipeline.tee import MAX_CONSECUTIVE_TEE_FAILURES, get_tee_status
+
+        proc = _make_proc(stdout=self._CHANGED_OUTPUT)
+        with patch(
+            "quor.adapters.dispatcher.write_tee", side_effect=OSError("Access is denied")
+        ):
+            for _ in range(MAX_CONSECUTIVE_TEE_FAILURES):
+                with (
+                    patch("subprocess.run", return_value=proc),
+                    patch("sys.stdout", io.StringIO()),
+                ):
+                    run_dispatch(["pytest", "tests/"])
+
+        status = get_tee_status()
+        assert status.disabled is True
+        assert status.consecutive_failures == MAX_CONSECUTIVE_TEE_FAILURES
+
+    def test_disabled_tee_makes_no_further_write_attempts(self) -> None:
+        """After adaptive-disable, one more invocation (with content that
+        would otherwise clearly trigger tee) must not even call write_tee —
+        no automatic retry, ever."""
+        from quor.pipeline.tee import MAX_CONSECUTIVE_TEE_FAILURES, get_tee_status
+
+        proc = _make_proc(stdout=self._CHANGED_OUTPUT)
+        with patch(
+            "quor.adapters.dispatcher.write_tee", side_effect=OSError("Access is denied")
+        ) as mock_write:
+            for _ in range(MAX_CONSECUTIVE_TEE_FAILURES):
+                with (
+                    patch("subprocess.run", return_value=proc),
+                    patch("sys.stdout", io.StringIO()),
+                ):
+                    run_dispatch(["pytest", "tests/"])
+            assert mock_write.call_count == MAX_CONSECUTIVE_TEE_FAILURES
+
+        assert get_tee_status().disabled is True
+
+        captured = io.StringIO()
+        with (
+            patch("subprocess.run", return_value=proc),
+            patch("sys.stdout", captured),
+            patch("quor.adapters.dispatcher.write_tee") as mock_write_after_disable,
+        ):
+            exit_code = run_dispatch(["pytest", "tests/"])
+            mock_write_after_disable.assert_not_called()
+
+        assert exit_code == 0
+        assert "FAILED" in captured.getvalue()
+        assert "[full output:" not in captured.getvalue()
+
+    def test_successful_write_resets_failure_counter(self) -> None:
+        """A single failure followed by a real, successful write must reset
+        the consecutive-failure counter back to zero."""
+        from quor.pipeline.tee import get_tee_status
+
+        proc = _make_proc(stdout=self._CHANGED_OUTPUT)
+        with (
+            patch("subprocess.run", return_value=proc),
+            patch("sys.stdout", io.StringIO()),
+            patch("quor.adapters.dispatcher.write_tee", side_effect=OSError("Access is denied")),
+        ):
+            run_dispatch(["pytest", "tests/"])
+        assert get_tee_status().consecutive_failures == 1
+
+        with (
+            patch("subprocess.run", return_value=proc),
+            patch("sys.stdout", io.StringIO()),
+        ):
+            run_dispatch(["pytest", "tests/"])  # real write_tee — succeeds
+
+        status = get_tee_status()
+        assert status.consecutive_failures == 0
+        assert status.disabled is False
+
     def test_footer_bypasses_the_filters_max_tokens_budget(self) -> None:
         """End-to-end proof of the ADR-023 design claim: the footer is
         appended after the full pipeline (including max_tokens) has already

@@ -1,4 +1,4 @@
-"""quor doctor — health check: dependencies, hook, tracking DB, filters, mode."""
+"""quor doctor — health check: dependencies, hook, tracking DB, filters, mode, tee."""
 
 from __future__ import annotations
 
@@ -37,8 +37,22 @@ def doctor(
     settings_path: Path | None = typer.Option(
         None, "--settings-path", hidden=True, help="Override the Claude settings.json path (for testing)."
     ),
+    reset_tee: bool = typer.Option(
+        False,
+        "--reset-tee",
+        help="Clear tee's adaptive-disable state and re-enable it after fixing a filesystem issue.",
+    ),
 ) -> None:
     """Run health checks and print a summary with colored status indicators."""
+    if reset_tee:
+        from quor.pipeline.tee import reset_tee_state
+
+        try:
+            reset_tee_state()
+            console.print("[green]Tee adaptive-disable state cleared.[/green]")
+        except Exception as exc:  # noqa: BLE001
+            console.print(f"[red]Could not reset tee state: {exc}[/red]")
+
     checks: list[tuple[str, bool, str]] = []
 
     checks.append(_check_python_version())
@@ -49,6 +63,7 @@ def doctor(
     checks.append(_check_sqlite())
     checks.append(_check_filters())
     checks.append(_check_mode())
+    checks.append(_check_tee())
     checks.append(_check_plugins())
 
     all_ok = True
@@ -160,6 +175,38 @@ def _check_filters() -> tuple[str, bool, str]:
 def _check_mode() -> tuple[str, bool, str]:
     mode = load_user_config().mode
     return (f"Mode: {mode}", True, "")
+
+
+def _check_tee() -> tuple[str, bool, str]:
+    """Report tee's status (ADR-023 / QB-013 adaptive fallback).
+
+    Three distinct states, only one of which is flagged as a problem:
+      - enabled — normal, healthy state.
+      - deliberately disabled by the user (QuorUserConfig.tee_enabled /
+        QUOR_TEE_ENABLED) — intentional, not a problem.
+      - adaptively disabled after repeated filesystem write failures — a
+        real problem worth surfacing (✗), since it means recovery footers
+        have silently stopped being written.
+    """
+    from quor.pipeline.tee import get_tee_status
+
+    try:
+        status = get_tee_status()
+    except Exception as exc:  # noqa: BLE001
+        return ("Tee", True, f"(could not check: {exc})")
+
+    if status.disabled:
+        hint = (
+            f"auto-disabled after {status.consecutive_failures} consecutive write "
+            f"failures ({status.disabled_reason}) — fix the underlying filesystem "
+            "issue, then run `quor doctor --reset-tee` to re-enable"
+        )
+        return ("Tee: disabled (filesystem unavailable)", False, hint)
+
+    if not load_user_config().tee_enabled:
+        return ("Tee: disabled (disabled in config)", True, "")
+
+    return ("Tee: enabled", True, "")
 
 
 def _check_plugins() -> tuple[str, bool, str]:

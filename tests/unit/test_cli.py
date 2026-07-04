@@ -244,6 +244,55 @@ class TestDoctor:
         assert result.exit_code == 0
         assert "✓ Hook script installed" in result.output
 
+    def test_tee_enabled_by_default(self, tmp_path: Path) -> None:
+        hook_path = tmp_path / "hooks" / "claude-hook.ps1"
+        hook_path.parent.mkdir(parents=True, exist_ok=True)
+        hook_path.write_text("dummy", encoding="utf-8")
+        settings_path = tmp_path / "settings.json"
+        with patch("platformdirs.user_data_dir", return_value=str(tmp_path)):
+            result = runner.invoke(app, ["doctor", "--settings-path", str(settings_path)])
+        assert result.exit_code == 0
+        assert "Tee: enabled" in result.output
+
+    def test_tee_disabled_after_two_consecutive_failures(self, tmp_path: Path) -> None:
+        from quor.pipeline.tee import record_tee_failure
+
+        hook_path = tmp_path / "hooks" / "claude-hook.ps1"
+        hook_path.parent.mkdir(parents=True, exist_ok=True)
+        hook_path.write_text("dummy", encoding="utf-8")
+        settings_path = tmp_path / "settings.json"
+
+        with patch("platformdirs.user_data_dir", return_value=str(tmp_path)):
+            record_tee_failure("PermissionError: Access is denied")
+            record_tee_failure("PermissionError: Access is denied")
+            result = runner.invoke(app, ["doctor", "--settings-path", str(settings_path)])
+
+        assert "Tee: disabled (filesystem unavailable)" in result.output
+        assert "quor doctor --reset-tee" in result.output
+        # tee being adaptively disabled is a real problem -> doctor exits non-zero
+        assert result.exit_code == ExitCode.GENERAL_ERROR
+
+    def test_reset_tee_flag_clears_disabled_state(self, tmp_path: Path) -> None:
+        from quor.pipeline.tee import get_tee_status, record_tee_failure
+
+        hook_path = tmp_path / "hooks" / "claude-hook.ps1"
+        hook_path.parent.mkdir(parents=True, exist_ok=True)
+        hook_path.write_text("dummy", encoding="utf-8")
+        settings_path = tmp_path / "settings.json"
+
+        with patch("platformdirs.user_data_dir", return_value=str(tmp_path)):
+            record_tee_failure("x")
+            record_tee_failure("x")
+            assert get_tee_status().disabled is True
+
+            result = runner.invoke(
+                app, ["doctor", "--settings-path", str(settings_path), "--reset-tee"]
+            )
+
+            assert "Tee adaptive-disable state cleared" in result.output
+            assert "Tee: enabled" in result.output
+            assert get_tee_status().disabled is False
+
     def test_plugin_diagnostics_include_version(self, tmp_path: Path) -> None:
         """quor doctor lists discovered plugins with their declared version."""
         from quor.pipeline.plugin_loader import PluginInfo, PluginLoadReport

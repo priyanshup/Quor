@@ -14,7 +14,18 @@ from pathlib import Path
 import platformdirs
 import pytest
 
-from quor.pipeline.tee import cleanup_tee, content_hash, tee_dir, tee_path, write_tee
+from quor.pipeline.tee import (
+    MAX_CONSECUTIVE_TEE_FAILURES,
+    cleanup_tee,
+    content_hash,
+    get_tee_status,
+    record_tee_failure,
+    record_tee_success,
+    reset_tee_state,
+    tee_dir,
+    tee_path,
+    write_tee,
+)
 
 # ---------------------------------------------------------------------------
 # content_hash
@@ -208,3 +219,91 @@ class TestCleanupTee:
         finally:
             conn.close()
         assert mode.lower() == "wal"
+
+
+# ---------------------------------------------------------------------------
+# Adaptive fallback: get_tee_status / record_tee_failure / record_tee_success
+# / reset_tee_state
+# ---------------------------------------------------------------------------
+
+
+class TestGetTeeStatus:
+    def test_default_status_is_enabled_with_no_failures(self) -> None:
+        """Nothing has ever failed (no state file exists yet) — must default
+        to enabled, not disabled."""
+        status = get_tee_status()
+        assert status.disabled is False
+        assert status.consecutive_failures == 0
+        assert status.disabled_reason is None
+
+
+class TestRecordTeeFailure:
+    def test_one_failure_short_of_threshold_leaves_tee_enabled(self) -> None:
+        """Anything short of MAX_CONSECUTIVE_TEE_FAILURES must not disable
+        tee — only reaching the threshold itself does."""
+        for _ in range(MAX_CONSECUTIVE_TEE_FAILURES - 1):
+            record_tee_failure("PermissionError: Access is denied")
+        status = get_tee_status()
+        assert status.disabled is False
+        assert status.consecutive_failures == MAX_CONSECUTIVE_TEE_FAILURES - 1
+
+    def test_reaching_threshold_disables_tee(self) -> None:
+        for _ in range(MAX_CONSECUTIVE_TEE_FAILURES):
+            record_tee_failure("PermissionError: Access is denied")
+        status = get_tee_status()
+        assert status.disabled is True
+        assert status.consecutive_failures == MAX_CONSECUTIVE_TEE_FAILURES
+        assert status.disabled_reason == "PermissionError: Access is denied"
+
+    def test_disabled_reason_reflects_the_triggering_failure(self) -> None:
+        for _ in range(MAX_CONSECUTIVE_TEE_FAILURES - 1):
+            record_tee_failure("an earlier error")
+        record_tee_failure("the triggering error")
+        assert get_tee_status().disabled_reason == "the triggering error"
+
+    def test_disabled_state_survives_a_fresh_read(self) -> None:
+        """get_tee_status() has no in-memory cache — every call is a fresh
+        read from disk. Calling it again (as a new `quor` process would
+        after a restart) must still see the persisted disabled state."""
+        for _ in range(MAX_CONSECUTIVE_TEE_FAILURES):
+            record_tee_failure("disk full")
+        assert get_tee_status().disabled is True
+        assert get_tee_status().disabled is True  # second, independent read
+
+
+class TestRecordTeeSuccess:
+    def test_success_resets_counter_after_one_failure(self) -> None:
+        record_tee_failure("transient error")
+        assert get_tee_status().consecutive_failures == 1
+
+        record_tee_success()
+
+        status = get_tee_status()
+        assert status.consecutive_failures == 0
+        assert status.disabled is False
+
+    def test_success_with_no_prior_failures_is_a_noop(self) -> None:
+        record_tee_success()
+        status = get_tee_status()
+        assert status.consecutive_failures == 0
+        assert status.disabled is False
+
+
+class TestResetTeeState:
+    def test_reset_clears_disabled_state_and_counter(self) -> None:
+        for _ in range(MAX_CONSECUTIVE_TEE_FAILURES):
+            record_tee_failure("x")
+        assert get_tee_status().disabled is True
+
+        reset_tee_state()
+
+        status = get_tee_status()
+        assert status.disabled is False
+        assert status.consecutive_failures == 0
+        assert status.disabled_reason is None
+
+    def test_reset_with_no_prior_state_is_a_noop(self) -> None:
+        reset_tee_state()
+        status = get_tee_status()
+        assert status.disabled is False
+        assert status.consecutive_failures == 0
