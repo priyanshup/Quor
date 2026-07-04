@@ -416,4 +416,8 @@ ADR-009 and the docs to reflect `optimize` as the intended default — and the t
 **Desired outcome:**
 Production publication must require successful TestPyPI validation and explicit approval.
 
-**Status:** Backlog
+**Status:** Resolved — implemented on `feature/qb-001-testpypi-release-gate` (`.github/workflows/release.yml`).
+`publish-pypi` now needs a `release-approval` environment job, which needs `validate-testpypi` (installs
+the tagged version from TestPyPI and smoke-tests it), which needs `publish-testpypi`. A maintainer must
+still create the `release-approval` environment with required reviewers under Settings > Environments
+for the approval gate to be enforced.
