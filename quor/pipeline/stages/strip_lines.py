@@ -1,10 +1,13 @@
 """strip_lines stage: COMPRESS matching lines, PROTECT preserved lines.
 
 Decision precedence (highest wins):
-  1. Already PROTECT  → never touched
-  2. matches preserve_patterns → PROTECT (no subsequent stage can downgrade)
-  3. matches patterns           → COMPRESS
-  4. no match                   → leave decision unchanged
+  1. Already PROTECT   → never touched
+  2. Already COMPRESS  → never touched (a prior stage, e.g. group_repeated,
+                          has already decided this line is discardable; this
+                          stage must not resurrect it via preserve_patterns)
+  3. matches preserve_patterns → PROTECT (no subsequent stage can downgrade)
+  4. matches patterns           → COMPRESS
+  5. no match                   → leave decision unchanged
 
 Patterns use the `regex` package so user-supplied patterns cannot cause
 catastrophic backtracking to hang the process (timeout=1.0 s per match).
@@ -51,7 +54,11 @@ class StripLinesStage:
                 new_lines.append(lm)
                 continue
 
-            if compiled_preserve and matches_any(lm.line, compiled_preserve):
+            if (
+                lm.decision is not Decision.COMPRESS
+                and compiled_preserve
+                and matches_any(lm.line, compiled_preserve)
+            ):
                 new_lines.append(
                     LineMask(lm.line, Decision.PROTECT, "matches preserve_pattern", self.stage_type)
                 )

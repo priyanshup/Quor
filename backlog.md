@@ -6,6 +6,326 @@ outcome, Status. Add new entries at the top (most recent first).
 
 ---
 
+## QB-015
+
+**Priority:** Low
+**Category:** Documentation
+
+**Title:** Document Git branching, commit and PR workflow
+
+**Problem:**
+The project had no documented Git workflow: no branch-naming convention, no commit message
+convention, and no PR checklist covering backlog/documentation/release-note follow-through. This
+surfaced directly while preparing the QB-014 fix for merge — work was happening ad hoc, and the
+QB-014 branch briefly carried unrelated workflow-documentation changes before being split out.
+
+**Desired outcome:**
+`CONTRIBUTING.md` documents the standard workflow (branch from `main`, `feature/qb-XXX-short-description`
+naming, one backlog item per branch, run `quor verify` + full test suite before commit, conventional
+commit messages, push, PR, merge only after review, delete branch after merge) and an expanded PR
+checklist (tests pass, no unrelated changes, backlog updated, documentation updated, release notes
+required Y/N). `docs/final/CLAUDE.md` documents the corresponding rules for AI-assisted sessions:
+never develop on `main`, check branch before changes, never auto-commit or auto-merge, always confirm
+before history-changing Git operations.
+
+**Status:** Resolved — implemented on `feature/qb-015-git-workflow` (CONTRIBUTING.md, docs/final/CLAUDE.md)
+
+---
+
+## QB-004
+
+**Priority:** High
+**Category:** Bug Investigation
+
+**Title:** Investigate git-diff max_tokens stage not enforcing configured limit
+
+**Problem:**
+Measured output from `quor git show`/`git diff` (~5,806 estimated tokens on a real test) greatly
+exceeds the `git-diff` filter's configured `max_tokens` limit of 600 in `git.toml`. Root cause is
+unknown — the stage may not be executing, the configuration may be wrong, or the token estimation
+used for reporting may differ from what the stage actually enforces.
+
+**Desired outcome:**
+Root cause identified and either the stage is fixed to actually enforce its configured limit, or the
+discrepancy between reported and enforced token counts is understood and documented.
+
+**Resolution:**
+Investigated and confirmed `max_tokens` executes correctly and enforces its budget exactly as
+documented. The overshoot is caused by `git-diff`'s `preserve_patterns` (`^\+`, `^-`, `^@@`,
+`conflict`, `Error`) marking most diff content as `PROTECT`, which `max_tokens` is designed to never
+compress — measured at 298 of 515 lines PROTECT, summing to ~5,265 tokens alone, well above the
+600 limit, before `max_tokens` even runs. This is expected behavior given current configuration, not
+a stage defect. Follow-up product decision tracked in QB-012.
+
+**Status:** Closed — Not a bug
+
+---
+
+## QB-012
+
+**Priority:** Medium
+**Category:** Product Decision
+
+**Title:** Define token budget semantics when protected content exceeds max_tokens
+
+**Problem:**
+QB-004's investigation confirmed `max_tokens` executes correctly, but when `PROTECT` lines alone
+exceed the configured budget, the limit cannot be enforced — `max_tokens` silently becomes a
+no-op for that content. There is no documented, decided answer for what should happen in this case.
+
+**Desired outcome:**
+A maintainer decides and documents the intended semantics. Options to evaluate:
+
+1. **Best-effort budget (recommended)** — `max_tokens` is a target, not a guarantee. Protected lines
+   are never compressed, even if that means exceeding the configured limit.
+2. **Hard budget** — `max_tokens` is absolute. Protected lines may be compressed if required to stay
+   under the limit, overriding PROTECT when the two conflict.
+3. **Priority-based budgeting** — Replace the binary `PROTECT`/`KEEP`/`COMPRESS` model with multiple
+   protection levels, so the budget can compress lower-priority protected content before falling back
+   to higher-priority content.
+
+Whichever option is chosen should be documented alongside the `max_tokens` stage and reflected in
+`git.toml`'s `git-diff` filter (and any other filter combining `preserve_patterns` with `max_tokens`).
+
+**Resolution:**
+Decided: Option 1, best-effort budget. Recorded as ADR-031 in `docs/final/DECISIONS.md`. `max_tokens`
+remains a target that only ever compresses KEEP lines; PROTECT always takes precedence and rendered
+output may exceed the configured limit when protected content alone is large. This formalizes
+existing shipped behavior — no runtime or filter-configuration changes were made. Documentation
+updated: `quor/pipeline/stages/max_tokens.py` (docstring + `limit` field description), `README.md`
+(`max_tokens` bullet), `docs/final/PROJECT_BIBLE.md` (new note tying `max_tokens` to the existing
+"meaning preservation is non-negotiable" principle, plus a status flag on the tee-mechanism claim).
+Two follow-ups spun out as their own backlog items: QB-013 (tee mechanism is decided via ADR-023 but
+not implemented) and QB-014 (mypy's `group_repeated` stage ordering issue found during this
+investigation).
+
+**Status:** Resolved — see ADR-031
+
+---
+
+## QB-014
+
+**Priority:** Medium
+**Category:** Bug Investigation
+
+**Title:** Investigate mypy filter stage ordering (group_repeated vs PROTECT interaction)
+
+**Problem:**
+Found during the QB-012 investigation: `build.toml`'s `mypy` filter runs `strip_lines`
+(with `preserve_patterns` covering `error:`/`warning:`/`note:`) before `group_repeated`
+(configured to collapse repeated `^.*: error: ` lines). Since `strip_lines`'s `preserve_patterns`
+already marks every matching line `PROTECT`, and `group_repeated` treats `PROTECT` lines as run
+breakers (per its own docstring), `group_repeated` never actually collapses anything for the `mypy`
+filter as currently ordered — it is effectively a no-op given the current stage sequence.
+
+**Desired outcome:**
+Confirm the no-op behavior with a reproduction (e.g. a mypy run with 3+ consecutive identical
+error lines), then decide the correct fix: reorder stages so `group_repeated` runs before
+`strip_lines` marks those lines PROTECT, narrow `strip_lines`'s `preserve_patterns` so it doesn't
+cover the exact lines `group_repeated` is meant to collapse, or confirm current behavior is
+acceptable and document why. No fix implemented yet — investigation only.
+
+**Status:** Backlog
+
+---
+
+## QB-013
+
+**Priority:** Medium
+**Category:** Feature
+
+**Title:** Implement the documented tee mechanism for recoverable aggressive compression
+
+**Problem:**
+`docs/final/DECISIONS.md` ADR-023 ("Tee Mechanism — Cache Original Before Compression") and
+`docs/final/PROJECT_BIBLE.md` both document a tee mechanism — cache the original output to
+`~/.local/share/quor/tee/{hash}.txt` and append a `[full output: path]` pointer to compressed output
+— specifically so that aggressive compression is safe because "nothing is irrecoverably lost." ADR-023
+is marked `Decided`, but no implementation exists: there is no `tee.py` module, and no built-in filter
+reads a `tee` field. This gap became directly relevant while resolving QB-012 (best-effort `max_tokens`
+budgets rely on the tee mechanism as the safety net for cases where protected content pushes output
+well over the configured target).
+
+**Desired outcome:**
+Implement the tee mechanism as specified in ADR-023: cache original subprocess output before
+compression, append the `[full output: path]` footer (not subject to `max_tokens`), support
+per-filter `tee = false` opt-out, and clean up tee files older than 7 days at session start. Once
+implemented, `PROJECT_BIBLE.md`'s "nothing is irrecoverably lost" claim becomes accurate rather than
+aspirational.
+
+**Status:** Backlog
+
+---
+
+## QB-005
+
+**Priority:** High
+**Category:** Feature
+
+**Title:** Structural code extraction for file reads
+
+**Problem:**
+Quor's `cat` filter only strips comments and blank lines; it always returns full source content
+otherwise. For large files this leaves significant token cost on the table compared to returning
+just the API surface a developer or AI actually needs.
+
+**Desired outcome:**
+An AST-aware or parser-assisted code summarization mode that prioritizes imports, public types,
+function/method signatures, docstrings, constants, and file structure over full function bodies —
+reducing tokens while preserving developer/AI context. Primary objective is token reduction without
+losing the structural understanding needed to work with the file.
+
+**Status:** Backlog
+
+---
+
+## QB-006
+
+**Priority:** High
+**Category:** Feature
+
+**Title:** Node.js ecosystem support
+
+**Problem:**
+Quor has no rewrite/filter coverage for `npm`, `npx`, or `pnpm` — a significant ecosystem gap
+relative to competitors. Build, test, lint, and type-check output for JS/TS projects currently
+passes through unfiltered and untracked.
+
+**Desired outcome:**
+Rewrite rules and filters for `npm`/`npx`/`pnpm` invocations, prioritized by workflow: build, test,
+lint, and type-check first.
+
+**Status:** Backlog
+
+---
+
+## QB-007
+
+**Priority:** High
+**Category:** Feature
+
+**Title:** Intelligent document compression
+
+**Problem:**
+Quor only filters shell command output today. Reading DOCX, PDF, Markdown, or plain text documents
+returns raw content with no structure-aware compression.
+
+**Desired outcome:**
+Token-efficient reading of DOCX, PDF, Markdown, and text documents by extracting structure —
+headings, tables, numbered lists, requirements, decisions — instead of returning raw document text
+whenever possible.
+
+**Status:** Backlog
+
+---
+
+## QB-008
+
+**Priority:** Medium
+**Category:** Enhancement
+
+**Title:** Regex replacement pipeline stage
+
+**Problem:**
+Quor's pipeline has no general-purpose regex substitution stage. Repeated high-entropy content
+(paths, timestamps, UUIDs, hashes) in command output can't be normalized the way ZAP's `replace`
+stage does.
+
+**Desired outcome:**
+A configurable regex replacement stage (with backreference support, chainable like existing stages)
+usable by any filter to normalize this kind of content.
+
+**Status:** Backlog
+
+---
+
+## QB-009
+
+**Priority:** Medium
+**Category:** Enhancement
+
+**Title:** Per-line truncation stage
+
+**Problem:**
+Quor has no stage to cap individual line length. Long lines (stack traces, JSON payloads, long
+paths) can dominate token cost even when the number of lines is otherwise under control.
+
+**Desired outcome:**
+A configurable max-line-length stage, similar to ZAP's `truncate_lines_at`, usable by any filter to
+reduce excessively long lines while preserving useful context.
+
+**Status:** Backlog
+
+---
+
+## QB-010
+
+**Priority:** Medium
+**Category:** Enhancement
+
+**Title:** Whole-output pattern short-circuit
+
+**Problem:**
+Quor's only whole-output shortcuts today are the narrower `abort_unless`/`on_empty` filter-level
+options. There's no general stage that can match the entire output against a pattern and immediately
+substitute a short summary, avoiding unnecessary downstream stage processing — the equivalent of
+ZAP's `match_output` + `unless` guard.
+
+**Desired outcome:**
+A pipeline stage that can short-circuit to an immediate compressed result when the complete output
+matches a predefined pattern (e.g. clean git status, successful build summary), configurable per
+filter.
+
+**Status:** Backlog
+
+---
+
+## QB-011
+
+**Priority:** Medium
+**Category:** Engineering
+
+**Title:** Compression benchmark suite
+
+**Problem:**
+Quor has no repeatable way to measure token reduction, latency, or compression quality across a
+fixed corpus, and no way to track whether a pipeline change is an improvement or a regression over
+time. This gap was surfaced directly during a ZAP efficiency comparison, where neither tool had
+proven, benchmarked efficiency numbers to point to.
+
+**Desired outcome:**
+A repeatable benchmark framework that runs a fixed corpus of representative commands and documents
+through Quor's pipeline, measuring token reduction, latency, and compression quality, with results
+trackable over time to catch regressions and validate improvements objectively.
+
+**Status:** Backlog
+
+---
+
+## QB-003
+
+**Priority:** Low
+**Category:** Documentation
+
+**Title:** Document command allowlist behavior
+
+**Problem:**
+Users naturally expect "Bash hook installed" to mean "every Bash command is tracked." In reality,
+Quor intentionally rewrites only a small allowlist of known commands (git, cargo, pytest, etc.);
+anything else passes through untouched and unrecorded. Nothing in the docs states this explicitly,
+which invites confusion like the investigation that preceded this backlog item (hook verified
+installed and firing correctly, yet `quor gain` reported zero invocations because the tested
+commands were outside the allowlist / hit an unrelated protocol bug).
+
+**Desired outcome:**
+Documentation (README and/or CLAUDE.md) explicitly states that Quor only rewrites commands matching
+its known rule set, links to `quor explain <command>` as the way to check whether a given command is
+covered, and lists (or links to) the current allowlist so users don't assume blanket coverage.
+
+**Status:** Backlog
+
+---
+
 ## QB-002
 
 **Priority:** Medium
