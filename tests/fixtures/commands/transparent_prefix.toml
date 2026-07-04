@@ -40,12 +40,21 @@ input = "podman exec mycontainer git status"
 expected_rewrite = "podman exec mycontainer quor git status"
 should_rewrite = true
 
+# QB-006A: npx is a known base command now, not a transparent prefix — its
+# own generic wrapper noise gets filtered (see node.toml), and the wrapped
+# tool's own output otherwise passes through untouched (no tool-aware routing).
 [[case]]
 input = "npx tsc --noEmit"
-should_rewrite = false
+expected_rewrite = "quor npx tsc --noEmit"
+should_rewrite = true
 
 [[case]]
 input = "npx jest"
+expected_rewrite = "quor npx jest"
+should_rewrite = true
+
+[[case]]
+input = "bunx cowsay hello"
 should_rewrite = false
 
 [[case]]
@@ -63,16 +72,19 @@ should_rewrite = false
 
 # sudo on unknown command: still passes through
 [[case]]
-input = "sudo npm install"
-should_rewrite = false
-
-[[case]]
 input = "sudo make build"
 should_rewrite = false
 
+# QB-006A: npm is known now, so these rewrite instead of passing through.
+[[case]]
+input = "sudo npm install"
+expected_rewrite = "sudo quor npm install"
+should_rewrite = true
+
 [[case]]
 input = "docker exec container npm install"
-should_rewrite = false
+expected_rewrite = "docker exec container quor npm install"
+should_rewrite = true
 
 # Nested transparent prefixes: sudo docker exec — only one level handled
 [[case]]

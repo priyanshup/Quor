@@ -180,7 +180,25 @@ class TestRules:
         assert is_known_command("python", []) is False
 
     def test_known_command_unknown(self) -> None:
-        assert is_known_command("npm", ["install"]) is False
+        assert is_known_command("cargo", ["build"]) is False
+
+    def test_known_command_npm(self) -> None:
+        assert is_known_command("npm", ["install"]) is True
+
+    def test_known_command_npm_any_subcommand(self) -> None:
+        """Unlike python -m X, npm/npx/pnpm/yarn are not subcommand-gated —
+        their own wrapper noise appears regardless of what subcommand runs."""
+        assert is_known_command("npm", ["test"]) is True
+        assert is_known_command("npm", ["run", "build"]) is True
+
+    def test_known_command_npx(self) -> None:
+        assert is_known_command("npx", ["eslint"]) is True
+
+    def test_known_command_pnpm(self) -> None:
+        assert is_known_command("pnpm", ["install"]) is True
+
+    def test_known_command_yarn(self) -> None:
+        assert is_known_command("yarn", []) is True
 
     def test_structured_output_json_flag(self) -> None:
         assert has_structured_output_flag(["--json"]) is True
@@ -240,6 +258,24 @@ class TestRules:
         result = is_transparent_prefix([])
         assert result is None
 
+    def test_npx_not_a_transparent_prefix(self) -> None:
+        """QB-006A: npx is a known base command now, not stripped as a prefix."""
+        assert is_transparent_prefix(["npx", "eslint"]) is None
+
+    def test_yarn_not_a_transparent_prefix(self) -> None:
+        assert is_transparent_prefix(["yarn", "build"]) is None
+
+    def test_pnpm_not_a_transparent_prefix(self) -> None:
+        assert is_transparent_prefix(["pnpm", "run", "build"]) is None
+
+    def test_bunx_still_a_transparent_prefix(self) -> None:
+        """Bun is explicitly out of scope for QB-006A — bunx is unaffected."""
+        result = is_transparent_prefix(["bunx", "cowsay", "hello"])
+        assert result is not None
+        prefix, remaining = result
+        assert prefix == "bunx"
+        assert remaining == ["cowsay", "hello"]
+
 
 # ---------------------------------------------------------------------------
 # Classifier unit tests
@@ -253,9 +289,29 @@ class TestClassifySimple:
         assert r.rewritten == f"{Q} git status"
 
     def test_unknown_command_passthrough(self) -> None:
-        r = classify_command("npm install")
+        r = classify_command("cargo build")
         assert r.should_rewrite is False
         assert r.rewritten is None
+
+    def test_npm_rewritten(self) -> None:
+        r = classify_command("npm install")
+        assert r.should_rewrite is True
+        assert r.rewritten == f"{Q} npm install"
+
+    def test_npx_rewritten(self) -> None:
+        r = classify_command("npx jest")
+        assert r.should_rewrite is True
+        assert r.rewritten == f"{Q} npx jest"
+
+    def test_pnpm_rewritten(self) -> None:
+        r = classify_command("pnpm install")
+        assert r.should_rewrite is True
+        assert r.rewritten == f"{Q} pnpm install"
+
+    def test_yarn_rewritten(self) -> None:
+        r = classify_command("yarn add lodash")
+        assert r.should_rewrite is True
+        assert r.rewritten == f"{Q} yarn add lodash"
 
     def test_empty_command(self) -> None:
         r = classify_command("")
@@ -307,10 +363,16 @@ class TestClassifyCompound:
         assert r.rewritten == f"{Q} git status && {Q} git diff"
 
     def test_and_one_unknown(self) -> None:
-        r = classify_command("npm install && git status")
+        r = classify_command("cargo build && git status")
         assert r.should_rewrite is True
-        assert "npm install" in (r.rewritten or "")
+        assert "cargo build" in (r.rewritten or "")
         assert f"{Q} git status" in (r.rewritten or "")
+
+    def test_and_both_known_npm_and_npm(self) -> None:
+        """QB-006A: npm is not subcommand-gated, so both sides are known now."""
+        r = classify_command("npm install && npm test")
+        assert r.should_rewrite is True
+        assert r.rewritten == f"{Q} npm install && {Q} npm test"
 
     def test_or_both_known(self) -> None:
         r = classify_command("pytest tests/ || echo fail")
@@ -324,7 +386,7 @@ class TestClassifyCompound:
         assert f"{Q} git log" in (r.rewritten or "")
 
     def test_all_unknown_compound(self) -> None:
-        r = classify_command("npm install && make build")
+        r = classify_command("cargo build && make build")
         assert r.should_rewrite is False
 
 
@@ -348,8 +410,14 @@ class TestClassifyPipe:
         assert r.should_rewrite is False
 
     def test_first_segment_unknown_pipe(self) -> None:
-        r = classify_command("npm list | grep express")
+        r = classify_command("cargo build | grep error")
         assert r.should_rewrite is False
+
+    def test_npm_pipe_first_segment_now_known(self) -> None:
+        """QB-006A: npm is a known base command, so this now rewrites."""
+        r = classify_command("npm list | grep express")
+        assert r.should_rewrite is True
+        assert f"{Q} npm list" in (r.rewritten or "")
 
 
 class TestClassifyEnvPrefix:
@@ -365,8 +433,13 @@ class TestClassifyEnvPrefix:
         assert f"{Q} python" in (r.rewritten or "")
 
     def test_env_prefix_unknown_command(self) -> None:
-        r = classify_command("DEBUG=1 npm install")
+        r = classify_command("DEBUG=1 cargo build")
         assert r.should_rewrite is False
+
+    def test_env_prefix_npm_now_known(self) -> None:
+        r = classify_command("DEBUG=1 npm install")
+        assert r.should_rewrite is True
+        assert r.rewritten == f"DEBUG=1 {Q} npm install"
 
 
 class TestClassifyTransparentPrefix:
@@ -381,8 +454,20 @@ class TestClassifyTransparentPrefix:
         assert r.rewritten == f"docker exec mycontainer {Q} git status"
 
     def test_sudo_unknown_passthrough(self) -> None:
-        r = classify_command("sudo npm install")
+        r = classify_command("sudo cargo build")
         assert r.should_rewrite is False
+
+    def test_sudo_npm_now_known(self) -> None:
+        r = classify_command("sudo npm install")
+        assert r.should_rewrite is True
+        assert r.rewritten == f"sudo {Q} npm install"
+
+    def test_npx_no_longer_transparent_prefix(self) -> None:
+        """npx used to be stripped as a transparent prefix (passthrough for
+        the unknown 'jest' base underneath). QB-006A makes npx itself known."""
+        r = classify_command("npx jest")
+        assert r.should_rewrite is True
+        assert r.rewritten == f"{Q} npx jest"
 
 
 class TestRewriteCommand:
@@ -390,7 +475,10 @@ class TestRewriteCommand:
         assert rewrite_command("git status") == f"{Q} git status"
 
     def test_unknown_returns_none(self) -> None:
-        assert rewrite_command("npm install") is None
+        assert rewrite_command("cargo build") is None
+
+    def test_npm_returns_string(self) -> None:
+        assert rewrite_command("npm install") == f"{Q} npm install"
 
     def test_excluded_returns_none(self) -> None:
         assert rewrite_command("git status --porcelain") is None

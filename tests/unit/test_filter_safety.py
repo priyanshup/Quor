@@ -505,3 +505,276 @@ class TestGenericFilterSafety:
         assert "Error: Connection timeout after 30s" in rendered
         assert "Traceback (most recent call last):" in rendered
         assert "ConnectionError: database connection refused" in rendered
+
+
+# ---------------------------------------------------------------------------
+# npm filter (QB-006A)
+# ---------------------------------------------------------------------------
+
+
+class TestNpmFilterSafety:
+    """Real npm install/audit output: noise stripped, findings/errors survive."""
+
+    INSTALL_OUTPUT = (
+        "npm warn deprecated inflight@1.0.6: This module is not supported, and leaks memory.\n"
+        "npm warn deprecated glob@7.2.3: Glob versions prior to v9 are no longer supported\n"
+        "npm warn deprecated rimraf@2.7.1: Rimraf versions prior to v4 are no longer supported\n"
+        "\n"
+        "added 152 packages, and audited 153 packages in 4s\n"
+        "\n"
+        "23 packages are looking for funding\n"
+        "  run `npm fund` for details\n"
+        "\n"
+        "3 vulnerabilities (1 moderate, 2 high)\n"
+        "\n"
+        "To address all issues, run:\n"
+        "  npm audit fix\n"
+        "\n"
+        "Run `npm audit` for details.\n"
+    )
+
+    FAILURE_OUTPUT = (
+        "npm warn deprecated foo@1.0.0: old\n"
+        "npm ERR! code ENOENT\n"
+        "npm ERR! syscall open\n"
+        "npm ERR! path /some/path/package.json\n"
+        "npm ERR! errno -4058\n"
+        "npm ERR! enoent Could not read package.json\n"
+    )
+
+    def test_deprecation_spam_collapses_but_stays_visible(self) -> None:
+        result = _trace("npm install", self.INSTALL_OUTPUT)
+        decisions = _decisions_for(result, "deprecated inflight")
+        assert decisions
+        assert Decision.COMPRESS not in decisions
+
+    def test_repeated_deprecation_lines_are_compressed(self) -> None:
+        result = _trace("npm install", self.INSTALL_OUTPUT)
+        decisions = _decisions_for(result, "glob@7.2.3")
+        assert decisions
+        assert Decision.COMPRESS in decisions
+
+    def test_package_count_summary_is_not_compress(self) -> None:
+        result = _trace("npm install", self.INSTALL_OUTPUT)
+        decisions = _decisions_for(result, "added 152 packages")
+        assert decisions
+        assert Decision.COMPRESS not in decisions
+
+    def test_vulnerability_summary_is_not_compress(self) -> None:
+        result = _trace("npm install", self.INSTALL_OUTPUT)
+        decisions = _decisions_for(result, "3 vulnerabilities")
+        assert decisions
+        assert Decision.COMPRESS not in decisions
+
+    def test_funding_nag_is_compressed(self) -> None:
+        result = _trace("npm install", self.INSTALL_OUTPUT)
+        decisions = _decisions_for(result, "looking for funding")
+        assert decisions
+        assert Decision.COMPRESS in decisions
+
+    def test_audit_cta_is_compressed(self) -> None:
+        result = _trace("npm install", self.INSTALL_OUTPUT)
+        decisions = _decisions_for(result, "To address all issues")
+        assert decisions
+        assert Decision.COMPRESS in decisions
+
+    def test_rendered_output_preserves_actionable_summary(self) -> None:
+        rendered = _apply("npm install", self.INSTALL_OUTPUT)
+        assert "added 152 packages, and audited 153 packages in 4s" in rendered
+        assert "3 vulnerabilities (1 moderate, 2 high)" in rendered
+        assert "looking for funding" not in rendered
+        assert "To address all issues" not in rendered
+
+    def test_npm_err_lines_never_compressed(self) -> None:
+        result = _trace("npm ci", self.FAILURE_OUTPUT)
+        for fragment in ("code ENOENT", "syscall open", "errno -4058", "enoent Could not read"):
+            decisions = _decisions_for(result, fragment)
+            assert decisions, f"Expected 'npm ERR!' line with {fragment!r} in mask"
+            assert Decision.COMPRESS not in decisions, f"npm ERR! line {fragment!r} must survive"
+
+    def test_rendered_failure_output_contains_all_npm_err_lines(self) -> None:
+        rendered = _apply("npm ci", self.FAILURE_OUTPUT)
+        assert "npm ERR! code ENOENT" in rendered
+        assert "npm ERR! errno -4058" in rendered
+
+
+# ---------------------------------------------------------------------------
+# npx filter (QB-006A)
+# ---------------------------------------------------------------------------
+
+
+class TestNpxFilterSafety:
+    """npx's own resolution preamble is generic noise; the wrapped tool's
+    output (whatever it is) must pass through untouched — no tool-aware
+    routing for what runs underneath npx."""
+
+    AUTO_INSTALL_OUTPUT = (
+        "npm warn exec The following package was not found and will be installed: cowsay@1.6.0\n"
+        " ______\n"
+        "< moo >\n"
+        " ------\n"
+    )
+
+    WRAPPED_FAILURE_OUTPUT = (
+        "npm warn exec The following package was not found and will be installed: foo@1.0.0\n"
+        "Error: something broke\n"
+        "    at Object.<anonymous> (/tmp/foo/index.js:3:7)\n"
+    )
+
+    def test_resolution_preamble_is_compressed(self) -> None:
+        result = _trace("npx cowsay hello", self.AUTO_INSTALL_OUTPUT)
+        decisions = _decisions_for(result, "npm warn exec")
+        assert decisions
+        assert Decision.COMPRESS in decisions
+
+    def test_wrapped_tool_output_is_not_compress(self) -> None:
+        result = _trace("npx cowsay hello", self.AUTO_INSTALL_OUTPUT)
+        decisions = _decisions_for(result, "moo")
+        assert decisions
+        assert Decision.COMPRESS not in decisions
+
+    def test_wrapped_tool_error_is_not_compress(self) -> None:
+        result = _trace("npx foo", self.WRAPPED_FAILURE_OUTPUT)
+        for fragment in ("Error: something broke", "Object.<anonymous>"):
+            decisions = _decisions_for(result, fragment)
+            assert decisions, f"Expected line with {fragment!r} in mask"
+            assert Decision.COMPRESS not in decisions
+
+    def test_rendered_output_drops_only_resolution_preamble(self) -> None:
+        rendered = _apply("npx foo", self.WRAPPED_FAILURE_OUTPUT)
+        assert "Error: something broke" in rendered
+        assert "Object.<anonymous>" in rendered
+        assert "npm warn exec" not in rendered
+
+
+# ---------------------------------------------------------------------------
+# pnpm filter (QB-006A)
+# ---------------------------------------------------------------------------
+
+
+class TestPnpmFilterSafety:
+    """Real pnpm install output: progress ticks stripped, package delta and
+    structured fetch errors survive."""
+
+    INSTALL_OUTPUT = (
+        "Lockfile is up to date, resolution step is skipped\n"
+        "Progress: resolved 1, reused 0, downloaded 0, added 0\n"
+        "Progress: resolved 80, reused 40, downloaded 5, added 80\n"
+        "Progress: resolved 152, reused 140, downloaded 12, added 152, done\n"
+        "Packages: +152\n"
+        "++++++++++++++++++++++++++++++++++++++++++++++++++++\n"
+        "\n"
+        "dependencies:\n"
+        "+ express 4.18.2\n"
+        "\n"
+        "Done in 3.2s\n"
+    )
+
+    FETCH_FAILURE_OUTPUT = (
+        "Progress: resolved 10, reused 0, downloaded 0\n"
+        "ERR_PNPM_FETCH_404  GET https://registry.npmjs.org/nonexistent-pkg: Not Found - 404\n"
+        "This error happened while installing a direct dependency of the project\n"
+    )
+
+    def test_progress_ticks_are_compressed(self) -> None:
+        result = _trace("pnpm install", self.INSTALL_OUTPUT)
+        decisions = _decisions_for(result, "Progress: resolved")
+        assert decisions
+        assert Decision.COMPRESS in decisions
+
+    def test_progress_bar_line_is_compressed(self) -> None:
+        result = _trace("pnpm install", self.INSTALL_OUTPUT)
+        plus_lines = [lm for lm in result.mask.lines if lm.line.strip("+") == "" and lm.line.strip()]
+        assert plus_lines, "Expected a plus-sign progress bar line in mask"
+        assert all(lm.decision is Decision.COMPRESS for lm in plus_lines)
+
+    def test_package_delta_summary_is_not_compress(self) -> None:
+        result = _trace("pnpm install", self.INSTALL_OUTPUT)
+        decisions = _decisions_for(result, "Packages: +152")
+        assert decisions
+        assert Decision.COMPRESS not in decisions
+
+    def test_done_summary_is_not_compress(self) -> None:
+        result = _trace("pnpm install", self.INSTALL_OUTPUT)
+        decisions = _decisions_for(result, "Done in 3.2s")
+        assert decisions
+        assert Decision.COMPRESS not in decisions
+
+    def test_rendered_output_preserves_actionable_summary(self) -> None:
+        rendered = _apply("pnpm install", self.INSTALL_OUTPUT)
+        assert "Packages: +152" in rendered
+        assert "+ express 4.18.2" in rendered
+        assert "Done in 3.2s" in rendered
+        assert "Lockfile is up to date" not in rendered
+        assert "Progress: resolved" not in rendered
+
+    def test_structured_fetch_error_never_compressed(self) -> None:
+        result = _trace("pnpm add nonexistent-pkg", self.FETCH_FAILURE_OUTPUT)
+        for fragment in ("ERR_PNPM_FETCH_404", "direct dependency of the project"):
+            decisions = _decisions_for(result, fragment)
+            assert decisions, f"Expected line with {fragment!r} in mask"
+            assert Decision.COMPRESS not in decisions
+
+
+# ---------------------------------------------------------------------------
+# yarn filter (QB-006A)
+# ---------------------------------------------------------------------------
+
+
+class TestYarnFilterSafety:
+    """Real yarn classic install output: step banners stripped, success/
+    timing summary and command failures survive."""
+
+    INSTALL_OUTPUT = (
+        "yarn install v1.22.19\n"
+        "[1/4] Resolving packages...\n"
+        "[2/4] Fetching packages...\n"
+        "[3/4] Linking dependencies...\n"
+        "[4/4] Building fresh packages...\n"
+        "success Saved lockfile.\n"
+        "Done in 12.34s.\n"
+    )
+
+    PEER_WARNING_OUTPUT = (
+        'warning "eslint > file-entry-cache@6.0.1" has unmet peer dependency "flat-cache@^3.0.4".\n'
+        'warning "eslint > table@6.8.1" has unmet peer dependency "ajv@^8.0.1".\n'
+        'warning "jest > jest-cli@29.0.0" has unmet peer dependency "node-notifier@^10.0.0".\n'
+        "error Command failed with exit code 1.\n"
+    )
+
+    def test_step_banners_are_compressed(self) -> None:
+        result = _trace("yarn install", self.INSTALL_OUTPUT)
+        for fragment in ("Resolving packages", "Fetching packages", "Linking dependencies"):
+            decisions = _decisions_for(result, fragment)
+            assert decisions
+            assert Decision.COMPRESS in decisions
+
+    def test_success_confirmation_is_not_compress(self) -> None:
+        result = _trace("yarn install", self.INSTALL_OUTPUT)
+        decisions = _decisions_for(result, "success Saved lockfile")
+        assert decisions
+        assert Decision.COMPRESS not in decisions
+
+    def test_done_summary_is_not_compress(self) -> None:
+        result = _trace("yarn install", self.INSTALL_OUTPUT)
+        decisions = _decisions_for(result, "Done in 12.34s")
+        assert decisions
+        assert Decision.COMPRESS not in decisions
+
+    def test_repeated_peer_warnings_collapse_but_first_stays_visible(self) -> None:
+        result = _trace("yarn install", self.PEER_WARNING_OUTPUT)
+        decisions = _decisions_for(result, "file-entry-cache")
+        assert decisions
+        assert Decision.COMPRESS not in decisions
+
+    def test_command_failure_never_compressed(self) -> None:
+        result = _trace("yarn build", self.PEER_WARNING_OUTPUT)
+        decisions = _decisions_for(result, "error Command failed with exit code 1")
+        assert decisions
+        assert Decision.COMPRESS not in decisions
+
+    def test_rendered_output_preserves_success_and_failure_summaries(self) -> None:
+        rendered = _apply("yarn install", self.INSTALL_OUTPUT)
+        assert "success Saved lockfile." in rendered
+        assert "Done in 12.34s." in rendered
+        assert "Resolving packages" not in rendered

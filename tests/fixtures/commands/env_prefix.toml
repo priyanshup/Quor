@@ -53,12 +53,14 @@ should_rewrite = true
 
 # Env prefix on unknown command: still passes through
 [[case]]
-input = "DEBUG=1 npm install"
-should_rewrite = false
-
-[[case]]
 input = "NODE_ENV=production make build"
 should_rewrite = false
+
+# QB-006A: npm is a known base command now.
+[[case]]
+input = "DEBUG=1 npm install"
+expected_rewrite = "DEBUG=1 quor npm install"
+should_rewrite = true
 
 # Env prefix with empty var value
 [[case]]
