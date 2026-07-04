@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "quor"
-version = "0.2.0"
+version = "0.2.1"
 description = "A rule-based command-output optimization and context-compression layer that reduces unnecessary LLM context while preserving important information."
 readme = "README.md"
 license = { text = "Apache-2.0" }

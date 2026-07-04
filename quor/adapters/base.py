@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 from pydantic import BaseModel, ConfigDict
 
@@ -22,12 +22,26 @@ class HookInput(BaseModel):
     tool_input: ToolInput
 
 
-class HookOutput(BaseModel):
-    """Hook stdout payload (same shape as HookInput, command possibly rewritten)."""
+class HookSpecificOutput(BaseModel):
+    """The `hookSpecificOutput` object Claude Code reads from PreToolUse hook stdout.
+
+    `updatedInput` is the only field Claude Code honors for overriding tool
+    arguments — see https://code.claude.com/docs/en/hooks.md. A bare top-level
+    `tool_input` (mirroring HookInput's shape) is not part of the protocol and
+    is silently ignored.
+    """
 
     model_config = ConfigDict(extra="allow", frozen=True)
-    tool_name: str = ""
-    tool_input: ToolInput
+    hookEventName: str = "PreToolUse"
+    permissionDecision: str = "allow"
+    updatedInput: dict[str, Any] | None = None
+
+
+class HookOutput(BaseModel):
+    """Full Claude Code PreToolUse hook stdout payload."""
+
+    model_config = ConfigDict(extra="allow", frozen=True)
+    hookSpecificOutput: HookSpecificOutput
 
 
 @runtime_checkable

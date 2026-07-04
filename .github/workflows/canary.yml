@@ -49,7 +49,10 @@ jobs:
 
       - name: Verify hook responds to current Claude Code PreToolUse format
         # Send the JSON format Claude Code actually sends via PreToolUse hook,
-        # verify the response is valid JSON with the expected command rewrite.
+        # verify the response is valid JSON with the expected command rewrite
+        # nested under hookSpecificOutput.updatedInput (ADR-030) — Claude Code
+        # ignores a bare top-level tool_input echo entirely, so that shape
+        # must never reappear here even though it looks plausible in isolation.
         run: |
           PAYLOAD='{"tool_name":"Bash","tool_input":{"command":"git status"}}'
           RESULT=$(echo "$PAYLOAD" | python -m quor hook claude)
@@ -63,7 +66,21 @@ jobs:
           except json.JSONDecodeError as e:
               print(f"FAIL: hook response is not valid JSON: {e}", file=sys.stderr)
               sys.exit(1)
-          cmd = d.get("tool_input", {}).get("command", "")
+          if "tool_input" in d or "tool_name" in d:
+              print(
+                  f"FAIL: response echoes a top-level tool_input/tool_name field "
+                  f"(ADR-030 regression — Claude Code ignores this), got {d!r}",
+                  file=sys.stderr,
+              )
+              sys.exit(1)
+          hso = d.get("hookSpecificOutput")
+          if hso is None:
+              print(f"FAIL: response missing hookSpecificOutput entirely, got {d!r}", file=sys.stderr)
+              sys.exit(1)
+          if hso.get("hookEventName") != "PreToolUse":
+              print(f"FAIL: hookSpecificOutput.hookEventName != 'PreToolUse', got {hso.get('hookEventName')!r}", file=sys.stderr)
+              sys.exit(1)
+          cmd = hso.get("updatedInput", {}).get("command", "")
           if "-m quor git status" not in cmd:
               print(f"FAIL: expected '-m quor git status' in command, got {cmd!r}", file=sys.stderr)
               sys.exit(1)
@@ -77,21 +94,27 @@ jobs:
           print(f"OK: command rewritten to {cmd!r}")
           EOF
 
-      - name: Verify hook preserves extra JSON fields
-        # Claude Code may add extra fields to the payload; Quor must not drop them.
+      - name: Verify hook preserves sibling tool_input fields in updatedInput
+        # updatedInput replaces the whole tool_input object, not just "command",
+        # so fields Claude Code sets alongside it (e.g. "description") must
+        # survive the rewrite. (Top-level fields like session_id are not part
+        # of the PreToolUse response contract at all — Claude Code only reads
+        # hookSpecificOutput — so they are correctly not echoed back.)
         run: |
-          PAYLOAD='{"tool_name":"Bash","tool_input":{"command":"git status"},"session_id":"abc123","extra_field":"preserved"}'
+          PAYLOAD='{"tool_name":"Bash","tool_input":{"command":"git status","description":"check repo state"}}'
           RESULT=$(echo "$PAYLOAD" | python -m quor hook claude)
+          echo "Hook response: $RESULT"
           echo "$RESULT" | python3 - <<'EOF'
           import sys, json
           d = json.load(sys.stdin)
-          if d.get("session_id") != "abc123":
-              print("FAIL: extra fields were dropped by the hook", file=sys.stderr)
+          updated = d.get("hookSpecificOutput", {}).get("updatedInput", {})
+          if updated.get("description") != "check repo state":
+              print(f"FAIL: sibling tool_input field 'description' was dropped, got {updated!r}", file=sys.stderr)
               sys.exit(1)
-          if d.get("extra_field") != "preserved":
-              print("FAIL: extra_field was dropped by the hook", file=sys.stderr)
+          if "-m quor git status" not in updated.get("command", ""):
+              print(f"FAIL: expected rewritten command in updatedInput, got {updated!r}", file=sys.stderr)
               sys.exit(1)
-          print("OK: extra JSON fields preserved")
+          print("OK: sibling tool_input fields preserved in updatedInput")
           EOF
 
       - name: Verify quor init --claude writes valid settings.json

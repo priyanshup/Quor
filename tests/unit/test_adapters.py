@@ -88,11 +88,18 @@ class TestModels:
         )
         assert hi.tool_name == "Bash"
 
-    def test_hook_output_is_same_shape(self) -> None:
+    def test_hook_output_shape(self) -> None:
         ho = HookOutput.model_validate(
-            {"tool_name": "Bash", "tool_input": {"command": f"{Q} git status"}}
+            {
+                "hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "permissionDecision": "allow",
+                    "updatedInput": {"command": f"{Q} git status"},
+                }
+            }
         )
-        assert ho.tool_input.command == f"{Q} git status"
+        assert ho.hookSpecificOutput.updatedInput is not None
+        assert ho.hookSpecificOutput.updatedInput["command"] == f"{Q} git status"
 
     def test_hook_input_missing_tool_input_raises(self) -> None:
         from pydantic import ValidationError
@@ -110,52 +117,78 @@ class TestModels:
 # ---------------------------------------------------------------------------
 
 
+def _updated_command(result: dict) -> str | None:
+    """Extract the rewritten command from a hookSpecificOutput response, if any."""
+    updated_input = result.get("hookSpecificOutput", {}).get("updatedInput")
+    return None if updated_input is None else updated_input.get("command")
+
+
 class TestRunHookRewrite:
     def test_known_command_is_rewritten(self) -> None:
         payload = _make_hook_payload("git status")
         result = _run_hook_with(payload)
-        assert result["tool_input"]["command"] == f"{Q} git status"
+        assert _updated_command(result) == f"{Q} git status"
+
+    def test_response_shape(self) -> None:
+        """The response is wrapped in hookSpecificOutput — not a raw tool_input echo."""
+        payload = _make_hook_payload("git status")
+        result = _run_hook_with(payload)
+        assert result["hookSpecificOutput"]["hookEventName"] == "PreToolUse"
+        assert result["hookSpecificOutput"]["permissionDecision"] == "allow"
+        assert "tool_input" not in result
 
     def test_unknown_command_unchanged(self) -> None:
+        """No rewrite → updatedInput is omitted so Claude Code runs the original command."""
         payload = _make_hook_payload("npm install")
         result = _run_hook_with(payload)
-        assert result["tool_input"]["command"] == "npm install"
+        assert "updatedInput" not in result["hookSpecificOutput"]
 
     def test_compound_command_rewritten(self) -> None:
         payload = _make_hook_payload("git status && git diff")
         result = _run_hook_with(payload)
-        assert result["tool_input"]["command"] == f"{Q} git status && {Q} git diff"
+        assert _updated_command(result) == f"{Q} git status && {Q} git diff"
 
     def test_excluded_command_unchanged(self) -> None:
         payload = _make_hook_payload("git status --porcelain")
         result = _run_hook_with(payload)
-        assert result["tool_input"]["command"] == "git status --porcelain"
+        assert "updatedInput" not in result["hookSpecificOutput"]
 
     def test_heredoc_command_unchanged(self) -> None:
         payload = _make_hook_payload("git commit -m << EOF")
         result = _run_hook_with(payload)
-        assert result["tool_input"]["command"] == "git commit -m << EOF"
-
-    def test_extra_fields_preserved(self) -> None:
-        payload = _make_hook_payload("git status", session_id="abc123", tool_name="Bash")
-        result = _run_hook_with(payload)
-        assert result["session_id"] == "abc123"
-        assert result["tool_name"] == "Bash"
+        assert "updatedInput" not in result["hookSpecificOutput"]
 
     def test_extra_tool_input_fields_preserved(self) -> None:
+        """updatedInput replaces the whole tool_input object — sibling fields must survive."""
         payload = {
             "tool_name": "Bash",
             "tool_input": {"command": "git log", "description": "show history"},
         }
         result = _run_hook_with(payload)
-        assert result["tool_input"]["description"] == "show history"
-        assert result["tool_input"]["command"] == f"{Q} git log"
+        updated_input = result["hookSpecificOutput"]["updatedInput"]
+        assert updated_input["description"] == "show history"
+        assert updated_input["command"] == f"{Q} git log"
 
     def test_output_is_valid_json(self) -> None:
         payload = _make_hook_payload("git status")
         result = _run_hook_with(payload)
         # _run_hook_with already parsed — reaching here means valid JSON
         assert isinstance(result, dict)
+
+    def test_does_not_regress_to_bare_tool_input_echo(self) -> None:
+        """Regression guard: Claude Code only honors hookSpecificOutput.updatedInput.
+
+        A prior version of this hook echoed back the whole mutated input
+        payload as a top-level `tool_input` key. That shape round-trips fine
+        in-process (these tests would have passed) but is silently ignored by
+        the real Claude Code binary, so the rewrite never took effect end to
+        end. Guard against reintroducing it.
+        """
+        payload = _make_hook_payload("git status")
+        result = _run_hook_with(payload)
+        assert "tool_input" not in result
+        assert "tool_name" not in result
+        assert set(result.keys()) == {"hookSpecificOutput"}
 
 
 # ---------------------------------------------------------------------------
@@ -182,16 +215,16 @@ class TestRunHookBom:
 
     def test_single_bom_stripped(self) -> None:
         result = self._run_with_bom_str(1, _make_hook_payload("git status"))
-        assert result["tool_input"]["command"] == f"{Q} git status"
+        assert _updated_command(result) == f"{Q} git status"
 
     def test_doubled_bom_stripped(self) -> None:
         result = self._run_with_bom_str(2, _make_hook_payload("git diff"))
-        assert result["tool_input"]["command"] == f"{Q} git diff"
+        assert _updated_command(result) == f"{Q} git diff"
 
     def test_no_bom_works(self) -> None:
         payload = _make_hook_payload("pytest tests/")
         result = _run_hook_with(payload)
-        assert result["tool_input"]["command"] == f"{Q} pytest tests/"
+        assert _updated_command(result) == f"{Q} pytest tests/"
 
 
 # ---------------------------------------------------------------------------

@@ -123,7 +123,7 @@ def _check_hook_roundtrip() -> tuple[str, bool, str]:
         sys.stdout = fake_stdout
         run_hook()
         result = orjson.loads(fake_stdout.buffer.getvalue())
-        rewritten = result.get("tool_input", {}).get("command", "")
+        rewritten = result.get("hookSpecificOutput", {}).get("updatedInput", {}).get("command", "")
         expected = f"{get_quor_invocation()} git status"
         if rewritten == expected:
             return ("Hook responds correctly", True, "")

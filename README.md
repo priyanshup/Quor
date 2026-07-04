@@ -2,7 +2,7 @@
 
 > A rule-based command-output optimization and context-compression layer that reduces unnecessary LLM context while preserving important information.
 
-> **Status:** v0.1.1 is the latest version [available on PyPI](https://pypi.org/project/quor/); v0.2.0 is in release preparation (see [CHANGELOG](https://github.com/priyanshup/Quor/blob/main/CHANGELOG.md)). All 10 implementation phases complete (613 tests passing, ruff + mypy clean, verified on Python 3.11 and 3.14 across multiple machines).
+> **Status:** v0.1.1 is the latest version [available on PyPI](https://pypi.org/project/quor/); v0.2.1 is in release preparation (see [CHANGELOG](https://github.com/priyanshup/Quor/blob/main/CHANGELOG.md)). All 10 implementation phases complete (613 tests passing, ruff + mypy clean, verified on Python 3.11 and 3.14 across multiple machines).
 
 ---
 

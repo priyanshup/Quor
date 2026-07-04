@@ -248,6 +248,26 @@ application-control policies block. This entry is left as originally written
 (Phase 5, pre-v0.2.0) for historical accuracy of what was built and verified
 at the time; it is not the current behavior.
 
+**Update (2026-07-04, ADR-030):** The stdout shape shown above is also wrong
+and was never actually honored by Claude Code — see DECISIONS.md ADR-030.
+Claude Code only reads `hookSpecificOutput.updatedInput` from a PreToolUse
+hook's stdout; a bare top-level `tool_input` key (as shown above) is silently
+ignored, so the rewrite never reached execution. The actual flow is:
+```
+stdin: {"tool_name": "Bash", "tool_input": {"command": "git status"}}
+    → parse HookInput
+    → rewrite_command("git status") → "<sys.executable> -m quor git status"
+    → build hookSpecificOutput with permissionDecision "allow" and
+      updatedInput = tool_input with "command" replaced (siblings preserved)
+stdout: {"hookSpecificOutput": {"hookEventName": "PreToolUse",
+         "permissionDecision": "allow",
+         "updatedInput": {"command": "<sys.executable> -m quor git status"}}}
+```
+When no rewrite applies, `updatedInput` is omitted entirely (not present as
+an unchanged echo) so Claude Code runs the original command as-is. This entry
+is left as originally written (Phase 5, pre-v0.2.0) for historical accuracy;
+it is not the current behavior.
+
 **Hook dispatcher flow (when Claude Code runs `quor git status`):**
 ```
 args: ["git", "status"]

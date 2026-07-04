@@ -1,8 +1,11 @@
 """Claude Code hook adapter.
 
 Reads a Claude Code PreToolUse JSON payload from sys.stdin, rewrites the
-`tool_input.command` field if Quor has a filter for it, and writes the
-(possibly modified) JSON to sys.stdout.
+`tool_input.command` field if Quor has a rewrite for it, and writes a
+`hookSpecificOutput.updatedInput` response to sys.stdout — the only shape
+Claude Code actually honors for overriding tool arguments
+(see https://code.claude.com/docs/en/hooks.md). `updatedInput` is omitted
+when no rewrite applies, so Claude Code executes the original command.
 
 Called by __main__._run_hook() which guarantees:
 - sys.stdin is a TextIOWrapper over the original stdin bytes
@@ -41,7 +44,7 @@ def run_hook() -> None:
     """Process one PreToolUse hook call.
 
     Reads JSON from sys.stdin (already set up by __main__._run_hook).
-    Writes modified JSON to sys.stdout.
+    Writes a `hookSpecificOutput` response to sys.stdout.
     Raises on parse/validation errors — caller handles fail-open.
     """
     raw = sys.stdin.read()
@@ -49,17 +52,25 @@ def run_hook() -> None:
     # Strip UTF-8 BOM (single or doubled — Cursor sends doubled BOM on Windows)
     raw = raw.lstrip(_UTF8_BOM)
 
-    # Parse full payload as a dict so extra fields are preserved verbatim
+    # Parse full payload as a dict so extra tool_input fields are preserved
     data: dict[str, Any] = orjson.loads(raw)
 
     # Validate the fields we care about (raises ValidationError on bad shape)
     hook_input = HookInput.model_validate(data)
     original_cmd = hook_input.tool_input.command
 
+    hook_specific: dict[str, Any] = {
+        "hookEventName": "PreToolUse",
+        "permissionDecision": "allow",
+    }
+
     rewritten = rewrite_command(original_cmd)
     if rewritten is not None and rewritten != original_cmd:
-        # Modify the dict in-place to preserve every extra field
-        data["tool_input"]["command"] = rewritten
+        # Preserve sibling tool_input fields (e.g. "description") — updatedInput
+        # replaces the whole tool_input object, not just the command field.
+        updated_input = dict(data.get("tool_input", {}))
+        updated_input["command"] = rewritten
+        hook_specific["updatedInput"] = updated_input
 
-    sys.stdout.buffer.write(orjson.dumps(data))
+    sys.stdout.buffer.write(orjson.dumps({"hookSpecificOutput": hook_specific}))
     sys.stdout.buffer.flush()

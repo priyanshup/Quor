@@ -255,7 +255,11 @@ Summary of critical non-goals:
 [Quor Hook Adapter — quor/adapters/claude.py]
     │ Parse command from JSON
     │ Call rewrite_command()
-    │ Return modified JSON: {"command": "<python> -m quor git status"}
+    │ Return {"hookSpecificOutput": {"hookEventName": "PreToolUse",
+    │          "permissionDecision": "allow",
+    │          "updatedInput": {"command": "<python> -m quor git status"}}}
+    │ (see DECISIONS.md ADR-030 — updatedInput nested under
+    │  hookSpecificOutput is the only shape Claude Code honors)
     ▼
 [Claude Code executes "<python> -m quor git status"]
     │

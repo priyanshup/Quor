@@ -1,7 +1,7 @@
 ﻿# PROJECT STATUS
 ## Quor — Current State Snapshot
 
-> Last updated: 2026-07-04 (rewrite invocation hardening — see below; v0.1.0 remains the last published release)
+> Last updated: 2026-07-04 (PreToolUse hook protocol fix, ADR-030 — see below; v0.1.0 remains the last published release)
 > Update this document at the start of every implementation session.
 
 ---

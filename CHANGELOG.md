@@ -3,6 +3,28 @@
 All notable changes to Quor are documented here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.2.1] — 2026-07-04
+
+- **PreToolUse hook now emits the response shape Claude Code actually reads.**
+  The hook adapter (`quor/adapters/claude.py`) used to rewrite
+  `tool_input.command` in place and echo the whole mutated input payload back
+  to stdout. Claude Code only honors `hookSpecificOutput.updatedInput` for
+  overriding tool arguments — a bare top-level `tool_input` key is silently
+  ignored — so the rewrite never reached execution, and `quor gain` never
+  recorded real invocations. The hook now emits
+  `{"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision":
+  "allow", "updatedInput": {...}}}`, omitting `updatedInput` entirely when no
+  rewrite applies. Verified end-to-end against the real Claude Code binary
+  (not just in-process unit tests). See ADR-030 in DECISIONS.md.
+- Fixed `.github/workflows/canary.yml`, which still asserted the old
+  `tool_input`-echo shape and would have falsely reported a Claude Code
+  protocol change on its next scheduled run.
+- No user-facing action required beyond upgrading the package — the installed
+  PowerShell hook script is unchanged; it invokes `python -m quor hook claude`,
+  which now returns the corrected response automatically.
+
+[0.2.1]: https://github.com/priyanshup/Quor/releases/tag/v0.2.1
+
 ## [0.2.0] — 2026-07-04
 
 - **Rewritten commands no longer depend on the `quor`/`qr` launcher stubs.**
