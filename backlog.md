@@ -209,7 +209,13 @@ per-filter `tee = false` opt-out, and clean up tee files older than 7 days at se
 implemented, `PROJECT_BIBLE.md`'s "nothing is irrecoverably lost" claim becomes accurate rather than
 aspirational.
 
-**Status:** Backlog
+**Status:** Resolved — implemented on `feature/qb-013-tee-mechanism` (merged via PR #8, hardening
+fix via PR #9). Dispatcher-level only (`quor/adapters/dispatcher.py`), no pipeline/stage changes.
+SHA256 content-addressed storage under `~/.local/share/quor/tee/`, with dedup + mtime refresh on
+cache hit. `[full output: <path>]` footer appended post-pipeline (not subject to `max_tokens`).
+7-day TTL cleanup, throttled via a separate `tee_state.db` (WAL mode, hardened against concurrent-
+open lock contention). Global (`tee_enabled`, `QUOR_TEE_ENABLED`) and per-filter (`FilterConfig.tee`)
+opt-out, both backward-compatible defaults.
 
 ---
 
