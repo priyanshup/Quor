@@ -179,7 +179,7 @@ Expected output for step 3 (`quor doctor`) on a healthy install:
 ✓ No conflicting PreToolUse hooks
 ✓ Tracking DB readable/writable
 ✓ Built-in filter tests pass
-✓ Mode: optimize
+✓ Mode: audit
 ✓ Plugin discovery — no third-party plugins installed
 ```
 

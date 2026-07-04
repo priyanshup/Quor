@@ -114,7 +114,7 @@ class TestGain:
         result = runner.invoke(app, ["gain", "--project", str(tmp_path)])
         assert result.exit_code == 0
         assert "No invocations recorded" in result.output
-        assert "Mode: optimize" in result.output
+        assert "Mode: audit" in result.output
 
     def test_populated_db(self, tmp_path: Path) -> None:
         from quor.tracking.db import InvocationRecord, TrackingDB
