@@ -64,8 +64,15 @@ jobs:
               print(f"FAIL: hook response is not valid JSON: {e}", file=sys.stderr)
               sys.exit(1)
           cmd = d.get("tool_input", {}).get("command", "")
-          if "quor git status" not in cmd:
-              print(f"FAIL: expected 'quor git status' in command, got {cmd!r}", file=sys.stderr)
+          if "-m quor git status" not in cmd:
+              print(f"FAIL: expected '-m quor git status' in command, got {cmd!r}", file=sys.stderr)
+              sys.exit(1)
+          if cmd.startswith("quor "):
+              print(
+                  f"FAIL: rewritten command still uses the bare 'quor' launcher "
+                  f"instead of the interpreter (ADR-029), got {cmd!r}",
+                  file=sys.stderr,
+              )
               sys.exit(1)
           print(f"OK: command rewritten to {cmd!r}")
           EOF

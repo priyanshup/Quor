@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from quor.rewrite.invocation import get_quor_invocation
 from quor.rewrite.lexer import Token, TokenKind, has_heredoc, parse_args, split_compound, tokenize
 from quor.rewrite.rules import (
     cat_is_safe_to_rewrite,
@@ -204,7 +205,7 @@ def _classify_simple(cmd: str) -> ClassificationResult:
 
     # --- Build the rewritten command ---
     arg_str = (" " + " ".join(args)) if args else ""
-    rewritten = f"{env_prefix}{transparent_prefix}quor {base}{arg_str}"
+    rewritten = f"{env_prefix}{transparent_prefix}{get_quor_invocation()} {base}{arg_str}"
     return ClassificationResult(
         should_rewrite=True,
         rewritten=rewritten,

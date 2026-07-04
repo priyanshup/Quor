@@ -740,3 +740,26 @@ A release-readiness review found that `pyproject.toml`'s `dev` extra declared `q
 - The published wheel's `dev` extra now only lists real PyPI packages (`pytest`, `pytest-cov`, `mypy`, `ruff`) — `pip install quor[dev]` from PyPI will resolve cleanly (though a PyPI user still won't have the `tests/` directory to point the fixture at; that extra was always intended for contributors working from a source checkout, not end users).
 - Contributors must remember the second install step — documented in three places (CI workflows, `CONTRIBUTING.md`, README) specifically to reduce the chance of it being missed or drifting out of sync.
 - If a genuinely reusable, general-purpose plugin-testing fixture is ever needed by third parties (not just this repo's own test suite), publishing it as a real PyPI package should be reconsidered — this decision is scoped to "make the current release clean," not a permanent rejection of that option.
+
+---
+
+## ADR-029: Rewritten Commands Invoke `sys.executable -m quor` (not the `quor`/`qr` launcher)
+
+**Status:** Decided
+**Date:** 2026-07-04
+
+**Context:**
+ADR-011 decided the rewritten command Quor hands back to Claude Code is `quor <original>` — the bare word `quor`, resolved via PATH by whatever shell Claude Code's Bash tool runs. On a corporate Windows laptop this bare word resolves to the pip-generated `quor.exe` console-script launcher stub (declared in `[project.scripts]`), which some application-control policies block outright, even though the exact same Python interpreter running `python -m quor` is allowed. Investigation traced the full path from the PreToolUse hook (`quor/adapters/claude.py::run_hook`) through `rewrite_command` (`quor/rewrite/classifier.py`) and confirmed the rewritten string is not merely metadata: Claude Code executes it verbatim, so the literal prefix chosen here fully determines which executable actually runs. `python -m quor doctor` working while `quor doctor` is blocked on the same machine was the direct evidence.
+
+**Options considered:**
+- `py -m quor ...` (Windows Python Launcher): rejected — doesn't exist on Linux/macOS at all, and even on Windows it isn't guaranteed to resolve to the interpreter Quor is currently running under (venv/pipx/poetry/uv/conda environments aren't reliably reachable through `py`), which could invoke a Python without Quor installed.
+- Bare `quor`/`qr` (status quo): rejected — this is the bug; it depends on the PATH-resolved launcher stub, which is exactly what gets blocked.
+- `sys.executable -m quor ...`: the interpreter already running Quor, by definition has Quor importable, and is unambiguous across every packaging/environment tool. Chosen.
+
+**Decision:** Rewritten commands are prefixed with `shlex.quote(sys.executable) + " -m quor"`, produced by a single helper, `get_quor_invocation()` in the new `quor/rewrite/invocation.py`. `quor/rewrite/classifier.py::_classify_simple` is the only call site that constructs this prefix (compound/piped/env-prefixed/transparent-prefix rewrites all recurse through it, so there is no second place to keep in sync). `shlex.quote` produces POSIX-safe quoting, matching the Git-Bash-style shell Claude Code's Bash tool actually parses on every OS, so interpreter paths containing spaces (common on Windows) are handled correctly.
+
+**Consequences:**
+- The `quor`/`qr` console-script entry points in `pyproject.toml` are unchanged and still installed by `pip install quor` — they are now purely a convenience for commands a user types by hand (`quor doctor`, `quor init --claude`), not a runtime dependency of the PreToolUse rewrite path.
+- `quor/cli/commands/doctor.py::_check_hook_roundtrip` and every rewrite-format test (`tests/unit/test_rewrite.py`, `tests/unit/test_adapters.py`, `tests/fixtures/commands/*.toml` via the loader) now compare against `get_quor_invocation()` instead of a hardcoded `"quor "` literal, so they remain valid on any machine/interpreter.
+- If Quor is ever distributed as a frozen binary (PyInstaller/Nuitka), `sys.executable` would be that binary and `-m quor` would no longer apply — not the case for any currently published build; noted as a limitation in `get_quor_invocation()`'s docstring for future maintainers.
+- Manual invocation (a user typing `quor doctor` directly) is unaffected by this ADR and still goes through the launcher stub — the corporate-launcher troubleshooting entry in `README.md` is retained for that case, with a clarification that automatic Claude-Code-driven commands are no longer subject to it.

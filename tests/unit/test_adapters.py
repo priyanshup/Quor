@@ -15,10 +15,16 @@ from pydantic import ValidationError
 from quor.adapters.base import HookInput, HookOutput, ToolInput
 from quor.adapters.claude import HOOK_COMMAND, HOOK_PS1_TEMPLATE, run_hook
 from quor.adapters.dispatcher import run_dispatch
+from quor.rewrite.invocation import get_quor_invocation
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+# Rewritten commands are prefixed with the shell-safe Quor invocation
+# (sys.executable -m quor), not the bare `quor` launcher — see
+# quor/rewrite/invocation.py. Compare against this same helper.
+Q = get_quor_invocation()
 
 
 def _make_hook_payload(command: str, **extra: Any) -> dict:
@@ -84,9 +90,9 @@ class TestModels:
 
     def test_hook_output_is_same_shape(self) -> None:
         ho = HookOutput.model_validate(
-            {"tool_name": "Bash", "tool_input": {"command": "quor git status"}}
+            {"tool_name": "Bash", "tool_input": {"command": f"{Q} git status"}}
         )
-        assert ho.tool_input.command == "quor git status"
+        assert ho.tool_input.command == f"{Q} git status"
 
     def test_hook_input_missing_tool_input_raises(self) -> None:
         from pydantic import ValidationError
@@ -108,7 +114,7 @@ class TestRunHookRewrite:
     def test_known_command_is_rewritten(self) -> None:
         payload = _make_hook_payload("git status")
         result = _run_hook_with(payload)
-        assert result["tool_input"]["command"] == "quor git status"
+        assert result["tool_input"]["command"] == f"{Q} git status"
 
     def test_unknown_command_unchanged(self) -> None:
         payload = _make_hook_payload("npm install")
@@ -118,7 +124,7 @@ class TestRunHookRewrite:
     def test_compound_command_rewritten(self) -> None:
         payload = _make_hook_payload("git status && git diff")
         result = _run_hook_with(payload)
-        assert result["tool_input"]["command"] == "quor git status && quor git diff"
+        assert result["tool_input"]["command"] == f"{Q} git status && {Q} git diff"
 
     def test_excluded_command_unchanged(self) -> None:
         payload = _make_hook_payload("git status --porcelain")
@@ -143,7 +149,7 @@ class TestRunHookRewrite:
         }
         result = _run_hook_with(payload)
         assert result["tool_input"]["description"] == "show history"
-        assert result["tool_input"]["command"] == "quor git log"
+        assert result["tool_input"]["command"] == f"{Q} git log"
 
     def test_output_is_valid_json(self) -> None:
         payload = _make_hook_payload("git status")
@@ -176,16 +182,16 @@ class TestRunHookBom:
 
     def test_single_bom_stripped(self) -> None:
         result = self._run_with_bom_str(1, _make_hook_payload("git status"))
-        assert result["tool_input"]["command"] == "quor git status"
+        assert result["tool_input"]["command"] == f"{Q} git status"
 
     def test_doubled_bom_stripped(self) -> None:
         result = self._run_with_bom_str(2, _make_hook_payload("git diff"))
-        assert result["tool_input"]["command"] == "quor git diff"
+        assert result["tool_input"]["command"] == f"{Q} git diff"
 
     def test_no_bom_works(self) -> None:
         payload = _make_hook_payload("pytest tests/")
         result = _run_hook_with(payload)
-        assert result["tool_input"]["command"] == "quor pytest tests/"
+        assert result["tool_input"]["command"] == f"{Q} pytest tests/"
 
 
 # ---------------------------------------------------------------------------

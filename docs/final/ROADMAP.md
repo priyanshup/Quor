@@ -3,6 +3,10 @@
 
 > This document describes what each version delivers and what "done" means for each milestone.
 > Versions are not date-committed. Each exits when its release criteria (see RELEASE_CRITERIA.md) are met.
+> Not every published version gets its own milestone section here — this document tracks feature
+> milestones (v0.1, v0.5, Beta, V1), not every patch/minor release in between. A point release like
+> v0.1.1 (documentation-only) or v0.2.0 (bug-fix hardening, no new user-facing feature) stays within
+> the v0.1 milestone's scope. See CHANGELOG.md for the complete, version-by-version release history.
 
 ---
 

@@ -7,8 +7,8 @@ security fixes; there is no long-term-support branch yet.
 
 | Version | Supported |
 |---------|-----------|
-| 0.1.x   | Yes       |
-| < 0.1   | No        |
+| 0.2.x   | Yes       |
+| < 0.2   | No        |
 
 ## Reporting a Vulnerability
 
@@ -22,7 +22,7 @@ Instead, report privately via one of:
 Please include:
 1. A description of the vulnerability and its potential impact.
 2. Steps to reproduce, including a minimal example if possible.
-3. The Quor version (`quor --version`) and Python version affected.
+3. The Quor version (`pip show quor` — there's no `quor --version` flag) and Python version affected.
 
 We aim to acknowledge reports within 5 business days. As a single-maintainer,
 pre-1.0 project there is no formal SLA yet, but security reports are

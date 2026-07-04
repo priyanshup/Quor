@@ -2,7 +2,7 @@
 
 > A rule-based command-output optimization and context-compression layer that reduces unnecessary LLM context while preserving important information.
 
-> **Status:** v0.1.0 released — [available on PyPI](https://pypi.org/project/quor/). All 10 implementation phases complete (605 tests passing, ruff + mypy clean, verified on Python 3.11 and 3.14 across multiple machines).
+> **Status:** v0.1.1 is the latest version [available on PyPI](https://pypi.org/project/quor/); v0.2.0 is in release preparation (see [CHANGELOG](https://github.com/priyanshup/Quor/blob/main/CHANGELOG.md)). All 10 implementation phases complete (613 tests passing, ruff + mypy clean, verified on Python 3.11 and 3.14 across multiple machines).
 
 ---
 
@@ -13,7 +13,7 @@ AI coding assistants spend a large share of their context window on raw command 
 Quor sits between your shell and the assistant's context window. It runs your command exactly as it would run anyway, then applies a deterministic filtering pipeline that removes low-signal output while preserving everything that indicates success, failure, or change. The result is a smaller, higher-signal prompt — not a different one.
 
 ```
-git status          →  quor git status
+git status          →  <your Python interpreter> -m quor git status
                            ↓
               [deterministic filtering pipeline]
                            ↓
@@ -202,7 +202,16 @@ py -3.11 -m quor doctor
 
 **`pip.exe` / `quor.exe` "Access is denied" on a locked-down corporate machine**
 
-Some corporate endpoint-protection policies block execution of newly created `.exe` wrapper scripts even though the underlying Python interpreter is allowed to run. Work around it by always going through the interpreter instead of the wrapper:
+`pip install quor` creates `quor.exe`/`qr.exe` — small, unsigned launcher stubs in your Python install's `Scripts` folder that just re-invoke the interpreter. Some corporate endpoint-protection / application-control policies allow the interpreter itself (`python.exe`, usually a signed, known binary from a trusted install path) but block execution of these newly created, unsigned wrapper scripts, even though they do nothing but call back into that same interpreter.
+
+This only affects commands *you* type directly. Every command Claude Code runs automatically already invokes the interpreter directly — `<your Python interpreter> -m quor ...`, never `quor.exe`/`qr.exe` — so the PreToolUse hook is unaffected by this policy (see [docs/final/DECISIONS.md](https://github.com/priyanshup/Quor/blob/main/docs/final/DECISIONS.md) ADR-029). When typing commands yourself, use the same enterprise-safe form, going through the interpreter instead of the wrapper:
+
+```bash
+py -m pip install quor
+py -m quor doctor
+```
+
+or, if the `py` launcher isn't available (e.g. on Linux/macOS):
 
 ```bash
 python -m pip install quor
@@ -263,7 +272,7 @@ it's clear what to expect next, not as claims about current behavior:
 - **Verbose diagnostics** — an opt-in detailed trace mode for debugging
   filter behavior, beyond what `quor explain` already provides.
 
-See [docs/final/ROADMAP.md](docs/final/ROADMAP.md) for the full
+See [docs/final/ROADMAP.md](https://github.com/priyanshup/Quor/blob/main/docs/final/ROADMAP.md) for the full
 version-by-version plan.
 
 ---
@@ -284,7 +293,7 @@ version-by-version plan.
 | 9 | Plugin discovery & loading | **Complete** |
 | 10 | Packaging & release | **Complete** — [v0.1.0 on PyPI](https://pypi.org/project/quor/) |
 
-605 tests passing, ruff + mypy clean on `quor/` and `tests/`, verified on Python 3.11, 3.13, and 3.14. See [docs/final/PROJECT_STATUS.md](docs/final/PROJECT_STATUS.md) for the current snapshot, [docs/final/IMPLEMENTATION_PLAN.md](docs/final/IMPLEMENTATION_PLAN.md) for the full roadmap, and [CHANGELOG.md](CHANGELOG.md) for the v0.1.0 release notes.
+613 tests passing, ruff + mypy clean on `quor/` and `tests/`, verified on Python 3.11, 3.13, and 3.14. See [docs/final/PROJECT_STATUS.md](https://github.com/priyanshup/Quor/blob/main/docs/final/PROJECT_STATUS.md) for the current snapshot, [docs/final/IMPLEMENTATION_PLAN.md](https://github.com/priyanshup/Quor/blob/main/docs/final/IMPLEMENTATION_PLAN.md) for the full roadmap, and [CHANGELOG.md](https://github.com/priyanshup/Quor/blob/main/CHANGELOG.md) for the full release notes.
 
 The operating-mode system (AUDIT / OPTIMIZE / SIMULATE) is intentionally display-only in this release — `quor doctor` and `quor gain` show the configured mode, but the dispatcher doesn't yet branch on it. This is a scoped, documented roadmap item, not a bug; see `docs/final/PROJECT_STATUS.md` for details.
 
@@ -301,7 +310,7 @@ pytest tests/
 ```
 
 The second install step is required for the plugin-discovery tests — see
-[CONTRIBUTING.md](CONTRIBUTING.md) for why it's a separate step rather than
+[CONTRIBUTING.md](https://github.com/priyanshup/Quor/blob/main/CONTRIBUTING.md) for why it's a separate step rather than
 a `pyproject.toml` dev dependency.
 
 Requires Python 3.11+. Windows is the primary development and CI target. Pure Python — no `uv` or other non-pip tooling required.
@@ -310,10 +319,10 @@ Requires Python 3.11+. Windows is the primary development and CI target. Pure Py
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for the full contributor guide, [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) for community standards, and [SECURITY.md](SECURITY.md) to report a vulnerability.
+See [CONTRIBUTING.md](https://github.com/priyanshup/Quor/blob/main/CONTRIBUTING.md) for the full contributor guide, [CODE_OF_CONDUCT.md](https://github.com/priyanshup/Quor/blob/main/CODE_OF_CONDUCT.md) for community standards, and [SECURITY.md](https://github.com/priyanshup/Quor/blob/main/SECURITY.md) to report a vulnerability.
 
 ---
 
 ## License
 
-Apache 2.0 — see [LICENSE](LICENSE) for details.
+Apache 2.0 — see [LICENSE](https://github.com/priyanshup/Quor/blob/main/LICENSE) for details.

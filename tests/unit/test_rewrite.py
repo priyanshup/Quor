@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import re
 import tomllib
 from pathlib import Path
 
 import pytest
 
 from quor.rewrite.classifier import classify_command, rewrite_command
+from quor.rewrite.invocation import get_quor_invocation
 from quor.rewrite.lexer import (
     TokenKind,
     has_heredoc,
@@ -24,6 +26,12 @@ from quor.rewrite.rules import (
 )
 
 _FIXTURES_DIR = Path(__file__).parent.parent / "fixtures" / "commands"
+
+# The command classifier's rewritten output is prefixed with the shell-safe
+# Quor invocation (`sys.executable -m quor`, not the bare `quor` launcher —
+# see quor/rewrite/invocation.py). Tests compare against this same helper
+# rather than hardcoding a literal so they remain valid on every machine.
+Q = get_quor_invocation()
 
 
 # ---------------------------------------------------------------------------
@@ -242,7 +250,7 @@ class TestClassifySimple:
     def test_known_command_rewritten(self) -> None:
         r = classify_command("git status")
         assert r.should_rewrite is True
-        assert r.rewritten == "quor git status"
+        assert r.rewritten == f"{Q} git status"
 
     def test_unknown_command_passthrough(self) -> None:
         r = classify_command("npm install")
@@ -260,7 +268,7 @@ class TestClassifySimple:
     def test_python_m_pytest_rewritten(self) -> None:
         r = classify_command("python -m pytest tests/")
         assert r.should_rewrite is True
-        assert r.rewritten == "quor python -m pytest tests/"
+        assert r.rewritten == f"{Q} python -m pytest tests/"
 
     def test_python_script_passthrough(self) -> None:
         r = classify_command("python script.py")
@@ -269,7 +277,7 @@ class TestClassifySimple:
     def test_cat_safe_rewritten(self) -> None:
         r = classify_command("cat pyproject.toml")
         assert r.should_rewrite is True
-        assert r.rewritten == "quor cat pyproject.toml"
+        assert r.rewritten == f"{Q} cat pyproject.toml"
 
     def test_cat_unsafe_passthrough(self) -> None:
         r = classify_command("cat -e file.txt")
@@ -296,24 +304,24 @@ class TestClassifyCompound:
     def test_and_both_known(self) -> None:
         r = classify_command("git status && git diff")
         assert r.should_rewrite is True
-        assert r.rewritten == "quor git status && quor git diff"
+        assert r.rewritten == f"{Q} git status && {Q} git diff"
 
     def test_and_one_unknown(self) -> None:
         r = classify_command("npm install && git status")
         assert r.should_rewrite is True
         assert "npm install" in (r.rewritten or "")
-        assert "quor git status" in (r.rewritten or "")
+        assert f"{Q} git status" in (r.rewritten or "")
 
     def test_or_both_known(self) -> None:
         r = classify_command("pytest tests/ || echo fail")
         assert r.should_rewrite is True
-        assert r.rewritten == "quor pytest tests/ || echo fail"
+        assert r.rewritten == f"{Q} pytest tests/ || echo fail"
 
     def test_semicolon(self) -> None:
         r = classify_command("git status ; git log --oneline")
         assert r.should_rewrite is True
-        assert "quor git status" in (r.rewritten or "")
-        assert "quor git log" in (r.rewritten or "")
+        assert f"{Q} git status" in (r.rewritten or "")
+        assert f"{Q} git log" in (r.rewritten or "")
 
     def test_all_unknown_compound(self) -> None:
         r = classify_command("npm install && make build")
@@ -324,7 +332,7 @@ class TestClassifyPipe:
     def test_pipe_to_grep_allowed(self) -> None:
         r = classify_command("git log --oneline | grep feat")
         assert r.should_rewrite is True
-        assert "quor git log" in (r.rewritten or "")
+        assert f"{Q} git log" in (r.rewritten or "")
 
     def test_pipe_to_xargs_excluded(self) -> None:
         r = classify_command("git log --oneline | xargs echo")
@@ -348,13 +356,13 @@ class TestClassifyEnvPrefix:
     def test_env_prefix_rewritten(self) -> None:
         r = classify_command("FORCE_COLOR=1 git status")
         assert r.should_rewrite is True
-        assert r.rewritten == "FORCE_COLOR=1 quor git status"
+        assert r.rewritten == f"FORCE_COLOR=1 {Q} git status"
 
     def test_multiple_env_vars(self) -> None:
         r = classify_command("CI=true PYTHONPATH=src python -m pytest")
         assert r.should_rewrite is True
         assert "CI=true" in (r.rewritten or "")
-        assert "quor python" in (r.rewritten or "")
+        assert f"{Q} python" in (r.rewritten or "")
 
     def test_env_prefix_unknown_command(self) -> None:
         r = classify_command("DEBUG=1 npm install")
@@ -365,12 +373,12 @@ class TestClassifyTransparentPrefix:
     def test_sudo_git(self) -> None:
         r = classify_command("sudo git status")
         assert r.should_rewrite is True
-        assert r.rewritten == "sudo quor git status"
+        assert r.rewritten == f"sudo {Q} git status"
 
     def test_docker_exec_git(self) -> None:
         r = classify_command("docker exec mycontainer git status")
         assert r.should_rewrite is True
-        assert r.rewritten == "docker exec mycontainer quor git status"
+        assert r.rewritten == f"docker exec mycontainer {Q} git status"
 
     def test_sudo_unknown_passthrough(self) -> None:
         r = classify_command("sudo npm install")
@@ -379,7 +387,7 @@ class TestClassifyTransparentPrefix:
 
 class TestRewriteCommand:
     def test_known_returns_string(self) -> None:
-        assert rewrite_command("git status") == "quor git status"
+        assert rewrite_command("git status") == f"{Q} git status"
 
     def test_unknown_returns_none(self) -> None:
         assert rewrite_command("npm install") is None
@@ -429,6 +437,21 @@ def test_fixture_exclusions(case: dict) -> None:
     _run_fixture_case(case)
 
 
+# Fixtures encode the rewrite prefix as the literal word "quor" (they predate
+# the sys.executable-based invocation). Substitute only the inserted prefix
+# token — not incidental occurrences like the "quor/" source directory in
+# `mypy quor/` — by requiring the match be followed by whitespace, which the
+# prefix always is and a bare directory-name argument never is.
+_QUOR_PREFIX_RE = re.compile(r"\bquor(?=\s)")
+
+
+def _expected_rewrite(raw: str) -> str:
+    # Replacement is a callable, not a string: Q may contain backslashes
+    # (Windows interpreter paths), which re.sub would otherwise try to
+    # interpret as backreferences/escapes.
+    return _QUOR_PREFIX_RE.sub(lambda _match: Q, raw)
+
+
 def _run_fixture_case(case: dict) -> None:
     cmd = case["input"]
     should_rewrite: bool = case["should_rewrite"]
@@ -440,9 +463,9 @@ def _run_fixture_case(case: dict) -> None:
     )
 
     if should_rewrite and "expected_rewrite" in case:
-        assert result.rewritten == case["expected_rewrite"], (
-            f"rewrite mismatch for {cmd!r}: "
-            f"expected={case['expected_rewrite']!r}, got={result.rewritten!r}"
+        expected = _expected_rewrite(case["expected_rewrite"])
+        assert result.rewritten == expected, (
+            f"rewrite mismatch for {cmd!r}: expected={expected!r}, got={result.rewritten!r}"
         )
 
     if not should_rewrite:

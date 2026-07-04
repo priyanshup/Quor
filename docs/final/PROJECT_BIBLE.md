@@ -96,7 +96,7 @@ No existing tool solves this for Windows users who cannot install a Rust binary.
 
 4. **Onboarding**: First 5 filtered commands print to stderr (not stdout):
    ```
-   [quor] git status → quor git status (hook active)
+   [quor] git status → <python> -m quor git status (hook active)
    [quor] Estimated: 847 tokens → 203 tokens (76% reduction ±20%)
    [quor] Run `quor gain` to see cumulative savings.
    ```
@@ -203,8 +203,9 @@ Summary of critical non-goals:
 | FR01 | Hook intercepts Claude Code PreToolUse commands without developer interaction |
 | FR02 | Rewrite rules support compound commands (&&, \|\|, ;, &) and env prefixes |
 | FR03 | Commands containing heredocs are NOT rewritten |
-| FR04 | Transparent prefix recursion: `docker exec mycontainer git status` → `docker exec mycontainer quor git status` |
+| FR04 | Transparent prefix recursion: `docker exec mycontainer git status` → `docker exec mycontainer <python> -m quor git status` |
 | FR05 | Hook embeds full sys.executable path (not `python`) to survive venv environments |
+| FR05a | Rewritten commands invoke the current interpreter directly (`sys.executable -m quor ...`, via `get_quor_invocation()`), never the bare `quor`/`qr` PATH launcher — see ADR-029 |
 | FR06 | ContentMask pipeline: stages produce KEEP/COMPRESS/PROTECT decisions; final render step applies mask |
 | FR07 | PROTECT decisions propagate through all stages and cannot be overridden |
 | FR08 | `can_handle()` guard on every stage; false → stage skipped cleanly |
@@ -254,9 +255,9 @@ Summary of critical non-goals:
 [Quor Hook Adapter — quor/adapters/claude.py]
     │ Parse command from JSON
     │ Call rewrite_command()
-    │ Return modified JSON: {"command": "quor git status"}
+    │ Return modified JSON: {"command": "<python> -m quor git status"}
     ▼
-[Claude Code executes "quor git status"]
+[Claude Code executes "<python> -m quor git status"]
     │
     ▼
 [Quor Dispatcher — quor/__main__.py]

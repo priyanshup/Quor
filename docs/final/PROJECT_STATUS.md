@@ -1,7 +1,7 @@
 ﻿# PROJECT STATUS
 ## Quor — Current State Snapshot
 
-> Last updated: 2026-07-02 (v0.1.0 published — see Release Notes below)
+> Last updated: 2026-07-04 (rewrite invocation hardening — see below; v0.1.0 remains the last published release)
 > Update this document at the start of every implementation session.
 
 ---
@@ -11,10 +11,10 @@
 | Area | Status | % Complete | Notes |
 |---|---|---|---|
 | Research | COMPLETE | 100% | All 5 research documents finalized. Archived. |
-| Architecture | COMPLETE | 100% | All decisions made. Documented in DECISIONS.md (28 ADRs). |
+| Architecture | COMPLETE | 100% | All decisions made. Documented in DECISIONS.md (29 ADRs). |
 | Documentation | COMPLETE | 100% | 10 canonical docs + README, CHANGELOG, LICENSE, CONTRIBUTING, CODE_OF_CONDUCT, SECURITY all written and reconciled against the released package (see Release Notes below). |
 | Implementation | COMPLETE | 100% | All 10 phases complete, including packaging. |
-| Testing | COMPLETE | 100% | 605 tests, ruff+mypy clean on `quor/` and `tests/`. All passing, fully machine-isolated. Verified on Python 3.11, 3.13, 3.14. |
+| Testing | COMPLETE | 100% | 613 tests, ruff+mypy clean on `quor/` and `tests/`. All passing, fully machine-isolated. Verified on Python 3.11, 3.13, 3.14. |
 | Packaging | COMPLETE | 100% | v0.1.0 published to both TestPyPI and PyPI on 2026-07-01. Installed and verified from a real PyPI/TestPyPI index on three separate machines (Python 3.11 and 3.14). |
 
 ---
@@ -39,7 +39,7 @@ The one exception: the three empirical pre-flight checks are observations about 
 
 ## Architecture Phase (COMPLETE)
 
-All architectural decisions are finalized. The 28 ADRs in DECISIONS.md are the authoritative record.
+All architectural decisions are finalized. The 29 ADRs in DECISIONS.md are the authoritative record.
 
 **Nothing in the architecture is undecided or provisional.** If implementation reveals that a decision was wrong, update DECISIONS.md with the new decision and the reason for the change — do not implement around an ADR without updating it.
 
@@ -374,6 +374,66 @@ Closed out Phase 10 by actually publishing, rather than just preparing to publis
   - Corporate/office laptop, Python 3.14 — passes, but required `python -m pip` / `python -m quor` instead of the `pip.exe`/`quor.exe` wrapper scripts directly, because this machine's endpoint-protection policy blocked execution of the wrapper executables even though the interpreter itself was permitted. Documented as a Troubleshooting entry in `README.md`.
   - Incidentally confirmed Windows' 260-character path limit can silently break a venv install if the venv directory is deeply nested — also added to `README.md` Troubleshooting.
 - **First-time-user documentation pass** (this pass): reconciled `README.md`, `CHANGELOG.md`, `CONTRIBUTING.md`, `SECURITY.md`, and this document against the actual released package and real CLI `--help` output (captured directly from the published `0.1.0` wheel). Found and fixed one genuine doc bug: `CONTRIBUTING.md` told bug reporters to run `quor --version`, which doesn't exist as a flag — replaced with `pip show quor` everywhere it was referenced. Added a README Quick Start and Troubleshooting section (PATH issues, `py` launcher, multiple Python versions, corporate AppLocker-style `.exe` blocking, path-length limits). No application code was changed.
+
+---
+
+## Rewrite Invocation Hardening (2026-07-04)
+
+Not a release — no version bump yet (still `0.1.1` in `pyproject.toml`). This
+closes a real bug reported from the corporate/office laptop noted in the
+Release Publication Notes above: `python -m quor doctor` worked but bare
+`quor doctor` was blocked by application control. That entry documented it as
+a manual-invocation workaround; this session fixed the actual root cause for
+the automatic path.
+
+- **Root cause traced with evidence, not assumption.** Followed the full
+  execution path from the PreToolUse hook through `rewrite_command()` to the
+  point Claude Code executes the rewritten string. Confirmed `quor.exe`/`qr.exe`
+  (the `pip`-generated `[project.scripts]` console-script launchers) were on
+  the runtime path: every rewritten command started with the bare word
+  `quor`, which Claude Code's shell resolves via PATH — landing on the exact
+  launcher stub some corporate application-control policies block.
+- **Fixed via a single new helper**, `get_quor_invocation()`
+  (`quor/rewrite/invocation.py`), used by `quor/rewrite/classifier.py`'s one
+  rewrite call site. Rewritten commands now read
+  `"<sys.executable> -m quor ..."` — the exact interpreter already running
+  Quor, quoted with `shlex.quote` for POSIX-shell safety (matching the
+  Git-Bash-style shell Claude Code's Bash tool actually parses on every OS).
+  See DECISIONS.md ADR-029 for the full option comparison (`sys.executable`
+  vs. the Windows-only `py` launcher vs. the status quo).
+- **`quor doctor`'s hook roundtrip self-check** and every rewrite-format test
+  (`test_rewrite.py`, `test_adapters.py`, the TOML fixture loader) now compare
+  against `get_quor_invocation()` instead of a hardcoded `"quor "` literal.
+  Added `tests/unit/test_invocation.py` with explicit regressions: rewritten
+  commands never start with bare `quor`, always start with the quoted current
+  interpreter, and existing classify/rewrite behavior is unchanged. Full
+  suite (613 tests), `ruff`, and `mypy` all clean; verified end-to-end with
+  a real `python -m quor git status` run.
+- **Documentation pass (this entry):** reviewed every user-facing doc
+  (`README.md`, `CHANGELOG.md`, `CONTRIBUTING.md`, `SECURITY.md`, all of
+  `docs/final/`) for stale claims that rewritten commands execute through the
+  bare `quor` launcher. Fixed the architecture diagram and onboarding-message
+  example in `README.md` and `PROJECT_BIBLE.md`, the diagram in `CLAUDE.md`,
+  and clarified `README.md`'s corporate-launcher troubleshooting entry to
+  distinguish manual CLI use (still launcher-dependent) from Claude Code's
+  automatic hook-driven commands (no longer launcher-dependent). Left
+  `IMPLEMENTATION_PLAN.md`'s Phase 5 flow diagram as originally written, with
+  a dated addendum pointing to ADR-029 — it's a historical record of what was
+  built at the time, not current-behavior documentation.
+- **CI gap found and fixed:** `.github/workflows/canary.yml`'s hook-format
+  check only asserted the substring `"quor git status"` appeared in the
+  rewritten command. That still coincidentally passes under the new format
+  (`"...-m quor git status"` contains it), so it wasn't failing — but it no
+  longer verified the property that actually matters (that the rewrite no
+  longer depends on the bare launcher). Tightened to also assert the
+  rewritten command does not start with the bare word `quor` and does
+  contain the interpreter-invocation form.
+- **Version bump still pending.** This is architecturally significant enough
+  to warrant `0.2.0` rather than a patch release (changes the on-the-wire
+  format of what a rewritten command looks like), consistent with the
+  recommendation made when the change was implemented. Not yet applied to
+  `pyproject.toml`/`CHANGELOG.md` — that's a release-process step, deferred
+  until the change is reviewed.
 
 ---
 

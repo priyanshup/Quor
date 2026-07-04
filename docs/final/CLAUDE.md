@@ -13,7 +13,7 @@ Quor is a Python CLI tool that compresses AI coding assistant command output bef
 **Package name:** `quor` (CLI commands: `quor` and `qr`)  
 **Python version:** 3.11+ required (stdlib `tomllib`)  
 **Primary OS:** Windows 10/11 (corporate, no admin rights, pip only)  
-**Status:** Phases 0-10 complete (605 tests passing, ruff+mypy clean). v0.1.0 published to PyPI (2026-07-01). See PROJECT_STATUS.md for the current session snapshot.
+**Status:** Phases 0-10 complete (613 tests passing, ruff+mypy clean). v0.1.0 published to PyPI (2026-07-01); v0.2.0 in release preparation. See PROJECT_STATUS.md for the current session snapshot.
 
 Read PROJECT_BIBLE.md for the full product context. Read DECISIONS.md for the reasoning behind every architectural choice. Do not re-derive decisions already made.
 
@@ -23,7 +23,9 @@ Read PROJECT_BIBLE.md for the full product context. Read DECISIONS.md for the re
 
 ```
 Claude Code PreToolUse hook
-    → JSON rewrite: "git status" → "quor git status"
+    → JSON rewrite: "git status" → "<python> -m quor git status"
+      (interpreter invocation via get_quor_invocation(), not the quor/qr
+      launcher — see DECISIONS.md ADR-029)
     → Quor subprocess runs real command, captures stdout
     → ContentMask pipeline (stages annotate lines, final render applies)
     → Compressed output returned to AI context

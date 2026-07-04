@@ -113,6 +113,7 @@ def _check_hook_roundtrip() -> tuple[str, bool, str]:
     import orjson
 
     from quor.adapters.claude import run_hook
+    from quor.rewrite.invocation import get_quor_invocation
 
     payload = orjson.dumps({"tool_name": "Bash", "tool_input": {"command": "git status"}})
     old_stdin, old_stdout = sys.stdin, sys.stdout
@@ -123,7 +124,8 @@ def _check_hook_roundtrip() -> tuple[str, bool, str]:
         run_hook()
         result = orjson.loads(fake_stdout.buffer.getvalue())
         rewritten = result.get("tool_input", {}).get("command", "")
-        if rewritten == "quor git status":
+        expected = f"{get_quor_invocation()} git status"
+        if rewritten == expected:
             return ("Hook responds correctly", True, "")
         return ("Hook responds correctly", False, f"unexpected rewrite: {rewritten!r}")
     except Exception as exc:  # noqa: BLE001

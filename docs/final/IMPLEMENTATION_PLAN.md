@@ -238,6 +238,16 @@ stdin: {"tool_input": {"command": "git status"}}
 stdout: {"tool_input": {"command": "quor git status"}}
 ```
 
+**Update (2026-07-04):** `rewrite_command()`'s output format changed —
+see DECISIONS.md ADR-029. The rewritten command is now
+`"<sys.executable> -m quor git status"`, produced by the new
+`get_quor_invocation()` helper (`quor/rewrite/invocation.py`), instead of the
+bare `"quor git status"` shown above. This closed a real bug: the bare form
+depended on the pip-generated `quor`/`qr` launcher, which some corporate
+application-control policies block. This entry is left as originally written
+(Phase 5, pre-v0.2.0) for historical accuracy of what was built and verified
+at the time; it is not the current behavior.
+
 **Hook dispatcher flow (when Claude Code runs `quor git status`):**
 ```
 args: ["git", "status"]
