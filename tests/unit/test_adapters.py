@@ -5,6 +5,7 @@ from __future__ import annotations
 import io
 import subprocess
 import sys
+from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -15,6 +16,7 @@ from pydantic import ValidationError
 from quor.adapters.base import HookInput, HookOutput, ToolInput
 from quor.adapters.claude import HOOK_COMMAND, HOOK_PS1_TEMPLATE, run_hook
 from quor.adapters.dispatcher import run_dispatch
+from quor.filters.registry import FilterRegistry
 from quor.rewrite.invocation import get_quor_invocation
 
 # ---------------------------------------------------------------------------
@@ -441,6 +443,124 @@ class TestDispatcher:
         # Original output preserved unchanged — the failing plugin's would-be
         # transformation never took effect.
         assert captured.getvalue() == "hello world\n"
+
+
+# ---------------------------------------------------------------------------
+# run_dispatch() — tee mechanism (ADR-023)
+# ---------------------------------------------------------------------------
+
+
+class TestDispatcherTee:
+    _CHANGED_OUTPUT = (
+        "PASSED tests/test_a.py::test_x\n"
+        "FAILED tests/test_b.py::test_y\n"
+        "    AssertionError: got False\n"
+    )
+
+    def test_footer_appended_when_output_changes(self) -> None:
+        proc = _make_proc(stdout=self._CHANGED_OUTPUT)
+        captured = io.StringIO()
+        with (
+            patch("subprocess.run", return_value=proc),
+            patch("sys.stdout", captured),
+        ):
+            run_dispatch(["pytest", "tests/"])
+
+        output = captured.getvalue()
+        assert "[full output:" in output
+
+        import re
+
+        match = re.search(r"\[full output: (.+)\]", output)
+        assert match is not None
+        tee_file = Path(match.group(1))
+        assert tee_file.exists()
+        # The tee file holds the true raw output, including the PASSED line
+        # that the filter stripped from what's printed to stdout.
+        assert tee_file.read_text(encoding="utf-8") == self._CHANGED_OUTPUT
+
+    def test_no_footer_when_output_unchanged(self) -> None:
+        # abort_unless (no FAILED/ERROR/error substring) short-circuits the
+        # pytest filter, so output is returned byte-for-byte unchanged —
+        # nothing to recover, so tee must not fire.
+        proc = _make_proc(stdout="2 passed in 0.1s\n")
+        captured = io.StringIO()
+        with (
+            patch("subprocess.run", return_value=proc),
+            patch("sys.stdout", captured),
+        ):
+            run_dispatch(["pytest", "tests/"])
+
+        assert "[full output:" not in captured.getvalue()
+
+    def test_filter_level_opt_out_disables_footer(self) -> None:
+        proc = _make_proc(stdout=self._CHANGED_OUTPUT)
+        captured = io.StringIO()
+
+        real_registry = FilterRegistry(project_root=Path.cwd())
+        real_filter = real_registry.find("pytest tests/")
+        assert real_filter is not None
+        disabled_filter = real_filter.model_copy(update={"tee": False})
+
+        with (
+            patch("subprocess.run", return_value=proc),
+            patch("sys.stdout", captured),
+            patch("quor.adapters.dispatcher.FilterRegistry") as mock_reg_cls,
+        ):
+            mock_inst = MagicMock()
+            mock_reg_cls.return_value = mock_inst
+            mock_inst.find.return_value = disabled_filter
+            mock_inst.apply.return_value = "FAILED tests/test_b.py::test_y\n"
+            run_dispatch(["pytest", "tests/"])
+
+        assert "[full output:" not in captured.getvalue()
+
+    def test_global_env_opt_out_disables_footer(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("QUOR_TEE_ENABLED", "0")
+        proc = _make_proc(stdout=self._CHANGED_OUTPUT)
+        captured = io.StringIO()
+        with (
+            patch("subprocess.run", return_value=proc),
+            patch("sys.stdout", captured),
+        ):
+            run_dispatch(["pytest", "tests/"])
+
+        assert "[full output:" not in captured.getvalue()
+
+    def test_identical_repeated_output_dedupes_to_one_tee_file(self) -> None:
+        from quor.pipeline.tee import tee_dir
+
+        proc = _make_proc(stdout=self._CHANGED_OUTPUT)
+        footers = []
+        for _ in range(2):
+            captured = io.StringIO()
+            with (
+                patch("subprocess.run", return_value=proc),
+                patch("sys.stdout", captured),
+            ):
+                run_dispatch(["pytest", "tests/"])
+            footers.append(captured.getvalue())
+
+        import re
+
+        paths = [re.search(r"\[full output: (.+)\]", f).group(1) for f in footers]  # type: ignore[union-attr]
+        assert paths[0] == paths[1]
+        assert len(list(tee_dir().glob("*.txt"))) == 1
+
+    def test_tee_failure_does_not_affect_stdout_or_exit_code(self) -> None:
+        """A broken tee write must never affect the real command's output/exit code."""
+        proc = _make_proc(stdout=self._CHANGED_OUTPUT, returncode=0)
+        captured = io.StringIO()
+        with (
+            patch("subprocess.run", return_value=proc),
+            patch("sys.stdout", captured),
+            patch("quor.adapters.dispatcher.write_tee", side_effect=OSError("disk full")),
+        ):
+            exit_code = run_dispatch(["pytest", "tests/"])
+
+        assert exit_code == 0
+        assert "FAILED" in captured.getvalue()
+        assert "[full output:" not in captured.getvalue()
 
 
 # ---------------------------------------------------------------------------

@@ -4,6 +4,9 @@ Mode is documented in ADR-009 (AUDIT / OPTIMIZE / SIMULATE) and is currently
 display-only — `quor doctor` and `quor gain` show it, but the dispatcher does
 not yet switch behavior based on it. Default is "audit" per ADR-009: new
 users should see what filtering would do before opting into OPTIMIZE.
+
+`tee_enabled` is the global kill-switch for the tee mechanism (ADR-023); see
+`quor/pipeline/tee.py` and `FilterConfig.tee` for the per-filter override.
 """
 
 from __future__ import annotations
@@ -39,5 +42,11 @@ def load_user_config() -> QuorUserConfig:
     env_mode = os.environ.get("QUOR_MODE", "").lower()
     if env_mode in VALID_MODES:
         config = config.model_copy(update={"mode": env_mode})
+
+    env_tee = os.environ.get("QUOR_TEE_ENABLED", "").strip().lower()
+    if env_tee in ("0", "false"):
+        config = config.model_copy(update={"tee_enabled": False})
+    elif env_tee in ("1", "true"):
+        config = config.model_copy(update={"tee_enabled": True})
 
     return config
