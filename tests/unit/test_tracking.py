@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import os
 import sqlite3
 import subprocess
 import threading
@@ -603,6 +604,13 @@ class TestNormalizeProjectPath:
     def test_case_insensitive(self) -> None:
         assert normalize_project_path("C:/Workspace") == normalize_project_path("c:/workspace")
 
+    @pytest.mark.skipif(
+        os.name != "nt",
+        reason="Path(...) only parses backslash as a separator on Windows "
+        "(WindowsPath); on POSIX, Path is PosixPath and treats backslash as "
+        "a literal character within one path component, so this input "
+        "isn't a backslash-separated path at all off Windows.",
+    )
     def test_backslashes_normalized_to_posix(self) -> None:
         assert normalize_project_path(Path("C:\\Users\\dev\\project")) == normalize_project_path(
             "C:/Users/dev/project"
