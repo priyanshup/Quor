@@ -1,0 +1,162 @@
+# Quor compression benchmark manifest (QB-011).
+#
+# Each [[case]] is one benchmark sample: a command string (used only to pick
+# a filter via FilterRegistry.find(), exactly like real dispatch), a sample
+# file containing pre-captured command output, and correctness/floor checks.
+#
+# This manifest is the ONLY place filter-specific knowledge lives. The
+# runner (benchmark_runner.py) and reports (report.py) treat `category` and
+# `ecosystem` as arbitrary, opaque strings — they group and report on
+# whatever values appear here without any hardcoded list of filters or
+# ecosystems. Adding support for a brand-new filter (npm, Docker, PDF,
+# DOCX, Terraform, ...) never requires touching benchmark_runner.py or
+# report.py: add a sample file and a [[case]] entry, done.
+#
+# Fields:
+#   id                 — stable identifier, used to match cases against a
+#                        saved baseline across runs (renaming an id starts
+#                        it fresh with no baseline history).
+#   category           — groups cases in the per-filter report; one per
+#                        required command family (git-diff, git-log,
+#                        git-status, pytest, mypy, generic).
+#   ecosystem          — a coarser grouping than category, for the
+#                        per-ecosystem report (e.g. "Git", "Python",
+#                        "Generic"). Multiple categories can share one
+#                        ecosystem (git-status/git-log/git-diff -> "Git").
+#   command            — a real, representative command string. Matched
+#                        against the built-in FilterRegistry the same way
+#                        the dispatcher matches a real invocation.
+#   sample_file        — path relative to tests/benchmarks/.
+#   expected_filter    — the filter name FilterRegistry.find() must return
+#                        for this command. A mismatch is a correctness
+#                        failure (e.g. a routing regression), independent
+#                        of compression ratio.
+#   min_reduction_pct  — a loose, absolute floor (not the primary
+#                        regression signal — that's baseline comparison).
+#                        Catches a catastrophic break (e.g. a stage
+#                        silently no-oping) even before a baseline exists.
+#   must_contain       — substrings that must survive in the rendered
+#                        output. A violation is a correctness failure,
+#                        reported separately from compression metrics,
+#                        following the must_contain convention already used
+#                        by every built-in filter's own inline tests.
+
+[[case]]
+id = "git-status-modified-untracked"
+category = "git-status"
+ecosystem = "Git"
+command = "git status"
+sample_file = "samples/git-status/001_modified_and_untracked.txt"
+expected_filter = "git-status"
+min_reduction_pct = 15.0
+must_contain = ["modified:   src/payments/processor.py", "new file:   src/payments/retry.py"]
+
+[[case]]
+id = "git-status-conflict-merge"
+category = "git-status"
+ecosystem = "Git"
+command = "git status"
+sample_file = "samples/git-status/002_conflict_during_merge.txt"
+expected_filter = "git-status"
+min_reduction_pct = 5.0
+must_contain = ["Unmerged paths", "both modified:   src/config/settings.py"]
+
+[[case]]
+id = "git-log-recent-history"
+category = "git-log"
+ecosystem = "Git"
+command = "git log"
+sample_file = "samples/git-log/001_oneline_recent_history.txt"
+expected_filter = "git-log"
+min_reduction_pct = 10.0
+must_contain = ["feat!: change webhook signature format", "BREAKING CHANGE"]
+
+[[case]]
+id = "git-log-hotfix-branch"
+category = "git-log"
+ecosystem = "Git"
+command = "git log"
+sample_file = "samples/git-log/002_hotfix_branch_history.txt"
+expected_filter = "git-log"
+min_reduction_pct = 10.0
+must_contain = ["fix: guard against null session token"]
+
+[[case]]
+id = "git-diff-single-file-bugfix"
+category = "git-diff"
+ecosystem = "Git"
+command = "git diff"
+sample_file = "samples/git-diff/001_single_file_bugfix.txt"
+expected_filter = "git-diff"
+min_reduction_pct = 5.0
+must_contain = ["+        if self._ledger.has_pending_charge(account_id, amount):", "-        result = self._gateway.charge(account_id, amount)"]
+
+[[case]]
+id = "git-diff-multi-file-refactor"
+category = "git-diff"
+ecosystem = "Git"
+command = "git diff"
+sample_file = "samples/git-diff/002_multi_file_refactor.txt"
+expected_filter = "git-diff"
+min_reduction_pct = 5.0
+must_contain = ["+    SIGNATURE_VERSION = \"v2\"", "@@ -15,8 +15,12 @@"]
+
+[[case]]
+id = "pytest-two-failures"
+category = "pytest"
+ecosystem = "Python"
+command = "pytest"
+sample_file = "samples/pytest/001_two_failures_one_pass.txt"
+expected_filter = "pytest"
+min_reduction_pct = 10.0
+must_contain = ["FAILED tests/test_auth.py::test_logout", "AssertionError: assert False is True", "DID NOT RAISE"]
+
+[[case]]
+id = "pytest-large-suite-single-failure"
+category = "pytest"
+ecosystem = "Python"
+command = "pytest"
+sample_file = "samples/pytest/002_large_suite_single_failure.txt"
+expected_filter = "pytest"
+min_reduction_pct = 40.0
+must_contain = ["FAILED tests/test_payment.py::test_charge_duplicate", "DID NOT RAISE"]
+
+[[case]]
+id = "mypy-repeated-type-error"
+category = "mypy"
+ecosystem = "Python"
+command = "mypy src/"
+sample_file = "samples/mypy/001_repeated_type_error.txt"
+expected_filter = "mypy"
+min_reduction_pct = 20.0
+must_contain = ["error:", "union-attr"]
+
+[[case]]
+id = "mypy-distinct-errors"
+category = "mypy"
+ecosystem = "Python"
+command = "mypy src/"
+sample_file = "samples/mypy/002_distinct_errors_no_repetition.txt"
+expected_filter = "mypy"
+min_reduction_pct = 5.0
+must_contain = ["Missing return statement", "has no attribute \"get_json\""]
+
+[[case]]
+id = "generic-ls-la"
+category = "generic"
+ecosystem = "Generic"
+command = "ls -la"
+sample_file = "samples/generic/001_ls_la_output.txt"
+expected_filter = "generic"
+min_reduction_pct = 0.0
+must_contain = ["README.md", "pyproject.toml"]
+
+[[case]]
+id = "generic-build-tool-ansi-repeats"
+category = "generic"
+ecosystem = "Generic"
+command = "some-build-tool"
+sample_file = "samples/generic/002_build_tool_with_ansi_and_repeats.txt"
+expected_filter = "generic"
+min_reduction_pct = 5.0
+must_contain = ["Build succeeded in 2.4s", "Compiling module: payments"]

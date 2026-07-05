@@ -26,6 +26,10 @@ ENV/
 htmlcov/
 coverage.xml
 
+# Benchmark run output (generated per-run; the committed baseline lives at
+# tests/benchmarks/baseline.json, not here)
+tests/benchmarks/results/
+
 # Type checking
 .mypy_cache/
 .ruff_cache/

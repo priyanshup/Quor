@@ -1,0 +1,33 @@
+commit a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0
+Author: Priya Sharma <priya@example.com>
+Date:   Tue Jul 1 14:22:03 2026 +0530
+
+    feat: add retry logic to payment webhook handler
+
+commit b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1
+Author: Priya Sharma <priya@example.com>
+Date:   Tue Jul 1 11:05:44 2026 +0530
+
+    fix: correct off-by-one error in pagination cursor
+
+commit c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2
+Merge: a1b2c3d b2c3d4e
+Author: Dev Bot <bot@example.com>
+Date:   Mon Jun 30 18:40:12 2026 +0530
+
+    Merge pull request #142 from team/hotfix-timeout
+
+commit d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3
+Author: Marcus Lee <marcus@example.com>
+Date:   Mon Jun 30 09:12:55 2026 +0530
+
+    feat!: change webhook signature format
+
+    BREAKING CHANGE: webhook payloads now require a `signature_version`
+    field; consumers on the old format will fail verification.
+
+commit e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4
+Author: Priya Sharma <priya@example.com>
+Date:   Fri Jun 27 16:03:21 2026 +0530
+
+    chore: bump dependency versions

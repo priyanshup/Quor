@@ -1,0 +1,8 @@
+src/payments/processor.py:12: error: Argument 1 to "charge" has incompatible type "str"; expected "int"  [arg-type]
+src/payments/processor.py:34: error: Argument 1 to "charge" has incompatible type "str"; expected "int"  [arg-type]
+src/payments/processor.py:58: error: Argument 1 to "charge" has incompatible type "str"; expected "int"  [arg-type]
+src/payments/processor.py:71: error: Argument 1 to "charge" has incompatible type "str"; expected "int"  [arg-type]
+src/webhooks/handlers.py:5: warning: Unused "type: ignore" comment  [unused-ignore]
+src/webhooks/handlers.py:6: note: Consider removing the comment
+src/auth/middleware.py:9: error: Item "None" of "str | None" has no attribute "strip"  [union-attr]
+Found 5 errors in 3 files (checked 41 source files)
