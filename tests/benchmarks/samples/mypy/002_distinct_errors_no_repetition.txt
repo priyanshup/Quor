@@ -1,0 +1,3 @@
+src/api/routes.py:14: error: Missing return statement  [return]
+src/webhooks/handlers.py:22: error: "Request" has no attribute "get_json"  [attr-defined]
+Found 2 errors in 2 files (checked 41 source files)

@@ -1,0 +1,7 @@
+[36mBuilding project...[0m
+Compiling module: auth
+Compiling module: auth
+Compiling module: payments
+Compiling module: webhooks
+[K[1G
+[32mBuild succeeded in 2.4s[0m

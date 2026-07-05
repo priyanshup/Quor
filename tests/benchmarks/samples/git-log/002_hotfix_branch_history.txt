@@ -1,0 +1,17 @@
+commit f1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0
+Author: Marcus Lee <marcus@example.com>
+Date:   Wed Jul 2 08:14:09 2026 +0530
+
+    fix: guard against null session token in auth middleware
+
+commit a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1
+Author: Marcus Lee <marcus@example.com>
+Date:   Wed Jul 2 07:58:31 2026 +0530
+
+    test: add regression test for null session token
+
+commit b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2
+Author: Priya Sharma <priya@example.com>
+Date:   Tue Jul 1 22:41:17 2026 +0530
+
+    fix: prevent double-charge on payment retry

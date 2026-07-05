@@ -696,7 +696,44 @@ A repeatable benchmark framework that runs a fixed corpus of representative comm
 through Quor's pipeline, measuring token reduction, latency, and compression quality, with results
 trackable over time to catch regressions and validate improvements objectively.
 
-**Status:** Backlog
+**Resolution:**
+Implemented under `tests/benchmarks/` (isolated from `quor/` by construction — it only calls the
+existing `FilterRegistry`, `count_tokens`, and `content_hash` public surface; no filter, stage, or
+compression algorithm was touched). Design reuses the benchmark structure already documented in
+`docs/archive/research/design-review.md`'s "Benchmark Suite Design" section (tuple-style cases with
+a command, sample file, expected filter, minimum reduction floor, and must-preserve content — same
+`must_contain` convention already used by every built-in filter's own inline TOML tests) rather than
+inventing a new format.
+
+- **Dataset**: `manifest.toml` + `samples/<category>/` — 12 realistic, hand-written (sanitized —
+  fictional names/repos, no real data) samples across all 6 required categories (git-status,
+  git-log, git-diff, pytest, mypy, generic), 2 per category.
+- **Runner**: `benchmark_runner.py` (engine) + `run_benchmarks.py` (CLI, `python -m
+  tests.benchmarks.run_benchmarks`) — deliberately a standalone script, not a new `quor` subcommand,
+  to respect the existing "six CLI commands, no more without approval" rule.
+- **Metrics**: original/final tokens, tokens saved, compression %, execution time (reported only,
+  never gated — wall-clock is too noisy across machines/CI to use as a pass/fail signal), matched
+  filter, and whether tee would fire (via `content_hash`, read-only — never calls `write_tee()`).
+- **Reports**: JSON (`benchmark-results.json`) and Markdown (`benchmark-report.md`), including
+  per-sample results, per-category summary, overall totals, and best/worst performers.
+- **Regression detection**: `baseline.json` (committed) compared via percentage-point delta in
+  compression (`--regression-threshold`, default 2.0pp); correctness violations (wrong filter,
+  missing required content) and min-reduction floor violations are separate, always-fatal checks
+  independent of the baseline diff. `--update-baseline` refuses to run if either check is failing.
+- **CI integration**: `test_benchmarks.py` runs automatically with `pytest tests/`, so a regression
+  fails the build without a separate manual step.
+- **Docs**: `tests/benchmarks/README.md` covers adding cases, running, updating the baseline, and
+  interpreting each failure type.
+
+One real bug found and fixed during dataset construction (not a runner bug): a "distinct errors, no
+repetition" mypy sample accidentally had exactly 3 consecutive `: error:` lines, triggering mypy's
+existing shape-based `group_repeated` collapse (min_count=3) despite the messages differing — correct
+filter behavior, but it defeated the sample's intended purpose as a no-collapsing contrast case.
+Fixed by reducing to 2 errors, below the threshold.
+
+**Status:** Resolved. Full `pytest` (all green, including the new benchmark tests), the standalone
+benchmark suite (0 correctness failures, 0 floor violations, 0 regressions against its own
+just-created baseline), `quor verify`, `ruff check`, and `mypy quor/` all pass.
 
 ---
 

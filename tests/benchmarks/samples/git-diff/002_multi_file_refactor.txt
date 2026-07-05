@@ -1,0 +1,39 @@
+diff --git a/src/api/routes.py b/src/api/routes.py
+index 1a2b3c4..5d6e7f8 100644
+--- a/src/api/routes.py
++++ b/src/api/routes.py
+@@ -10,7 +10,7 @@ from src.auth import require_session
+
+ @app.route("/webhooks/payment", methods=["POST"])
+ def payment_webhook():
+-    payload = request.get_json()
++    payload = request.get_json(force=True)
+     signature = request.headers.get("X-Signature")
+     if not verify_signature(payload, signature):
+         abort(401)
+diff --git a/src/auth/middleware.py b/src/auth/middleware.py
+index 2b3c4d5..6e7f8a9 100644
+--- a/src/auth/middleware.py
++++ b/src/auth/middleware.py
+@@ -15,8 +15,12 @@ def require_session(fn):
+     @wraps(fn)
+     def wrapper(*args, **kwargs):
+         token = session.get("token")
+-        if not token:
++        if token is None:
+             abort(401)
++
++        if not token.strip():
++            abort(401)
++
+         return fn(*args, **kwargs)
+     return wrapper
+diff --git a/src/config/settings.py b/src/config/settings.py
+index 3c4d5e6..7f8a9b0 100644
+--- a/src/config/settings.py
++++ b/src/config/settings.py
+@@ -30,4 +30,5 @@ class Settings:
+     DEBUG = False
+     WEBHOOK_TIMEOUT_SECONDS = 10
+     MAX_RETRY_ATTEMPTS = 3
++    SIGNATURE_VERSION = "v2"

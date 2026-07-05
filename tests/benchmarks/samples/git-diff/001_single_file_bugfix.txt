@@ -1,0 +1,39 @@
+diff --git a/src/payments/processor.py b/src/payments/processor.py
+index 3f8a1c2..9b7d4e1 100644
+--- a/src/payments/processor.py
++++ b/src/payments/processor.py
+@@ -40,12 +40,16 @@ class PaymentProcessor:
+     def charge(self, account_id: str, amount: int) -> ChargeResult:
+         if amount <= 0:
+             raise ValueError("negative amounts not allowed")
+
+-        result = self._gateway.charge(account_id, amount)
+-        self._ledger.record(account_id, amount)
+-        return result
++        if self._ledger.has_pending_charge(account_id, amount):
++            raise DuplicateChargeError(
++                f"duplicate charge detected for {account_id}"
++            )
++
++        result = self._gateway.charge(account_id, amount)
++        self._ledger.record(account_id, amount)
++        return result
+
+     def refund(self, charge_id: str) -> RefundResult:
+         charge = self._ledger.get_charge(charge_id)
+diff --git a/tests/test_processor.py b/tests/test_processor.py
+index 7a2c9d0..1e5f8b3 100644
+--- a/tests/test_processor.py
++++ b/tests/test_processor.py
+@@ -22,3 +22,14 @@ def test_charge_rejects_negative_amount():
+     processor = PaymentProcessor(gateway=FakeGateway(), ledger=FakeLedger())
+     with pytest.raises(ValueError):
+         processor.charge("acct_1", -100)
++
++
++def test_charge_rejects_duplicate_pending_charge():
++    ledger = FakeLedger()
++    ledger.mark_pending("acct_1", 500)
++    processor = PaymentProcessor(gateway=FakeGateway(), ledger=ledger)
++    with pytest.raises(DuplicateChargeError):
++        processor.charge("acct_1", 500)

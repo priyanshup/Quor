@@ -1,0 +1,9 @@
+total 48
+drwxr-xr-x  9 dev  staff   288 Jul  2 09:14 .
+drwxr-xr-x  6 dev  staff   192 Jun 28 17:02 ..
+-rw-r--r--  1 dev  staff   187 Jul  1 22:41 .gitignore
+drwxr-xr-x  4 dev  staff   128 Jul  2 09:14 src
+drwxr-xr-x  3 dev  staff    96 Jul  2 08:58 tests
+-rw-r--r--  1 dev  staff  1204 Jun 30 18:40 README.md
+-rw-r--r--  1 dev  staff   842 Jun 27 16:03 pyproject.toml
+-rw-r--r--  1 dev  staff   312 Jun 25 11:20 requirements.txt

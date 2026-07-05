@@ -1,0 +1,37 @@
+============================= test session starts ==============================
+platform linux -- Python 3.11.0, pytest-7.4.0, pluggy-1.0.0
+rootdir: /workspace/myapp
+plugins: cov-5.0.0, anyio-4.2.0
+collecting ...
+collected 14 items
+
+PASSED tests/test_auth.py::test_login
+PASSED tests/test_auth.py::test_logout
+PASSED tests/test_auth.py::test_refresh_token
+PASSED tests/test_auth.py::test_expired_token
+PASSED tests/test_payment.py::test_charge_success
+PASSED tests/test_payment.py::test_refund_success
+PASSED tests/test_payment.py::test_charge_negative_amount
+FAILED tests/test_payment.py::test_charge_duplicate
+PASSED tests/test_webhooks.py::test_signature_valid
+PASSED tests/test_webhooks.py::test_signature_invalid
+PASSED tests/test_webhooks.py::test_payload_missing_field
+PASSED tests/test_settings.py::test_defaults_loaded
+PASSED tests/test_settings.py::test_env_override
+PASSED tests/test_settings.py::test_signature_version
+
+================================= FAILURES ====================================
+_____________________________ test_charge_duplicate ____________________________
+
+    def test_charge_duplicate():
+        ledger = FakeLedger()
+        ledger.mark_pending("acct_1", 500)
+        processor = PaymentProcessor(gateway=FakeGateway(), ledger=ledger)
+>       with pytest.raises(DuplicateChargeError):
+            processor.charge("acct_1", 500)
+E       Failed: DID NOT RAISE <class 'src.payments.errors.DuplicateChargeError'>
+
+tests/test_payment.py:41: Failed
+=========================== short test summary info ============================
+FAILED tests/test_payment.py::test_charge_duplicate - Failed: DID NOT RAISE <class 'src.payments.errors.DuplicateChargeError'>
+13 passed, 1 failed in 1.02s

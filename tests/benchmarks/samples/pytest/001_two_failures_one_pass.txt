@@ -1,0 +1,36 @@
+============================= test session starts ==============================
+platform linux -- Python 3.11.0, pytest-7.4.0, pluggy-1.0.0
+rootdir: /workspace/myapp
+plugins: cov-5.0.0, anyio-4.2.0
+collecting ...
+collected 3 items
+
+PASSED tests/test_auth.py::test_login
+FAILED tests/test_auth.py::test_logout
+FAILED tests/test_payment.py::test_charge_duplicate
+
+================================= FAILURES ====================================
+_____________________________ test_logout ______________________________________
+
+    def test_logout():
+        client = FakeClient(session_active=True)
+>       assert client.logout() is True
+E       AssertionError: assert False is True
+E        +  where False = <bound method FakeClient.logout of <FakeClient object at 0x7f1a2b3c4d50>>()
+
+tests/test_auth.py:25: AssertionError
+_____________________________ test_charge_duplicate ____________________________
+
+    def test_charge_duplicate():
+        ledger = FakeLedger()
+        ledger.mark_pending("acct_1", 500)
+        processor = PaymentProcessor(gateway=FakeGateway(), ledger=ledger)
+>       with pytest.raises(DuplicateChargeError):
+            processor.charge("acct_1", 500)
+E       Failed: DID NOT RAISE <class 'src.payments.errors.DuplicateChargeError'>
+
+tests/test_payment.py:41: Failed
+=========================== short test summary info ============================
+FAILED tests/test_auth.py::test_logout - AssertionError: assert False is True
+FAILED tests/test_payment.py::test_charge_duplicate - Failed: DID NOT RAISE <class 'src.payments.errors.DuplicateChargeError'>
+2 failed, 1 passed in 0.41s
