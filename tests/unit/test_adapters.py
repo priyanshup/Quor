@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -341,6 +342,32 @@ class TestDispatcher:
             exit_code = run_dispatch(["nonexistent-command", "--flag"])
 
         assert exit_code == 127
+
+    @pytest.mark.skipif(
+        sys.platform != "win32",
+        reason="npm/npx/pnpm/yarn .cmd shim resolution is a Windows-specific concern",
+    )
+    def test_windows_shell_shim_executable_resolves_and_runs(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # npm/npx/pnpm/yarn are .cmd shims on Windows, not native .exe files.
+        # subprocess.run(["npm", ...]) without shell=True fails with
+        # FileNotFoundError (WinError 2) because CreateProcess does not apply
+        # PATHEXT resolution the way a shell does — confirmed by every other
+        # test in this class mocking subprocess.run entirely, which is
+        # exactly why this gap went undetected. This test spawns a real
+        # subprocess (a throwaway .cmd shim) rather than mocking
+        # subprocess.run, or it would not exercise the bug at all.
+        shim = tmp_path / "fakeshim.cmd"
+        shim.write_text("@echo off\r\necho shim output\r\n", encoding="utf-8")
+        monkeypatch.setenv("PATH", f"{tmp_path}{os.pathsep}{os.environ.get('PATH', '')}")
+
+        captured = io.StringIO()
+        with patch("sys.stdout", captured):
+            exit_code = run_dispatch(["fakeshim"])
+
+        assert exit_code == 0
+        assert "shim output" in captured.getvalue()
 
     def test_filter_error_falls_through_to_original(self) -> None:
         proc = _make_proc(

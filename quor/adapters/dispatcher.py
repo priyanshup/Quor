@@ -13,6 +13,7 @@ Pipeline, or any StageHandler. See quor/pipeline/tee.py.
 
 from __future__ import annotations
 
+import shutil
 import subprocess
 import sys
 import time
@@ -53,9 +54,15 @@ def run_dispatch(args: list[str], tracking: TrackingDB | None = None) -> int:
     t0 = time.monotonic()
 
     # --- Run the real command ---
+    # shutil.which() resolves shell-shim executables (npm.CMD, npx.CMD, etc.)
+    # that CreateProcess cannot find by bare name without shell=True — see
+    # ADR-033. Falls back to the original token unchanged if not found, so
+    # the existing FileNotFoundError/OSError handling below still catches a
+    # genuinely missing command exactly as before.
+    resolved = shutil.which(args[0]) or args[0]
     try:
         proc = subprocess.run(
-            args,
+            [resolved, *args[1:]],
             stdout=subprocess.PIPE,
             stderr=None,       # inherit: real stderr flows to user directly
             encoding="utf-8",
