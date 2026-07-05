@@ -13,9 +13,9 @@ Quor is a Python CLI tool that compresses AI coding assistant command output bef
 **Package name:** `quor` (CLI commands: `quor` and `qr`)  
 **Python version:** 3.11+ required (stdlib `tomllib`)  
 **Primary OS:** Windows 10/11 (corporate, no admin rights, pip only)  
-**Status:** Phases 0-10 complete (614 tests passing, ruff+mypy clean). v0.2.1 published to PyPI (2026-07-04; first released as v0.1.0 on 2026-07-01). See PROJECT_STATUS.md for the current session snapshot.
+**Status:** Phases 0-10 complete (983 tests passing, ruff+mypy clean). v0.3.0 is the current version (v0.2.1 was the prior PyPI release, published 2026-07-04; first released as v0.1.0 on 2026-07-01). See PROJECT_STATUS.md for the current session snapshot.
 
-Read PROJECT_BIBLE.md for the full product context. Read DECISIONS.md for the reasoning behind every architectural choice. Do not re-derive decisions already made.
+Read PROJECT_BIBLE.md for the full product context. Read DECISIONS.md for the reasoning behind every architectural choice. Read COMMAND_SUPPORT.md for the canonical list of every supported command/filter, command detection rules, and filter precedence. Do not re-derive decisions already made.
 
 ---
 
@@ -180,7 +180,11 @@ must_not_contain = ["PASSED"]
 compression_target = 0.5
 ```
 
-Every new filter must include at least 3 `[[filter.tests]]` entries.
+Every new filter must include at least 3 `[[filter.tests]]` entries, plus a benchmark case
+(`tests/benchmarks/manifest.toml` + sample file, QB-011) — see COMMAND_SUPPORT.md §7 and
+CONTRIBUTING.md's Filter checklist. See COMMAND_SUPPORT.md for the full command/filter inventory,
+how command detection works, and filter precedence rules — this file documents the pipeline and
+TOML schema; COMMAND_SUPPORT.md documents which commands actually use them.
 
 ---
 
@@ -330,6 +334,66 @@ Before making any code or documentation changes for a new backlog item, always f
   3. Delete the local feature branch: `git branch -d feature/qb-XXX-short-description`
   4. Delete the remote feature branch: `git push origin --delete feature/qb-XXX-short-description`
   5. Only then start the next backlog item — re-enter this section at step 1.
+
+### Before Opening a PR — Benchmark & Regression Requirements (QB-011)
+
+In addition to `quor verify`, `ruff`, and `mypy` (Rule 2 above) and whatever backlog item this
+branch implements:
+
+1. **If the change touches `quor/pipeline/`, `quor/filters/`, or `quor/rewrite/`**, run the
+   compression benchmark suite locally: `python -m tests.benchmarks.run_benchmarks`. It also runs
+   automatically inside `pytest tests/` (`tests/benchmarks/test_benchmarks.py`), so CI will catch
+   a regression either way — but running it standalone produces the full Markdown report
+   (`tests/benchmarks/results/benchmark-report.md`), which is far easier to read than a pytest
+   failure when deciding whether a compression change was intentional.
+2. **A new built-in filter is not complete without benchmark coverage.** See
+   `docs/final/COMMAND_SUPPORT.md` §7 and `CONTRIBUTING.md`'s Filter checklist — a
+   `[[case]]` entry, a sample file, and a committed baseline are required alongside the ≥3 inline
+   `[[filter.tests]]` entries.
+3. **Regression checking:** if `python -m tests.benchmarks.run_benchmarks` reports a
+   `"regression"` status for any case (compression dropped by more than
+   `--regression-threshold` percentage points, default 2.0, against `tests/benchmarks/baseline.json`),
+   treat it the same as a failing test — bisect and fix, don't silence it. Only run
+   `--update-baseline` when the compression change is intentional, and explain why in the PR body
+   (see `tests/benchmarks/README.md`'s "Interpreting a failure" section).
+4. **New or changed filter → update `docs/final/COMMAND_SUPPORT.md`.** It is the canonical
+   command/filter reference (QB-003); a filter change that isn't reflected there is an incomplete
+   PR, the same way an undocumented public API change would be.
+
+### Review Checklist
+
+Beyond `CONTRIBUTING.md`'s "What reviewers check" (safety/fail-open, Windows correctness, test
+quality, anti-goals, scope), a reviewer of AI-assisted work should also confirm:
+
+- [ ] The branch followed "Starting Any Backlog Item" above — one backlog item, branched from
+      current `main`, not stacked on another unmerged feature branch.
+- [ ] `quor verify`, full `pytest`, `ruff check quor/ tests/`, and `mypy quor/` are all clean
+      (Rule 2) — not just "should pass," actually run and shown green.
+- [ ] If `quor/pipeline/`, `quor/filters/`, or `quor/rewrite/` changed: the benchmark suite was run
+      and any regression is either fixed or explicitly justified with an updated baseline.
+- [ ] If a filter was added or changed: `docs/final/COMMAND_SUPPORT.md` reflects it, and benchmark
+      coverage (§7 there) was added.
+- [ ] `backlog.md`'s entry for this item has its Status updated, and any follow-up gaps discovered
+      during the work are spun out as new entries rather than silently dropped.
+- [ ] No unrelated changes bundled into the PR.
+
+### Release Readiness Checklist
+
+Cutting a release is a separate, higher-stakes activity than merging an individual PR. Before
+tagging a version:
+
+- [ ] Every gate for the target version in `docs/final/RELEASE_CRITERIA.md` passes — no partial
+      credit, per that document's own rules.
+- [ ] The full `CONTRIBUTING.md` "Release Process" checklist (versioning, `CHANGELOG.md`,
+      `pyproject.toml`/`quor/__init__.py` version bump, CI green, `python -m build` +
+      `twine check`, TestPyPI validation, tag push, `release.yml`) is followed in order — it is
+      not repeated here to avoid two copies drifting apart.
+- [ ] The compression benchmark suite is green against its committed baseline — a release should
+      never ship a silent compression regression relative to the last tagged version.
+- [ ] `docs/final/PROJECT_STATUS.md` reflects the actual current state (test count, phase status,
+      known gaps) as of this release, not a stale snapshot from an earlier session.
+- [ ] `docs/final/COMMAND_SUPPORT.md` and `README.md`'s command/filter-facing sections are current
+      with whatever filters shipped in this release.
 
 ---
 

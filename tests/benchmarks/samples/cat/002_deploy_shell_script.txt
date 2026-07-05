@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# Deploy script for the storefront service
+set -euo pipefail
+
+# FIXME: this still assumes a single region, needs multi-region support
+REGION="us-east-1"
+
+echo "Building image..."
+docker build -t storefront:latest .
+
+# Push to the registry
+docker push storefront:latest
+
+echo "Deployment complete."

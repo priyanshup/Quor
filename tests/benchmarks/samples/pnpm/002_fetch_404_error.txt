@@ -1,0 +1,6 @@
+Progress: resolved 5, reused 0, downloaded 0
+ ERR_PNPM_FETCH_404  GET https://registry.npmjs.org/left-pad-deprecated-typo: Not Found - 404
+
+This error happened while installing a direct dependency of /workspace/storefront
+
+Progress: resolved 5, reused 0, downloaded 0, added 0

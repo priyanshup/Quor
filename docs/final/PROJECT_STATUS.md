@@ -1,7 +1,7 @@
 ﻿# PROJECT STATUS
 ## Quor — Current State Snapshot
 
-> Last updated: 2026-07-04 (PreToolUse hook protocol fix, ADR-030 — see below; v0.2.1 is the latest published release)
+> Last updated: 2026-07-04 (PreToolUse hook protocol fix, ADR-030 — see below; v0.3.0 is the current version, v0.2.1 is the latest published release)
 > Update this document at the start of every implementation session.
 
 ---
@@ -14,8 +14,8 @@
 | Architecture | COMPLETE | 100% | All decisions made. Documented in DECISIONS.md (29 ADRs). |
 | Documentation | COMPLETE | 100% | 10 canonical docs + README, CHANGELOG, LICENSE, CONTRIBUTING, CODE_OF_CONDUCT, SECURITY all written and reconciled against the released package (see Release Notes below). |
 | Implementation | COMPLETE | 100% | All 10 phases complete, including packaging. |
-| Testing | COMPLETE | 100% | 614 tests, ruff+mypy clean on `quor/` and `tests/`. All passing, fully machine-isolated. Verified on Python 3.11, 3.13, 3.14. |
-| Packaging | COMPLETE | 100% | v0.1.0 published to both TestPyPI and PyPI on 2026-07-01; v0.2.0 and v0.2.1 released since (2026-07-04). v0.2.1 installed and verified from the real PyPI index in a fresh virtual environment. |
+| Testing | COMPLETE | 100% | 983 tests, ruff+mypy clean on `quor/` and `tests/`. All passing, fully machine-isolated. Verified on Python 3.11, 3.13, 3.14. |
+| Packaging | COMPLETE | 100% | v0.1.0 published to both TestPyPI and PyPI on 2026-07-01; v0.2.0 and v0.2.1 released since (2026-07-04); v0.3.0 is the current version. v0.2.1 installed and verified from the real PyPI index in a fresh virtual environment. |
 
 ---
 
@@ -183,7 +183,7 @@ against the actual released package and CLI behavior.
 
 ## Known Blockers
 
-None. v0.2.1 is the latest published release on PyPI (2026-07-04); v0.1.0 was the first, published 2026-07-01.
+None. v0.3.0 is the current version; v0.2.1 is the latest published release on PyPI (2026-07-04); v0.1.0 was the first, published 2026-07-01.
 
 ---
 
@@ -263,7 +263,7 @@ The mode system (ADR-009: AUDIT/OPTIMIZE/SIMULATE) remains **display-only** — 
 
 ## Immediate Next Milestone
 
-**v0.2.1 is released** (v0.1.0 was the first release, 2026-07-01; v0.2.0 and v0.2.1 followed on 2026-07-04). `pyproject.toml` entry-points, PyPI registration, README, and the release workflow are all done and published. The next milestone is **v0.5 — Public Alpha** (see ROADMAP.md): Windows + Linux CI already exist from v0.1, so the remaining gap is broader real-world usage (multiple non-builder developers) and the additional Public Alpha gates in RELEASE_CRITERIA.md.
+**v0.3.0 is the current version** (v0.1.0 was the first release, 2026-07-01; v0.2.0 and v0.2.1 followed on 2026-07-04). `pyproject.toml` entry-points, PyPI registration, README, and the release workflow are all done and published. The next milestone is **v0.5 — Public Alpha** (see ROADMAP.md): Windows + Linux CI already exist from v0.1, so the remaining gap is broader real-world usage (multiple non-builder developers) and the additional Public Alpha gates in RELEASE_CRITERIA.md.
 
 ---
 

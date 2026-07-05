@@ -165,10 +165,19 @@ regression is unintentional, that's a real bug in a recent pipeline change —
 bisect it the same way you would any other regression. If it's an accepted
 trade-off, update the baseline (see above) and say why in the PR.
 
+## Filter coverage
+
+As of ADR-032 (`docs/final/DECISIONS.md`), every currently-implemented built-in filter has at
+least 2 manifest cases: `git-status`, `git-log`, `git-diff`, `pytest`, `mypy`, `ruff`, `eslint`,
+`npm`, `npx`, `pnpm`, `yarn`, `cat`, `cat-python`, and `generic` (28 cases across 14 categories).
+This closes the gap this section used to describe (`eslint`/`npm`/`npx`/`pnpm`/`yarn` were the
+original omissions from QB-011; `ruff` and `cat`/`cat-python` were found missing during the same
+follow-up pass). Every filter added after this point must include its own benchmark case before
+merge — see `docs/final/COMMAND_SUPPORT.md` §7.
+
 ## Future benchmark expansion
 
-See the implementation summary for recommendations (additional filters as
-they ship — e.g. `eslint`, `npm`/`npx`/`pnpm`/`yarn` — a "mixed session"
-category chaining multiple commands, and wiring `--regression-threshold`
-into CI as an explicit, reviewable config value rather than a hardcoded
-default).
+A "mixed session" category chaining multiple commands, and wiring `--regression-threshold`
+into CI as an explicit, reviewable config value rather than a hardcoded default, remain open
+ideas — see the implementation summary for detail. Filter coverage itself (the original content
+of this section) is now complete; see "Filter coverage" above.

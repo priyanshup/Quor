@@ -607,6 +607,19 @@ The hash is SHA256 of the original content. Tee files older than 7 days are clea
 - The `[full output: path]` footer is not subject to `max_tokens` limits — it is appended after the pipeline completes.
 - Tee can be disabled per-filter with `tee = false` in the filter config.
 
+**Implementation Update (QB-013):**
+This ADR was `Decided` but unimplemented for some time (see ADR-031's original Consequences
+section, and `backlog.md`'s QB-013, for the historical gap — no `tee.py` module existed and no
+filter read a `tee` field). QB-013 has since implemented it: `quor/pipeline/tee.py`, dispatcher-level
+only (`quor/adapters/dispatcher.py` calls it; no `ContentMask`/`Pipeline`/`StageHandler` change).
+SHA256 content-addressed storage under `platformdirs.user_data_dir("quor") / "tee"`, with dedup and
+mtime refresh on a cache hit. 7-day TTL cleanup, throttled via a separate `tee_state.db` (WAL mode).
+Global kill-switch (`tee_enabled` / `QUOR_TEE_ENABLED`) and per-filter (`FilterConfig.tee`) opt-out,
+both backward-compatible defaults (tee on unless explicitly disabled). An adaptive fallback disables
+tee automatically after repeated `OSError` write failures (e.g. a locked-down corporate filesystem)
+rather than retrying forever; reset via `quor doctor --reset-tee`. `docs/final/PROJECT_BIBLE.md`'s
+"nothing is irrecoverably lost" claim is now accurate current behavior, not aspirational design.
+
 ---
 
 ## ADR-024: Windows Path Encoding — UTF-8 Everywhere
@@ -809,7 +822,7 @@ QB-004 investigated why `git-diff`'s `max_tokens` stage (`limit = 600`) rendered
 - No runtime behavior changes — this ADR formalizes shipped behavior, it does not alter it.
 - `quor/pipeline/stages/max_tokens.py`'s module docstring and `MaxTokensConfig.limit` field description now state explicitly that the limit is a best-effort target, not a guarantee.
 - `README.md`'s `max_tokens` description now states that `PROTECT` lines take precedence and the budget can be exceeded.
-- The existing tee mechanism (ADR-023) remains the correct complementary safety net for cases where best-effort compression still leaves large output — but ADR-023 is `Decided` and not yet implemented (no `tee.py` module, no `tee` field read by any built-in filter). Tracked as QB-013.
+- The existing tee mechanism (ADR-023) remains the correct complementary safety net for cases where best-effort compression still leaves large output — but ADR-023 is `Decided` and not yet implemented (no `tee.py` module, no `tee` field read by any built-in filter). Tracked as QB-013. **Update:** QB-013 has since been implemented (see ADR-023's "Implementation Update"); this line is preserved as originally written for historical accuracy of what was true when this ADR was decided.
 - A related but separate finding from the QB-012 investigation: `build.toml`'s `mypy` filter runs `group_repeated` after `strip_lines` has already marked every `error:`/`warning:`/`note:` line `PROTECT` via `preserve_patterns` — since `group_repeated` treats `PROTECT` as a run-breaker, it is currently a no-op for `mypy`. This is a stage-ordering question, not a budget-semantics question, and is out of scope for this ADR. Tracked as QB-014.
 
 **Implementation Update (QB-014):**
@@ -817,3 +830,118 @@ This ADR's Consequences section above describes the state of the `mypy` filter a
 - The `mypy` pipeline now executes `group_repeated` → `strip_lines` → `max_tokens` (reordered from the sequence described above).
 - `strip_lines` now skips its `preserve_patterns` check for lines already marked `COMPRESS`, so the reorder doesn't resurrect duplicates `group_repeated` already collapsed.
 - The fix was validated with a new regression test and full project verification (`quor verify`, full `pytest` suite, dependency review across all built-in filters, byte-for-byte before/after comparison). See `backlog.md`'s `QB-014` entry for full details.
+
+---
+
+## ADR-032: Benchmark Coverage — Every Built-in Filter Requires a Manifest Case (QB-011 follow-up)
+
+**Status:** Decided
+**Date:** 2026-07-05
+
+**Context:**
+QB-011 shipped the compression benchmark suite (`tests/benchmarks/`) covering only 6 of the built-in
+filter categories that existed at the time — `git-status`, `git-log`, `git-diff`, `pytest`, `mypy`,
+`generic` — explicitly naming `eslint`/`npm`/`npx`/`pnpm`/`yarn` as a known follow-up gap in its own
+README's "Future benchmark expansion" section. `ruff` (shipped alongside `mypy` in `build.toml`) and
+`cat`/`cat-python` (QB-005) were never covered either, since none of the three were part of the
+original 6-category corpus. Batch 7's documentation audit (QB-003, `docs/final/COMMAND_SUPPORT.md`)
+surfaced the `eslint`/`npm`/`npx`/`pnpm`/`yarn`/`cat`/`cat-python` gap concretely while writing the
+canonical command/filter reference; auditing the resulting coverage claim against the manifest then
+surfaced `ruff` as an eighth, previously-unnoticed gap of the same kind. It matters because the
+benchmark suite is the only mechanism that catches a *quiet* compression regression in a shared stage
+(e.g. `strip_lines`, `group_repeated`) over time — inline `[[filter.tests]]` catch correctness
+violations on that filter's own crafted fixtures, but carry no baseline to regress against. A filter
+with no benchmark case has no regression protection beyond whatever its own inline tests happen to
+assert.
+
+**Options considered:**
+- Leave the gap as a "nice to have": simplest, but leaves 8 of 14 built-in filter blocks with zero
+  compression-regression tracking indefinitely, and a documentation audit that finds a gap without
+  closing it invites the same gap resurfacing at the next audit.
+- Require benchmark coverage only for *future* new filters: partially closes the process gap but
+  leaves the already-shipped `ruff`/`eslint`/`npm`/`npx`/`pnpm`/`yarn`/`cat`/`cat-python` filters
+  permanently uncovered unless someone separately revisits them later.
+- Close the existing gap immediately (benchmark cases for every currently-implemented filter) and
+  formalize the requirement going forward: fully closes the gap now and prevents recurrence.
+
+**Decision:** Close the gap immediately, and make benchmark coverage mandatory for every filter from
+this point forward, not merely a recommendation. Added 16 new `[[case]]` entries (2 per filter:
+`ruff`, `eslint`, `npm`, `npx`, `pnpm`, `yarn`, `cat`, `cat-python`) to `tests/benchmarks/manifest.toml`,
+with realistic sample files under `tests/benchmarks/samples/<category>/`. Verified via
+`python -m tests.benchmarks.run_benchmarks --no-compare` — all 28 cases (12 original + 16 new) pass
+correctness and `min_reduction_pct` floor checks — then committed to `tests/benchmarks/baseline.json`
+via `--update-baseline`. Every currently-implemented built-in filter now has measurable,
+regression-tracked benchmark coverage. `docs/final/COMMAND_SUPPORT.md` §7, `CONTRIBUTING.md`'s Filter
+checklist, and `docs/final/CLAUDE.md`'s Git Workflow section all state this as a hard requirement — a
+filter PR without a benchmark case is incomplete, the same way a filter PR without inline tests
+already was (`docs/final/ANTI_GOALS.md` #23).
+
+**Consequences:**
+- `tests/benchmarks/manifest.toml` now has 28 cases across 14 categories (was 12 across 6).
+  `tests/benchmarks/baseline.json` was regenerated to include all of them.
+- `tests/benchmarks/README.md`'s "Future benchmark expansion" note, which named part of this exact
+  gap, is now stale and was updated to reflect the closed state.
+- No production code changed — `tests/benchmarks/` remains isolated from `quor/` by construction (per
+  QB-011's original design), calling only `FilterRegistry`, `count_tokens`, and `content_hash`.
+- A filter added after this ADR without benchmark coverage should be treated as an incomplete PR at
+  review time (see `docs/final/CLAUDE.md`'s Review Checklist).
+
+---
+
+## ADR-033: Subprocess Execution — Resolve via `shutil.which()`, Never `shell=True`
+
+**Status:** Decided
+**Date:** 2026-07-05
+
+**Context:**
+A production-readiness validation of the tracking/gain pipeline ran real commands end-to-end
+through `quor/adapters/dispatcher.py::run_dispatch()` rather than through mocked
+`subprocess.run` calls (every existing dispatcher test mocks `subprocess.run`, which is exactly
+why this went undetected). `npm`, `npx`, `pnpm`, and `yarn` — known base commands since QB-006A,
+specifically so their wrapper noise gets filtered — failed unconditionally on Windows with
+`FileNotFoundError: [WinError 2] The system cannot find the file specified`, because these tools
+ship as `.CMD` shell shims, not native `.exe` binaries. Windows' `CreateProcess` (what
+`subprocess.run(args)` calls without `shell=True`) does not apply `PATHEXT`-based extension
+resolution the way `cmd.exe` or `quor explain`'s `subprocess.run(command, shell=True)` does.
+The result in the real dispatch path: the classifier correctly recognized and rewrote the
+command, the filter registry correctly had an `npm`/`npx`/`pnpm`/`yarn` entry, but the actual
+subprocess spawn failed before any of that mattered — the command simply never ran, printing
+`[quor] cannot run 'npm': ...` to stderr and returning exit code 127, on the exact platform
+(Windows) this project is built for.
+
+**Options considered:**
+- **`shell=True` with a joined string:** works, but re-joining an argv list into a single string
+  and re-parsing it through `cmd.exe` reopens shell-metacharacter injection risk (`&`, `|`, `^`,
+  `%VAR%` expansion) for command content that already passed through the classifier as a safe,
+  pre-split argv list. Manually re-escaping for `cmd.exe` specifically is exactly the kind of
+  hand-rolled quoting logic ADR-015 already rejected for regex (unbounded edge cases).
+- **`shell=True` with the args list:** Python's `list2cmdline` quotes each argument before handing
+  the joined string to `cmd.exe`, so this is safer than the string form — but still routes every
+  invocation through a shell, an unnecessary and permanently larger security surface for the 95%+
+  of commands (`git`, `pytest`, `mypy`, `ruff`, `cat`) that are native executables needing no shell
+  at all.
+- **`shutil.which(args[0])` resolution, keep `shell=False`:** resolves the shim's real path
+  (`...\npm.CMD`) using Python's own stdlib `PATHEXT`-aware search — the same mechanism a real
+  shell uses — then hands that fully-resolved path straight to `CreateProcess` with no shell
+  involved at all. No new metacharacter-interpretation surface is introduced for any command,
+  known or not.
+
+**Decision:** `shutil.which(args[0]) or args[0]` before the `subprocess.run(...)` call in
+`run_dispatch()`, falling back to the original token unchanged if not found so the existing
+`FileNotFoundError`/`OSError` handling still catches a genuinely missing command exactly as
+before. `shell=False` is preserved. This is the minimal change that fixes the root cause without
+adding a shell to the execution path.
+
+**Consequences:**
+- `git`, `pytest`, `mypy`, `ruff`, `cat`, `python` are unaffected — `shutil.which()` resolves their
+  real `.exe`/script path exactly as `CreateProcess` would have found it anyway; behavior for
+  every previously-working command is unchanged.
+- `npm`, `npx`, `pnpm`, `yarn` (and any future shell-shim-based tool added as a known base command)
+  now actually execute on Windows through the real dispatch path, not just in `quor explain` (which
+  happened to use `shell=True` already) or in the benchmark suite (which never spawns a real
+  subprocess at all — it calls `FilterRegistry.apply()` directly on pre-captured sample files).
+- A new regression test (`tests/unit/test_adapters.py::TestDispatcher::test_windows_shell_shim_executable_resolves_and_runs`)
+  spawns a real throwaway `.cmd` shim rather than mocking `subprocess.run`, specifically because
+  mocking is what let the original bug ship undetected. Skipped on non-Windows platforms, since
+  `.cmd`/`.bat` shim resolution is a Windows-specific concern.
+- See `backlog.md`'s `QB-019` for the full investigation record.

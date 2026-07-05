@@ -1,0 +1,33 @@
+"""Payment processing orchestration for the storefront checkout flow."""
+
+import logging
+
+from src.payments.errors import DuplicateChargeError
+from src.payments.gateway import PaymentGateway
+
+logger = logging.getLogger(__name__)
+
+DEFAULT_CURRENCY = "USD"
+
+
+class PaymentProcessor:
+    """Coordinates charge, refund, and duplicate-detection logic."""
+
+    def __init__(self, gateway: PaymentGateway, ledger):
+        self._gateway = gateway
+        self._ledger = ledger
+
+    def charge(self, account_id: str, amount: int) -> str:
+        """Charge an account, guarding against duplicate pending charges."""
+        if self._ledger.has_pending_charge(account_id, amount):
+            raise DuplicateChargeError(account_id)
+        logger.info("charging account %s for %s", account_id, amount)
+        result = self._gateway.charge(account_id, amount)
+        self._ledger.mark_settled(account_id, result.charge_id)
+        return result.charge_id
+
+    def refund(self, charge_id: str) -> None:
+        """Refund a previously settled charge."""
+        logger.info("refunding charge %s", charge_id)
+        self._gateway.refund(charge_id)
+        self._ledger.mark_refunded(charge_id)

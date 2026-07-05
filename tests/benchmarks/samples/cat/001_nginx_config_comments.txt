@@ -1,0 +1,30 @@
+# nginx configuration for the storefront service
+# Last reviewed: 2026-06-01
+
+server {
+    listen 80;
+    server_name storefront.example.com;
+
+    # Redirect all HTTP traffic to HTTPS
+    return 301 https://$host$request_uri;
+}
+
+server {
+    listen 443 ssl;
+    server_name storefront.example.com;
+
+    # TODO: rotate this certificate before it expires in March
+    ssl_certificate     /etc/ssl/certs/storefront.crt;
+    ssl_certificate_key /etc/ssl/private/storefront.key;
+
+    location /api/ {
+        # Proxy API traffic to the backend service
+        proxy_pass http://backend:8000;
+        proxy_set_header Host $host;
+    }
+
+    location / {
+        root /var/www/storefront;
+        try_files $uri /index.html;
+    }
+}

@@ -6,6 +6,75 @@ outcome, Status. Add new entries at the top (most recent first).
 
 ---
 
+## QB-020
+
+**Priority:** Medium
+**Category:** Engineering
+
+**Title:** Single source of truth for version numbers, with a drift-detection test
+
+**Problem:**
+The 0.3.0 release audit found that `pyproject.toml`'s `[project].version` (what PyPI/`pip show` see)
+and `quor/__init__.py`'s `__version__` (what `quor --help`/`python -m quor` print) are two
+independently hand-maintained strings with no automated link between them. `tests/unit/test_version.py`
+checks that `__version__` is a well-formed, non-empty string but never cross-checks it against
+`pyproject.toml`. They have agreed at every release so far purely because whoever bumped the version
+remembered to edit both files — nothing would catch it if a future release only updated one.
+
+**Desired outcome:**
+One of the two values becomes the sole source of truth and the other is derived from it (e.g.
+`quor/__init__.py` reads its version via `importlib.metadata.version("quor")` at runtime instead of
+hardcoding a string — the standard approach for this exact problem — falling back to a hardcoded
+string only for the editable/uninstalled case if needed), **and** a test exists that fails the build
+if the two ever diverge again, so this can't silently regress the way it could have going into 0.3.0.
+
+**Status:** Backlog
+
+---
+
+## QB-019
+
+**Priority:** High
+**Category:** Bug fix
+
+**Title:** `npm`/`npx`/`pnpm`/`yarn` never actually execute through the real dispatch path on Windows
+
+**Problem:**
+A production-readiness validation of the tracking/gain pipeline (run against real commands via
+`run_dispatch()` directly, not through mocked `subprocess.run`) found that `npm`, `npx`, `pnpm`,
+and `yarn` — known base commands since QB-006A — fail unconditionally on Windows with
+`FileNotFoundError: [WinError 2] The system cannot find the file specified`. These tools ship as
+`.CMD` shell shims, not native `.exe` binaries; `subprocess.run(args)` without `shell=True` uses
+Windows' `CreateProcess`, which does not apply `PATHEXT` extension resolution the way a real shell
+does. The classifier correctly rewrote the command and the filter registry correctly matched
+`npm`/`npx`/`pnpm`/`yarn`/`eslint`, but the actual subprocess spawn failed before any filtering
+mattered — the command simply never ran (exit code 127), on Windows specifically, the platform
+this project is built for. Every existing dispatcher test mocks `subprocess.run` entirely, which is
+exactly why this was invisible to the test suite, `quor verify`, and the QB-011 benchmark suite
+(which also never spawns a real subprocess — it applies filters directly to pre-captured sample
+files). `quor explain` was unaffected only because it happens to use `shell=True` already.
+
+**Desired outcome:**
+`npm`/`npx`/`pnpm`/`yarn` (and any future shell-shim-based known command) actually execute through
+`run_dispatch()` on Windows, with no new security surface (no shell-metacharacter injection risk)
+introduced for any command, and a regression test that spawns a real subprocess rather than mocking
+one, so this class of bug cannot silently reappear.
+
+**Resolution:**
+Implemented on `feature/qb-003-command-support-docs` (bundled into the same session as the Batch 7
+documentation work and the QB-011 benchmark-coverage follow-up, per explicit instruction to fix any
+real bug found during validation). `quor/adapters/dispatcher.py::run_dispatch()` now resolves
+`args[0]` via `shutil.which()` before calling `subprocess.run()`, falling back to the original token
+unchanged if not found (existing `FileNotFoundError`/`OSError` handling is untouched).
+`shell=False` is preserved — no shell is introduced into the execution path. See ADR-033 in
+`docs/final/DECISIONS.md` for the full options analysis. Added
+`test_windows_shell_shim_executable_resolves_and_runs` (`tests/unit/test_adapters.py`), which
+spawns a real throwaway `.cmd` shim (skipped on non-Windows) — confirmed to fail with exit code 127
+on the pre-fix code and pass on the fix, per the project's Rule 3 (behavior lock principle). Full
+`pytest tests/` and the `tests/benchmarks/` suite re-verified green after the change.
+
+---
+
 ## QB-018
 
 **Priority:** High
@@ -317,6 +386,18 @@ tree at the start of a backlog item is a stop-and-ask condition — never resolv
 stash/reset/clean/discard.
 
 **Status:** Resolved — implemented on `feature/qb-016-strengthen-git-workflow` (docs/final/CLAUDE.md)
+
+**Update (Batch 7 — Workflow Review, `feature/qb-003-command-support-docs`):** Re-reviewed against
+the current engineering process after QB-011 (compression benchmark suite), per this batch's
+explicit request. The branching/PR-checklist/commit-convention rules this item originally
+introduced were verified still accurate and were **not** changed (no inconsistency found). Added,
+without altering the existing branching strategy: a "Before Opening a PR — Benchmark & Regression
+Requirements" subsection (when to run `tests/benchmarks/`, regression-threshold handling, the
+new-filter-must-update-COMMAND_SUPPORT.md rule), a "Review Checklist," and a "Release Readiness
+Checklist" (cross-referencing `docs/final/RELEASE_CRITERIA.md` and `CONTRIBUTING.md`'s existing
+Release Process rather than duplicating it) — all in `docs/final/CLAUDE.md`'s Git Workflow section.
+`CONTRIBUTING.md`'s PR checklist and Filter checklist also gained benchmark-requirement lines (see
+QB-003's resolution above for the doc-hygiene batch this was part of).
 
 ---
 
@@ -757,7 +838,19 @@ Documentation (README and/or CLAUDE.md) explicitly states that Quor only rewrite
 its known rule set, links to `quor explain <command>` as the way to check whether a given command is
 covered, and lists (or links to) the current allowlist so users don't assume blanket coverage.
 
-**Status:** Backlog
+**Status:** Resolved — implemented on `feature/qb-003-command-support-docs` as part of Batch 7
+(Product Clarity / Documentation Hygiene). Created `docs/final/COMMAND_SUPPORT.md` as the single
+canonical reference: how command detection works (rewrite-layer gating, transparent prefixes,
+pipe/structured-output exclusions), the current command allowlist (`_KNOWN_BASE_COMMANDS`,
+`_KNOWN_PYTHON_SUBCOMMANDS`), a full command-by-command filter table (what each filter optimizes /
+does not optimize, examples, known limitations, source links), filter precedence (three-tier +
+first-match-wins-by-load-order, no priority field), fallback behavior (`z_generic.toml`), how new
+commands are added, best practices for new filters, and the QB-011 benchmark-coverage requirement.
+`README.md` and `docs/final/CLAUDE.md`/`PROJECT_BIBLE.md` now cross-reference this document instead
+of restating command/filter detail, per this item's "eliminate duplicated or conflicting
+information elsewhere" requirement. Note: `cargo` (named in this item's own Problem text as an
+allowlist example) is **not** actually in `_KNOWN_BASE_COMMANDS` — the Problem text was
+illustrative, not literal; `COMMAND_SUPPORT.md` documents the real, verified allowlist.
 
 ---
 
