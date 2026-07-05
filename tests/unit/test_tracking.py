@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import os
 import sqlite3
 import subprocess
 import threading
@@ -19,6 +20,7 @@ from quor.tracking.db import (
     TrackingDB,
     count_tokens,
     get_tracking_db,
+    normalize_project_path,
     query_gain,
 )
 
@@ -88,7 +90,7 @@ class TestInvocationRecord:
         assert d["filter_name"] == "git-status"
         assert d["was_passthrough"] == 0  # bool → int
         assert d["duration_ms"] == 12.5
-        assert d["schema_version"] == 1
+        assert d["schema_version"] == 2  # bumped for project_key_normalized (v2)
 
     def test_was_passthrough_int_encoding(self) -> None:
         rec = _sample_record(was_passthrough=True, filter_name=None)
@@ -139,7 +141,7 @@ class TestTrackingDbSqlite:
             versions = [r[0] for r in conn.execute(
                 "SELECT version FROM schema_migrations"
             ).fetchall()]
-        assert 1 in versions
+        assert 2 in versions  # bumped for project_key_normalized (v2)
 
     def test_record_written_to_sqlite(self, tmp_path: Path) -> None:
         db, db_path, _ = _db_and_jsonl(tmp_path)
@@ -441,6 +443,196 @@ class TestQueryGain:
         ])
         report = query_gain(db_path, Path("/proj"))
         assert report.total_invocations == 2
+
+    def test_project_identity_case_insensitive_consistency(self, tmp_path: Path) -> None:
+        """'C:/Workspace' and 'c:/workspace' must be treated as one project —
+        case differences anywhere in the path (not just the drive letter)
+        must not split one project's history into two logical entries."""
+        db_path = tmp_path / "quor.db"
+        self._populate(db_path, [
+            {"project_path": "C:/Workspace", "original_tokens": 100, "final_tokens": 20},
+            {"project_path": "c:/workspace", "original_tokens": 200, "final_tokens": 50},
+        ])
+        report = query_gain(db_path, Path("C:/Workspace"))
+        assert report.total_invocations == 2
+        assert report.tokens_before == 300
+        assert report.tokens_after == 70
+
+    def test_project_identity_no_sibling_leakage(self, tmp_path: Path) -> None:
+        """A sibling directory that merely shares a text prefix — with no
+        path-separator boundary — must never be included. Regression for
+        the naive `GLOB "{project}*"` matching "/workspace-other" under a
+        query for "/workspace"."""
+        db_path = tmp_path / "quor.db"
+        self._populate(db_path, [
+            {"project_path": "/workspace", "original_tokens": 100, "final_tokens": 20},
+            {"project_path": "/workspace-other", "original_tokens": 999, "final_tokens": 999},
+        ])
+        report = query_gain(db_path, Path("/workspace"))
+        assert report.total_invocations == 1
+        assert report.tokens_before == 100
+        assert report.tokens_after == 20
+
+    def test_project_identity_subdirectory_inclusion(self, tmp_path: Path) -> None:
+        """True subdirectories, separated by "/", must still be included —
+        the same canonical rule that excludes sibling-prefix leakage above
+        must not also exclude genuine nesting."""
+        db_path = tmp_path / "quor.db"
+        self._populate(db_path, [
+            {"project_path": "/workspace", "original_tokens": 100, "final_tokens": 20},
+            {"project_path": "/workspace/subdir", "original_tokens": 50, "final_tokens": 10},
+        ])
+        report = query_gain(db_path, Path("/workspace"))
+        assert report.total_invocations == 2
+        assert report.tokens_before == 150
+        assert report.tokens_after == 30
+
+    def test_project_identity_glob_special_characters_in_path(self, tmp_path: Path) -> None:
+        """A real directory name containing literal brackets — special to
+        the old GLOB-based design, requiring escaping there — must still
+        match correctly now that matching is LIKE-based: brackets have no
+        special meaning to LIKE at all, so this passes without any
+        escaping being needed for this particular character set. Kept as
+        the same named regression test the GLOB design required, now
+        verifying the LIKE-based replacement handles it too."""
+        db_path = tmp_path / "quor.db"
+        self._populate(db_path, [
+            {"project_path": "c:/my[client]project", "original_tokens": 100, "final_tokens": 20},
+            {"project_path": "c:/my[client]project/subdir", "original_tokens": 50, "final_tokens": 10},
+        ])
+        report = query_gain(db_path, Path("c:/my[client]project"))
+        assert report.total_invocations == 2
+        assert report.tokens_before == 150
+        assert report.tokens_after == 30
+
+    def test_project_identity_like_wildcard_characters_do_not_overmatch(self, tmp_path: Path) -> None:
+        """'_' is LIKE's "match any single character" wildcard — and
+        extremely common in real directory names ("my_project"). Without
+        escaping, querying "my_project" would have its subdirectory pattern
+        "my_project/%" also match "myXproject/subdir" for any character X.
+        This must not happen."""
+        db_path = tmp_path / "quor.db"
+        self._populate(db_path, [
+            {"project_path": "c:/my_project", "original_tokens": 100, "final_tokens": 20},
+            {"project_path": "c:/myXproject/subdir", "original_tokens": 999, "final_tokens": 999},
+        ])
+        report = query_gain(db_path, Path("c:/my_project"))
+        assert report.total_invocations == 1
+        assert report.tokens_before == 100
+        assert report.tokens_after == 20
+
+    def test_degenerate_root_key_rejected(self, tmp_path: Path) -> None:
+        """A normalized key with no directory segment of its own (empty, or
+        a bare drive letter) must be rejected outright rather than silently
+        turned into a match-everything wildcard."""
+        db_path = tmp_path / "quor.db"
+        self._populate(db_path, [
+            {"project_path": "C:/alpha-project"},
+            {"project_path": "C:/beta-project"},
+        ])
+        for degenerate in ("/", "C:/", "c:"):
+            with pytest.raises(ValueError, match="too broad"):
+                query_gain(db_path, Path(degenerate))
+
+    def test_drive_root_query_no_longer_overmatches(self, tmp_path: Path) -> None:
+        """Regression for the demonstrated wildcard-explosion bug: querying
+        a bare drive root must raise rather than silently sweeping in every
+        unrelated project on that drive."""
+        db_path = tmp_path / "quor.db"
+        self._populate(db_path, [
+            {"project_path": "C:/alpha-project"},
+            {"project_path": "C:/beta-project"},
+            {"project_path": "C:/gamma-project"},
+        ])
+        with pytest.raises(ValueError):
+            query_gain(db_path, Path("C:/"))
+
+    def test_lazy_backfill_populates_missing_columns_for_pre_v2_database(
+        self, tmp_path: Path
+    ) -> None:
+        """A database created before schema v2 has no project_key_normalized
+        column at all (not merely a NULL value in it) — query_gain() must
+        add the column and backfill existing rows on first read, with no
+        manual migration step, and the row must be included in the result
+        exactly as if it had always had it."""
+        db_path = tmp_path / "quor.db"
+        pre_v2_schema = """
+            CREATE TABLE invocations (
+                id               INTEGER PRIMARY KEY AUTOINCREMENT,
+                command          TEXT    NOT NULL,
+                project_path     TEXT    NOT NULL,
+                original_tokens  INTEGER NOT NULL DEFAULT 0,
+                final_tokens     INTEGER NOT NULL DEFAULT 0,
+                filter_name      TEXT,
+                was_passthrough  INTEGER NOT NULL DEFAULT 0,
+                duration_ms      REAL    NOT NULL DEFAULT 0,
+                recorded_at      TEXT    NOT NULL DEFAULT (datetime('now')),
+                schema_version   INTEGER NOT NULL DEFAULT 1
+            );
+        """
+        with sqlite3.connect(str(db_path)) as conn:
+            conn.executescript(pre_v2_schema)
+            conn.execute(
+                """INSERT INTO invocations
+                   (command, project_path, original_tokens, final_tokens,
+                    filter_name, was_passthrough, duration_ms, recorded_at, schema_version)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    "git status", "C:/legacy-project", 100, 20,
+                    "git-status", 0, 1.0, datetime.now(UTC).isoformat(), 1,
+                ),
+            )
+            conn.commit()
+
+        report = query_gain(db_path, Path("C:/legacy-project"))
+        assert report.total_invocations == 1
+        assert report.tokens_before == 100
+        assert report.tokens_after == 20
+
+        # Confirm the row was actually backfilled, not found some other way.
+        with sqlite3.connect(str(db_path)) as conn:
+            row = conn.execute(
+                "SELECT project_key_normalized FROM invocations"
+            ).fetchone()
+        assert row == ("c:/legacy-project",)
+
+
+class TestNormalizeProjectPath:
+    """Direct unit coverage for the single canonical project-identity rule
+    (query_gain's matching is only as correct as this function's contract)."""
+
+    def test_case_insensitive(self) -> None:
+        assert normalize_project_path("C:/Workspace") == normalize_project_path("c:/workspace")
+
+    @pytest.mark.skipif(
+        os.name != "nt",
+        reason="Path(...) only parses backslash as a separator on Windows "
+        "(WindowsPath); on POSIX, Path is PosixPath and treats backslash as "
+        "a literal character within one path component, so this input "
+        "isn't a backslash-separated path at all off Windows.",
+    )
+    def test_backslashes_normalized_to_posix(self) -> None:
+        assert normalize_project_path(Path("C:\\Users\\dev\\project")) == normalize_project_path(
+            "C:/Users/dev/project"
+        )
+
+    def test_trailing_slash_insensitive(self) -> None:
+        assert normalize_project_path("/proj/") == normalize_project_path("/proj")
+
+    def test_accepts_str_or_path_identically(self) -> None:
+        assert normalize_project_path(Path("/proj")) == normalize_project_path("/proj")
+
+    def test_distinct_projects_remain_distinct(self) -> None:
+        assert normalize_project_path("/workspace") != normalize_project_path("/workspace-other")
+
+    def test_normalize_project_path_idempotence(self) -> None:
+        """Re-normalizing an already-normalized value must be a no-op — the
+        SQL layer relies on project_key being stable and final by the time
+        it reaches a query parameter, with no further transformation needed
+        or applied anywhere else."""
+        once = normalize_project_path("C:\\Users\\dev\\project/")
+        twice = normalize_project_path(once)
+        assert once == twice
 
 
 # ---------------------------------------------------------------------------

@@ -6,6 +6,115 @@ outcome, Status. Add new entries at the top (most recent first).
 
 ---
 
+## QB-018
+
+**Priority:** High
+**Category:** Bug fix
+
+**Title:** `quor gain` project-scoping correctness (case-sensitivity, sibling leakage, GLOB/LIKE injection, degenerate keys)
+
+**Problem:**
+Investigation into "`quor gain` stopped increasing" (triggered by a user report) found the plateau
+itself was expected behavior (real recent activity was dominated by zero-savings git plumbing
+commands), but surfaced a chain of real, separate correctness bugs in `quor/tracking/db.py`'s
+project-scoping: (1) `project_path` was matched case-sensitively (`GLOB`/`LIKE` are), so a project
+recorded under two different casings (e.g. Windows shells reporting `C:/...` vs `c:/...` for the
+identical directory) silently split into two untracked halves; (2) a naive `GLOB "{project}*"`
+prefix match had no path-separator boundary, so `/workspace` incorrectly swept in the unrelated
+sibling `/workspace-other`; (3) the project key was spliced unescaped into a GLOB pattern, so a real
+directory name containing `*`, `?`, `[`, or `]` was silently reinterpreted as a wildcard/character-class,
+causing missed or spurious subdirectory matches; (4) a degenerate query key (empty, or a bare drive
+letter from querying "/" or "C:/") turned the subdirectory pattern into a match-everything wildcard,
+verified to sweep in every unrelated project on a whole drive.
+
+**Desired outcome:**
+A single, deterministic, well-tested project-identity model with no duplicated normalization logic
+between Python and SQL, no schema migration required, and no behavioral change to real historical
+data.
+
+**Resolution:**
+- Added `normalize_project_path()` (`quor/tracking/db.py`) as the sole, exclusive definition of
+  project identity (lowercase, POSIX-style, trailing-slash-insensitive).
+- Added a precomputed `project_key_normalized` column (schema v2, nullable, backward-compatible —
+  `ALTER TABLE ADD COLUMN` guarded by `PRAGMA table_info()`, idempotent on every connection),
+  populated at write time in `TrackingDB._write_sqlite()`. `InvocationRecord` and `dispatcher.py`'s
+  call site are unchanged — the derived column is computed at the single point every record already
+  passes through on its way into SQLite.
+- Historical rows (written before this column existed) are lazily backfilled by `query_gain()` on
+  first read: `normalize_project_path` is registered as a SQL function
+  (`conn.create_function(...)`, once per connection) and the backfill `UPDATE` *calls* it directly
+  — not a hand-written SQL approximation (`LOWER(RTRIM(...))` was tried and rejected: SQLite's
+  `LOWER()` only folds ASCII, and it doesn't collapse repeated separators or normalize backslashes
+  the way `Path(...).as_posix()` does, so a SQL-side approximation could silently diverge for edge
+  cases the real function handles correctly). This is a single set-based `UPDATE`, one transaction,
+  idempotent (its own `WHERE ... IS NULL` guard converges to a no-op once complete).
+- Matching moved from `GLOB` to `LIKE` (`project_key_normalized = ? OR project_key_normalized LIKE
+  ? ESCAPE '\'`), with proper escaping of `%`/`_` (LIKE's only metacharacters) applied only to the
+  subdirectory pattern's path portion — never to the equality branch, never to the deliberate `/%`
+  wildcard suffix.
+- Degenerate query keys (empty, or a bare drive letter) are rejected outright with a clear
+  `ValueError` rather than silently matching everything.
+- A `project_prefix` column, added during an intermediate design iteration, was found to be written
+  but never read by any query — removed entirely (column, write, backfill, index consideration,
+  comments) to keep the schema minimal.
+
+Verified against the real production database throughout (via disposable copies for any
+migration-touching step): invocation counts and token totals are unchanged for legitimate queries;
+the demonstrated overmatching/undermatching bugs are fixed; the live database was independently
+confirmed to have already migrated correctly via this session's own ambient dogfooding activity.
+
+**Status:** Resolved. Full `pytest`, `quor verify`, `ruff check`, and `mypy` all pass. Comprehensive
+regression tests added to `tests/unit/test_tracking.py` covering case-insensitivity, sibling-leakage
+exclusion, subdirectory inclusion, GLOB/LIKE metacharacter escaping, degenerate-key rejection, and
+lazy backfill of a hand-built pre-v2 database.
+
+---
+
+## QB-017
+
+**Priority:** Low
+**Category:** Metrics / Observability
+
+**Title:** TEE footer affects token metrics clarity
+
+**Problem:**
+`quor gain` occasionally reports a negative token contribution for an invocation (confirmed: 7
+historical rows, e.g. `git rev-parse HEAD origin/main` recorded as 21→43 tokens). Root-caused via
+investigation: the tee recovery mechanism (ADR-023) appends a fixed-size footer
+(`\n[full output: {path}]`, ~130 characters / ~33 tokens, dominated by the platformdirs cache path
+plus a 64-character SHA256 filename) to the filtered output *before* `original_tokens`/`final_tokens`
+are computed in `quor/adapters/dispatcher.py`'s `_track()`. For invocations where the ContentMask
+pipeline's real content compression is smaller than the footer's fixed cost — which is common for
+already-short, already-clean command output, the exact case where compression has the least to work
+with — the footer's overhead can exceed the genuine savings, producing a net "negative" result in
+`quor gain` even though the pipeline compressed correctly.
+
+This is **not a correctness bug** in the pipeline, tee mechanism, or tracking/aggregation logic — all
+three do exactly what they're designed to do, and the negative numbers were reproduced live and
+reconciled exactly against historical data. It is a **metrics-definition problem**: `final_tokens`
+(and therefore `tokens_saved`) conflates two different things — "how much the ContentMask pipeline
+compressed the content" and "how much dispatcher-level recovery metadata was appended afterward" —
+and presents them to the user as one undifferentiated number attributed to the matched filter.
+
+**Desired outcome (for a future metrics redesign, not this item):**
+`quor gain` should be able to distinguish genuine compression savings from intentional
+dispatcher-level overhead (tee's recovery footer, and any similar future annotation) rather than
+netting them silently. Candidate approaches to evaluate at that time: measure `final_tokens` before
+`_apply_tee()` runs (changes existing semantics — `final_tokens` would no longer equal exactly what
+was written to stdout), or add a distinct field (e.g. `tee_overhead_tokens`) so both numbers can be
+shown separately without changing what "final_tokens" has historically meant. Either choice needs a
+schema/display decision, not just a code fix, which is why this is deferred rather than bundled into
+QB-017 immediately below or fixed ad hoc.
+
+**Status:** Deferred investigation. No immediate fix. Revisit as part of a future `quor gain` /
+tracking metrics redesign, not as a standalone bug fix — the current behavior is internally
+consistent and arguably defensible (the footer genuinely is extra text sent to the AI's context), so
+the right fix depends on a product decision about what "tokens saved" should mean, not just a code
+change. Unrelated to, and not fixed by, the separate `project_path` case-sensitivity and GLOB
+sibling-leakage fixes to `quor/tracking/db.py` made alongside this entry.
+
+---
+
 ## QB-006A
 
 **Priority:** High
