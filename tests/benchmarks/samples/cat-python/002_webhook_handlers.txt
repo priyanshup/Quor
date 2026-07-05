@@ -1,0 +1,32 @@
+"""Inbound webhook signature verification and dispatch."""
+
+import hmac
+import hashlib
+
+SIGNATURE_HEADER = "X-Webhook-Signature"
+SIGNATURE_VERSION = "v2"
+
+
+def verify_signature(payload: bytes, signature: str, secret: str) -> bool:
+    """Return True if the HMAC signature matches the payload."""
+    expected = hmac.new(secret.encode(), payload, hashlib.sha256).hexdigest()
+    return hmac.compare_digest(expected, signature)
+
+
+def dispatch(event_type: str, payload: dict) -> None:
+    """Route a verified webhook event to its handler."""
+    handler = _HANDLERS.get(event_type)
+    if handler is None:
+        raise ValueError(f"no handler registered for {event_type}")
+    handler(payload)
+
+
+def _handle_charge_succeeded(payload: dict) -> None:
+    account_id = payload["account_id"]
+    amount = payload["amount"]
+    _ledger.record_success(account_id, amount)
+
+
+_HANDLERS = {
+    "charge.succeeded": _handle_charge_succeeded,
+}

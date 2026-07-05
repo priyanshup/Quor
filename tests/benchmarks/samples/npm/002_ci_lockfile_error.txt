@@ -1,0 +1,10 @@
+npm warn deprecated har-validator@5.1.5: this library is no longer supported
+npm warn deprecated uuid@3.4.0: Please upgrade to version 7 or higher. Older versions may use Math.random() in certain circumstances, which is known to be problematic from a security perspective.
+npm ERR! code EUSAGE
+npm ERR!
+npm ERR! The `npm ci` command can only install with an existing package-lock.json or
+npm ERR! npm-shrinkwrap.json with lockfileVersion >= 1. Run an install with npm@5 or
+npm ERR! later to generate a package-lock.json file, then try again.
+npm ERR!
+npm ERR! Missing: express@4.18.2 from lock file
+npm ERR! Missing: body-parser@1.20.2 from lock file

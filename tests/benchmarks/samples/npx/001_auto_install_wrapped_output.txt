@@ -1,0 +1,9 @@
+npm warn exec The following package was not found and will be installed: cowsay@1.6.0
+ ________________
+< hello world >
+ ----------------
+        \   ^__^
+         \  (oo)\_______
+            (__)\       )\/\
+                ||----w |
+                ||     ||

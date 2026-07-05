@@ -142,6 +142,166 @@ min_reduction_pct = 5.0
 must_contain = ["Missing return statement", "has no attribute \"get_json\""]
 
 [[case]]
+id = "ruff-multi-file-violations"
+category = "ruff"
+ecosystem = "Python"
+command = "ruff check src/"
+sample_file = "samples/ruff/001_multi_file_violations.txt"
+expected_filter = "ruff"
+min_reduction_pct = 5.0
+must_contain = ["F401", "E501", "F821"]
+
+[[case]]
+id = "ruff-single-file-distinct-violations"
+category = "ruff"
+ecosystem = "Python"
+command = "ruff check src/payments/gateway.py"
+sample_file = "samples/ruff/002_single_file_distinct_violations.txt"
+expected_filter = "ruff"
+min_reduction_pct = 0.0
+must_contain = ["F401", "E501"]
+
+[[case]]
+id = "eslint-multi-file-mixed-severity"
+category = "eslint"
+ecosystem = "JavaScript"
+command = "npx eslint ."
+sample_file = "samples/eslint/001_multi_file_mixed_severity.txt"
+expected_filter = "eslint"
+min_reduction_pct = 5.0
+must_contain = ["no-unused-vars", "no-console", "✖ 5 problems (3 errors, 2 warnings)", "(×2)"]
+
+[[case]]
+id = "eslint-react-lint-errors"
+category = "eslint"
+ecosystem = "JavaScript"
+command = "npm exec eslint -- --format stylish src/"
+sample_file = "samples/eslint/002_react_lint_errors.txt"
+expected_filter = "eslint"
+min_reduction_pct = 0.0
+must_contain = ["react/react-in-jsx-scope", "no-unused-vars", "✖ 3 problems (2 errors, 1 warning)"]
+
+[[case]]
+id = "npm-install-with-deprecations"
+category = "npm"
+ecosystem = "JavaScript"
+command = "npm install"
+sample_file = "samples/npm/001_install_with_deprecations.txt"
+expected_filter = "npm"
+min_reduction_pct = 15.0
+must_contain = ["added 842 packages, and audited 843 packages in 12s", "found 0 vulnerabilities"]
+
+[[case]]
+id = "npm-ci-lockfile-error"
+category = "npm"
+ecosystem = "JavaScript"
+command = "npm ci"
+sample_file = "samples/npm/002_ci_lockfile_error.txt"
+expected_filter = "npm"
+min_reduction_pct = 0.0
+must_contain = ["npm ERR! code EUSAGE", "Missing: express@4.18.2 from lock file"]
+
+[[case]]
+id = "npx-auto-install-wrapped-output"
+category = "npx"
+ecosystem = "JavaScript"
+command = "npx cowsay hello world"
+sample_file = "samples/npx/001_auto_install_wrapped_output.txt"
+expected_filter = "npx"
+min_reduction_pct = 5.0
+must_contain = ["hello world", "(oo)"]
+
+[[case]]
+id = "npx-prettier-check-failure"
+category = "npx"
+ecosystem = "JavaScript"
+command = "npx prettier --check ."
+sample_file = "samples/npx/002_prettier_check_failure.txt"
+expected_filter = "npx"
+min_reduction_pct = 5.0
+must_contain = ["Code style issues found in 2 files", "src/components/Cart.jsx"]
+
+[[case]]
+id = "pnpm-install-progress-noise"
+category = "pnpm"
+ecosystem = "JavaScript"
+command = "pnpm install"
+sample_file = "samples/pnpm/001_install_progress_noise.txt"
+expected_filter = "pnpm"
+min_reduction_pct = 15.0
+must_contain = ["Packages: +214 -3", "dependencies:", "+ stripe 14.14.0", "Done in 4.1s"]
+
+[[case]]
+id = "pnpm-fetch-404-error"
+category = "pnpm"
+ecosystem = "JavaScript"
+command = "pnpm add left-pad"
+sample_file = "samples/pnpm/002_fetch_404_error.txt"
+expected_filter = "pnpm"
+min_reduction_pct = 5.0
+must_contain = ["ERR_PNPM_FETCH_404", "This error happened while installing a direct dependency"]
+
+[[case]]
+id = "yarn-classic-install-peer-warnings"
+category = "yarn"
+ecosystem = "JavaScript"
+command = "yarn install"
+sample_file = "samples/yarn/001_classic_install_peer_warnings.txt"
+expected_filter = "yarn"
+min_reduction_pct = 15.0
+must_contain = ["success Saved lockfile.", "Done in 9.87s.", "(×2)"]
+
+[[case]]
+id = "yarn-build-script-failure"
+category = "yarn"
+ecosystem = "JavaScript"
+command = "yarn build"
+sample_file = "samples/yarn/002_build_script_failure.txt"
+expected_filter = "yarn"
+min_reduction_pct = 15.0
+must_contain = ["error Command failed with exit code 2."]
+
+[[case]]
+id = "cat-nginx-config-comments"
+category = "cat"
+ecosystem = "Files"
+command = "cat deploy/nginx.conf"
+sample_file = "samples/cat/001_nginx_config_comments.txt"
+expected_filter = "cat"
+min_reduction_pct = 5.0
+must_contain = ["listen 443 ssl;", "TODO: rotate this certificate", "proxy_pass http://backend:8000;"]
+
+[[case]]
+id = "cat-deploy-shell-script"
+category = "cat"
+ecosystem = "Files"
+command = "cat scripts/deploy.sh"
+sample_file = "samples/cat/002_deploy_shell_script.txt"
+expected_filter = "cat"
+min_reduction_pct = 5.0
+must_contain = ["#!/usr/bin/env bash", "FIXME: this still assumes a single region", "docker build -t storefront:latest .", "Deployment complete."]
+
+[[case]]
+id = "cat-python-payment-processor"
+category = "cat-python"
+ecosystem = "Python"
+command = "cat src/payments/processor.py"
+sample_file = "samples/cat-python/001_payment_processor.txt"
+expected_filter = "cat-python"
+min_reduction_pct = 10.0
+must_contain = ["import logging", "DEFAULT_CURRENCY = \"USD\"", "class PaymentProcessor:", "def charge(self, account_id: str, amount: int) -> str:", "Charge an account, guarding against duplicate pending charges."]
+
+[[case]]
+id = "cat-python-webhook-handlers"
+category = "cat-python"
+ecosystem = "Python"
+command = "cat src/webhooks/handlers.py"
+sample_file = "samples/cat-python/002_webhook_handlers.txt"
+expected_filter = "cat-python"
+min_reduction_pct = 10.0
+must_contain = ["import hmac", "SIGNATURE_VERSION = \"v2\"", "def verify_signature(payload: bytes, signature: str, secret: str) -> bool:", "Return True if the HMAC signature matches the payload.", "def dispatch(event_type: str, payload: dict) -> None:"]
+
+[[case]]
 id = "generic-ls-la"
 category = "generic"
 ecosystem = "Generic"

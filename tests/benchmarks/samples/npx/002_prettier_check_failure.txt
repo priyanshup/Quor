@@ -1,0 +1,5 @@
+npm warn exec The following package was not found and will be installed: prettier@3.2.5
+Checking formatting...
+[warn] src/components/Cart.jsx
+[warn] src/utils/formatCurrency.js
+Code style issues found in 2 files. Run Prettier with --write to fix.

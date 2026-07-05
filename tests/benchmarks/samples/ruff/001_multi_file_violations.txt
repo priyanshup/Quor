@@ -1,0 +1,5 @@
+src/payments/processor.py:12:1: F401 'os' imported but unused
+src/payments/processor.py:45:5: E501 Line too long (105 > 100 characters)
+src/webhooks/handlers.py:8:1: F821 undefined name 'os'
+Found 3 errors.
+[*] 1 fixable with the `--fix` option.
