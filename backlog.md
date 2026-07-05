@@ -6,6 +6,37 @@ outcome, Status. Add new entries at the top (most recent first).
 
 ---
 
+## QB-021
+
+**Priority:** High
+**Category:** Bug fix
+
+**Title:** `release.yml`'s TestPyPI publish collides with the pre-tag manual dry run
+
+**Problem:**
+Found while walking through the actual 0.3.0 release: `CONTRIBUTING.md`'s documented Release Process
+has the maintainer manually trigger `publish-testpypi.yml` against the target version *before*
+tagging, as a dry-run validation step. But `release.yml` (triggered by the tag push) runs its own,
+separate `publish-testpypi` job as the first step of the gated production chain — re-uploading the
+identical wheel/sdist for a version that's already on TestPyPI from the dry run. Neither workflow's
+`pypa/gh-action-pypi-publish` step set `skip-existing`, so TestPyPI's rejection of the duplicate
+upload (same filename, already exists) would hard-fail the job, blocking every downstream job
+(`validate-testpypi` → `release-approval` → `publish-pypi`) — the exact chain QB-001 built to gate
+production publishes. This would have hit every release that follows the documented process, not
+just this one.
+
+**Desired outcome:**
+The documented dry-run-then-tag workflow no longer fails, without changing what gets published or
+weakening the `release-approval` gate.
+
+**Resolution:**
+Added `skip-existing: true` to the `publish-testpypi` step in both `release.yml` and
+`publish-testpypi.yml`. Re-uploading an already-published version is now a no-op instead of a hard
+failure; a genuinely new version still publishes normally. No change to the approval gate or to
+`publish-pypi` — this only affects the TestPyPI upload step's handling of a duplicate.
+
+---
+
 ## QB-020
 
 **Priority:** Medium
