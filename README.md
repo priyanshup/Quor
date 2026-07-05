@@ -2,7 +2,7 @@
 
 > A rule-based command-output optimization and context-compression layer that reduces unnecessary LLM context while preserving important information.
 
-> **Status:** v0.2.1 is the latest version [available on PyPI](https://pypi.org/project/quor/) (see [CHANGELOG](https://github.com/priyanshup/Quor/blob/main/CHANGELOG.md)). All 10 implementation phases complete (614 tests passing, ruff + mypy clean, verified on Python 3.11 and 3.14 across multiple machines).
+> **Status:** v0.3.0 is the latest version [available on PyPI](https://pypi.org/project/quor/) (see [CHANGELOG](https://github.com/priyanshup/Quor/blob/main/CHANGELOG.md)). All 10 implementation phases complete (983 tests passing, ruff + mypy clean, verified on Python 3.11 and 3.14 across multiple machines).
 
 ---
 
@@ -61,6 +61,9 @@ truncating the meaning of the lines that remain.
 - `deduplicate_consecutive` — collapses runs of identical adjacent lines to the first occurrence.
 - `group_repeated` — collapses N repetitions of a matched pattern into the first instance plus a `(×N)` count.
 - `max_tokens` — truncates beyond a configured budget using a `head`, `tail`, or `both` strategy, only after the above stages have already removed redundant content. The budget is a **best-effort target, not a guarantee**: `PROTECT` lines (see below) always take precedence and are never truncated to meet it, so rendered output can exceed the configured limit when protected content alone is large (e.g. a `git diff` with many changed lines — see "Why reduction varies by content" below).
+- `python_ast_summarize` — compresses Python function/method bodies to their signature + docstring using a stdlib `ast` parse (no type inference, no rewriting of kept lines); fails open on invalid syntax or non-Python input, returning the file unmodified.
+
+A few additional stages (`truncate_lines`, `regex_replace`, `match_output`) exist for narrower cases — see [docs/final/CLAUDE.md](https://github.com/priyanshup/Quor/blob/main/docs/final/CLAUDE.md)'s "Built-in stages" list. For the complete, currently-supported command-by-command reference — which filter handles what, what it does and doesn't optimize, and known limitations — see [docs/final/COMMAND_SUPPORT.md](https://github.com/priyanshup/Quor/blob/main/docs/final/COMMAND_SUPPORT.md).
 
 ### Why reduction varies by content
 
@@ -79,6 +82,11 @@ logs, ANSI-heavy terminal formatting.
 `AssertionError` and similar exception text, diff hunks, anything matching
 a filter's `preserve_patterns`, and any line already marked `PROTECT` by an
 earlier stage — no later stage can downgrade a `PROTECT` decision.
+
+**Nothing removed is unrecoverable.** Before compressing, Quor caches the true raw command output
+to a local, content-addressed file (`~/.local/share/quor/tee/{hash}.txt`) and appends `[full
+output: <path>]` to the compressed result. If the compressed version ever lacks detail you need,
+the original is still on disk — this is what makes aggressive compression safe rather than risky.
 
 ### Why determinism matters here
 
@@ -303,9 +311,9 @@ version-by-version plan.
 | 7 | CLI commands | **Complete** |
 | 8 | Plugin infrastructure | **Complete** |
 | 9 | Plugin discovery & loading | **Complete** |
-| 10 | Packaging & release | **Complete** — [v0.2.1 on PyPI](https://pypi.org/project/quor/) (first released as v0.1.0) |
+| 10 | Packaging & release | **Complete** — [v0.3.0 on PyPI](https://pypi.org/project/quor/) (first released as v0.1.0) |
 
-614 tests passing, ruff + mypy clean on `quor/` and `tests/`, verified on Python 3.11, 3.13, and 3.14. See [docs/final/PROJECT_STATUS.md](https://github.com/priyanshup/Quor/blob/main/docs/final/PROJECT_STATUS.md) for the current snapshot, [docs/final/IMPLEMENTATION_PLAN.md](https://github.com/priyanshup/Quor/blob/main/docs/final/IMPLEMENTATION_PLAN.md) for the full roadmap, and [CHANGELOG.md](https://github.com/priyanshup/Quor/blob/main/CHANGELOG.md) for the full release notes.
+983 tests passing, ruff + mypy clean on `quor/` and `tests/`, verified on Python 3.11, 3.13, and 3.14. See [docs/final/PROJECT_STATUS.md](https://github.com/priyanshup/Quor/blob/main/docs/final/PROJECT_STATUS.md) for the current snapshot, [docs/final/IMPLEMENTATION_PLAN.md](https://github.com/priyanshup/Quor/blob/main/docs/final/IMPLEMENTATION_PLAN.md) for the full roadmap, and [CHANGELOG.md](https://github.com/priyanshup/Quor/blob/main/CHANGELOG.md) for the full release notes.
 
 The operating-mode system (AUDIT / OPTIMIZE / SIMULATE) is intentionally display-only in this release — `quor doctor` and `quor gain` show the configured mode, but the dispatcher doesn't yet branch on it. This is a scoped, documented roadmap item, not a bug; see `docs/final/PROJECT_STATUS.md` for details.
 
@@ -324,6 +332,11 @@ pytest tests/
 The second install step is required for the plugin-discovery tests — see
 [CONTRIBUTING.md](https://github.com/priyanshup/Quor/blob/main/CONTRIBUTING.md) for why it's a separate step rather than
 a `pyproject.toml` dev dependency.
+
+A separate compression benchmark suite (`tests/benchmarks/`) validates real-world compression
+quality against a committed baseline and runs automatically as part of `pytest tests/`; it can
+also be run standalone (`python -m tests.benchmarks.run_benchmarks`) for a full report — see
+[tests/benchmarks/README.md](https://github.com/priyanshup/Quor/blob/main/tests/benchmarks/README.md).
 
 Requires Python 3.11+. Windows is the primary development and CI target. Pure Python — no `uv` or other non-pip tooling required.
 

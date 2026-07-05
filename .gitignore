@@ -38,6 +38,13 @@ tests/benchmarks/results/
 *.whl
 *.tar.gz
 
+# Local-machine diagnostic scripts (never imported by production code, not
+# part of the installable package — see quor/pipeline/tee.py's tee mechanism
+# docs for what scripts/test_tee_permissions.py is for). Excluded from git so
+# it can't accidentally ship in a release sdist; also excluded via
+# [tool.hatch.build.targets.sdist] in pyproject.toml as a second guard.
+scripts/test_tee_permissions.py
+
 # IDE
 .vscode/
 .idea/

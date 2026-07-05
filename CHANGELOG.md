@@ -3,6 +3,30 @@
 All notable changes to Quor are documented here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.3.0] — Unreleased
+
+- **Fixed: `npm`/`npx`/`pnpm`/`yarn` never actually executed through the real
+  dispatch path on Windows.** These tools ship as `.CMD` shell shims, not
+  native `.exe` binaries; `subprocess.run()` without `shell=True` can't
+  resolve them via Windows' `CreateProcess`, so every real invocation failed
+  with `WinError 2` before any filtering could happen. `run_dispatch()` now
+  resolves the executable via `shutil.which()` first, keeping `shell=False`
+  (no new shell-injection surface). See ADR-033 and QB-019 in `backlog.md`.
+- **Added: benchmark coverage for every built-in filter.** The compression
+  benchmark suite (QB-011) covered only 6 of 14 filter categories; `ruff`,
+  `eslint`, `npm`, `npx`, `pnpm`, `yarn`, `cat`, and `cat-python` had none.
+  All 14 categories now have committed baseline cases (28 total). See
+  ADR-032.
+- **Added: `docs/final/COMMAND_SUPPORT.md`**, the canonical reference for
+  every supported command, which filter handles it, command detection
+  rules, and filter precedence — consolidates detail previously scattered
+  or missing across README/CLAUDE.md/PROJECT_BIBLE.md.
+- Strengthened the AI-assisted Git workflow (`docs/final/CLAUDE.md`) with
+  pre-PR benchmark/regression requirements, a review checklist, and a
+  release-readiness checklist.
+- Test count: 983 (was 614), reflecting the above plus accumulated coverage
+  from QB-013 (tee), QB-018 (gain project-identity fix), and QB-019.
+
 ## [0.2.1] — 2026-07-04
 
 - **PreToolUse hook now emits the response shape Claude Code actually reads.**

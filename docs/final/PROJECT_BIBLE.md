@@ -4,6 +4,9 @@
 > This document is the single source of truth for all implementation decisions.
 > Every future Claude Code session, every contributor, every reviewer reads this first.
 > When this document conflicts with any archived research, this document wins.
+> For the current, maintained inventory of every supported command and filter, see
+> `docs/final/COMMAND_SUPPORT.md` — that document is canonical for command/filter detail
+> specifically, so it doesn't need to be re-synced here every time a filter is added.
 
 ---
 
@@ -147,12 +150,16 @@ No existing tool solves this for Windows users who cannot install a Rust binary.
 
 **One integration:** Claude Code PreToolUse hook. Only Claude Code at v1.0.
 
-**Five built-in filter categories:**
-- `git`: status, diff, log, blame
-- `pytest`: test output filtering, failure extraction, repetition counting
-- `build`: compiler errors (mypy, ruff, tsc minimal)
-- `cat/read`: file contents with comment stripping (minimal mode)
-- `generic`: fallback for any command (ANSI stripping, max_lines cap)
+**Built-in filter categories** (see `docs/final/COMMAND_SUPPORT.md` for the authoritative,
+currently-maintained command-by-command list — this is a category summary, not an exhaustive
+inventory):
+- `git`: status, log, diff/show
+- `pytest`: test output filtering, failure extraction
+- `build`: compiler/linter errors (mypy, ruff)
+- `node`: npm/npx/pnpm/yarn wrapper-noise reduction, with tool-aware routing to `eslint` (QB-006A/QB-006B)
+- `cat/read`: file contents with comment stripping (minimal mode); Python files additionally get
+  AST-based function-body compression (QB-005)
+- `generic`: fallback for any command (ANSI stripping, dedup, max_tokens cap)
 
 **Six CLI commands:**
 - `quor init --claude` — install Claude Code hook
@@ -313,24 +320,20 @@ quor/
 │   ├── mask.py              — ContentMask, LineMask, Decision enum
 │   ├── engine.py            — Pipeline executor
 │   ├── content_type.py      — Two-tier content detection
-│   └── stages/
+│   └── stages/               — see docs/final/COMMAND_SUPPORT.md / CLAUDE.md's
+│                               "Built-in stages" list for the current, maintained inventory
 │       ├── base.py          — StageHandler Protocol, StageResult
-│       ├── remove_ansi.py
-│       ├── strip_lines.py
-│       ├── group_repeated.py
-│       ├── deduplicate_consecutive.py
-│       ├── max_tokens.py
-│       └── file_stage.py    — file:// escape hatch loader
+│       └── ...               (remove_ansi, strip_lines, group_repeated,
+│                               deduplicate_consecutive, max_tokens, truncate_lines,
+│                               regex_replace, match_output, python_ast_summarize,
+│                               file_stage — file:// escape hatch loader)
 ├── filters/
 │   ├── registry.py          — Three-tier lookup (project > user > built-in)
 │   ├── loader.py            — TOML parser → FilterConfig
 │   ├── trust.py             — Git-tracked file verification
-│   └── builtin/             — Built-in TOML filter files
-│       ├── git.toml
-│       ├── pytest.toml
-│       ├── build.toml
-│       ├── cat.toml
-│       └── generic.toml
+│   └── builtin/             — Built-in TOML filter files — see
+│                               docs/final/COMMAND_SUPPORT.md §4 for the current,
+│                               maintained list of every file and what it covers
 ├── rewrite/
 │   ├── classifier.py        — classify_command(), rewrite_command()
 │   ├── rules.py             — RULES list (general-to-specific ordering)
@@ -369,7 +372,7 @@ applied specifically to the token-budget stage — a stage is not permitted to t
 content just because it is over budget.
 
 **The tee mechanism makes aggressive compression safe:**
-Originals are cached to `~/.local/share/quor/tee/{hash}.txt`. The compressed output includes `[full output: ~/.local/share/quor/tee/abc123.txt]`. The AI can request the full output if the compressed version lacks necessary detail. This means Quor can be aggressive — nothing is irrecoverably lost. **Status: this mechanism is decided (ADR-023) but not yet implemented** — no `tee.py` module exists and no built-in filter reads a `tee` field. Until it lands, "nothing is irrecoverably lost" describes the intended design, not current behavior. Tracked as QB-013.
+Originals are cached to `~/.local/share/quor/tee/{hash}.txt`. The compressed output includes `[full output: ~/.local/share/quor/tee/abc123.txt]`. The AI can request the full output if the compressed version lacks necessary detail. This means Quor can be aggressive — nothing is irrecoverably lost. **Status: implemented (QB-013)** — `quor/pipeline/tee.py`, dispatcher-level (not a pipeline stage), SHA256 content-addressed storage, global (`tee_enabled`/`QUOR_TEE_ENABLED`) and per-filter (`FilterConfig.tee`) opt-out, 7-day TTL cleanup. "Nothing is irrecoverably lost" is now accurate current behavior, not aspirational design. See ADR-023's "Implementation Update" in `docs/final/DECISIONS.md` for full detail.
 
 **Token estimation:**
 `ceil(len(text) / 4)` — char/4 approximation. Always labeled as an estimate with ±20% uncertainty. Never presented as exact. This is a known limitation and must be documented, not hidden.
@@ -510,6 +513,17 @@ Every filter test should include:
 - `compression_target`: minimum % reduction (performance)
 
 **Honest benchmark reporting:** Results include the input, the filter applied, the output, and whether each assertion passed. Not just a single percentage.
+
+**Current implementation status (QB-011, ADR-032):** The "Baseline" category above is implemented as
+`tests/benchmarks/` — not `quor verify`'s inline tests (which check filter *correctness* per-commit),
+but a separate, git-committed-baseline compression benchmark that runs automatically inside
+`pytest tests/` and can also be run standalone (`python -m tests.benchmarks.run_benchmarks`). Every
+currently-implemented built-in filter (`git-status`, `git-log`, `git-diff`, `pytest`, `mypy`, `ruff`,
+`eslint`, `npm`, `npx`, `pnpm`, `yarn`, `cat`, `cat-python`, `generic` — 14 categories, 28 cases) has
+at least 2 manifest cases with measured, regression-tracked compression — see ADR-032 and
+`docs/final/COMMAND_SUPPORT.md` §7. Every future filter must add benchmark coverage before merge, per
+that ADR. The "Regression," "Performance," and "Quality" categories above remain forward-looking
+design intent, not yet built.
 
 ---
 

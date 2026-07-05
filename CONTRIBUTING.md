@@ -4,6 +4,8 @@
 > Welcome. This guide covers everything you need to contribute to Quor.
 > For the full design rationale behind every decision, read [docs/final/DECISIONS.md](docs/final/DECISIONS.md).
 > For AI-assisted development, read [docs/final/CLAUDE.md](docs/final/CLAUDE.md) first.
+> For what Quor currently supports — every command, which filter handles it, and known
+> limitations — read [docs/final/COMMAND_SUPPORT.md](docs/final/COMMAND_SUPPORT.md).
 > For our community expectations, read [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md).
 
 ---
@@ -30,11 +32,17 @@ intentionally *not* listed as a `file:` dependency in `pyproject.toml`'s
 published package metadata and break for anyone installing `quor[dev]`
 from PyPI rather than from this repository.
 
-Dev extras (in `pyproject.toml`):
+Dev extras (in `pyproject.toml`'s `dev` extra, installed by the command above):
 - `pytest`, `pytest-cov` — testing
 - `mypy` — type checking
 - `ruff` — linting + formatting
-- `build`, `twine` — packaging (only needed for releases)
+
+`build` and `twine` are **not** part of the `dev` extra — they're only needed when actually cutting a
+release (see "Release Process" below), not for day-to-day contribution, so install them separately
+when you need them:
+```bash
+pip install build twine
+```
 
 **Verify setup:**
 ```bash
@@ -259,6 +267,7 @@ Examples:
 
 - [ ] Tests pass: `pytest tests/`, `mypy quor/`, `ruff check quor/ tests/`, and `quor verify` (if filter files changed)
 - [ ] Coverage on changed modules ≥80%
+- [ ] Benchmark suite passes with no unexplained regression: `python -m tests.benchmarks.run_benchmarks` (required if `quor/pipeline/`, `quor/filters/`, or `quor/rewrite/` changed — it also runs automatically inside `pytest tests/`, but the standalone run gives the full Markdown report). If the change intentionally alters compression, update the baseline (`--update-baseline`) and say why in the PR body. See `tests/benchmarks/README.md`.
 - [ ] Windows CI passes (check the Actions tab)
 - [ ] No unrelated changes — this PR touches only what the linked backlog item / issue requires
 - [ ] Backlog updated (if applicable) — `backlog.md` entry's Status reflects the outcome (Resolved/Closed/etc.), and any follow-up items spun out during the work are added
@@ -296,12 +305,23 @@ Filters are the most impactful contribution. Before writing one:
 - [ ] `preserve_patterns`: error and exception patterns are protected
 - [ ] `on_empty`: defined if the filter could produce empty output
 - [ ] `abort_unless` or `abort_if` if the filter should short-circuit on certain conditions
+- [ ] **Benchmark coverage (QB-011):** a `[[case]]` entry in `tests/benchmarks/manifest.toml` plus a
+      realistic sample file under `tests/benchmarks/samples/<category>/`, with a baseline entry
+      committed via `--update-baseline`. Required for every new built-in filter, in addition to the
+      ≥3 inline tests above — see `tests/benchmarks/README.md` and
+      `docs/final/COMMAND_SUPPORT.md` §7.
 
 ### Filter placement
 
 - **New command for an existing category:** Add to the existing built-in TOML file (e.g., a new `git cherry-pick` filter goes in `git.toml`).
 - **New category:** Create a new built-in TOML file (e.g., `terraform.toml`). Open an issue to discuss before creating.
 - **Tool-specific/company-specific:** Create a plugin package (`pip install quor-yourtool`). See Plugin Development below.
+- **Precedence/ordering:** specificity between filters is achieved via filename/block ordering, not
+  a priority field — see `docs/final/COMMAND_SUPPORT.md` §2 and §6 before adding a filter that
+  should win over an existing broader one.
+- **After adding or changing a filter:** update `docs/final/COMMAND_SUPPORT.md`'s command table
+  (§4) — it is the canonical, single-source reference for what Quor supports and must stay in
+  sync with `quor/filters/builtin/`.
 
 ---
 
