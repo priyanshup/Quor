@@ -1,18 +1,20 @@
 """SQLite + JSONL tracking for Quor pipeline invocations.
 
 Public API:
-    InvocationRecord  — frozen dataclass, one per pipeline run
-    GainReport        — aggregated token-savings summary
-    TrackingDB        — background-thread writer (non-blocking)
-    query_gain()      — read-side: produce a GainReport from SQLite
-    get_tracking_db() — factory: create TrackingDB in the platformdirs data dir
-    count_tokens()    — ceil(len(text)/4) estimate (±20%)
+    InvocationRecord       — frozen dataclass, one per pipeline run
+    GainReport             — aggregated token-savings summary
+    TrackingDB             — background-thread writer (non-blocking)
+    query_gain()           — read-side: produce a GainReport from SQLite
+    normalize_project_path() — canonical project identity (query_gain's matching rule)
+    get_tracking_db()      — factory: create TrackingDB in the platformdirs data dir
+    count_tokens()         — ceil(len(text)/4) estimate (±20%)
 """
 
 from __future__ import annotations
 
 import math
 import queue
+import re
 import sqlite3
 import threading
 import warnings
@@ -24,8 +26,15 @@ from typing import Any
 import orjson
 import platformdirs
 
-_SCHEMA_VERSION = 1
+_SCHEMA_VERSION = 2
 _SCHEMA_SQL = (Path(__file__).parent / "schema.sql").read_text(encoding="utf-8")
+
+# v2: project_key_normalized. CREATE TABLE IF NOT EXISTS in schema.sql only
+# defines this column for a brand-new database — it is a no-op against an
+# existing `invocations` table from before this version. SQLite has no
+# `ALTER TABLE ADD COLUMN IF NOT EXISTS`, so existing databases are migrated
+# idempotently via PRAGMA table_info() + a guarded ADD COLUMN.
+_PROJECT_IDENTITY_COLUMNS = ("project_key_normalized",)
 
 # Sentinel: put this on the queue to stop the worker thread
 _STOP = object()
@@ -93,6 +102,20 @@ def count_tokens(text: str) -> int:
 # ---------------------------------------------------------------------------
 # TrackingDB — background-thread writer
 # ---------------------------------------------------------------------------
+
+
+def _ensure_project_identity_columns(conn: sqlite3.Connection) -> None:
+    """Idempotently add the v2 project-identity column(s) to an existing
+    `invocations` table. `CREATE TABLE IF NOT EXISTS` in schema.sql is a
+    no-op against a table that already exists from before v2, so a database
+    created under the old schema needs its column(s) added explicitly.
+    SQLite has no `ADD COLUMN IF NOT EXISTS`, so PRAGMA table_info() is
+    checked first — this makes the call safe to run on every connection,
+    not just once."""
+    existing = {row[1] for row in conn.execute("PRAGMA table_info(invocations)")}
+    for column in _PROJECT_IDENTITY_COLUMNS:
+        if column not in existing:
+            conn.execute(f"ALTER TABLE invocations ADD COLUMN {column} TEXT")
 
 
 class TrackingDB:
@@ -185,6 +208,7 @@ class TrackingDB:
     def _apply_schema(self, conn: sqlite3.Connection) -> None:
         """Create tables if they don't exist and record schema migration."""
         conn.executescript(_SCHEMA_SQL)
+        _ensure_project_identity_columns(conn)
         # Ensure migration row exists for current version
         conn.execute(
             "INSERT OR IGNORE INTO schema_migrations (version) VALUES (?)",
@@ -201,13 +225,22 @@ class TrackingDB:
 
     def _write_sqlite(self, conn: sqlite3.Connection, rec: InvocationRecord) -> None:
         d = rec.to_dict()
+        # project_key_normalized is computed here, at the single point every
+        # record passes through on its way to SQLite — not by changing
+        # InvocationRecord's fields or dispatcher.py's call site, which stay
+        # exactly as they were. Every row written from now on already
+        # carries its own precomputed identity; query_gain never needs to
+        # re-derive it from project_path for a row written this way.
+        d["project_key_normalized"] = normalize_project_path(rec.project_path)
         conn.execute(
             """INSERT INTO invocations
                (command, project_path, original_tokens, final_tokens,
-                filter_name, was_passthrough, duration_ms, recorded_at, schema_version)
+                filter_name, was_passthrough, duration_ms, recorded_at, schema_version,
+                project_key_normalized)
                VALUES
                (:command, :project_path, :original_tokens, :final_tokens,
-                :filter_name, :was_passthrough, :duration_ms, :recorded_at, :schema_version)
+                :filter_name, :was_passthrough, :duration_ms, :recorded_at, :schema_version,
+                :project_key_normalized)
             """,
             d,
         )
@@ -230,6 +263,77 @@ class TrackingDB:
 # ---------------------------------------------------------------------------
 
 
+def normalize_project_path(path: str | Path) -> str:
+    """Canonical project identity: the single source of truth for what "the
+    same project" means. Python owns this definition completely.
+
+    Three rules, applied together:
+      1. case-insensitive   — Windows drive letters/segments can be reported
+         with different casing by different shells (Git Bash's MSYS layer
+         vs. native PowerShell/cmd) for the identical physical directory.
+      2. POSIX-style          — always forward slashes, matching how the
+         write path (dispatcher.py) already stores `Path.cwd().as_posix()`.
+      3. trailing-slash-insensitive — "/proj" and "/proj/" are the same
+         project.
+
+    This is the single, exclusive implementation of the identity rule —
+    nothing else in this module re-derives it, including SQL:
+      - Write side: TrackingDB._write_sqlite() calls it once per record to
+        populate the precomputed `project_key_normalized` column (schema v2).
+      - Read side: query_gain() calls it once on its own input to produce
+        `project_key`, compared directly against that precomputed column.
+      - Backfill: historical rows written before this column existed have
+        it as NULL. query_gain() lazily backfills them by registering this
+        exact function as a SQL callable (`conn.create_function(...)`) and
+        running `UPDATE ... SET project_key_normalized =
+        normalize_project_path(project_path) WHERE ... IS NULL` — the
+        backfill *calls this function*, it does not re-implement its rule
+        in SQL syntax. This guarantees the backfilled value can never
+        diverge from what this function would compute for the same input,
+        including edge cases a hand-written SQL approximation would miss
+        (Unicode case-folding, multiple internal separators, backslashes).
+    """
+    posix = path.as_posix() if isinstance(path, Path) else Path(path).as_posix()
+    return posix.rstrip("/").lower()
+
+
+# A normalized key that is empty ("", from "/") or a bare drive letter
+# ("c:", from "C:/" or "c:") has no directory segment of its own — scoping a
+# query to it would turn the subdirectory LIKE pattern into a match-everything
+# wildcard ("" -> "/%" matches every POSIX-style path; "c:" -> "c:/%" matches
+# every project on that entire drive). Verified: querying "C:/" against three
+# unrelated sibling projects returned all three. A key with at least one real
+# segment ("/proj" or "c:/proj") is unaffected by this check.
+_BARE_DRIVE_RE = re.compile(r"^[a-z]:$")
+
+
+def _is_degenerate_project_key(key: str) -> bool:
+    """True if `key` has no directory segment of its own (empty, or a bare
+    drive letter) — too broad to safely scope a query."""
+    return key == "" or bool(_BARE_DRIVE_RE.fullmatch(key))
+
+
+# SQLite's LIKE (unlike GLOB) supports an ESCAPE clause. "%" and "_" are its
+# only wildcard characters, but "_" in particular is extremely common in
+# real directory names ("my_project") — the standard technique is to
+# backslash-escape both, plus the escape character itself, and declare
+# `ESCAPE '\'` on the LIKE clause. Without this, a real project path
+# containing "_" would have that character silently reinterpreted as "match
+# any single character" instead of literal text.
+_LIKE_ESCAPE_TABLE = str.maketrans({"\\": "\\\\", "%": "\\%", "_": "\\_"})
+_LIKE_ESCAPE_CLAUSE = "ESCAPE '\\'"
+
+
+def _escape_like(value: str) -> str:
+    """Escape SQLite LIKE metacharacters (%, _) so `value` matches only
+    literally. Only ever applied to the *path* portion of a LIKE prefix
+    pattern — never to the deliberate wildcard suffix ("/%"), and never to
+    the equality branch's parameter, since `=` does not interpret these
+    characters at all and escaping it would break the match (the stored
+    column contains the literal, unescaped key)."""
+    return value.translate(_LIKE_ESCAPE_TABLE)
+
+
 def query_gain(
     db_path: Path,
     project_path: Path,
@@ -248,26 +352,74 @@ def query_gain(
             days=days,
         )
 
-    project_posix = project_path.as_posix()
-    glob_pattern = f"{project_posix}*"
+    project_key = normalize_project_path(project_path)
+    if _is_degenerate_project_key(project_key):
+        raise ValueError(
+            f"project_path {str(project_path)!r} normalizes to {project_key!r}, "
+            "which has no directory segment of its own and is too broad to "
+            "safely scope a query (it would match every project under that "
+            "root/drive). Pass a specific project directory instead."
+        )
+    # The equality branch compares the literal, unescaped project_key against
+    # the literal, unescaped precomputed column — LIKE metacharacters have no
+    # special meaning under `=` at all. The LIKE branch's path portion must
+    # be escaped so a real directory name containing % or _ is matched
+    # literally rather than reinterpreted as a wildcard; only the deliberate
+    # trailing "/%" wildcard suffix is left unescaped.
+    subdir_pattern = f"{_escape_like(project_key)}/%"
     since = f"-{days} days"
+    project_filter = (
+        f"(project_key_normalized = ? OR project_key_normalized LIKE ? {_LIKE_ESCAPE_CLAUSE})"
+    )
 
     with sqlite3.connect(str(db_path)) as conn:
         conn.row_factory = sqlite3.Row
 
+        # query_gain() connects directly, independent of TrackingDB — an
+        # existing database created under the pre-v2 schema (with no writer
+        # having run yet in this process) would not have this column at
+        # all, so the backfill UPDATE below needs it to exist first. Same
+        # idempotent guard TrackingDB._apply_schema() uses.
+        _ensure_project_identity_columns(conn)
+
+        # Lazy backfill (schema v2): populate project_key_normalized for any
+        # row written before this column existed. Idempotent and cheap once
+        # complete — the WHERE clause matches zero rows on every subsequent
+        # call, and is covered by the same index used for the real query
+        # below. normalize_project_path is registered as a SQL function so
+        # this UPDATE *calls* the one authoritative implementation rather
+        # than re-deriving an approximation of its rule in SQL syntax — a
+        # hand-written `LOWER(RTRIM(x, '/'))` would silently diverge for
+        # inputs normalize_project_path handles that plain string functions
+        # cannot: non-ASCII case-folding (SQLite's built-in LOWER() only
+        # folds ASCII), stray backslashes, or repeated internal separators.
+        # This is still a single set-based UPDATE — one statement, one
+        # transaction, applied to every matching row by SQLite's own engine
+        # — not a Python loop issuing one UPDATE per row; a registered
+        # scalar function is invoked per-row internally by SQLite the same
+        # way a built-in function like LOWER() already is.
+        conn.create_function("normalize_project_path", 1, normalize_project_path)
+        conn.execute(
+            """UPDATE invocations
+               SET project_key_normalized = normalize_project_path(project_path)
+               WHERE project_key_normalized IS NULL
+            """
+        )
+        conn.commit()
+
         # Aggregate totals
         row = conn.execute(
-            """SELECT
+            f"""SELECT
                  COUNT(*)                              AS total,
                  COALESCE(SUM(original_tokens - final_tokens), 0) AS saved,
                  COALESCE(SUM(original_tokens), 0)     AS before_sum,
                  COALESCE(SUM(final_tokens), 0)         AS after_sum,
                  SUM(was_passthrough)                  AS passthroughs
                FROM invocations
-               WHERE project_path GLOB ?
+               WHERE {project_filter}
                  AND recorded_at  >= datetime('now', ?)
             """,
-            (glob_pattern, since),
+            (project_key, subdir_pattern, since),
         ).fetchone()
 
         total = int(row["total"])
@@ -279,16 +431,16 @@ def query_gain(
 
         # Top 5 filters by tokens saved
         top_rows = conn.execute(
-            """SELECT filter_name, SUM(original_tokens - final_tokens) AS saved_sum
+            f"""SELECT filter_name, SUM(original_tokens - final_tokens) AS saved_sum
                FROM invocations
-               WHERE project_path GLOB ?
+               WHERE {project_filter}
                  AND recorded_at  >= datetime('now', ?)
                  AND filter_name  IS NOT NULL
                GROUP BY filter_name
                ORDER BY saved_sum DESC
                LIMIT 5
             """,
-            (glob_pattern, since),
+            (project_key, subdir_pattern, since),
         ).fetchall()
 
     top_filters = [(r["filter_name"], int(r["saved_sum"])) for r in top_rows]
