@@ -28,7 +28,11 @@ hardcoding a string — the standard approach for this exact problem — falling
 string only for the editable/uninstalled case if needed), **and** a test exists that fails the build
 if the two ever diverge again, so this can't silently regress the way it could have going into 0.3.0.
 
-**Status:** Backlog
+**Status:** Partially resolved — `tests/unit/test_version.py::test_version_matches_pyproject` now
+fails the build if `quor.__version__` and `pyproject.toml`'s version ever diverge (confirmed: fails
+with a mismatch injected, passes once reverted). The single-source-of-truth half (deriving
+`__version__` from `importlib.metadata` instead of a second hardcoded string) is still open — the
+two values are still independently maintained, just now guarded by a test instead of unguarded.
 
 ---
 
