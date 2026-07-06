@@ -2,11 +2,17 @@
 
 Proposed changes, process improvements, and known gaps that are not yet scheduled
 for implementation. Each entry: ID, Priority, Category, Title, Problem, Desired
-outcome, Status. Add new entries at the top (most recent first).
+outcome, Status.
+
+Entries are grouped by **Priority** (High → Medium → Low). Within a group, most
+recent first. When adding a new entry, insert it at the top of its priority
+group — do not just append to the end of the file.
 
 ---
 
-## QB-021
+## Priority: High
+
+### QB-021
 
 **Priority:** High
 **Category:** Bug fix
@@ -37,37 +43,7 @@ failure; a genuinely new version still publishes normally. No change to the appr
 
 ---
 
-## QB-020
-
-**Priority:** Medium
-**Category:** Engineering
-
-**Title:** Single source of truth for version numbers, with a drift-detection test
-
-**Problem:**
-The 0.3.0 release audit found that `pyproject.toml`'s `[project].version` (what PyPI/`pip show` see)
-and `quor/__init__.py`'s `__version__` (what `quor --help`/`python -m quor` print) are two
-independently hand-maintained strings with no automated link between them. `tests/unit/test_version.py`
-checks that `__version__` is a well-formed, non-empty string but never cross-checks it against
-`pyproject.toml`. They have agreed at every release so far purely because whoever bumped the version
-remembered to edit both files — nothing would catch it if a future release only updated one.
-
-**Desired outcome:**
-One of the two values becomes the sole source of truth and the other is derived from it (e.g.
-`quor/__init__.py` reads its version via `importlib.metadata.version("quor")` at runtime instead of
-hardcoding a string — the standard approach for this exact problem — falling back to a hardcoded
-string only for the editable/uninstalled case if needed), **and** a test exists that fails the build
-if the two ever diverge again, so this can't silently regress the way it could have going into 0.3.0.
-
-**Status:** Partially resolved — `tests/unit/test_version.py::test_version_matches_pyproject` now
-fails the build if `quor.__version__` and `pyproject.toml`'s version ever diverge (confirmed: fails
-with a mismatch injected, passes once reverted). The single-source-of-truth half (deriving
-`__version__` from `importlib.metadata` instead of a second hardcoded string) is still open — the
-two values are still independently maintained, just now guarded by a test instead of unguarded.
-
----
-
-## QB-019
+### QB-019
 
 **Priority:** High
 **Category:** Bug fix
@@ -110,7 +86,7 @@ on the pre-fix code and pass on the fix, per the project's Rule 3 (behavior lock
 
 ---
 
-## QB-018
+### QB-018
 
 **Priority:** High
 **Category:** Bug fix
@@ -174,52 +150,7 @@ lazy backfill of a hand-built pre-v2 database.
 
 ---
 
-## QB-017
-
-**Priority:** Low
-**Category:** Metrics / Observability
-
-**Title:** TEE footer affects token metrics clarity
-
-**Problem:**
-`quor gain` occasionally reports a negative token contribution for an invocation (confirmed: 7
-historical rows, e.g. `git rev-parse HEAD origin/main` recorded as 21→43 tokens). Root-caused via
-investigation: the tee recovery mechanism (ADR-023) appends a fixed-size footer
-(`\n[full output: {path}]`, ~130 characters / ~33 tokens, dominated by the platformdirs cache path
-plus a 64-character SHA256 filename) to the filtered output *before* `original_tokens`/`final_tokens`
-are computed in `quor/adapters/dispatcher.py`'s `_track()`. For invocations where the ContentMask
-pipeline's real content compression is smaller than the footer's fixed cost — which is common for
-already-short, already-clean command output, the exact case where compression has the least to work
-with — the footer's overhead can exceed the genuine savings, producing a net "negative" result in
-`quor gain` even though the pipeline compressed correctly.
-
-This is **not a correctness bug** in the pipeline, tee mechanism, or tracking/aggregation logic — all
-three do exactly what they're designed to do, and the negative numbers were reproduced live and
-reconciled exactly against historical data. It is a **metrics-definition problem**: `final_tokens`
-(and therefore `tokens_saved`) conflates two different things — "how much the ContentMask pipeline
-compressed the content" and "how much dispatcher-level recovery metadata was appended afterward" —
-and presents them to the user as one undifferentiated number attributed to the matched filter.
-
-**Desired outcome (for a future metrics redesign, not this item):**
-`quor gain` should be able to distinguish genuine compression savings from intentional
-dispatcher-level overhead (tee's recovery footer, and any similar future annotation) rather than
-netting them silently. Candidate approaches to evaluate at that time: measure `final_tokens` before
-`_apply_tee()` runs (changes existing semantics — `final_tokens` would no longer equal exactly what
-was written to stdout), or add a distinct field (e.g. `tee_overhead_tokens`) so both numbers can be
-shown separately without changing what "final_tokens" has historically meant. Either choice needs a
-schema/display decision, not just a code fix, which is why this is deferred rather than bundled into
-QB-017 immediately below or fixed ad hoc.
-
-**Status:** Deferred investigation. No immediate fix. Revisit as part of a future `quor gain` /
-tracking metrics redesign, not as a standalone bug fix — the current behavior is internally
-consistent and arguably defensible (the footer genuinely is extra text sent to the AI's context), so
-the right fix depends on a product decision about what "tokens saved" should mean, not just a code
-change. Unrelated to, and not fixed by, the separate `project_path` case-sensitivity and GLOB
-sibling-leakage fixes to `quor/tracking/db.py` made alongside this entry.
-
----
-
-## QB-006A
+### QB-006A
 
 **Priority:** High
 **Category:** Feature
@@ -290,7 +221,226 @@ unit tests and fixture cases. Full `pytest`, `quor verify`, `ruff check`, and `m
 
 ---
 
-## QB-006B
+### QB-004
+
+**Priority:** High
+**Category:** Bug Investigation
+
+**Title:** Investigate git-diff max_tokens stage not enforcing configured limit
+
+**Problem:**
+Measured output from `quor git show`/`git diff` (~5,806 estimated tokens on a real test) greatly
+exceeds the `git-diff` filter's configured `max_tokens` limit of 600 in `git.toml`. Root cause is
+unknown — the stage may not be executing, the configuration may be wrong, or the token estimation
+used for reporting may differ from what the stage actually enforces.
+
+**Desired outcome:**
+Root cause identified and either the stage is fixed to actually enforce its configured limit, or the
+discrepancy between reported and enforced token counts is understood and documented.
+
+**Resolution:**
+Investigated and confirmed `max_tokens` executes correctly and enforces its budget exactly as
+documented. The overshoot is caused by `git-diff`'s `preserve_patterns` (`^\+`, `^-`, `^@@`,
+`conflict`, `Error`) marking most diff content as `PROTECT`, which `max_tokens` is designed to never
+compress — measured at 298 of 515 lines PROTECT, summing to ~5,265 tokens alone, well above the
+600 limit, before `max_tokens` even runs. This is expected behavior given current configuration, not
+a stage defect. Follow-up product decision tracked in QB-012.
+
+**Status:** Closed — Not a bug
+
+---
+
+### QB-005
+
+**Priority:** High
+**Category:** Feature
+
+**Title:** Structural code extraction for file reads
+
+**Problem:**
+Quor's `cat` filter only strips comments and blank lines; it always returns full source content
+otherwise. For large files this leaves significant token cost on the table compared to returning
+just the API surface a developer or AI actually needs.
+
+**Desired outcome:**
+An AST-aware or parser-assisted code summarization mode that prioritizes imports, public types,
+function/method signatures, docstrings, constants, and file structure over full function bodies —
+reducing tokens while preserving developer/AI context. Primary objective is token reduction without
+losing the structural understanding needed to work with the file.
+
+**Approved architecture (Batch 5 design review):**
+- **Python only in V1.** No multi-language parsing, no third-party parser — Python standard library
+  `ast` only. No new dependency.
+- **`StageHandler`'s interface is not modified.** Stages continue to receive only `ContentMask` +
+  config, never a filename or command string — the same contract every existing stage has.
+- **Python detection happens at the filter layer**, via command matching (e.g. `cat *.py`), not by
+  threading filenames into stages. A new `cat-python.toml` filter routes `.py` file reads to the new
+  AST-aware stage; the stage itself receives only file content, exactly like every existing stage.
+- **No new registry tie-break algorithm.** `FilterRegistry` keeps its existing "first matching filter
+  wins" behavior unchanged. Correctness comes entirely from **built-in filter load order**:
+  `cat-python.toml` must load (and therefore match) before the generic `cat.toml`. Document this
+  ordering rule so future extension-specific filters (e.g. a hypothetical `cat-javascript.toml`)
+  follow the same pattern rather than each inventing their own precedence mechanism.
+- **Fail-open on any parsing failure** (`SyntaxError` or otherwise) — falls back to full, unmodified
+  content, never a crash or partial/corrupt output.
+
+**Status:** Implemented (Batch 5, item 1). `quor/pipeline/stages/python_ast_summarize.py` compresses
+function/method bodies to signature + docstring using stdlib `ast` only, with fail-open behavior
+delegated entirely to the engine's existing per-stage exception handling (no local try/except).
+`cat-python.toml` routes `.py` file reads through it, then reuses `cat.toml`'s existing
+strip_lines/deduplicate_consecutive/max_tokens stack so comment-stripping and blank-line dedup
+(which `ast` cannot see, since comments have no AST node) are not lost for Python files — this
+combination is covered by a dedicated inline filter test. Comprehensive unit tests added to
+`tests/unit/test_stages.py::TestPythonAstSummarize` (valid file, syntax error at both the stage and
+pipeline fail-open level, empty file, null-byte input, decorators, nested classes/functions, async
+functions, a 300-function synthetic large file, non-ASCII identifiers/docstrings, single-line and
+docstring-only function bodies, and byte-identical-kept-line regression tests). Full `pytest`,
+`quor verify`, `ruff check`, and `mypy` all pass. Not yet committed — awaiting instruction.
+
+---
+
+### QB-006
+
+**Priority:** High
+**Category:** Feature
+
+**Title:** Node.js ecosystem support
+
+**Problem:**
+Quor has no rewrite/filter coverage for `npm`, `npx`, or `pnpm` — a significant ecosystem gap
+relative to competitors. Build, test, lint, and type-check output for JS/TS projects currently
+passes through unfiltered and untracked.
+
+**Desired outcome:**
+Rewrite rules and filters for `npm`/`npx`/`pnpm` invocations, prioritized by workflow: build, test,
+lint, and type-check first.
+
+**Status:** Split following the Batch 5 design review — see QB-006A (generic Node ecosystem noise
+removal, approved for implementation next) and QB-006B (tool-aware Node ecosystem filtering,
+deferred to future backlog). This entry is kept for historical context; new work is tracked under
+QB-006A/QB-006B.
+
+---
+
+### QB-007
+
+**Priority:** High
+**Category:** Feature
+
+**Title:** Intelligent document compression
+
+**Problem:**
+Quor only filters shell command output today. Reading DOCX, PDF, Markdown, or plain text documents
+returns raw content with no structure-aware compression.
+
+**Desired outcome:**
+Token-efficient reading of DOCX, PDF, Markdown, and text documents by extracting structure —
+headings, tables, numbered lists, requirements, decisions — instead of returning raw document text
+whenever possible.
+
+**Status:** Blocked pending feasibility investigation into whether Claude Code can intercept native
+Read/File tool output. Implementation will begin only after this investigation is complete.
+
+**Context (Batch 5 design review):** Quor's only integration point today is the Claude Code
+`PreToolUse` hook registered for the Bash matcher (`quor/cli/commands/init.py`); most PDF/DOCX
+reading inside Claude Code uses native Read/File tools, not Bash, so Quor never receives those
+requests under the current architecture. The feasibility investigation is a prerequisite for this
+item, not separate product work — no backlog ID is tracked for it.
+
+---
+
+### QB-001
+
+**Priority:** High
+**Category:** Release Process
+
+**Title:** Require successful TestPyPI validation before production release
+
+**Problem:**
+`release.yml` publishes directly to PyPI after tagging, bypassing manual TestPyPI verification.
+
+**Desired outcome:**
+Production publication must require successful TestPyPI validation and explicit approval.
+
+**Status:** Resolved — implemented on `feature/qb-001-testpypi-release-gate` (`.github/workflows/release.yml`).
+`publish-pypi` now needs a `release-approval` environment job, which needs `validate-testpypi` (installs
+the tagged version from TestPyPI and smoke-tests it), which needs `publish-testpypi`. A maintainer must
+still create the `release-approval` environment with required reviewers under Settings > Environments
+for the approval gate to be enforced.
+
+---
+
+## Priority: Medium
+
+### QB-022
+
+**Priority:** Medium
+**Category:** Engineering
+
+**Title:** Decompose `run_dispatch()`'s monolithic orchestration for multi-contributor scalability
+
+**Problem:**
+Surfaced during a SOLID-principles review of the codebase (2026-07-06): every genuine *extension
+point* Quor has — `StageHandler`, `HookAdapter`, `Plugin` — is already cleanly isolated behind a
+`Protocol` (`quor/pipeline/stages/base.py`, `quor/adapters/base.py`, `quor/plugins/base.py`), so a
+third-party contributor adding a new compression stage, hook adapter, or lifecycle plugin never needs
+to touch core files. That extensibility boundary is the right thing to have in place before opening
+the project to outside hobby contributors, and it's already solid.
+
+The one place this breaks down is `quor/adapters/dispatcher.py::run_dispatch()` — a single ~150-line
+function that inlines seven sequential concerns (subprocess execution, tee cleanup, filter lookup,
+plugin discovery/lifecycle, PRE_FILTER execution, ContentMask filtering, POST_FILTER execution, tee
+write, tracking), each wrapped in its own fail-open `try/except`. It is not a correctness problem
+today — it's tested and every step is defensively isolated — but it is a single-responsibility
+violation, and as more contributors touch the project, it's the one function where unrelated PRs
+(e.g. one changing tee behavior, another changing plugin ordering) are likely to collide and produce
+avoidable merge conflicts.
+
+**Desired outcome:**
+Split `run_dispatch()` into a thin orchestrator that delegates to separately named, independently
+testable helper functions (e.g. subprocess execution, plugin-pipeline execution, tee + tracking),
+with no change to external behavior, the fail-open contract, or the six-CLI-command surface. This is
+a mechanical extraction, not a new abstraction or interface — no `Protocol`, registry, or config
+schema change is implied.
+
+**Status:** Open — not yet scheduled. Not urgent: revisit when a new dispatch-level step is actually
+being added (e.g. an 8th pipeline concern), rather than preemptively. Estimated effort: roughly half a
+day, including re-running `tests/unit/test_adapters.py` and `tests/unit/test_pipeline.py` to confirm
+no behavioral change. Low risk.
+
+---
+
+### QB-020
+
+**Priority:** Medium
+**Category:** Engineering
+
+**Title:** Single source of truth for version numbers, with a drift-detection test
+
+**Problem:**
+The 0.3.0 release audit found that `pyproject.toml`'s `[project].version` (what PyPI/`pip show` see)
+and `quor/__init__.py`'s `__version__` (what `quor --help`/`python -m quor` print) are two
+independently hand-maintained strings with no automated link between them. `tests/unit/test_version.py`
+checks that `__version__` is a well-formed, non-empty string but never cross-checks it against
+`pyproject.toml`. They have agreed at every release so far purely because whoever bumped the version
+remembered to edit both files — nothing would catch it if a future release only updated one.
+
+**Desired outcome:**
+One of the two values becomes the sole source of truth and the other is derived from it (e.g.
+`quor/__init__.py` reads its version via `importlib.metadata.version("quor")` at runtime instead of
+hardcoding a string — the standard approach for this exact problem — falling back to a hardcoded
+string only for the editable/uninstalled case if needed), **and** a test exists that fails the build
+if the two ever diverge again, so this can't silently regress the way it could have going into 0.3.0.
+
+**Status:** Partially resolved — `tests/unit/test_version.py::test_version_matches_pyproject` now
+fails the build if `quor.__version__` and `pyproject.toml`'s version ever diverge (confirmed: fails
+with a mismatch injected, passes once reverted). The single-source-of-truth half (deriving
+`__version__` from `importlib.metadata` instead of a second hardcoded string) is still open — the
+two values are still independently maintained, just now guarded by a test instead of unguarded.
+
+---
+
+### QB-006B
 
 **Priority:** Medium
 **Category:** Feature
@@ -397,101 +547,7 @@ changing `group_repeated`'s existing behavior:
 
 ---
 
-## QB-016
-
-**Priority:** Low
-**Category:** Documentation
-
-**Title:** Strengthen AI Git Workflow
-
-**Problem:**
-QB-015's Git workflow documentation didn't specify the exact sequence to follow when starting a new
-backlog item (ensuring the prior branch is resolved, pulling latest `main`, verifying a clean working
-tree, branching, and verifying the branch before editing), nor what to do if the working tree is
-unexpectedly dirty at that point. Without this, there's a real risk of starting new work from a stale
-or wrong branch, or of an AI assistant "helpfully" stashing/resetting/discarding a user's uncommitted
-work to get to a clean state.
-
-**Desired outcome:**
-`docs/final/CLAUDE.md` documents an explicit "Starting Any Backlog Item" sequence (checkout `main`,
-pull, verify clean, branch, verify branch, then implement), states that every backlog item gets its
-own feature branch (never reused, never branched from another feature branch), documents the
-post-merge cleanup sequence before starting the next item, and adds a rule that an unclean working
-tree at the start of a backlog item is a stop-and-ask condition — never resolved automatically via
-stash/reset/clean/discard.
-
-**Status:** Resolved — implemented on `feature/qb-016-strengthen-git-workflow` (docs/final/CLAUDE.md)
-
-**Update (Batch 7 — Workflow Review, `feature/qb-003-command-support-docs`):** Re-reviewed against
-the current engineering process after QB-011 (compression benchmark suite), per this batch's
-explicit request. The branching/PR-checklist/commit-convention rules this item originally
-introduced were verified still accurate and were **not** changed (no inconsistency found). Added,
-without altering the existing branching strategy: a "Before Opening a PR — Benchmark & Regression
-Requirements" subsection (when to run `tests/benchmarks/`, regression-threshold handling, the
-new-filter-must-update-COMMAND_SUPPORT.md rule), a "Review Checklist," and a "Release Readiness
-Checklist" (cross-referencing `docs/final/RELEASE_CRITERIA.md` and `CONTRIBUTING.md`'s existing
-Release Process rather than duplicating it) — all in `docs/final/CLAUDE.md`'s Git Workflow section.
-`CONTRIBUTING.md`'s PR checklist and Filter checklist also gained benchmark-requirement lines (see
-QB-003's resolution above for the doc-hygiene batch this was part of).
-
----
-
-## QB-015
-
-**Priority:** Low
-**Category:** Documentation
-
-**Title:** Document Git branching, commit and PR workflow
-
-**Problem:**
-The project had no documented Git workflow: no branch-naming convention, no commit message
-convention, and no PR checklist covering backlog/documentation/release-note follow-through. This
-surfaced directly while preparing the QB-014 fix for merge — work was happening ad hoc, and the
-QB-014 branch briefly carried unrelated workflow-documentation changes before being split out.
-
-**Desired outcome:**
-`CONTRIBUTING.md` documents the standard workflow (branch from `main`, `feature/qb-XXX-short-description`
-naming, one backlog item per branch, run `quor verify` + full test suite before commit, conventional
-commit messages, push, PR, merge only after review, delete branch after merge) and an expanded PR
-checklist (tests pass, no unrelated changes, backlog updated, documentation updated, release notes
-required Y/N). `docs/final/CLAUDE.md` documents the corresponding rules for AI-assisted sessions:
-never develop on `main`, check branch before changes, never auto-commit or auto-merge, always confirm
-before history-changing Git operations.
-
-**Status:** Resolved — implemented on `feature/qb-015-git-workflow` (CONTRIBUTING.md, docs/final/CLAUDE.md)
-
----
-
-## QB-004
-
-**Priority:** High
-**Category:** Bug Investigation
-
-**Title:** Investigate git-diff max_tokens stage not enforcing configured limit
-
-**Problem:**
-Measured output from `quor git show`/`git diff` (~5,806 estimated tokens on a real test) greatly
-exceeds the `git-diff` filter's configured `max_tokens` limit of 600 in `git.toml`. Root cause is
-unknown — the stage may not be executing, the configuration may be wrong, or the token estimation
-used for reporting may differ from what the stage actually enforces.
-
-**Desired outcome:**
-Root cause identified and either the stage is fixed to actually enforce its configured limit, or the
-discrepancy between reported and enforced token counts is understood and documented.
-
-**Resolution:**
-Investigated and confirmed `max_tokens` executes correctly and enforces its budget exactly as
-documented. The overshoot is caused by `git-diff`'s `preserve_patterns` (`^\+`, `^-`, `^@@`,
-`conflict`, `Error`) marking most diff content as `PROTECT`, which `max_tokens` is designed to never
-compress — measured at 298 of 515 lines PROTECT, summing to ~5,265 tokens alone, well above the
-600 limit, before `max_tokens` even runs. This is expected behavior given current configuration, not
-a stage defect. Follow-up product decision tracked in QB-012.
-
-**Status:** Closed — Not a bug
-
----
-
-## QB-012
+### QB-012
 
 **Priority:** Medium
 **Category:** Product Decision
@@ -533,7 +589,7 @@ investigation).
 
 ---
 
-## QB-014
+### QB-014
 
 **Priority:** Medium
 **Category:** Bug Investigation
@@ -588,7 +644,7 @@ already-`COMPRESS` lines), so it resurrected the duplicates `group_repeated` had
 
 ---
 
-## QB-013
+### QB-013
 
 **Priority:** Medium
 **Category:** Feature
@@ -622,106 +678,7 @@ opt-out, both backward-compatible defaults.
 
 ---
 
-## QB-005
-
-**Priority:** High
-**Category:** Feature
-
-**Title:** Structural code extraction for file reads
-
-**Problem:**
-Quor's `cat` filter only strips comments and blank lines; it always returns full source content
-otherwise. For large files this leaves significant token cost on the table compared to returning
-just the API surface a developer or AI actually needs.
-
-**Desired outcome:**
-An AST-aware or parser-assisted code summarization mode that prioritizes imports, public types,
-function/method signatures, docstrings, constants, and file structure over full function bodies —
-reducing tokens while preserving developer/AI context. Primary objective is token reduction without
-losing the structural understanding needed to work with the file.
-
-**Approved architecture (Batch 5 design review):**
-- **Python only in V1.** No multi-language parsing, no third-party parser — Python standard library
-  `ast` only. No new dependency.
-- **`StageHandler`'s interface is not modified.** Stages continue to receive only `ContentMask` +
-  config, never a filename or command string — the same contract every existing stage has.
-- **Python detection happens at the filter layer**, via command matching (e.g. `cat *.py`), not by
-  threading filenames into stages. A new `cat-python.toml` filter routes `.py` file reads to the new
-  AST-aware stage; the stage itself receives only file content, exactly like every existing stage.
-- **No new registry tie-break algorithm.** `FilterRegistry` keeps its existing "first matching filter
-  wins" behavior unchanged. Correctness comes entirely from **built-in filter load order**:
-  `cat-python.toml` must load (and therefore match) before the generic `cat.toml`. Document this
-  ordering rule so future extension-specific filters (e.g. a hypothetical `cat-javascript.toml`)
-  follow the same pattern rather than each inventing their own precedence mechanism.
-- **Fail-open on any parsing failure** (`SyntaxError` or otherwise) — falls back to full, unmodified
-  content, never a crash or partial/corrupt output.
-
-**Status:** Implemented (Batch 5, item 1). `quor/pipeline/stages/python_ast_summarize.py` compresses
-function/method bodies to signature + docstring using stdlib `ast` only, with fail-open behavior
-delegated entirely to the engine's existing per-stage exception handling (no local try/except).
-`cat-python.toml` routes `.py` file reads through it, then reuses `cat.toml`'s existing
-strip_lines/deduplicate_consecutive/max_tokens stack so comment-stripping and blank-line dedup
-(which `ast` cannot see, since comments have no AST node) are not lost for Python files — this
-combination is covered by a dedicated inline filter test. Comprehensive unit tests added to
-`tests/unit/test_stages.py::TestPythonAstSummarize` (valid file, syntax error at both the stage and
-pipeline fail-open level, empty file, null-byte input, decorators, nested classes/functions, async
-functions, a 300-function synthetic large file, non-ASCII identifiers/docstrings, single-line and
-docstring-only function bodies, and byte-identical-kept-line regression tests). Full `pytest`,
-`quor verify`, `ruff check`, and `mypy` all pass. Not yet committed — awaiting instruction.
-
----
-
-## QB-006
-
-**Priority:** High
-**Category:** Feature
-
-**Title:** Node.js ecosystem support
-
-**Problem:**
-Quor has no rewrite/filter coverage for `npm`, `npx`, or `pnpm` — a significant ecosystem gap
-relative to competitors. Build, test, lint, and type-check output for JS/TS projects currently
-passes through unfiltered and untracked.
-
-**Desired outcome:**
-Rewrite rules and filters for `npm`/`npx`/`pnpm` invocations, prioritized by workflow: build, test,
-lint, and type-check first.
-
-**Status:** Split following the Batch 5 design review — see QB-006A (generic Node ecosystem noise
-removal, approved for implementation next) and QB-006B (tool-aware Node ecosystem filtering,
-deferred to future backlog). This entry is kept for historical context; new work is tracked under
-QB-006A/QB-006B.
-
----
-
-## QB-007
-
-**Priority:** High
-**Category:** Feature
-
-**Title:** Intelligent document compression
-
-**Problem:**
-Quor only filters shell command output today. Reading DOCX, PDF, Markdown, or plain text documents
-returns raw content with no structure-aware compression.
-
-**Desired outcome:**
-Token-efficient reading of DOCX, PDF, Markdown, and text documents by extracting structure —
-headings, tables, numbered lists, requirements, decisions — instead of returning raw document text
-whenever possible.
-
-**Status:** Blocked pending feasibility investigation into whether Claude Code can intercept native
-Read/File tool output. Implementation will begin only after this investigation is complete.
-
-**Context (Batch 5 design review):** Quor's only integration point today is the Claude Code
-`PreToolUse` hook registered for the Bash matcher (`quor/cli/commands/init.py`); most PDF/DOCX
-reading inside Claude Code uses native Read/File tools, not Bash, so Quor never receives those
-requests under the current architecture. The feasibility investigation is a prerequisite for this
-item, not separate product work — no backlog ID is tracked for it.
-
----
-
-## QB-008
+### QB-008
 
 **Priority:** Medium
 **Category:** Enhancement
@@ -744,7 +701,7 @@ never modified, matching every other stage's invariant. Registered in `quor/filt
 
 ---
 
-## QB-009
+### QB-009
 
 **Priority:** Medium
 **Category:** Enhancement
@@ -766,7 +723,7 @@ matching `max_tokens`'s precedent that protected content is never reduced by any
 
 ---
 
-## QB-010
+### QB-010
 
 **Priority:** Medium
 **Category:** Enhancement
@@ -794,7 +751,7 @@ engine/dispatcher changes needed). Emits an explicit warning on every fire, in a
 
 ---
 
-## QB-011
+### QB-011
 
 **Priority:** Medium
 **Category:** Engineering
@@ -853,7 +810,143 @@ just-created baseline), `quor verify`, `ruff check`, and `mypy quor/` all pass.
 
 ---
 
-## QB-003
+### QB-002
+
+**Priority:** Medium
+**Category:** Product Decision
+
+**Title:** Default operating mode contradicts ADR-009
+
+**Problem:**
+ADR-009 (DECISIONS.md) and three docs (CLAUDE.md, PROJECT_BIBLE.md, ROADMAP.md) state the default
+operating mode is `AUDIT`. `quor/config/model.py` actually defaults to `"optimize"`, and `quor doctor`
+prints `Mode: optimize` on a fresh install. Unclear whether this is an implementation bug against a
+finalized ADR, or an intentional change that was never written back into the docs/ADR.
+
+**Desired outcome:**
+A maintainer decides which side is correct — either fix the code default to match ADR-009, or update
+ADR-009 and the docs to reflect `optimize` as the intended default — and the two are reconciled.
+
+**Status:** Resolved — implemented on `feature/qb-002-default-mode-audit`. Code default changed to
+`audit` to match ADR-009/PROJECT_BIBLE.md/CLAUDE.md/ROADMAP.md (`quor/config/model.py`,
+`quor/config/loader.py`), README example output and `tests/unit/test_cli.py` updated to match. ADR-009
+was not touched — it was already correct.
+
+---
+
+## Priority: Low
+
+### QB-017
+
+**Priority:** Low
+**Category:** Metrics / Observability
+
+**Title:** TEE footer affects token metrics clarity
+
+**Problem:**
+`quor gain` occasionally reports a negative token contribution for an invocation (confirmed: 7
+historical rows, e.g. `git rev-parse HEAD origin/main` recorded as 21→43 tokens). Root-caused via
+investigation: the tee recovery mechanism (ADR-023) appends a fixed-size footer
+(`\n[full output: {path}]`, ~130 characters / ~33 tokens, dominated by the platformdirs cache path
+plus a 64-character SHA256 filename) to the filtered output *before* `original_tokens`/`final_tokens`
+are computed in `quor/adapters/dispatcher.py`'s `_track()`. For invocations where the ContentMask
+pipeline's real content compression is smaller than the footer's fixed cost — which is common for
+already-short, already-clean command output, the exact case where compression has the least to work
+with — the footer's overhead can exceed the genuine savings, producing a net "negative" result in
+`quor gain` even though the pipeline compressed correctly.
+
+This is **not a correctness bug** in the pipeline, tee mechanism, or tracking/aggregation logic — all
+three do exactly what they're designed to do, and the negative numbers were reproduced live and
+reconciled exactly against historical data. It is a **metrics-definition problem**: `final_tokens`
+(and therefore `tokens_saved`) conflates two different things — "how much the ContentMask pipeline
+compressed the content" and "how much dispatcher-level recovery metadata was appended afterward" —
+and presents them to the user as one undifferentiated number attributed to the matched filter.
+
+**Desired outcome (for a future metrics redesign, not this item):**
+`quor gain` should be able to distinguish genuine compression savings from intentional
+dispatcher-level overhead (tee's recovery footer, and any similar future annotation) rather than
+netting them silently. Candidate approaches to evaluate at that time: measure `final_tokens` before
+`_apply_tee()` runs (changes existing semantics — `final_tokens` would no longer equal exactly what
+was written to stdout), or add a distinct field (e.g. `tee_overhead_tokens`) so both numbers can be
+shown separately without changing what "final_tokens" has historically meant. Either choice needs a
+schema/display decision, not just a code fix, which is why this is deferred rather than bundled into
+QB-017 immediately below or fixed ad hoc.
+
+**Status:** Deferred investigation. No immediate fix. Revisit as part of a future `quor gain` /
+tracking metrics redesign, not as a standalone bug fix — the current behavior is internally
+consistent and arguably defensible (the footer genuinely is extra text sent to the AI's context), so
+the right fix depends on a product decision about what "tokens saved" should mean, not just a code
+change. Unrelated to, and not fixed by, the separate `project_path` case-sensitivity and GLOB
+sibling-leakage fixes to `quor/tracking/db.py` made alongside this entry.
+
+---
+
+### QB-016
+
+**Priority:** Low
+**Category:** Documentation
+
+**Title:** Strengthen AI Git Workflow
+
+**Problem:**
+QB-015's Git workflow documentation didn't specify the exact sequence to follow when starting a new
+backlog item (ensuring the prior branch is resolved, pulling latest `main`, verifying a clean working
+tree, branching, and verifying the branch before editing), nor what to do if the working tree is
+unexpectedly dirty at that point. Without this, there's a real risk of starting new work from a stale
+or wrong branch, or of an AI assistant "helpfully" stashing/resetting/discarding a user's uncommitted
+work to get to a clean state.
+
+**Desired outcome:**
+`docs/final/CLAUDE.md` documents an explicit "Starting Any Backlog Item" sequence (checkout `main`,
+pull, verify clean, branch, verify branch, then implement), states that every backlog item gets its
+own feature branch (never reused, never branched from another feature branch), documents the
+post-merge cleanup sequence before starting the next item, and adds a rule that an unclean working
+tree at the start of a backlog item is a stop-and-ask condition — never resolved automatically via
+stash/reset/clean/discard.
+
+**Status:** Resolved — implemented on `feature/qb-016-strengthen-git-workflow` (docs/final/CLAUDE.md)
+
+**Update (Batch 7 — Workflow Review, `feature/qb-003-command-support-docs`):** Re-reviewed against
+the current engineering process after QB-011 (compression benchmark suite), per this batch's
+explicit request. The branching/PR-checklist/commit-convention rules this item originally
+introduced were verified still accurate and were **not** changed (no inconsistency found). Added,
+without altering the existing branching strategy: a "Before Opening a PR — Benchmark & Regression
+Requirements" subsection (when to run `tests/benchmarks/`, regression-threshold handling, the
+new-filter-must-update-COMMAND_SUPPORT.md rule), a "Review Checklist," and a "Release Readiness
+Checklist" (cross-referencing `docs/final/RELEASE_CRITERIA.md` and `CONTRIBUTING.md`'s existing
+Release Process rather than duplicating it) — all in `docs/final/CLAUDE.md`'s Git Workflow section.
+`CONTRIBUTING.md`'s PR checklist and Filter checklist also gained benchmark-requirement lines (see
+QB-003's resolution above for the doc-hygiene batch this was part of).
+
+---
+
+### QB-015
+
+**Priority:** Low
+**Category:** Documentation
+
+**Title:** Document Git branching, commit and PR workflow
+
+**Problem:**
+The project had no documented Git workflow: no branch-naming convention, no commit message
+convention, and no PR checklist covering backlog/documentation/release-note follow-through. This
+surfaced directly while preparing the QB-014 fix for merge — work was happening ad hoc, and the
+QB-014 branch briefly carried unrelated workflow-documentation changes before being split out.
+
+**Desired outcome:**
+`CONTRIBUTING.md` documents the standard workflow (branch from `main`, `feature/qb-XXX-short-description`
+naming, one backlog item per branch, run `quor verify` + full test suite before commit, conventional
+commit messages, push, PR, merge only after review, delete branch after merge) and an expanded PR
+checklist (tests pass, no unrelated changes, backlog updated, documentation updated, release notes
+required Y/N). `docs/final/CLAUDE.md` documents the corresponding rules for AI-assisted sessions:
+never develop on `main`, check branch before changes, never auto-commit or auto-merge, always confirm
+before history-changing Git operations.
+
+**Status:** Resolved — implemented on `feature/qb-015-git-workflow` (CONTRIBUTING.md, docs/final/CLAUDE.md)
+
+---
+
+### QB-003
 
 **Priority:** Low
 **Category:** Documentation
@@ -888,46 +981,3 @@ allowlist example) is **not** actually in `_KNOWN_BASE_COMMANDS` — the Problem
 illustrative, not literal; `COMMAND_SUPPORT.md` documents the real, verified allowlist.
 
 ---
-
-## QB-002
-
-**Priority:** Medium
-**Category:** Product Decision
-
-**Title:** Default operating mode contradicts ADR-009
-
-**Problem:**
-ADR-009 (DECISIONS.md) and three docs (CLAUDE.md, PROJECT_BIBLE.md, ROADMAP.md) state the default
-operating mode is `AUDIT`. `quor/config/model.py` actually defaults to `"optimize"`, and `quor doctor`
-prints `Mode: optimize` on a fresh install. Unclear whether this is an implementation bug against a
-finalized ADR, or an intentional change that was never written back into the docs/ADR.
-
-**Desired outcome:**
-A maintainer decides which side is correct — either fix the code default to match ADR-009, or update
-ADR-009 and the docs to reflect `optimize` as the intended default — and the two are reconciled.
-
-**Status:** Resolved — implemented on `feature/qb-002-default-mode-audit`. Code default changed to
-`audit` to match ADR-009/PROJECT_BIBLE.md/CLAUDE.md/ROADMAP.md (`quor/config/model.py`,
-`quor/config/loader.py`), README example output and `tests/unit/test_cli.py` updated to match. ADR-009
-was not touched — it was already correct.
-
----
-
-## QB-001
-
-**Priority:** High
-**Category:** Release Process
-
-**Title:** Require successful TestPyPI validation before production release
-
-**Problem:**
-`release.yml` publishes directly to PyPI after tagging, bypassing manual TestPyPI verification.
-
-**Desired outcome:**
-Production publication must require successful TestPyPI validation and explicit approval.
-
-**Status:** Resolved — implemented on `feature/qb-001-testpypi-release-gate` (`.github/workflows/release.yml`).
-`publish-pypi` now needs a `release-approval` environment job, which needs `validate-testpypi` (installs
-the tagged version from TestPyPI and smoke-tests it), which needs `publish-testpypi`. A maintainer must
-still create the `release-approval` environment with required reviewers under Settings > Environments
-for the approval gate to be enforced.
