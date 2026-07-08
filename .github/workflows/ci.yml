@@ -41,3 +41,6 @@ jobs:
 
       - name: Tests
         run: pytest tests/ --cov=quor --cov-report=term-missing
+
+      - name: Integration tests (real subprocess/filesystem, excluded from the default run above)
+        run: pytest tests/ -m integration

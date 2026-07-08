@@ -119,9 +119,15 @@ ignore_missing_imports = true
 # ---------------------------------------------------------------------------
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "--tb=short -q"
+# "-m not integration" keeps the default, flag-less `pytest`/`pytest tests/`
+# invocation fast (PA-Q04: <30s) by excluding real-subprocess/real-filesystem
+# tests. Run the integration-only subset explicitly with `pytest -m integration`
+# (this overrides addopts' -m, it does not combine with it — verified: pytest's
+# -m is a single string option, and a CLI-supplied value takes precedence over
+# the one from addopts, exactly like any other last-one-wins argparse option).
+addopts = "--tb=short -q -m \"not integration\""
 markers = [
-    "integration: marks tests requiring real filesystem or subprocess (deselect with '-m not integration')",
+    "integration: marks tests requiring real filesystem or subprocess (run with 'pytest -m integration')",
 ]
 
 # ---------------------------------------------------------------------------
