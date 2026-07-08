@@ -123,7 +123,24 @@ def tokenize(cmd: str) -> list[Token]:
             i += 1
             continue
 
-        # Redirect (>, <, >>)
+        # Redirect (>, <, >>), optionally preceded by a file-descriptor
+        # number with no intervening space (e.g. "2>&1", "1>>log", "0<file").
+        # The descriptor must be consumed as part of the same token: a real
+        # shell requires "2" and ">&" to be adjacent for fd-duplication
+        # syntax (2>&1) — inserting a space between them (2 >&1) makes "2" a
+        # literal argument instead, changing what the command does. Space
+        # *after* the operator (2>& 1, 2> file) is harmless and unaffected.
+        if cmd[i].isdigit():
+            k = i
+            while k < n and cmd[k].isdigit():
+                k += 1
+            if k < n and cmd[k] in (">", "<"):
+                j = k + 1
+                if j < n and cmd[j] in (">", "&"):
+                    j += 1
+                tokens.append(Token(cmd[i:j], TokenKind.REDIRECT_OTHER))
+                i = j
+                continue
         if cmd[i] in (">", "<"):
             j = i + 1
             if j < n and cmd[j] in (">", "&"):
@@ -185,7 +202,11 @@ def split_compound(cmd: str) -> list[tuple[str, str | None]]:
 
 
 def parse_args(cmd: str) -> list[str]:
-    """Return the list of word-tokens from a simple (non-compound) command."""
+    """Return the list of word-tokens from a simple (non-compound) command.
+
+    Includes REDIRECT_OTHER (e.g. "2>&", ">>") so a known command's redirect
+    survives rewriting instead of being silently dropped from the arg list.
+    """
     words: list[str] = []
     for token in tokenize(cmd):
         if token.kind in (
@@ -193,6 +214,7 @@ def parse_args(cmd: str) -> list[str]:
             TokenKind.SINGLE_QUOTED,
             TokenKind.DOUBLE_QUOTED,
             TokenKind.ENV_ASSIGN,
+            TokenKind.REDIRECT_OTHER,
         ):
             words.append(token.value)
     return words
