@@ -12,6 +12,95 @@ group — do not just append to the end of the file.
 
 ## Priority: High
 
+### QB-028
+
+**Priority:** High
+**Category:** Release Process
+
+**Title:** Walk `RELEASE_CRITERIA.md`'s gates and record real pass/fail/evidence (TD-003)
+
+**Problem:**
+Found during the 2026-07-06 pre-release tech-debt audit (TD-003): every gate in
+`docs/final/RELEASE_CRITERIA.md`, across all four milestones, was still an unchecked `- [ ]` despite
+the project being functionally well past Internal Alpha (v0.3.0 published, 983+ tests). The document's
+own rules state "no milestone is done until every gate is green... partial credit does not exist," but
+nobody had actually walked it and recorded evidence for a single gate.
+
+**Desired outcome:**
+Walk Internal Alpha and Public Alpha (the realistic target per the tech-debt audit's own assessment)
+gate by gate, record real pass/fail/evidence for each, and surface any genuinely new gaps found along
+the way as their own backlog items rather than silently noting them.
+
+**Resolution:**
+`docs/final/RELEASE_CRITERIA.md` updated in place (per the document's own "record the result and the
+evidence for each gate" instruction) with a dated Gate Walk section and per-gate evidence.
+
+- **Internal Alpha: passes in full.** Every gate has direct, live evidence (real `quor doctor`/`quor
+  verify`/`quor gain`/`quor explain` runs, real coverage measurements, real grep checks, a live 10MB-input
+  timing test) except IA-F03, which used the closest available proxy — a real, unmocked hook-payload
+  round trip for all five listed commands (matching `canary.yml`'s own method) rather than a literal
+  live interactive Claude Code session, which this environment cannot spawn.
+- **Public Alpha: does not pass yet.** Concrete, newly-confirmed gaps (not just unverified) — see
+  QB-029 and QB-030 below for the two spun-out findings. Gates requiring genuinely external state (fresh
+  VM installs, multiple non-builder testers, multi-hour real sessions, external documentation review)
+  are left unchecked with a note on exactly what's needed, rather than assumed.
+- **Beta and v1.0 were not walked** — Public Alpha itself doesn't pass yet, and walking a later
+  milestone before its prerequisite passes would produce results with no real meaning, per the
+  document's own "all gates must pass first" rule.
+
+One concrete fix was made as a direct result of this walk (not a separate backlog item, since it was
+found and fixed in the same session as part of investigating PA-Q04): the default `pytest` invocation
+was measured at 28–31s locally, right at PA-Q04's <30s bar, because nothing actually excluded
+`@pytest.mark.integration`-marked tests from it despite the marker's own docstring and CLAUDE.md
+both already claiming they were "excluded from default CI." Added `-m "not integration"` to
+`pyproject.toml`'s `addopts` (verified `-m` is a last-one-wins pytest option, so `pytest -m
+integration` still works to run them explicitly) and a dedicated CI step so the integration suite
+still runs on every push/PR instead of being silently orphaned by the new exclusion.
+
+**Status:** Resolved — implemented on `feature/td-tier2-release-readiness`.
+
+---
+
+### QB-027
+
+**Priority:** High
+**Category:** Engineering
+
+**Title:** Add real integration tests for the six CLI commands (TD-006)
+
+**Problem:**
+Found during the 2026-07-06 pre-release tech-debt audit (TD-006): `tests/integration/` existed but was
+empty, and every CLI command test in `tests/unit/test_cli.py` mocks `subprocess.run` and/or
+`FilterRegistry` at the boundaries that matter most. QB-019's Windows npm/npx bug was invisible to the
+entire test suite specifically because every dispatcher test mocked `subprocess.run` — the same class
+of gap existed for the CLI surface, and was the reason `RELEASE_CRITERIA.md`'s **V1-Q07** ("all six CLI
+commands have integration tests") was still open.
+
+**Desired outcome:**
+Real integration tests for all six CLI commands (`init`, `validate`, `explain`, `gain`, `verify`,
+`doctor`) exercising real subprocess dispatch and a real (temp-dir-scoped) SQLite file, per V1-Q07.
+
+**Resolution:**
+Added `tests/integration/test_cli_commands.py`, marked `@pytest.mark.integration`, with no mocking of
+`subprocess.run`, `FilterRegistry`, or `platformdirs` beyond the existing autouse test-isolation
+fixture: a real `git status` through the real `run_dispatch()` path verified visible via `quor gain`
+(both directly via `query_gain()` and the rendered CLI output); `explain` running a genuinely unmocked
+real command (every existing unit test for it mocks `subprocess.run`); `verify`/`validate` against the
+real built-in filter registry plus a real project-local filter file on disk; and a real `quor init
+--claude` chained into a real, separately-invoked `quor doctor`.
+
+Verified empirically (via a throwaway script, before relying on it) that a genuinely separate `quor` OS
+subprocess could **not** be safely isolated from the real user data directory on this platform:
+`platformdirs`' Windows backend resolves `user_data_dir`/`user_config_dir` via ctypes
+(`SHGetKnownFolderPath`), which ignores `LOCALAPPDATA`/`APPDATA` environment variable overrides
+entirely. These tests therefore invoke the real command functions in-process (CliRunner /
+`run_dispatch()`) under the existing autouse `platformdirs` fixture, which does provide correct
+isolation, rather than spawning `quor` itself as a child process.
+
+**Status:** Resolved — implemented on `feature/td-tier2-release-readiness`.
+
+---
+
 ### QB-026
 
 **Priority:** High
@@ -505,6 +594,38 @@ for the approval gate to be enforced.
 
 ## Priority: Medium
 
+### QB-029
+
+**Priority:** Medium
+**Category:** Feature
+
+**Title:** Secret detection (PA-F07) and onboarding mode (PA-F08) are not implemented
+
+**Problem:**
+Found while walking `RELEASE_CRITERIA.md`'s gates (QB-028 / TD-003): two Public Alpha functional gates
+describe features that don't exist anywhere in the codebase, confirmed by grep returning zero matches
+for either:
+- **PA-F07 (secret detection):** an output line containing a GitHub token pattern (`ghp_...`) should
+  cause a warning to stderr, with hook output (stdout) unaffected.
+- **PA-F08 (onboarding mode):** the first 5 filtered commands should print brief stats to stderr, with
+  command 6 onward silent.
+
+These aren't just unverified — there's no partial implementation, no stage, no flag, nothing to point
+to. The competitive research (`docs/archive/product-discovery/competitive-research.md`) also lists
+"security-first mode for corporate use" as one of the gaps no existing competitor covers well, so this
+has product value beyond just closing the gate.
+
+**Desired outcome:**
+A maintainer decides whether these are still wanted for Public Alpha as originally scoped, and if so,
+they get implemented and tested per this project's Rule 1 (test requirement) and Rule 4
+(competitor-first design, given the competitive-research cross-reference above) before Public Alpha is
+declared complete.
+
+**Status:** Open — not yet scheduled. Flagged by the gate walk, not fixed as part of it (implementing
+two new features was out of scope for a gate-walk-and-record task).
+
+---
+
 ### QB-022
 
 **Priority:** Medium
@@ -968,6 +1089,40 @@ was not touched — it was already correct.
 ---
 
 ## Priority: Low
+
+### QB-030
+
+**Priority:** Low
+**Category:** Engineering
+
+**Title:** Two small follow-ups from the release-criteria gate walk: pre-existing slow CLI tests, and no permanent 10MB-input regression test
+
+**Problem:**
+Two minor findings surfaced while walking `RELEASE_CRITERIA.md` (QB-028 / TD-003), neither blocking but
+both worth tracking:
+
+1. **PA-Q04 is borderline, not comfortably passing.** The default `pytest` invocation measured 28–31s
+   locally across repeated runs — right at the <30s bar, before accounting for CI runners typically
+   being slower than local hardware. Confirmed this is dominated by a handful of pre-existing slow CLI
+   subprocess tests (e.g. `test_quor_no_args_prints_version` at ~1.6s, several hook-collision tests in
+   `tests/unit/test_cli.py` at ~1.5s each) — unrelated to any Tier 1/2 change. QB-028 already fixed the
+   one concrete regression risk (excluding `@pytest.mark.integration` tests from this measurement), but
+   the underlying pre-existing slowness itself was not investigated or fixed.
+2. **IA-S03 (10MB input must not hang >5s) has no permanent regression test.** Verified live this
+   session (0.58s, well within budget) but nothing guards this going forward — a future change to the
+   pipeline's line-by-line stage handling could silently regress this without any test catching it.
+
+**Desired outcome:**
+(1) Identify why the specific slow CLI tests take ~1.5s each (likely real subprocess/process-spawn
+overhead) and see if any can be sped up without losing what they verify, to give PA-Q04 real margin
+rather than sitting at the edge. (2) Add a permanent test asserting a large (~10MB) input completes
+pipeline processing within a fixed time budget.
+
+**Status:** Open — not yet scheduled. Both are minor, non-blocking findings from the gate walk, not
+bugs — deliberately not fixed as part of that walk to keep it scoped to recording status rather than
+open-ended optimization work.
+
+---
 
 ### QB-017
 

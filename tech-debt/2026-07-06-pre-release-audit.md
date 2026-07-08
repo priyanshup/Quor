@@ -110,6 +110,10 @@ actual maturity) top to bottom, record real pass/fail/evidence per gate, and fix
 (with the user's sign-off) anything that fails — starting with TD-002 and TD-004 below, which this
 audit already confirms fail today.
 
+**Status:** Resolved — see QB-028 in `backlog.md`. Fixed on `feature/td-tier2-release-readiness`.
+Internal Alpha passes in full; Public Alpha does not yet (real gaps found — secret detection and
+onboarding mode are unimplemented, spun out as QB-029; a few other findings spun out as QB-030).
+
 ### TD-004 — CI test matrix doesn't cover Python versions the package claims to support
 
 **Where:** `.github/workflows/ci.yml` — matrix is `python-version: ["3.11", "3.12"]` only.
@@ -162,6 +166,8 @@ mocks `subprocess.run`).
 **Fix:** add real integration tests for at least the six CLI commands (`init`, `validate`, `explain`,
 `gain`, `verify`, `doctor`) that exercise real subprocess dispatch and a real (temp-dir-scoped) SQLite
 file, per V1-Q07.
+
+**Status:** Resolved — see QB-027 in `backlog.md`. Fixed on `feature/td-tier2-release-readiness`.
 
 ### TD-008 — Version number still duplicated across two files
 
