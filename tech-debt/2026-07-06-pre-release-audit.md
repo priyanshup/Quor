@@ -57,9 +57,7 @@ commands, only compress what comes back," a bug that changes what the command *d
 class of defect it can have — worse than a compression-quality bug, because it's silent and the user
 has no way to know their command ran differently than intended.
 
-**Status:** known (recorded in a private session memory from 2026-07-04 during hook e2e validation)
-but never entered into `backlog.md` or fixed. Recommend giving this its own QB-0xx item and fixing
-before any public release announcement.
+**Status:** Resolved — see QB-023 in `backlog.md`. Fixed on `feature/td-tier1-pre-release-fixes`.
 
 ---
 
@@ -85,6 +83,8 @@ this gate right now.
 **Fix:** replace with an `if self._jsonl_path is None: raise RuntimeError(...)` (or restructure so
 the type is non-optional on this code path), matching the pattern used everywhere else in the
 codebase.
+
+**Status:** Resolved — see QB-024 in `backlog.md`. Fixed on `feature/td-tier1-pre-release-fixes`.
 
 ### TD-003 — `RELEASE_CRITERIA.md` gates have never been walked and checked off
 
@@ -125,6 +125,8 @@ claim to match what's actually tested (3.11–3.12) until CI catches up. `RELEAS
 own B-Q01 gate already calls for 3.13 in CI at Beta — doing it now, before public release, avoids
 shipping an unverified compatibility claim.
 
+**Status:** Resolved — see QB-025 in `backlog.md`. Fixed on `feature/td-tier1-pre-release-fixes`.
+
 ### TD-005 — No dependency / supply-chain security scanning
 
 **What:** No Dependabot config (`.github/dependabot.yml`), no CodeQL workflow, no `pip-audit`/`bandit`
@@ -136,6 +138,8 @@ in place *before* the audience grows, not after a report comes in.
 
 **Fix:** add a `dependabot.yml` (pip ecosystem, weekly) and a scheduled CodeQL workflow (Python).
 Both are one-time, low-maintenance additions.
+
+**Status:** Resolved — see QB-026 in `backlog.md`. Fixed on `feature/td-tier1-pre-release-fixes`.
 
 ---
 
