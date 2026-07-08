@@ -261,6 +261,18 @@ class TestTrackingDbJsonl:
         # Should not raise and no jsonl file created
         assert not (tmp_path / "invocations.jsonl").exists()
 
+    def test_write_jsonl_raises_if_called_without_path(self, tmp_path: Path) -> None:
+        """TD-002: this was an `assert`, which `python -O` strips silently.
+        Calling `_write_jsonl` directly (bypassing `_worker`'s `is not None`
+        guard) must raise a real, non-optimizable error."""
+        db_path = tmp_path / "quor.db"
+        db = TrackingDB(db_path=db_path, jsonl_path=None)
+        try:
+            with pytest.raises(RuntimeError, match="jsonl_path"):
+                db._write_jsonl(_sample_record())
+        finally:
+            db.close()
+
 
 # ---------------------------------------------------------------------------
 # TrackingDB — 90-day cleanup

@@ -251,7 +251,11 @@ class TrackingDB:
     # ------------------------------------------------------------------
 
     def _write_jsonl(self, rec: InvocationRecord) -> None:
-        assert self._jsonl_path is not None
+        if self._jsonl_path is None:
+            raise RuntimeError(
+                "_write_jsonl() called with no jsonl_path configured — "
+                "callers must guard with `if self._jsonl_path is not None`"
+            )
         self._jsonl_path.parent.mkdir(parents=True, exist_ok=True)
         line = orjson.dumps(rec.to_dict()) + b"\n"
         with open(self._jsonl_path, "ab") as fh:
