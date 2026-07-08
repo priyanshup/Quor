@@ -12,6 +12,139 @@ group — do not just append to the end of the file.
 
 ## Priority: High
 
+### QB-026
+
+**Priority:** High
+**Category:** Security
+
+**Title:** No dependency / supply-chain security scanning
+
+**Problem:**
+Found during the 2026-07-06 pre-release tech-debt audit (TD-005): no Dependabot config, no CodeQL
+workflow, and no `pip-audit`/`bandit` step existed anywhere in `.github/`, despite `SECURITY.md`
+already discussing trust boundaries (plugin execution, hook data flow) in detail. Standard,
+low-effort hardening worth having in place before a public release grows the audience, not after a
+report comes in.
+
+**Desired outcome:**
+Automated dependency update PRs and static security analysis running on a schedule.
+
+**Resolution:**
+Added `.github/dependabot.yml` (pip ecosystem, weekly) and `.github/workflows/codeql.yml` (scheduled
+weekly plus push/PR to `main`, Python analysis via `github/codeql-action`). Both are config-only
+additions with no effect on `quor/` or `tests/`; validated YAML syntax locally and confirmed
+structure matches the repo's existing workflow conventions (`permissions` block,
+`actions/checkout@v4`, unpinned major-version tags).
+
+**Status:** Resolved — implemented on `feature/td-tier1-pre-release-fixes`.
+
+---
+
+### QB-025
+
+**Priority:** High
+**Category:** Release Process
+
+**Title:** CI test matrix doesn't cover Python versions the package claims to support
+
+**Problem:**
+Found during the 2026-07-06 pre-release tech-debt audit (TD-004): `pyproject.toml` declares
+`requires-python = ">=3.11"` and lists classifiers for Python 3.11 through 3.14, but
+`.github/workflows/ci.yml`'s matrix only ran `3.11`/`3.12` — Python 3.13 and 3.14 were advertised as
+supported with zero CI coverage verifying it. This also intersects `RELEASE_CRITERIA.md`'s own
+**B-Q01** gate, which calls for 3.13 in CI at Beta.
+
+**Desired outcome:**
+CI matrix coverage matches the versions actually claimed as supported.
+
+**Resolution:**
+Added `3.13` and `3.14` to `ci.yml`'s matrix (still crossed with `ubuntu-latest`/`windows-latest`).
+Locally re-verified the full suite, `ruff check`, `mypy quor/`, and `quor verify` all pass under this
+machine's Python 3.14 interpreter (the only version available to test locally); 3.13 coverage will
+be confirmed by CI on the next push.
+
+**Status:** Resolved — implemented on `feature/td-tier1-pre-release-fixes`.
+
+---
+
+### QB-024
+
+**Priority:** High
+**Category:** Bug fix
+
+**Title:** `assert` used for validation in `quor/tracking/db.py`
+
+**Problem:**
+Found during the 2026-07-06 pre-release tech-debt audit (TD-002): `TrackingDB._write_jsonl()` used
+`assert self._jsonl_path is not None` to guard its only precondition — a direct violation of the
+project's own non-negotiable rule (`CLAUDE.md` Safety Rule #6, `RELEASE_CRITERIA.md` gate **IA-Q07**,
+"no `assert` in non-test source files used for validation, grep confirms"). The only call site
+(`_worker()`) already guarded this immediately before calling, so it wasn't reachable with a bad
+value today — but `python -O` strips assertions entirely, silently removing exactly the guarantee
+IA-Q07 exists to catch by grep.
+
+**Desired outcome:**
+The precondition is enforced by a real, non-optimizable check; `grep -rn "assert " quor/` returns
+nothing.
+
+**Resolution:**
+Replaced with `if self._jsonl_path is None: raise RuntimeError(...)`, matching the pattern used
+elsewhere in the codebase. Added `test_write_jsonl_raises_if_called_without_path`
+(`tests/unit/test_tracking.py`), which calls `_write_jsonl()` directly (bypassing `_worker()`'s
+guard) to confirm the check actually fires as a real error rather than a silently-strippable
+assertion.
+
+**Status:** Resolved — implemented on `feature/td-tier1-pre-release-fixes`. `grep -rn "assert "
+quor/` confirmed empty (IA-Q07 now passes). Full `pytest tests/`, `ruff check`, `mypy quor/`, and
+`quor verify` all pass.
+
+---
+
+### QB-023
+
+**Priority:** High
+**Category:** Bug fix
+
+**Title:** File-descriptor-prefixed redirects (`2>&1`) mangled by the lexer/classifier
+
+**Problem:**
+Found during the 2026-07-06 pre-release tech-debt audit (TD-001) and reproduced live:
+`quor explain "cd X && python -m quor gain 2>&1"` rewrote the redirect into `2 >& 1`, confirmed
+against a real shell that `2>&1` and `2 >& 1` are *not* equivalent (`echo hello 2>&1` prints `hello`;
+`echo hello 2 >& 1` prints `hello 2` — the space turns the file-descriptor prefix into a literal
+argument). Root cause: `quor/rewrite/lexer.py`'s tokenizer split a redirect's leading fd digit (the
+`2` in `2>&1`) into a separate `WORD` token from the operator; every downstream reconstruction
+(`split_compound`, `classify_command`) then re-joined tokens with a space. Investigating further
+surfaced a second, more severe variant of the same bug: for a *known* (rewritten) command,
+`parse_args()` only collected `WORD`/quoted/`ENV_ASSIGN` token kinds, silently dropping
+`REDIRECT_OTHER` entirely — so `pytest 2>&1` rewrote to `... pytest 2 1`, turning the redirect into
+two bare literal arguments rather than merely reformatting it.
+
+**Desired outcome:**
+`2>&1` and equivalent fd-prefixed redirects survive rewriting with unchanged shell semantics, for
+both passthrough segments and known/rewritten commands, with no change to any other tokenization
+behavior.
+
+**Resolution:**
+`quor/rewrite/lexer.py::tokenize()` now merges a digit run immediately followed by `>`/`<` (no
+intervening space) into a single `REDIRECT_OTHER` token (e.g. `2>&`, `10>&`, `1>>`, `0<`) instead of
+emitting the digits as a separate `WORD`. `parse_args()` now includes `REDIRECT_OTHER` in its
+collected token kinds so a known command's redirect is preserved rather than dropped. Verified
+against a real shell (via `subprocess`, not the Bash tool directly — Quor's own hook was live in this
+session and mangled the bug being tested, a fitting demonstration of the defect) that space *after*
+the operator (`2>& 1`, `2> file`) is harmless — only space *before* the fd digit changes behavior.
+Regression tests added to `tests/unit/test_rewrite.py` (`TestTokenize`, `TestParseArgs`,
+`TestClassifySimple`, `TestClassifyCompound`) covering the exact original repro, the known-command
+drop case, multi-digit fds, append (`>>`), input redirects (`<`), and confirming plain redirects/bare
+digit arguments are unaffected.
+
+**Status:** Resolved — implemented on `feature/td-tier1-pre-release-fixes`. Full `pytest tests/` (all
+green except the pre-existing, unrelated `test_discovers_noop_test_stage` plugin-discovery failure,
+confirmed present independently of this change on unmodified `main`), `ruff check`, `mypy quor/`, and
+`quor verify` (42/42) all pass.
+
+---
+
 ### QB-021
 
 **Priority:** High

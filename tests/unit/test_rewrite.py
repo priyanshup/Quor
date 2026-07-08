@@ -101,6 +101,43 @@ class TestTokenize:
     def test_whitespace_only(self) -> None:
         assert tokenize("   ") == []
 
+    def test_fd_redirect_stderr_to_stdout(self) -> None:
+        """TD-001: '2>&1' must stay one atomic token, not split into a
+        literal '2' word plus a separate '>&' redirect. Verified against a
+        real shell: 'echo hi 2>&1' prints 'hi', but 'echo hi 2 >&1' prints
+        'hi 2' — the space changes '2' from a file-descriptor prefix into a
+        literal argument."""
+        tokens = tokenize("echo hi 2>&1")
+        assert [t.value for t in tokens] == ["echo", "hi", "2>&", "1"]
+        assert tokens[2].kind == TokenKind.REDIRECT_OTHER
+
+    def test_fd_redirect_append(self) -> None:
+        tokens = tokenize("cmd 1>>log.txt")
+        assert tokens[1].value == "1>>"
+        assert tokens[1].kind == TokenKind.REDIRECT_OTHER
+
+    def test_fd_redirect_multi_digit(self) -> None:
+        tokens = tokenize("cmd 10>&2")
+        assert tokens[1].value == "10>&"
+
+    def test_fd_redirect_input(self) -> None:
+        tokens = tokenize("cmd 0<file.txt")
+        assert tokens[1].value == "0<"
+
+    def test_plain_redirect_no_fd_unaffected(self) -> None:
+        tokens = tokenize("echo hi > file.txt")
+        assert [t.value for t in tokens] == ["echo", "hi", ">", "file.txt"]
+
+    def test_bare_digit_argument_not_treated_as_redirect(self) -> None:
+        """A digit not immediately followed by '<'/'>' is a plain word."""
+        tokens = tokenize("sleep 30")
+        assert [t.value for t in tokens] == ["sleep", "30"]
+        assert tokens[1].kind == TokenKind.WORD
+
+    def test_digit_argument_before_flag_not_treated_as_redirect(self) -> None:
+        tokens = tokenize("head -n 5 file")
+        assert [t.value for t in tokens] == ["head", "-n", "5", "file"]
+
 
 class TestHasHeredoc:
     def test_detects_heredoc(self) -> None:
@@ -153,6 +190,12 @@ class TestParseArgs:
     def test_env_included(self) -> None:
         args = parse_args("FORCE_COLOR=1 git status")
         assert args[0] == "FORCE_COLOR=1"
+
+    def test_fd_redirect_included(self) -> None:
+        """TD-001: redirects must not be silently dropped from parsed args —
+        previously 'pytest 2>&1' rewrote to '... pytest 2 1', turning the
+        redirect into two literal arguments."""
+        assert parse_args("pytest 2>&1") == ["pytest", "2>&", "1"]
 
 
 # ---------------------------------------------------------------------------
@@ -344,6 +387,13 @@ class TestClassifySimple:
         assert r.should_rewrite is False
         assert "structured output" in r.reason.lower() or "porcelain" in r.reason.lower()
 
+    def test_known_command_fd_redirect_preserved(self) -> None:
+        """TD-001: a known command's fd redirect must survive rewriting
+        intact ('2>&1', not '2 1' or '2 >& 1')."""
+        r = classify_command("pytest 2>&1")
+        assert r.should_rewrite is True
+        assert r.rewritten == f"{Q} pytest 2>& 1"
+
 
 class TestClassifyHeredoc:
     def test_heredoc_excluded(self) -> None:
@@ -388,6 +438,15 @@ class TestClassifyCompound:
     def test_all_unknown_compound(self) -> None:
         r = classify_command("cargo build && make build")
         assert r.should_rewrite is False
+
+    def test_fd_redirect_in_passthrough_segment_preserved(self) -> None:
+        """TD-001 original repro: 'quor explain "cd X && python -m quor gain
+        2>&1"' rewrote the second (passthrough) segment's redirect from
+        '2>&1' to '2 >& 1', silently changing its shell meaning."""
+        r = classify_command("cd X && python -m quor gain 2>&1")
+        assert r.rewritten is not None
+        assert "2 >& 1" not in r.rewritten
+        assert "2>&1" in r.rewritten or "2>& 1" in r.rewritten
 
 
 class TestClassifyPipe:
