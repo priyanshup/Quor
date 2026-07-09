@@ -595,3 +595,67 @@ class TestGitDiffBestEffortBudget:
         rendered = self.registry.apply(filter_config, diff)
         rendered_tokens = len(rendered) // 4
         assert rendered_tokens <= 600
+
+
+# ---------------------------------------------------------------------------
+# QB-017 gain hardening: negative-token-row investigation
+# ---------------------------------------------------------------------------
+
+
+class TestFilterNeverExpandsOutput:
+    """Regression guard for QB-017's negative-token-row investigation.
+
+    quor gain occasionally reports a negative net (final_tokens >
+    original_tokens) for an invocation. The known, documented cause is the
+    tee recovery footer appended at the dispatcher level, *after* filtering
+    (see quor/pipeline/tee.py, ADR-023) — outside the scope of anything
+    tested here. This class instead answers a narrower question: could the
+    *filter pipeline itself* (independent of tee) ever be the culprit, by
+    producing more tokens than it was given?
+
+    Every built-in filter's own committed `[[filter.tests]]` inputs are run
+    through the real, unmocked `FilterRegistry.apply()` (no tee — that's a
+    dispatcher-level concern apply() never touches) and asserted to never
+    grow. This isn't a formal proof for all possible input — it's a
+    regression guard over each filter's own representative corpus, which is
+    the same corpus `quor verify` already exercises for correctness.
+
+    Investigation finding: no built-in filter can expand content on its
+    own. strip_lines/deduplicate_consecutive/remove_ansi/max_tokens/
+    python_ast_summarize/truncate_lines only ever remove or cap content.
+    group_repeated appends a short " (repeat count)" suffix to a run's first
+    line while removing the rest of the run — theoretically capable of a net
+    increase only if matched lines are shorter than the suffix itself, which
+    none of the shipped patterns (e.g. "npm WARN deprecated", "L:C  error")
+    permit in practice. regex_replace and match_output — the two stages
+    whose *configured* replacement text could in principle be longer than
+    what they replace — are not wired into any shipped built-in filter
+    today. Conclusion: negative rows are attributable to tee overhead (and,
+    in principle, third-party PRE_FILTER/POST_FILTER plugins that add
+    content — outside quor's own shipped code), not a hidden accounting bug
+    in the tracking formula or the built-in filter pipeline.
+    """
+
+    def setup_method(self) -> None:
+        self.registry = FilterRegistry(skip_user=True, skip_project=True)
+
+    def test_builtin_filter_tests_never_expand_token_count(self) -> None:
+        from quor.tracking.db import count_tokens
+
+        failures = []
+        for _, filter_config in self.registry.all_filters():
+            for test in filter_config.tests:
+                rendered = self.registry.apply(filter_config, test.input)
+                before = count_tokens(test.input)
+                after = count_tokens(rendered)
+                if after > before:
+                    failures.append(
+                        f"{filter_config.name!r} test {test.description!r}: "
+                        f"{before} -> {after} tokens"
+                    )
+
+        assert not failures, (
+            "Filter pipeline expanded content independent of tee — this "
+            "would be a genuine accounting bug, not tee overhead:\n"
+            + "\n".join(failures)
+        )

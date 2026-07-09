@@ -5,6 +5,18 @@ All notable changes to Quor are documented here. Format loosely follows
 
 ## [0.3.0] — Unreleased
 
+- **`quor gain` now explains negative-token rows instead of just softening
+  their display.** Confirmed via a new invariant test
+  (`TestFilterNeverExpandsOutput`) that no built-in filter stage can itself
+  expand content — negative rows come from the tee recovery footer (ADR-023)
+  or, in principle, a third-party plugin. `GainReport` gained two
+  presentation-only derived fields, `gross_savings` and `gross_overhead`
+  (`gross_savings − gross_overhead == tokens_saved`, always), computed at
+  query time with no new tracking column or schema migration. `quor gain`
+  shows a "Compression achieved" / "Recovery/overhead" breakdown and a
+  plain-language explanation, but only when at least one invocation actually
+  had a negative net — the common case is unchanged. See QB-017 in
+  `backlog.md`.
 - **Fixed: `npm`/`npx`/`pnpm`/`yarn` never actually executed through the real
   dispatch path on Windows.** These tools ship as `.CMD` shell shims, not
   native `.exe` binaries; `subprocess.run()` without `shell=True` can't

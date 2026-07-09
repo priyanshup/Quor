@@ -23,7 +23,7 @@ under **Completed Work** (top of that group) and fill in Resolution/Status.
 
 ## Pending Work
 
-*4 open items.*
+*3 open items.*
 
 ### High Priority
 
@@ -150,52 +150,9 @@ a retention/adoption investment once there's an actual user base to retain.
 
 ---
 
-#### QB-017 — Make the "tokens saved" number always trustworthy
-
-**Effort:** Small–Medium (needs a data-model decision first) · **Value:** Low · **Category:**
-Metrics / Observability
-
-The confusing part of this is already fixed: `quor gain` no longer shows a scary "-12 tokens saved"
-for tiny commands — it now just says the output was already small/clean. What's still outstanding
-is separating, in the underlying data, how much Quor's compression actually saved versus how much a
-small bookkeeping footer (the recovery link Quor appends to every output) adds back on top. That's
-a data-model decision, not urgent, and low-stakes now that the confusing display is gone.
-
-<details>
-<summary>Technical details</summary>
-
-**Problem:** `quor gain` occasionally reports a negative token contribution for an invocation
-(confirmed: 7 historical rows). Root cause: the tee recovery mechanism (ADR-023) appends a
-fixed-size footer (`\n[full output: {path}]`, ~33 tokens) to the filtered output *before*
-`original_tokens`/`final_tokens` are computed. For invocations where genuine compression is smaller
-than the footer's fixed cost — common for already-short, already-clean output — the footer's
-overhead can exceed the real savings, producing a net "negative" result even though the pipeline
-compressed correctly. Not a correctness bug in the pipeline, tee mechanism, or tracking logic — a
-**metrics-definition problem**: `final_tokens` conflates "how much the pipeline compressed" with
-"how much recovery metadata was appended afterward."
-
-**Desired outcome (future metrics redesign, not yet scoped):** `quor gain` should distinguish
-genuine compression savings from intentional dispatcher-level overhead (tee's footer, and any
-similar future annotation) rather than netting them silently. Candidate approaches: measure
-`final_tokens` before `_apply_tee()` runs (changes existing semantics), or add a distinct field
-(e.g. `tee_overhead_tokens`) so both numbers show separately. Either needs a schema/display
-decision.
-
-**Status:** Partially resolved (Tier 3 trust/credibility pass). The underlying metrics-definition
-question is still deferred. What *was* fixed, as a presentation-only quick win
-(`quor/cli/commands/gain.py`): a negative `tokens_saved` no longer shows as a celebratory bold-green
-"YOU SAVED -12 tokens" — it now shows "NET TOKENS" in a neutral style with an explanatory note.
-Also closed `RELEASE_CRITERIA.md`'s **B-S01** gate by stating the actual ±20% token-count
-uncertainty figure instead of just saying "approximation." Regression test:
-`tests/unit/test_cli.py::TestGain::test_negative_net_shown_as_net_not_saved`. No schema changes.
-
-</details>
-
----
-
 ## Completed Work
 
-*33 resolved items.*
+*34 resolved items.*
 
 ### High Priority
 
@@ -1199,6 +1156,96 @@ already correct.
 ---
 
 ### Low Priority
+
+#### QB-017 — Make the "tokens saved" number always trustworthy ("Gain Hardening")
+
+**Effort:** Small–Medium · **Value:** Low · **Category:** Metrics / Observability
+
+Full close-out of everything left open around `quor gain`, done as one cohesive pass before any
+major new feature (QB-007) begins. Covers four things: (1) an audit confirming the project
+case-sensitivity/sibling-leakage fix (QB-018) has no remaining gaps, (2) an investigation into every
+negative-token row to rule out a second, hidden accounting bug beyond the already-known recovery
+footer, (3) a redesign of `quor gain`'s CLI output so it explains *why* a negative net can happen
+and whether it matters, and (4) the regression tests locking all of the above in.
+
+<details>
+<summary>Technical details</summary>
+
+**1. Case-sensitivity / prefix-matching audit (items 1–2).** QB-018 had already fully implemented
+and tested this (`normalize_project_path()`, the precomputed `project_key_normalized` column with
+lazy backfill, LIKE-based subdirectory matching with `%`/`_` escaping, degenerate-key rejection).
+Audited rather than reimplemented, per the decision to reuse existing work (CLAUDE.md Rule 4) —
+found no gap in the algorithm itself. Closed four previously-untested *combinations* of already-correct
+behavior: subdirectories 3+ levels deep, case-insensitivity composed with sibling-leakage exclusion,
+case-insensitivity composed with subdirectory inclusion, and a trailing-slash query path exercised
+end-to-end through `query_gain()` (not just the unit-level `normalize_project_path()` test that
+already existed). All four passed against the unmodified implementation — confirms no regression,
+adds coverage `backlog.md`'s QB-018 write-up didn't explicitly call out.
+
+**2. Negative-token-row investigation (item 4).** Read every pipeline stage
+(`quor/pipeline/stages/*.py`) to check whether anything besides the tee footer (ADR-023) could make
+`final_tokens` exceed `original_tokens`. Finding: `truncate_lines`, `max_tokens`,
+`strip_lines`/`deduplicate_consecutive`/`remove_ansi`/`python_ast_summarize` can only ever remove or
+cap content. `group_repeated` appends a short `" (×N)"` suffix while removing the rest of a run —
+theoretically capable of a net increase only if the matched lines are shorter than the suffix
+itself, which none of the shipped filter patterns (`npm WARN deprecated`, `L:C  error`, etc.) permit
+in practice. `regex_replace` and `match_output` — the two stages whose *configured* replacement text
+could in principle be longer than what it replaces — are not wired into any shipped built-in filter
+today. This is now locked in by a real regression test, not just reasoning:
+`tests/unit/test_filters.py::TestFilterNeverExpandsOutput` runs every built-in filter's own
+`[[filter.tests]]` corpus through the real, unmocked pipeline and asserts none of them ever grow.
+**Conclusion: no second accounting bug found.** Negative rows are attributable to the tee recovery
+footer (dominant, already-documented cause) and, in principle, third-party `PRE_FILTER`/
+`POST_FILTER` plugins that add content (no plugin ships by default). Per the original scope
+decision, tracking itself (`original_tokens`/`final_tokens`/`tokens_saved`) is unchanged.
+
+**3. `quor gain` CLI redesign (item 3).** `GainReport` (`quor/tracking/db.py`) gained three
+presentation-only derived fields, computed by `query_gain()`'s existing SQL aggregation — no new
+tracking column, no schema migration, no change to what `_track()` writes per invocation:
+- `gross_savings` — sum of `(original − final)` over rows where it's positive
+- `gross_overhead` — sum of `(final − original)` over rows where it's positive
+- `negative_row_count` — count of rows where `final > original`
+
+`gross_savings − gross_overhead == tokens_saved` always holds exactly (verified by test) — this is
+a decomposition of the existing net figure, not a new measurement. `quor gain`
+(`quor/cli/commands/gain.py`) now shows a "Compression achieved" / "Recovery/overhead" breakdown
+plus a plain-language explanation, but **only when `negative_row_count > 0`** — the common
+all-positive case is untouched, so the redesign explains the exception instead of permanently
+cluttering the normal report. The explanation's closing sentence adapts to context: reassurance
+("doesn't affect the other commands — nothing to fix") when the overall net is still positive, or a
+concrete, already-existing lever (`tee = false` in a filter's config, ADR-023) when the window's net
+is genuinely negative. "Top savings" percentages now divide by `gross_savings` instead of the net
+`tokens_saved` — found and fixed during the redesign: dividing by net could previously produce a
+distorted or even >100% figure for a filter that saved a lot while an unrelated row elsewhere had
+overhead.
+
+**Found and fixed during implementation:** the first draft of the negative-row explainer pluralized
+"command(s)" against `negative_row_count` instead of `total_invocations` ("1 of 2 command" instead
+of "1 of 2 commands") — caught by
+`test_mixed_rows_shows_compression_breakdown_with_correct_values`, fixed, verified. Also: the
+explainer's long paragraph is printed with Rich's `soft_wrap=True` — without it, Rich's default
+word-wrap at the terminal width could insert a line break mid-sentence, which both looks worse in a
+real terminal and made an existing test's substring assertion fragile against terminal width.
+
+**4. Tests.** New: 4 project-identity combination tests (`tests/unit/test_tracking.py`), 4
+gross-savings/overhead decomposition tests (`tests/unit/test_tracking.py`), 1 filter-corpus
+never-expands invariant test (`tests/unit/test_filters.py`), 4 new `quor gain` CLI tests covering
+the breakdown appearing/not appearing, correct values, the reassurance-vs-lever wording split, and
+the gross-vs-net percentage fix (`tests/unit/test_cli.py`). 13 new tests total.
+
+**Desired outcome, restated from the original entry (now met):** `quor gain` distinguishes genuine
+compression savings from overhead rather than netting them silently — achieved via display-time
+decomposition of existing columns, avoiding the schema/migration cost the original entry flagged as
+the blocking "data-model decision."
+
+**Status:** Resolved — implemented on `feature/qb-017-gain-hardening`. Full `pytest tests/`, `quor
+verify`, `ruff check quor/ tests/`, and `mypy quor/` all clean. `RELEASE_CRITERIA.md`'s **B-S01**
+gate (every `quor gain` output carries the ±20% uncertainty label) remains satisfied — unaffected by
+this change, still not formally re-checked since Beta hasn't been walked yet (QB-028).
+
+</details>
+
+---
 
 #### QB-030 — Sped up the test suite and locked in a large-file safety test
 

@@ -401,6 +401,59 @@ class TestQueryGain:
         assert report.tokens_after == 70
         assert report.tokens_before - report.tokens_after == report.tokens_saved
 
+    def test_gross_savings_and_overhead_decomposition(self, tmp_path: Path) -> None:
+        """QB-017 gain hardening: gross_savings/gross_overhead split the same
+        per-row difference tokens_saved already sums, into positive and
+        negative parts. Three rows: one genuinely compressed, one genuinely
+        grew (the QB-017 tee-overhead shape), one unchanged."""
+        db_path = tmp_path / "quor.db"
+        self._populate(db_path, [
+            {"original_tokens": 100, "final_tokens": 20, "project_path": "/proj"},  # -80
+            {"original_tokens": 21, "final_tokens": 43, "project_path": "/proj"},   # +22
+            {"original_tokens": 50, "final_tokens": 50, "project_path": "/proj"},   # 0
+        ])
+        report = query_gain(db_path, Path("/proj"))
+        assert report.gross_savings == 80
+        assert report.gross_overhead == 22
+        assert report.negative_row_count == 1
+        # Exact identity: the decomposition must always net back out to the
+        # same tokens_saved figure already computed the original way.
+        assert report.gross_savings - report.gross_overhead == report.tokens_saved
+        assert report.tokens_saved == (100 - 20) + (21 - 43) + (50 - 50)  # 58
+
+    def test_gross_savings_and_overhead_all_positive(self, tmp_path: Path) -> None:
+        """When nothing grew, gross_overhead and negative_row_count are both
+        zero — gross_savings equals tokens_saved exactly."""
+        db_path = tmp_path / "quor.db"
+        self._populate(db_path, [
+            {"original_tokens": 100, "final_tokens": 20, "project_path": "/proj"},
+            {"original_tokens": 200, "final_tokens": 50, "project_path": "/proj"},
+        ])
+        report = query_gain(db_path, Path("/proj"))
+        assert report.gross_overhead == 0
+        assert report.negative_row_count == 0
+        assert report.gross_savings == report.tokens_saved == 230
+
+    def test_gross_savings_and_overhead_all_negative(self, tmp_path: Path) -> None:
+        """When every row grew, gross_savings is zero and gross_overhead
+        equals the (negative) tokens_saved's magnitude exactly."""
+        db_path = tmp_path / "quor.db"
+        self._populate(db_path, [
+            {"original_tokens": 21, "final_tokens": 43, "project_path": "/proj"},
+            {"original_tokens": 10, "final_tokens": 15, "project_path": "/proj"},
+        ])
+        report = query_gain(db_path, Path("/proj"))
+        assert report.gross_savings == 0
+        assert report.negative_row_count == 2
+        assert report.gross_overhead == 27
+        assert report.tokens_saved == -27
+
+    def test_empty_db_gross_fields_are_zero(self, tmp_path: Path) -> None:
+        report = query_gain(tmp_path / "missing.db", tmp_path)
+        assert report.gross_savings == 0
+        assert report.gross_overhead == 0
+        assert report.negative_row_count == 0
+
     def test_glob_project_scoping(self, tmp_path: Path) -> None:
         db_path = tmp_path / "quor.db"
         self._populate(db_path, [
@@ -558,6 +611,69 @@ class TestQueryGain:
         ])
         with pytest.raises(ValueError):
             query_gain(db_path, Path("C:/"))
+
+    def test_project_identity_deeply_nested_subdirectories(self, tmp_path: Path) -> None:
+        """QB-017 hardening: the subdirectory LIKE pattern ("{key}/%") must
+        match arbitrarily deep nesting, not just one level down — '%' spans
+        multiple path segments, so a 3-level-deep subdirectory must be
+        included exactly like a 1-level one already is
+        (test_project_identity_subdirectory_inclusion)."""
+        db_path = tmp_path / "quor.db"
+        self._populate(db_path, [
+            {"project_path": "/workspace", "original_tokens": 100, "final_tokens": 20},
+            {"project_path": "/workspace/a/b/c", "original_tokens": 50, "final_tokens": 10},
+            {"project_path": "/workspace/a/b/c/d/e", "original_tokens": 40, "final_tokens": 5},
+        ])
+        report = query_gain(db_path, Path("/workspace"))
+        assert report.total_invocations == 3
+        assert report.tokens_before == 190
+        assert report.tokens_after == 35
+
+    def test_project_identity_case_insensitive_sibling_exclusion(self, tmp_path: Path) -> None:
+        """Case-insensitivity and sibling-prefix exclusion must compose: a
+        sibling whose only relation to the queried project is a shared text
+        prefix must still be excluded even when its casing differs from
+        both the query and the stored separator boundary rule."""
+        db_path = tmp_path / "quor.db"
+        self._populate(db_path, [
+            {"project_path": "/Workspace", "original_tokens": 100, "final_tokens": 20},
+            {"project_path": "/WORKSPACE-OTHER", "original_tokens": 999, "final_tokens": 999},
+        ])
+        report = query_gain(db_path, Path("/workspace"))
+        assert report.total_invocations == 1
+        assert report.tokens_before == 100
+        assert report.tokens_after == 20
+
+    def test_project_identity_case_insensitive_subdirectory_inclusion(
+        self, tmp_path: Path
+    ) -> None:
+        """Case-insensitivity and subdirectory inclusion must also compose:
+        a genuine subdirectory recorded with different casing than the
+        query must still be included."""
+        db_path = tmp_path / "quor.db"
+        self._populate(db_path, [
+            {"project_path": "/Workspace", "original_tokens": 100, "final_tokens": 20},
+            {"project_path": "/WORKSPACE/Subdir", "original_tokens": 50, "final_tokens": 10},
+        ])
+        report = query_gain(db_path, Path("/workspace"))
+        assert report.total_invocations == 2
+        assert report.tokens_before == 150
+        assert report.tokens_after == 30
+
+    def test_project_identity_trailing_slash_on_query_path(self, tmp_path: Path) -> None:
+        """Integration-level companion to TestNormalizeProjectPath's
+        test_trailing_slash_insensitive: a query Path constructed with a
+        trailing slash must resolve to the same project_key as one without,
+        end to end through query_gain — not just at the normalize function
+        in isolation."""
+        db_path = tmp_path / "quor.db"
+        self._populate(db_path, [
+            {"project_path": "/workspace", "original_tokens": 100, "final_tokens": 20},
+        ])
+        report = query_gain(db_path, Path("/workspace/"))
+        assert report.total_invocations == 1
+        assert report.tokens_before == 100
+        assert report.tokens_after == 20
 
     def test_lazy_backfill_populates_missing_columns_for_pre_v2_database(
         self, tmp_path: Path

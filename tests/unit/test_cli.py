@@ -213,6 +213,172 @@ class TestGain:
         assert "YOU SAVED" not in result.output
         assert "does not mean compression failed" in result.output
 
+    def test_all_positive_hides_compression_breakdown(self, tmp_path: Path) -> None:
+        """QB-017 gain hardening: when nothing grew, the breakdown section
+        (and its explainer paragraph) must not appear at all — only the
+        exception gets explained, not the common case."""
+        from quor.tracking.db import InvocationRecord, TrackingDB
+
+        db_path = tmp_path / "data" / "quor.db"
+        db = TrackingDB(db_path=db_path)
+        db.record(
+            InvocationRecord(
+                command="git status",
+                project_path=tmp_path.as_posix(),
+                original_tokens=100,
+                final_tokens=20,
+                filter_name="git-status",
+                was_passthrough=False,
+                duration_ms=5.0,
+            )
+        )
+        db.flush()
+        db.close()
+
+        with patch("platformdirs.user_data_dir", return_value=str(tmp_path / "data")):
+            result = runner.invoke(app, ["gain", "--project", str(tmp_path), "--days", "30"])
+
+        assert result.exit_code == 0
+        assert "Compression achieved" not in result.output
+        assert "Recovery/overhead" not in result.output
+        assert "had output grow instead of shrink" not in result.output
+
+    def test_mixed_rows_shows_compression_breakdown_with_correct_values(
+        self, tmp_path: Path
+    ) -> None:
+        """A window with both a genuinely-compressed row and a genuinely-grew
+        row must show the breakdown, with gross_savings/gross_overhead
+        matching the underlying per-row math exactly (not the net figure)."""
+        from quor.tracking.db import InvocationRecord, TrackingDB
+
+        db_path = tmp_path / "data" / "quor.db"
+        db = TrackingDB(db_path=db_path)
+        db.record(
+            InvocationRecord(
+                command="pytest",
+                project_path=tmp_path.as_posix(),
+                original_tokens=1000,
+                final_tokens=200,  # -800, genuine compression
+                filter_name="pytest",
+                was_passthrough=False,
+                duration_ms=5.0,
+            )
+        )
+        db.record(
+            InvocationRecord(
+                command="git rev-parse HEAD",
+                project_path=tmp_path.as_posix(),
+                original_tokens=21,
+                final_tokens=43,  # +22, tee overhead
+                filter_name="git-status",
+                was_passthrough=False,
+                duration_ms=1.0,
+            )
+        )
+        db.flush()
+        db.close()
+
+        with patch("platformdirs.user_data_dir", return_value=str(tmp_path / "data")):
+            result = runner.invoke(app, ["gain", "--project", str(tmp_path), "--days", "30"])
+
+        assert result.exit_code == 0
+        assert "Compression achieved" in result.output
+        assert "~800 tokens" in result.output   # gross_savings, not net
+        assert "Recovery/overhead" in result.output
+        assert "~22 tokens" in result.output    # gross_overhead
+        assert "YOU SAVED" in result.output     # net (800 - 22 = 778) is still positive
+        assert "1 of 2 commands (50%) had output grow instead of shrink" in result.output
+        # Overall net is still positive -> reassurance, not the tee=false lever.
+        assert "doesn't affect the other commands" in result.output
+        assert "tee = false" not in result.output
+
+    def test_negative_overall_net_mentions_tee_false_lever(self, tmp_path: Path) -> None:
+        """When the *whole window's* net is negative (not just one row), the
+        explainer should offer the real, existing per-filter opt-out
+        (`tee = false`) rather than just reassuring — there's genuinely
+        something the user could do if they cared."""
+        from quor.tracking.db import InvocationRecord, TrackingDB
+
+        db_path = tmp_path / "data" / "quor.db"
+        db = TrackingDB(db_path=db_path)
+        db.record(
+            InvocationRecord(
+                command="git rev-parse HEAD",
+                project_path=tmp_path.as_posix(),
+                original_tokens=21,
+                final_tokens=43,
+                filter_name="git-status",
+                was_passthrough=False,
+                duration_ms=1.0,
+            )
+        )
+        db.record(
+            InvocationRecord(
+                command="git rev-parse --short HEAD",
+                project_path=tmp_path.as_posix(),
+                original_tokens=15,
+                final_tokens=40,
+                filter_name="git-status",
+                was_passthrough=False,
+                duration_ms=1.0,
+            )
+        )
+        db.flush()
+        db.close()
+
+        with patch("platformdirs.user_data_dir", return_value=str(tmp_path / "data")):
+            result = runner.invoke(app, ["gain", "--project", str(tmp_path), "--days", "30"])
+
+        assert result.exit_code == 0
+        assert "NET TOKENS" in result.output
+        assert "tee = false" in result.output
+        assert "doesn't affect the other commands" not in result.output
+
+    def test_top_savings_percentage_uses_gross_not_net(self, tmp_path: Path) -> None:
+        """Top savings percentages must be of gross_savings, not the net
+        figure — otherwise a filter that genuinely saved 800 tokens would
+        show a distorted (or, if net were smaller than any single filter's
+        contribution, an impossible >100%) percentage just because an
+        unrelated row elsewhere had overhead."""
+        from quor.tracking.db import InvocationRecord, TrackingDB
+
+        db_path = tmp_path / "data" / "quor.db"
+        db = TrackingDB(db_path=db_path)
+        db.record(
+            InvocationRecord(
+                command="pytest",
+                project_path=tmp_path.as_posix(),
+                original_tokens=1000,
+                final_tokens=200,  # -800
+                filter_name="pytest",
+                was_passthrough=False,
+                duration_ms=5.0,
+            )
+        )
+        db.record(
+            InvocationRecord(
+                command="git rev-parse HEAD",
+                project_path=tmp_path.as_posix(),
+                original_tokens=21,
+                final_tokens=43,  # +22 overhead; net = 778
+                filter_name="git-status",
+                was_passthrough=False,
+                duration_ms=1.0,
+            )
+        )
+        db.flush()
+        db.close()
+
+        with patch("platformdirs.user_data_dir", return_value=str(tmp_path / "data")):
+            result = runner.invoke(app, ["gain", "--project", str(tmp_path), "--days", "30"])
+
+        assert result.exit_code == 0
+        # pytest is the only row in top_filters with positive savings (800);
+        # against gross_savings (800) that's 100%, not 800/778 (~103%, the
+        # nonsensical figure the old net-based denominator would produce).
+        assert "pytest" in result.output
+        assert "(100%)" in result.output
+
 
 # ---------------------------------------------------------------------------
 # quor verify
