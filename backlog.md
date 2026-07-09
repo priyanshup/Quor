@@ -23,7 +23,7 @@ under **Completed Work** (top of that group) and fill in Resolution/Status.
 
 ## Pending Work
 
-*5 open items.*
+*4 open items.*
 
 ### High Priority
 
@@ -76,44 +76,6 @@ DOCX/PDF/Markdown structure extraction — none of which exists yet.
 
 **Status:** Unblocked — feasibility confirmed. Still not scheduled for implementation; needs its
 own scoped design pass (per CLAUDE.md Rule 4) before work begins.
-
-</details>
-
----
-
-### Medium Priority
-
-#### QB-022 — Simplify the code that runs every command
-
-**Effort:** Small (~half a day) · **Value:** Low · **Category:** Engineering
-
-One internal function has grown to handle seven different jobs at once (running the command,
-cleanup, filtering, tracking, and more). It works correctly today, but as more people contribute
-code, unrelated changes are likely to collide in this one spot. Splitting it into smaller, named
-pieces would make future changes safer to review — this is purely internal code health, with no
-visible change for users.
-
-<details>
-<summary>Technical details</summary>
-
-**Problem:** Surfaced during a SOLID-principles review (2026-07-06): every genuine *extension
-point* Quor has — `StageHandler`, `HookAdapter`, `Plugin` — is already cleanly isolated behind a
-`Protocol`, so third-party contributors never need to touch core files for those. The one place
-this breaks down is `quor/adapters/dispatcher.py::run_dispatch()` — a single ~150-line function
-inlining seven sequential concerns (subprocess execution, tee cleanup, filter lookup, plugin
-discovery/lifecycle, PRE_FILTER execution, ContentMask filtering, POST_FILTER execution, tee write,
-tracking), each wrapped in its own fail-open `try/except`. Not a correctness problem today — it's
-tested and every step is defensively isolated — but a single-responsibility violation likely to
-cause avoidable merge conflicts as more contributors touch the project.
-
-**Desired outcome:** Split `run_dispatch()` into a thin orchestrator delegating to separately named,
-independently testable helper functions, with no change to external behavior, the fail-open
-contract, or the six-CLI-command surface. A mechanical extraction, not a new abstraction.
-
-**Status:** Open — not yet scheduled. Not urgent: revisit when a new dispatch-level step is
-actually being added, rather than preemptively. Estimated effort: roughly half a day, including
-re-running `tests/unit/test_adapters.py` and `tests/unit/test_pipeline.py` to confirm no behavioral
-change. Low risk.
 
 </details>
 
@@ -233,7 +195,7 @@ uncertainty figure instead of just saying "approximation." Regression test:
 
 ## Completed Work
 
-*32 resolved items.*
+*33 resolved items.*
 
 ### High Priority
 
@@ -754,6 +716,49 @@ with required reviewers under Settings > Environments for the approval gate to b
 ---
 
 ### Medium Priority
+
+#### QB-022 — Simplify the code that runs every command
+
+**Effort:** Small (~half a day) · **Value:** Low · **Category:** Engineering
+
+One internal function had grown to handle seven different jobs at once (running the command,
+cleanup, filtering, tracking, and more). It worked correctly, but as more people contribute code,
+unrelated changes were likely to collide in this one spot. Split into smaller, named pieces so
+future changes are safer to review — purely internal code health, no visible change for users.
+
+<details>
+<summary>Technical details</summary>
+
+**Problem:** Surfaced during a SOLID-principles review (2026-07-06): every genuine *extension
+point* Quor has — `StageHandler`, `HookAdapter`, `Plugin` — is already cleanly isolated behind a
+`Protocol`, so third-party contributors never need to touch core files for those. The one place
+this broke down was `quor/adapters/dispatcher.py::run_dispatch()` — a single ~150-line function
+inlining seven sequential concerns (subprocess execution, tee cleanup, filter lookup, plugin
+discovery/lifecycle, PRE_FILTER execution, ContentMask filtering, POST_FILTER execution, tee write,
+tracking), each wrapped in its own fail-open `try/except`.
+
+**Desired outcome:** Split `run_dispatch()` into a thin orchestrator delegating to separately named,
+independently testable helper functions, with no change to external behavior, the fail-open
+contract, or the six-CLI-command surface. A mechanical extraction, not a new abstraction.
+
+**Resolution:** `run_dispatch()` cut from ~165 to ~55 executable lines. Six new private helpers
+added — `_run_subprocess`, `_lookup_filter`, `_setup_plugins`, `_run_pre_filter_plugins`,
+`_apply_content_filter`, `_run_post_filter_plugins` — joining the six that already existed
+(`_cleanup_tee_safe`, `_apply_tee`, `_teardown_plugins`, `_track`, `_scan_secrets_safe`,
+`_maybe_print_onboarding_tip_safe`). Purely mechanical: execution order, fail-open semantics, and
+every existing log/warning message preserved exactly. Plugin-subsystem imports stayed local/lazy
+inside the new helpers rather than being hoisted to module level, so per-invocation import cost is
+unchanged; a `TYPE_CHECKING`-guarded import (zero runtime cost) was added so the new helpers could
+carry real `PluginRegistry`/`PluginContext` type hints instead of `object`.
+
+**Status:** Resolved — implemented on `feature/qb-022-simplify-dispatcher` (PR #38). Full `pytest
+tests/`, `quor verify` (44/44), `ruff check`, and `mypy quor/` all pass. The one test-suite failure
+present (`test_version_matches_pyproject`) was confirmed pre-existing and unrelated via a
+stash-comparison against the unmodified tree.
+
+</details>
+
+---
 
 #### QB-033 — Closed a test-coverage gap in the most critical file
 
