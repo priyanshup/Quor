@@ -381,6 +381,35 @@ class TestFilterApply:
         assert any("Skipping" in str(w.message) for w in caught)
 
 
+class TestLargeInputPerformance:
+    """IA-S03 (RELEASE_CRITERIA.md): a 10MB input must not hang the pipeline
+    for more than 5 seconds. Verified manually during the 2026-07-08 gate
+    walk (0.58s) but had no permanent test guarding it — QB-030 closes that
+    gap so a future change to line-by-line stage handling can't silently
+    regress this without a test catching it."""
+
+    def test_ten_megabyte_input_completes_within_five_seconds(self) -> None:
+        import time
+
+        from quor.filters.registry import FilterRegistry
+
+        line = "some output line with a bit of realistic content here\n"
+        target_bytes = 10 * 1024 * 1024
+        repeat = -(-target_bytes // len(line))  # ceiling division: meet or exceed target_bytes
+        content = line * repeat
+        assert len(content) >= target_bytes  # sanity-check the fixture itself
+
+        registry = FilterRegistry(skip_user=True, skip_project=True)
+        filter_config = registry.find("some-totally-unknown-tool-xyz")
+        assert filter_config is not None  # falls through to the generic filter
+
+        start = time.monotonic()
+        registry.apply(filter_config, content, content_type="text")
+        elapsed = time.monotonic() - start
+
+        assert elapsed < 5.0, f"10MB input took {elapsed:.2f}s, exceeding the 5s IA-S03 budget"
+
+
 # ---------------------------------------------------------------------------
 # Registry — inline test runner
 # ---------------------------------------------------------------------------
