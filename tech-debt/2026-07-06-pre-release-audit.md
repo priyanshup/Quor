@@ -180,6 +180,8 @@ to bump both.
 `importlib.metadata.version("quor")` at runtime, falling back to a hardcoded string only for the
 editable/uninstalled case.
 
+**Status:** Resolved — see QB-020 in `backlog.md`. Fixed on `feature/td-tier5-engineering-hygiene`.
+
 ### TD-009 — No verified story for coexisting with another PreToolUse hook tool
 
 **What:** `quor doctor` warns if it detects another PreToolUse hook registered, but there is no

@@ -1287,6 +1287,63 @@ was not touched — it was already correct.
 
 ## Priority: Low
 
+### QB-035
+
+**Priority:** Low
+**Category:** Feature
+
+**Title:** Multi-agent hook support (Cursor, Copilot, Gemini) and multi-language AST extraction
+
+**Problem:**
+Quor's only integration today is the Claude Code `PreToolUse` Bash hook, and `python_ast_summarize`
+(QB-005) only understands Python. The competitive research (`docs/archive/product-discovery/competitive-research.md`)
+identifies both as real capabilities other tools have — RTK supports 14 AI coding assistants; Headroom
+AI's `CodeCompressor` handles Python, JS, Go, Rust, Java, C++ — and lists both explicitly as "v2" in
+its own feature matrix, not v1 scope.
+
+**Desired outcome:**
+Quor's hook mechanism works with Cursor, GitHub Copilot, and Gemini (or whichever agents prove
+relevant), and `cat`'s AST-aware compression extends beyond Python to at least JS/TS.
+
+**Status:** Deliberately not scheduled — large, multi-week-plus effort each (a new hook adapter per
+agent with its own PreToolUse-equivalent mechanism and payload shape; a new parser integration per
+additional language), not a same-session task like this backlog's other entries. The competitive
+research's own conclusion directly governs this: prove the Windows-first Python MVP earns real usage
+first (real external testers, multi-hour independent sessions — see QB-029/PA-F09/PA-S01, none of
+which are met yet) before investing in market-expansion bets RTK and Headroom AI already lead on.
+Revisit only after that validation exists, not on a fixed timeline.
+
+---
+
+### QB-034
+
+**Priority:** Low
+**Category:** Feature
+
+**Title:** `quor discover` — retroactive uncovered-command scanning
+
+**Problem:**
+Per the competitive research (`docs/archive/product-discovery/competitive-research.md`, Opportunity
+7): RTK's `discover` command scans past Claude Code session logs (JSONL) to find commands that ran
+unfiltered/uncompressed, ranks them by theoretical savings, and uses that to convert casual installs
+into committed users — described there as "the single most important adoption feature" and "a
+retroactive audit + adoption accelerator." Quor has no equivalent; `quor gain` only reports what
+*did* get compressed, never what was left on the table.
+
+**Desired outcome:**
+A command that scans a user's existing Claude Code session logs and surfaces commands Quor never
+saw or never matched a filter for, so a new user can see concretely what switching to (or fully
+adopting) Quor would have saved them.
+
+**Status:** Deliberately not scheduled. Per the competitive research's own ranking (#7, "important
+but not differentiating" — RTK already has this, so Quor would be catching up, not leading) and
+Opportunity 1's framing (Quor's actual differentiators are the Windows-first/plugin-system/
+transparency angle, not feature parity with RTK), this is real retention value but not worth pulling
+forward ahead of items that are genuinely uncontested. Revisit as a retention/adoption investment
+once there's an actual user base to retain, not before.
+
+---
+
 ### QB-030
 
 **Priority:** Low
