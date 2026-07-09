@@ -1,10 +1,14 @@
 """Smoke tests: package installs and exports the correct version string."""
 
+import importlib
 import subprocess
 import sys
 import tomllib
+from importlib.metadata import PackageNotFoundError
 from pathlib import Path
+from unittest.mock import patch
 
+import quor
 from quor import __version__
 
 _PYPROJECT_PATH = Path(__file__).resolve().parents[2] / "pyproject.toml"
@@ -18,6 +22,31 @@ def test_version_is_string() -> None:
 def test_version_format() -> None:
     # Must start with a digit (PEP 440)
     assert __version__[0].isdigit()
+
+
+def test_version_derived_from_installed_metadata() -> None:
+    """QB-020: __version__ is no longer a second hardcoded string -- it's
+    derived from importlib.metadata at import time, which is itself derived
+    from pyproject.toml at install/build time. This is the actual
+    single-source-of-truth half of QB-020 (test_version_matches_pyproject
+    only guards against the two ever silently diverging, it doesn't remove
+    the duplication)."""
+    from importlib.metadata import version
+
+    assert __version__ == version("quor")
+
+
+def test_version_falls_back_when_package_not_found() -> None:
+    """QB-020: if importlib.metadata has no distribution for "quor" at all
+    (a source checkout that was never `pip install`'d, editable or
+    otherwise), __version__ must still resolve via the hardcoded fallback
+    rather than raise ImportError / leave __version__ undefined."""
+    with patch("importlib.metadata.version", side_effect=PackageNotFoundError):
+        importlib.reload(quor)
+        try:
+            assert quor.__version__ == "0.3.0"
+        finally:
+            importlib.reload(quor)  # restore real behavior for later tests
 
 
 def test_version_matches_pyproject() -> None:
