@@ -77,12 +77,36 @@ class InvocationRecord:
 
 @dataclass(frozen=True)
 class GainReport:
-    """Token-savings summary returned by query_gain()."""
+    """Token-savings summary returned by query_gain().
+
+    QB-017 (gain hardening): `tokens_saved` is unchanged — still exactly
+    `sum(original_tokens - final_tokens)`, the same net figure computed
+    since the tracking schema was introduced. `gross_savings` and
+    `gross_overhead` are a presentation-only *decomposition* of that same
+    net figure, computed by splitting the per-row difference into its
+    positive and negative parts before summing:
+
+        gross_savings   = sum(original - final) over rows where it's > 0
+        gross_overhead  = sum(final - original) over rows where it's > 0
+        tokens_saved  ==  gross_savings - gross_overhead   (exact identity)
+
+    No new column, no schema migration, no change to what's written per
+    invocation — this only changes how the existing original_tokens/
+    final_tokens columns are aggregated for display. See
+    quor/cli/commands/gain.py for how these are surfaced, and QB-017 in
+    backlog.md for why a per-row "was this tee overhead?" field was
+    considered and deliberately not added (it would require changing the
+    dispatcher's tracking call, which is out of scope — see ADR-023/
+    ADR-031 on the tee mechanism this overhead most commonly comes from).
+    """
 
     total_invocations: int
-    tokens_saved: int              # sum(original_tokens - final_tokens)
+    tokens_saved: int              # sum(original_tokens - final_tokens) — unchanged formula
     tokens_before: int             # sum(original_tokens) — for display only
     tokens_after: int              # sum(final_tokens) — for display only
+    gross_savings: int             # sum of positive (original - final) rows only
+    gross_overhead: int            # sum of positive (final - original) rows only
+    negative_row_count: int        # count of rows where final_tokens > original_tokens
     passthrough_count: int
     filter_hit_rate: float         # (total - passthroughs) / total, or 0 if empty
     top_filters: list[tuple[str, int]]  # [(filter_name, tokens_saved)] top 5
@@ -350,6 +374,9 @@ def query_gain(
             tokens_saved=0,
             tokens_before=0,
             tokens_after=0,
+            gross_savings=0,
+            gross_overhead=0,
+            negative_row_count=0,
             passthrough_count=0,
             filter_hit_rate=0.0,
             top_filters=[],
@@ -411,13 +438,26 @@ def query_gain(
         )
         conn.commit()
 
-        # Aggregate totals
+        # Aggregate totals. gross_savings/gross_overhead split the same
+        # per-row (original_tokens - final_tokens) difference already used
+        # for `saved` into its positive and negative parts before summing —
+        # a presentation-only decomposition of the existing net figure, not
+        # a new measurement (see GainReport's docstring).
         row = conn.execute(
             f"""SELECT
                  COUNT(*)                              AS total,
                  COALESCE(SUM(original_tokens - final_tokens), 0) AS saved,
                  COALESCE(SUM(original_tokens), 0)     AS before_sum,
                  COALESCE(SUM(final_tokens), 0)         AS after_sum,
+                 COALESCE(SUM(CASE WHEN original_tokens - final_tokens > 0
+                                    THEN original_tokens - final_tokens ELSE 0 END), 0)
+                                                        AS gross_savings,
+                 COALESCE(SUM(CASE WHEN final_tokens - original_tokens > 0
+                                    THEN final_tokens - original_tokens ELSE 0 END), 0)
+                                                        AS gross_overhead,
+                 COALESCE(SUM(CASE WHEN final_tokens > original_tokens
+                                    THEN 1 ELSE 0 END), 0)
+                                                        AS negative_rows,
                  SUM(was_passthrough)                  AS passthroughs
                FROM invocations
                WHERE {project_filter}
@@ -430,6 +470,9 @@ def query_gain(
         saved = int(row["saved"])
         tokens_before = int(row["before_sum"])
         tokens_after = int(row["after_sum"])
+        gross_savings = int(row["gross_savings"])
+        gross_overhead = int(row["gross_overhead"])
+        negative_row_count = int(row["negative_rows"])
         passthroughs = int(row["passthroughs"] or 0)
         hit_rate = (total - passthroughs) / total if total else 0.0
 
@@ -454,6 +497,9 @@ def query_gain(
         tokens_saved=saved,
         tokens_before=tokens_before,
         tokens_after=tokens_after,
+        gross_savings=gross_savings,
+        gross_overhead=gross_overhead,
+        negative_row_count=negative_row_count,
         passthrough_count=passthroughs,
         filter_hit_rate=hit_rate,
         top_filters=top_filters,

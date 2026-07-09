@@ -620,6 +620,21 @@ tee automatically after repeated `OSError` write failures (e.g. a locked-down co
 rather than retrying forever; reset via `quor doctor --reset-tee`. `docs/final/PROJECT_BIBLE.md`'s
 "nothing is irrecoverably lost" claim is now accurate current behavior, not aspirational design.
 
+**Reporting Update (QB-017 gain hardening):**
+The `[full output: path]` footer is appended *after* `original_tokens`/`final_tokens` are computed
+for tracking, which means its cost is counted as part of `final_tokens` — for an already-small,
+already-clean command, the footer can cost more tokens than compression saved, producing a
+negative `tokens_saved` for that invocation. This is expected, not a bug (see QB-017 in
+`backlog.md`). `quor gain` now decomposes its net figure into `gross_savings` (sum of genuinely
+compressed invocations) and `gross_overhead` (sum of invocations whose output grew) — a
+presentation-only split of the existing `original_tokens`/`final_tokens` columns computed at query
+time in `quor/tracking/db.py::query_gain()`, with no new tracking column and no change to what
+`_track()` writes per invocation. Investigated during QB-017 and confirmed by a regression test
+(`tests/unit/test_filters.py::TestFilterNeverExpandsOutput`): no built-in filter stage can itself
+expand content, so a negative-net row is attributable to this footer (or, in principle, a
+third-party `PRE_FILTER`/`POST_FILTER` plugin adding content) — not a hidden accounting bug in the
+tracking formula.
+
 ---
 
 ## ADR-024: Windows Path Encoding — UTF-8 Everywhere
