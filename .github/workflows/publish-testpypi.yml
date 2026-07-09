@@ -52,7 +52,7 @@ jobs:
           echo "Input version $INPUT_VERSION matches package version $PKG_VERSION"
 
       - name: Upload build artifacts
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: dist
           path: dist/
