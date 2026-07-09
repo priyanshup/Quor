@@ -22,6 +22,18 @@ patterns = [
     '=+ test session starts =+',
     '=+ short test summary info =+',
     '^cacheprovider',
+    # Stack trace frame dedup: a failing test's traceback through Django/
+    # Flask/pytest's own internals is often 90% framework frames the user
+    # never needs to see (docs/archive/product-discovery/competitive-research.md
+    # Opportunity 6). Only the frame header line is stripped — its indented
+    # source-code line is a separate line with no distinguishing marker of
+    # its own, so it's left as-is rather than risk dropping real content
+    # (Safety Rule #3: when uncertain, keep it). site-packages/dist-packages
+    # unambiguously means third-party/installed code, never the user's own
+    # project, on every platform — bare stdlib paths are deliberately not
+    # matched here (Windows' stdlib path has no equivalently unambiguous
+    # marker, e.g. a user folder literally named "lib" would false-positive).
+    '(?i)^\s*File "[^"]*(?:site-packages|dist-packages)[^"]*", line \d+, in',
 ]
 preserve_patterns = [
     'FAILED',
@@ -57,3 +69,9 @@ description = "Session header and collection lines stripped on failure run"
 input = "===== test session starts =====\ncollecting ...\nFAILED tests/test_b.py::test_z\nERROR: something went wrong"
 must_contain = ["FAILED", "ERROR"]
 must_not_contain = ["collecting ..."]
+
+[[filter.tests]]
+description = "Framework traceback frames stripped; user frame and exception preserved"
+input = "FAILED tests/test_views.py::test_index\nTraceback (most recent call last):\n  File \"/home/user/myproject/views.py\", line 10, in index\n    return render(request)\n  File \"/usr/lib/python3.11/site-packages/django/core/handlers/base.py\", line 55, in _get_response\n    response = wrapped_callback(request)\nZeroDivisionError: division by zero"
+must_contain = ["FAILED", "Traceback", "views.py\", line 10, in index", "ZeroDivisionError"]
+must_not_contain = ["site-packages/django"]
