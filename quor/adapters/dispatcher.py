@@ -20,6 +20,7 @@ import time
 import uuid
 import warnings
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from quor.config.model import FilterConfig
 from quor.filters.registry import FilterRegistry
@@ -35,6 +36,17 @@ from quor.pipeline.tee import (
     write_tee,
 )
 from quor.tracking.db import InvocationRecord, TrackingDB, count_tokens
+
+if TYPE_CHECKING:
+    # Deferred at runtime (see _setup_plugins/_run_pre_filter_plugins/
+    # _run_post_filter_plugins): importing the plugin subsystem eagerly here
+    # would make every `quor` invocation that imports this module pay its
+    # import cost, not just invocations that actually dispatch a command.
+    # This block is invisible to the interpreter (TYPE_CHECKING is always
+    # False at runtime) and exists solely so the helpers below can carry
+    # real type hints instead of `object`.
+    from quor.plugins.base import PluginContext
+    from quor.plugins.registry import PluginRegistry
 
 
 def run_dispatch(args: list[str], tracking: TrackingDB | None = None) -> int:
@@ -55,7 +67,85 @@ def run_dispatch(args: list[str], tracking: TrackingDB | None = None) -> int:
     cmd_str = " ".join(args)
     t0 = time.monotonic()
 
-    # --- Run the real command ---
+    result = _run_subprocess(args)
+    if isinstance(result, int):
+        return result
+    proc = result
+    captured = proc.stdout or ""
+
+    # --- Tee cleanup: once per dispatch, throttled internally (ADR-023) ---
+    _cleanup_tee_safe()
+
+    filter_config, registry = _lookup_filter(cmd_str)
+    plugin_registry, plugin_ctx = _setup_plugins()
+
+    pre_output = _run_pre_filter_plugins(
+        plugin_registry, plugin_ctx, cmd_str=cmd_str, captured=captured
+    )
+
+    # --- Passthrough when no filter matches ---
+    if filter_config is None or registry is None:
+        _teardown_plugins(plugin_registry, plugin_ctx)
+        _track(
+            tracking,
+            cmd_str=cmd_str,
+            original=captured,
+            filtered=pre_output,
+            filter_name=None,
+            was_passthrough=True,
+            t0=t0,
+        )
+        _scan_secrets_safe(pre_output)
+        sys.stdout.write(pre_output)
+        sys.stdout.flush()
+        return proc.returncode
+
+    content_type = detect(pre_output).value
+    filtered = _apply_content_filter(
+        registry, filter_config, pre_output, content_type=content_type
+    )
+    filtered = _run_post_filter_plugins(
+        plugin_registry,
+        plugin_ctx,
+        cmd_str=cmd_str,
+        captured=captured,
+        filtered=filtered,
+        content_type=content_type,
+    )
+
+    # --- Tee: cache raw output + append recovery footer if it changed (ADR-023) ---
+    filtered = _apply_tee(filter_config, captured=captured, final_output=filtered)
+
+    _teardown_plugins(plugin_registry, plugin_ctx)
+    _track(
+        tracking,
+        cmd_str=cmd_str,
+        original=captured,
+        filtered=filtered,
+        filter_name=filter_config.name,
+        was_passthrough=False,
+        t0=t0,
+    )
+    _scan_secrets_safe(filtered)
+    _maybe_print_onboarding_tip_safe(
+        filter_name=filter_config.name,
+        original_tokens=count_tokens(captured),
+        final_tokens=count_tokens(filtered),
+    )
+
+    sys.stdout.write(filtered)
+    sys.stdout.flush()
+    return proc.returncode
+
+
+def _run_subprocess(args: list[str]) -> subprocess.CompletedProcess[str] | int:
+    """Resolve and run the real command.
+
+    Returns the `CompletedProcess` on success. On timeout or a missing/
+    unrunnable executable, prints the same message to stderr as before and
+    returns an int exit code (124/127) — the caller must return this
+    immediately, exactly as the inlined try/except used to do.
+    """
     # shutil.which() resolves shell-shim executables (npm.CMD, npx.CMD, etc.)
     # that CreateProcess cannot find by bare name without shell=True — see
     # ADR-033. Falls back to the original token unchanged if not found, so
@@ -63,7 +153,7 @@ def run_dispatch(args: list[str], tracking: TrackingDB | None = None) -> int:
     # genuinely missing command exactly as before.
     resolved = shutil.which(args[0]) or args[0]
     try:
-        proc = subprocess.run(
+        return subprocess.run(
             [resolved, *args[1:]],
             stdout=subprocess.PIPE,
             stderr=None,       # inherit: real stderr flows to user directly
@@ -78,22 +168,24 @@ def run_dispatch(args: list[str], tracking: TrackingDB | None = None) -> int:
         print(f"[quor] cannot run {args[0]!r}: {exc}", file=sys.stderr)
         return 127
 
-    captured = proc.stdout or ""
 
-    # --- Tee cleanup: once per dispatch, throttled internally (ADR-023) ---
-    _cleanup_tee_safe()
-
-    # --- Lookup filter ---
-    filter_config = None
-    registry: FilterRegistry | None = None
+def _lookup_filter(cmd_str: str) -> tuple[FilterConfig | None, FilterRegistry | None]:
+    """Resolve the FilterConfig (if any) matching `cmd_str`. Fail-open: any
+    registry error returns (None, None), which the caller already treats as
+    passthrough regardless of which of the two was the actual cause."""
     try:
         registry = FilterRegistry(project_root=Path.cwd())
-        filter_config = registry.find(cmd_str)
+        return registry.find(cmd_str), registry
     except Exception as exc:  # noqa: BLE001
         warnings.warn(f"[quor] filter registry error: {exc}", stacklevel=1)
+        return None, None
 
-    # --- Setup plugin pipeline (fail-open; empty registry = no-op) ---
-    from quor.plugins.base import ExecutionMode, PluginCategory, PluginContext, PluginPayload
+
+def _setup_plugins() -> tuple[PluginRegistry, PluginContext | None]:
+    """Discover and initialize plugins for this invocation (fail-open; empty
+    registry = no-op). Returns plugin_ctx=None if there are no plugins to
+    run or discovery/initialization raised."""
+    from quor.plugins.base import ExecutionMode, PluginContext
     from quor.plugins.registry import PluginRegistry
 
     plugin_registry = PluginRegistry()
@@ -122,87 +214,85 @@ def run_dispatch(args: list[str], tracking: TrackingDB | None = None) -> int:
         warnings.warn(f"[quor] plugin discovery error: {exc}", stacklevel=1)
         plugin_ctx = None
 
-    # --- PRE_FILTER plugins ---
-    pre_output = captured
-    if plugin_ctx is not None:
-        try:
-            pre_payload = PluginPayload(
-                command=cmd_str,
-                raw_output=captured,
-                current_output=captured,
-                content_type=detect(captured).value,
-            )
-            pre_payload = plugin_registry.run_category(
-                PluginCategory.PRE_FILTER, pre_payload, plugin_ctx
-            )
-            pre_output = pre_payload.current_output
-        except Exception as exc:  # noqa: BLE001
-            warnings.warn(f"[quor] PRE_FILTER plugin error: {exc}", stacklevel=1)
+    return plugin_registry, plugin_ctx
 
-    # --- Passthrough when no filter matches ---
-    if filter_config is None or registry is None:
-        _teardown_plugins(plugin_registry, plugin_ctx)
-        _track(
-            tracking,
-            cmd_str=cmd_str,
-            original=captured,
-            filtered=pre_output,
-            filter_name=None,
-            was_passthrough=True,
-            t0=t0,
-        )
-        _scan_secrets_safe(pre_output)
-        sys.stdout.write(pre_output)
-        sys.stdout.flush()
-        return proc.returncode
 
-    # --- Apply ContentMask filter ---
-    content_type = detect(pre_output).value
+def _run_pre_filter_plugins(
+    plugin_registry: PluginRegistry,
+    plugin_ctx: PluginContext | None,
+    *,
+    cmd_str: str,
+    captured: str,
+) -> str:
+    """Run PRE_FILTER plugins against the raw captured output. Fail-open:
+    returns `captured` unchanged if there are no active plugins or a plugin
+    raises."""
+    if plugin_ctx is None:
+        return captured
     try:
-        filtered = registry.apply(filter_config, pre_output, content_type=content_type)
+        from quor.plugins.base import PluginCategory, PluginPayload
+
+        pre_payload = PluginPayload(
+            command=cmd_str,
+            raw_output=captured,
+            current_output=captured,
+            content_type=detect(captured).value,
+        )
+        pre_payload = plugin_registry.run_category(
+            PluginCategory.PRE_FILTER, pre_payload, plugin_ctx
+        )
+        return pre_payload.current_output
+    except Exception as exc:  # noqa: BLE001
+        warnings.warn(f"[quor] PRE_FILTER plugin error: {exc}", stacklevel=1)
+        return captured
+
+
+def _apply_content_filter(
+    registry: FilterRegistry,
+    filter_config: FilterConfig,
+    pre_output: str,
+    *,
+    content_type: str,
+) -> str:
+    """Run the matched ContentMask filter. Fail-open: returns `pre_output`
+    unchanged if the filter raises."""
+    try:
+        return registry.apply(filter_config, pre_output, content_type=content_type)
     except Exception as exc:  # noqa: BLE001
         warnings.warn(f"[quor] filter apply error: {exc}", stacklevel=1)
-        filtered = pre_output
+        return pre_output
 
-    # --- POST_FILTER plugins ---
-    if plugin_ctx is not None:
-        try:
-            post_payload = PluginPayload(
-                command=cmd_str,
-                raw_output=captured,
-                current_output=filtered,
-                content_type=content_type,
-            )
-            post_payload = plugin_registry.run_category(
-                PluginCategory.POST_FILTER, post_payload, plugin_ctx
-            )
-            filtered = post_payload.current_output
-        except Exception as exc:  # noqa: BLE001
-            warnings.warn(f"[quor] POST_FILTER plugin error: {exc}", stacklevel=1)
 
-    # --- Tee: cache raw output + append recovery footer if it changed (ADR-023) ---
-    filtered = _apply_tee(filter_config, captured=captured, final_output=filtered)
+def _run_post_filter_plugins(
+    plugin_registry: PluginRegistry,
+    plugin_ctx: PluginContext | None,
+    *,
+    cmd_str: str,
+    captured: str,
+    filtered: str,
+    content_type: str,
+) -> str:
+    """Run POST_FILTER plugins against the filtered output. Fail-open:
+    returns `filtered` unchanged if there are no active plugins or a plugin
+    raises."""
+    if plugin_ctx is None:
+        return filtered
+    try:
+        from quor.plugins.base import PluginCategory, PluginPayload
 
-    _teardown_plugins(plugin_registry, plugin_ctx)
-    _track(
-        tracking,
-        cmd_str=cmd_str,
-        original=captured,
-        filtered=filtered,
-        filter_name=filter_config.name,
-        was_passthrough=False,
-        t0=t0,
-    )
-    _scan_secrets_safe(filtered)
-    _maybe_print_onboarding_tip_safe(
-        filter_name=filter_config.name,
-        original_tokens=count_tokens(captured),
-        final_tokens=count_tokens(filtered),
-    )
-
-    sys.stdout.write(filtered)
-    sys.stdout.flush()
-    return proc.returncode
+        post_payload = PluginPayload(
+            command=cmd_str,
+            raw_output=captured,
+            current_output=filtered,
+            content_type=content_type,
+        )
+        post_payload = plugin_registry.run_category(
+            PluginCategory.POST_FILTER, post_payload, plugin_ctx
+        )
+        return post_payload.current_output
+    except Exception as exc:  # noqa: BLE001
+        warnings.warn(f"[quor] POST_FILTER plugin error: {exc}", stacklevel=1)
+        return filtered
 
 
 def _cleanup_tee_safe() -> None:
