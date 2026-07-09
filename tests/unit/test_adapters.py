@@ -6,6 +6,7 @@ import io
 import os
 import subprocess
 import sys
+import warnings
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -470,6 +471,57 @@ class TestDispatcher:
         # Original output preserved unchanged — the failing plugin's would-be
         # transformation never took effect.
         assert captured.getvalue() == "hello world\n"
+
+    def test_secret_in_filtered_output_warns_but_stdout_unaffected(self) -> None:
+        """PA-F07: a secret pattern surviving compression (e.g. inside a
+        preserved FAILED/AssertionError line) triggers a stderr warning but
+        is never redacted — stdout must still contain the secret verbatim."""
+        secret = "ghp_" + "a" * 36
+        proc = _make_proc(
+            stdout=f"FAILED tests/test_leak.py::test_x\n    AssertionError: token {secret} leaked\n"
+        )
+        captured_stdout = io.StringIO()
+        with (
+            patch("subprocess.run", return_value=proc),
+            patch("sys.stdout", captured_stdout),
+            pytest.warns(UserWarning, match="Possible secret detected"),
+        ):
+            exit_code = run_dispatch(["pytest", "tests/"])
+
+        assert exit_code == 0
+        assert secret in captured_stdout.getvalue()
+
+    def test_no_secret_no_warning(self) -> None:
+        proc = _make_proc(stdout="FAILED tests/test_a.py::test_x\n    AssertionError: got False\n")
+        captured_stdout = io.StringIO()
+        with (
+            patch("subprocess.run", return_value=proc),
+            patch("sys.stdout", captured_stdout),
+            warnings.catch_warnings(record=True) as caught,
+        ):
+            warnings.simplefilter("always")
+            run_dispatch(["pytest", "tests/"])
+
+        assert not any("secret" in str(w.message).lower() for w in caught)
+
+    def test_onboarding_tip_fires_for_first_five_then_silent(self, tmp_path: Path) -> None:
+        """PA-F08: the first 5 filtered dispatches print a stderr tip; the
+        6th onward is silent. Real dispatcher path, real onboarding state
+        file (isolated by the autouse platformdirs fixture)."""
+        proc = _make_proc(stdout="FAILED tests/test_a.py::test_x\n    AssertionError: got False\n")
+
+        tip_counts = []
+        for _ in range(6):
+            captured_stderr = io.StringIO()
+            with (
+                patch("subprocess.run", return_value=proc),
+                patch("sys.stdout", io.StringIO()),
+                patch("sys.stderr", captured_stderr),
+            ):
+                run_dispatch(["pytest", "tests/"])
+            tip_counts.append("[quor] Tip (" in captured_stderr.getvalue())
+
+        assert tip_counts == [True, True, True, True, True, False]
 
 
 # ---------------------------------------------------------------------------

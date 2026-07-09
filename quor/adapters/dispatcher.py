@@ -24,6 +24,8 @@ from pathlib import Path
 from quor.config.model import FilterConfig
 from quor.filters.registry import FilterRegistry
 from quor.pipeline.content_type import detect
+from quor.pipeline.onboarding import MAX_ONBOARDING_COMMANDS, record_filtered_command
+from quor.pipeline.secrets import scan_for_secrets
 from quor.pipeline.tee import (
     cleanup_tee,
     content_hash,
@@ -149,6 +151,7 @@ def run_dispatch(args: list[str], tracking: TrackingDB | None = None) -> int:
             was_passthrough=True,
             t0=t0,
         )
+        _scan_secrets_safe(pre_output)
         sys.stdout.write(pre_output)
         sys.stdout.flush()
         return proc.returncode
@@ -190,6 +193,12 @@ def run_dispatch(args: list[str], tracking: TrackingDB | None = None) -> int:
         was_passthrough=False,
         t0=t0,
     )
+    _scan_secrets_safe(filtered)
+    _maybe_print_onboarding_tip_safe(
+        filter_name=filter_config.name,
+        original_tokens=count_tokens(captured),
+        final_tokens=count_tokens(filtered),
+    )
 
     sys.stdout.write(filtered)
     sys.stdout.flush()
@@ -202,6 +211,54 @@ def _cleanup_tee_safe() -> None:
         cleanup_tee()
     except Exception as exc:  # noqa: BLE001
         warnings.warn(f"[quor] tee cleanup error: {exc}", stacklevel=1)
+
+
+def _scan_secrets_safe(content: str) -> None:
+    """Warn on stderr if a known secret pattern is present in output that's
+    about to be written to stdout (PA-F07). Detection only — stdout is never
+    modified, regardless of what's found. Fail-open: an error here must
+    never affect the hook's real output."""
+    try:
+        found = scan_for_secrets(content)
+        if found:
+            warnings.warn(
+                f"[quor] Possible secret detected in output ({', '.join(found)}) "
+                "— output was not modified or redacted.",
+                stacklevel=1,
+            )
+    except Exception as exc:  # noqa: BLE001
+        warnings.warn(f"[quor] secret scan error: {exc}", stacklevel=1)
+
+
+def _maybe_print_onboarding_tip_safe(
+    *, filter_name: str, original_tokens: int, final_tokens: int
+) -> None:
+    """Print a brief stats line to stderr for each of the first 5 filtered
+    commands; silent from the 6th onward (PA-F08). Fail-open: an error here
+    must never affect the hook's real output."""
+    try:
+        sequence = record_filtered_command()
+        if sequence is None:
+            return
+        saved = original_tokens - final_tokens
+        # A small/already-clean output's tee recovery footer can exceed
+        # genuine compression savings, producing a net-negative result that
+        # isn't a bug (QB-017) — but showing a scary "-62% smaller" in a new
+        # user's very first impression of the tool would look exactly like
+        # one. Mirror quor gain's own fix for the identical phenomenon:
+        # reframe as a neutral net rather than a misleading percentage.
+        if saved > 0:
+            stats = f"from {original_tokens} to {final_tokens} tokens (~{saved / original_tokens:.0%} smaller)"
+        else:
+            stats = f"net {original_tokens} to {final_tokens} tokens (already small/clean output)"
+        print(
+            f"[quor] Tip ({sequence}/{MAX_ONBOARDING_COMMANDS}): compressed "
+            f"'{filter_name}' output {stats}. Run `quor gain` anytime to see "
+            "your total savings.",
+            file=sys.stderr,
+        )
+    except Exception as exc:  # noqa: BLE001
+        warnings.warn(f"[quor] onboarding tip error: {exc}", stacklevel=1)
 
 
 def _apply_tee(filter_config: FilterConfig, *, captured: str, final_output: str) -> str:
