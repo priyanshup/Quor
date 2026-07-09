@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import subprocess
 import sys
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
 
 import orjson
+import pytest
 from typer.testing import CliRunner
 
 from quor.cli.main import app
@@ -359,6 +361,21 @@ class TestDoctor:
 
 
 class TestInit:
+    @pytest.fixture(autouse=True)
+    def _fast_execution_policy_check(self) -> Iterator[None]:
+        """Every `init --claude` call runs `_warn_if_execution_policy_restricted()`,
+        which spawns a real PowerShell process (~1-1.5s cold start) —
+        completely incidental to what these tests actually verify (hook
+        collision, atomic writes, dry-run output). QB-030: this was the
+        single biggest contributor to the default suite's wall-clock time.
+        Mocked here; the real subprocess call has its own dedicated test,
+        test_execution_policy_check below, which does not use this fixture."""
+        proc = MagicMock(spec=subprocess.CompletedProcess)
+        proc.returncode = 0
+        proc.stdout = "RemoteSigned"
+        with patch("quor.cli.commands.init.subprocess.run", return_value=proc):
+            yield
+
     def test_no_claude_flag_noop(self) -> None:
         result = runner.invoke(app, ["init"])
         assert result.exit_code == 0
@@ -423,6 +440,76 @@ class TestInit:
         assert "quor hook claude" in content
 
 
+class TestExecutionPolicyCheck:
+    """Unit-level coverage of _warn_if_execution_policy_restricted()'s own
+    branching logic, with subprocess.run mocked (fast) — deliberately not
+    using TestInit's _fast_execution_policy_check fixture above, since this
+    class exists specifically to test what that fixture mocks away. The
+    real, unmocked PowerShell subprocess call is already exercised end to
+    end by tests/integration/test_cli_commands.py::TestInitAndDoctorIntegration
+    (marked @pytest.mark.integration, appropriately excluded from the
+    default fast suite — this class does not duplicate that coverage)."""
+
+    def test_restricted_policy_warns(self, capsys: pytest.CaptureFixture[str]) -> None:
+        from quor.cli.commands.init import _warn_if_execution_policy_restricted
+
+        proc = MagicMock(spec=subprocess.CompletedProcess)
+        proc.returncode = 0
+        proc.stdout = "Restricted"
+        with patch("quor.cli.commands.init.subprocess.run", return_value=proc):
+            _warn_if_execution_policy_restricted()
+
+        assert "Restricted" in capsys.readouterr().out
+
+    def test_remote_signed_policy_silent(self, capsys: pytest.CaptureFixture[str]) -> None:
+        from quor.cli.commands.init import _warn_if_execution_policy_restricted
+
+        proc = MagicMock(spec=subprocess.CompletedProcess)
+        proc.returncode = 0
+        proc.stdout = "RemoteSigned"
+        with patch("quor.cli.commands.init.subprocess.run", return_value=proc):
+            _warn_if_execution_policy_restricted()
+
+        assert capsys.readouterr().out == ""
+
+    def test_nonzero_returncode_silent(self, capsys: pytest.CaptureFixture[str]) -> None:
+        """A failed Get-ExecutionPolicy call (e.g. powershell not on PATH on
+        this particular machine) must not be misread as "Restricted"."""
+        from quor.cli.commands.init import _warn_if_execution_policy_restricted
+
+        proc = MagicMock(spec=subprocess.CompletedProcess)
+        proc.returncode = 1
+        proc.stdout = ""
+        with patch("quor.cli.commands.init.subprocess.run", return_value=proc):
+            _warn_if_execution_policy_restricted()
+
+        assert capsys.readouterr().out == ""
+
+    def test_powershell_missing_fails_open(self, capsys: pytest.CaptureFixture[str]) -> None:
+        """No powershell on PATH at all (e.g. a non-Windows dev box) must
+        not crash `quor init` — fails open, silently."""
+        from quor.cli.commands.init import _warn_if_execution_policy_restricted
+
+        with patch(
+            "quor.cli.commands.init.subprocess.run",
+            side_effect=OSError("not found"),
+        ):
+            _warn_if_execution_policy_restricted()  # must not raise
+
+        assert capsys.readouterr().out == ""
+
+    def test_timeout_fails_open(self, capsys: pytest.CaptureFixture[str]) -> None:
+        from quor.cli.commands.init import _warn_if_execution_policy_restricted
+
+        with patch(
+            "quor.cli.commands.init.subprocess.run",
+            side_effect=subprocess.TimeoutExpired(cmd="powershell", timeout=5),
+        ):
+            _warn_if_execution_policy_restricted()  # must not raise
+
+        assert capsys.readouterr().out == ""
+
+
 # ---------------------------------------------------------------------------
 # Hook collision detection (P0 item 3)
 # ---------------------------------------------------------------------------
@@ -440,6 +527,17 @@ def _settings_with_third_party_hook(cmd: str = "zap hook bash") -> dict[str, Any
 
 
 class TestHookCollisionDetection:
+    @pytest.fixture(autouse=True)
+    def _fast_execution_policy_check(self) -> Iterator[None]:
+        """See TestInit's identical fixture above — same rationale, same
+        fix (QB-030): every `init --claude` call in this class also pays
+        the real PowerShell spawn incidentally."""
+        proc = MagicMock(spec=subprocess.CompletedProcess)
+        proc.returncode = 0
+        proc.stdout = "RemoteSigned"
+        with patch("quor.cli.commands.init.subprocess.run", return_value=proc):
+            yield
+
     def test_third_party_hook_triggers_warning(self, tmp_path: Path) -> None:
         """init --claude warns when another Bash hook is already registered."""
         settings_path = tmp_path / "settings.json"
