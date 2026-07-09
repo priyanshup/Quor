@@ -796,3 +796,49 @@ class TestMainRouting:
             mock_dispatch.assert_not_called()
             mock_hook.assert_not_called()
             mock_app.assert_called_once()
+
+
+class TestMainRealExecution:
+    """TD-010: __main__.py had the lowest coverage in the codebase because
+    TestMainRouting above always mocks _run_hook/_run_dispatch entirely at
+    the call site — real bodies of the unknown-hook-adapter branch and the
+    dispatch wrapper were never actually exercised by any test."""
+
+    def test_run_hook_unknown_adapter_echoes_original_and_warns(self) -> None:
+        """quor hook <unknown-adapter>: the real _run_hook() body (not
+        mocked) writes the original stdin bytes back unchanged and warns on
+        stderr, rather than silently dropping input it doesn't understand."""
+        from quor.__main__ import _run_hook
+
+        payload = b'{"tool_name": "Bash", "tool_input": {"command": "git status"}}'
+        fake_stdin = MagicMock()
+        fake_stdin.buffer.read.return_value = payload
+        fake_stdout = _FakeStdout()
+        captured_stderr = io.StringIO()
+
+        with (
+            patch("sys.argv", ["quor", "hook", "bogus-adapter"]),
+            patch.object(sys, "stdin", fake_stdin),
+            patch.object(sys, "stdout", fake_stdout),
+            patch.object(sys, "stderr", captured_stderr),
+        ):
+            _run_hook()
+
+        fake_stdout.buffer.seek(0)
+        assert fake_stdout.buffer.read() == payload
+        assert "Unknown hook adapter: 'bogus-adapter'" in captured_stderr.getvalue()
+
+    def test_run_dispatch_real_execution_exits_with_real_code(self) -> None:
+        """quor git status: the real _run_dispatch() body (not mocked) opens
+        a real tracking DB, runs the real dispatcher, and exits with the
+        exit code run_dispatch() actually returned."""
+        from quor.__main__ import _run_dispatch
+
+        captured_stdout = io.StringIO()
+        with (
+            patch.object(sys, "stdout", captured_stdout),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            _run_dispatch(["git", "status"])
+
+        assert exc_info.value.code == 0

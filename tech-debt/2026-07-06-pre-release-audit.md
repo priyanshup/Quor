@@ -206,6 +206,9 @@ highest-blast-radius file if it ever does break silently.
 **Fix:** add two small tests — one invoking `quor hook <unknown-adapter>`, one invoking the plain CLI
 dispatch path (`quor git status`-shaped argv) end-to-end.
 
+**Status:** Resolved — see QB-033 in `backlog.md`. Fixed on `feature/td-tier5-engineering-hygiene`.
+Coverage went from 72% to 92%.
+
 ---
 
 ## Priority: Low / Deferred (carried forward from `backlog.md` — not duplicated in detail here)
