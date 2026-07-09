@@ -113,8 +113,10 @@ def _check_hook_collision(settings_path: Path | None = None) -> tuple[str, bool,
         conflicts = _find_conflicting_hooks(settings)
         if conflicts:
             detail = (
-                f"{len(conflicts)} other Bash hook(s) detected — "
-                "double-rewriting risk; run `quor init --claude` to review"
+                f"{len(conflicts)} other Bash hook(s) detected — only one PreToolUse Bash hook "
+                "tool can safely be active at a time (Claude Code can silently drop one hook's "
+                "rewrite when two are registered). This means disable the other tool, not "
+                "leave both running — run `quor init --claude` to see which one."
             )
             return ("No conflicting PreToolUse hooks", False, detail)
         return ("No conflicting PreToolUse hooks", True, "")
