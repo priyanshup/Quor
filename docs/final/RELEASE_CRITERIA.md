@@ -107,7 +107,7 @@ The bar for Internal Alpha is: "It works on the builder's machine without crashi
 - [x] **IA-Q02** `ruff check quor/` passes with no errors.
   Evidence: `python -m ruff check quor/ tests/` — "All checks passed!"
 - [x] **IA-Q03** `pytest tests/unit/` passes (all unit tests).
-  Evidence: full run green except the one pre-existing, unrelated plugin-discovery failure (`test_discovers_noop_test_stage`, tracked separately — not caused by any gate-walk or Tier 1/2 change, confirmed present on unmodified `main`); that test is itself marked `@pytest.mark.integration` and is excluded from the default run as of this session's PA-Q04 fix.
+  Evidence: full run green. **Correction (2026-07-08):** this gate previously reported `test_discovers_noop_test_stage` as a "pre-existing, unrelated" failure. That was wrong — the local environment used for this entire gate walk never ran `pip install -e ./tests/fixtures/test_plugin` (the step `ci.yml` always runs before tests), so the test's entry-point discovery had nothing to find. Installed it and re-ran: the test passes. Real CI (which does install the fixture) confirms this — the four Dependabot PRs merged right after this walk all show green CI, including the integration-test step. There was no real bug.
 - [x] **IA-Q04** Coverage ≥70% on `quor/pipeline/` and `quor/filters/`.
   Evidence: measured coverage — `quor/pipeline/*`: 86–100% across all modules; `quor/filters/*`: 84–100% across all modules. Both well above 70%.
 - [x] **IA-Q05** No hardcoded `~`, `%APPDATA%`, `/tmp`, or `/home` in any source file (grep confirms).

@@ -227,10 +227,17 @@ Regression tests added to `tests/unit/test_rewrite.py` (`TestTokenize`, `TestPar
 drop case, multi-digit fds, append (`>>`), input redirects (`<`), and confirming plain redirects/bare
 digit arguments are unaffected.
 
-**Status:** Resolved — implemented on `feature/td-tier1-pre-release-fixes`. Full `pytest tests/` (all
-green except the pre-existing, unrelated `test_discovers_noop_test_stage` plugin-discovery failure,
-confirmed present independently of this change on unmodified `main`), `ruff check`, `mypy quor/`, and
-`quor verify` (42/42) all pass.
+**Status:** Resolved — implemented on `feature/td-tier1-pre-release-fixes`. Full `pytest tests/`,
+`ruff check`, `mypy quor/`, and `quor verify` (42/42) all pass.
+
+**Correction (2026-07-08):** this entry originally reported `test_discovers_noop_test_stage` as a
+"pre-existing, unrelated" failure "confirmed present on unmodified `main`." That confirmation was
+itself wrong — the local dev environment used throughout this session never ran
+`pip install -e ./tests/fixtures/test_plugin` (the step `ci.yml` always runs before tests), so the
+test's entry-point discovery had nothing to find. Once installed locally, the test passes; real CI
+runs (which do install the fixture) confirm it always has. There was no real bug — just an
+incomplete local setup being mistaken for a product defect across several backlog/release-criteria
+entries this session. See TD-003/QB-028's correction note for the fuller account.
 
 ---
 
