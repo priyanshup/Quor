@@ -152,7 +152,7 @@ class TestGain:
         assert "~80 tokens (80%)" in output
         assert "Top savings" in output
         assert "git-status" in output
-        assert "* Token estimates use the existing char/4 approximation." in output
+        assert "* Token estimates use the char/4 approximation (±20%), not a real tokenizer." in output
 
     def test_zero_saved_filter_hidden_from_top_savings(self, tmp_path: Path) -> None:
         """A filter that saved nothing must not appear in Top savings."""
@@ -179,6 +179,37 @@ class TestGain:
 
         assert result.exit_code == 0
         assert "Top savings" not in result.output
+
+    def test_negative_net_shown_as_net_not_saved(self, tmp_path: Path) -> None:
+        """QB-017: a net-negative invocation (tee footer overhead exceeds
+        genuine compression on already-small output) must not be presented
+        as "YOU SAVED" in celebratory green — it's not a bug, but it must
+        not look like one either."""
+        from quor.tracking.db import InvocationRecord, TrackingDB
+
+        db_path = tmp_path / "data" / "quor.db"
+        db = TrackingDB(db_path=db_path)
+        db.record(
+            InvocationRecord(
+                command="git rev-parse HEAD",
+                project_path=tmp_path.as_posix(),
+                original_tokens=21,
+                final_tokens=43,  # tee footer pushed this above the original
+                filter_name="git-status",
+                was_passthrough=False,
+                duration_ms=1.0,
+            )
+        )
+        db.flush()
+        db.close()
+
+        with patch("platformdirs.user_data_dir", return_value=str(tmp_path / "data")):
+            result = runner.invoke(app, ["gain", "--project", str(tmp_path), "--days", "30"])
+
+        assert result.exit_code == 0
+        assert "NET TOKENS" in result.output
+        assert "YOU SAVED" not in result.output
+        assert "does not mean compression failed" in result.output
 
 
 # ---------------------------------------------------------------------------
