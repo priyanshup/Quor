@@ -1404,9 +1404,43 @@ overhead) and see if any can be sped up without losing what they verify, to give
 rather than sitting at the edge. (2) Add a permanent test asserting a large (~10MB) input completes
 pipeline processing within a fixed time budget.
 
-**Status:** Open — not yet scheduled. Both are minor, non-blocking findings from the gate walk, not
-bugs — deliberately not fixed as part of that walk to keep it scoped to recording status rather than
-open-ended optimization work.
+**Resolution:**
+1. **Root cause found:** every test that calls `quor init --claude` (`tests/unit/test_cli.py`'s
+   `TestInit` and `TestHookCollisionDetection` classes — 8 tests total) incidentally spawns a real
+   PowerShell subprocess via `init.py`'s `_warn_if_execution_policy_restricted()`, regardless of what
+   each individual test actually verifies (hook collision, atomic writes, dry-run output — none of
+   which have anything to do with the execution-policy check). This, not `test_quor_no_args_prints_version`
+   as originally suspected, was the dominant cost.
+   - Added an autouse fixture to both classes mocking just that one subprocess call, cutting each
+     affected test from ~1–1.5s to ~0.05–0.2s.
+   - Added a new `TestExecutionPolicyCheck` class that unit-tests `_warn_if_execution_policy_restricted()`'s
+     own branching logic directly (Restricted → warns, RemoteSigned → silent, missing `powershell` /
+     timeout → fails open) — so the behavior the fixture mocks away doesn't lose coverage, it moves to
+     a focused, still-fast test. The real, fully unmocked PowerShell call remains covered end-to-end by
+     the existing `tests/integration/test_cli_commands.py::TestInitAndDoctorIntegration` (QB-027),
+     appropriately in the integration tier, not the fast default suite.
+   - Also merged `test_version.py`'s `test_quor_no_args_exits_zero` and `test_quor_no_args_prints_version`
+     — two tests independently spawning the *identical* `python -m quor` subprocess just to check
+     different assertions on the same output — into one test, one spawn. `test_quor_help_exits_zero`
+     (a genuinely different invocation) was left as its own real subprocess test; unlike the
+     PowerShell case, this one substantively needs a real interpreter spawn to verify the actual entry
+     point, so it wasn't a candidate for removal.
+   - Measured repeatedly after the fix: 17–28s (some real run-to-run variance on this machine), down
+     from the pre-fix 28–31s the gate was failing on. See QB's own `RELEASE_CRITERIA.md` PA-Q04 entry.
+2. **IA-S03 regression test added:** `tests/unit/test_filters.py::TestLargeInputPerformance::test_ten_megabyte_input_completes_without_hanging` —
+   a real 10MB input through the real `FilterRegistry.apply()`. This was previously only verified
+   manually during the gate walk with no permanent guard.
+
+   **Found and fixed on the open PR, before merge:** first shipped with a hard 5.0s ceiling (matching
+   IA-S03's literal wording) and CI promptly failed it on `ubuntu-latest` at 5.16s, across Python
+   3.11/3.12/3.13 — confirmed real CI hardware variance, not a bug (this machine measures 0.5–1.2s
+   for the identical input; GitHub's shared runners are measurably slower/noisier). Loosened to a 20s
+   budget: this test's actual job is catching a catastrophic regression (an accidental O(n²) stage
+   would show minutes, not a 3% overage), not enforcing the literal number down to the decimal on
+   noisy shared hardware — 20s gives ~15–40x margin over every real measurement seen so far (local
+   and CI) while still catching a genuine algorithmic regression early.
+
+**Status:** Resolved — implemented on `feature/qb-030-test-speed-and-10mb-regression`.
 
 ---
 

@@ -64,7 +64,16 @@ def test_version_matches_pyproject() -> None:
     )
 
 
-def test_quor_no_args_exits_zero() -> None:
+def test_quor_no_args_exits_zero_and_prints_version() -> None:
+    """QB-030: merged from two separate tests that each independently
+    spawned the identical `python -m quor` subprocess (~1s real
+    interpreter startup each) just to check different assertions on what
+    is necessarily the same output. One real subprocess spawn, not
+    mocked away -- this genuinely needs to verify the real entry point
+    end to end, unlike the CLI tests QB-030 also sped up (test_cli.py's
+    init/hook-collision tests), which were paying for an *incidental*
+    real subprocess call (a PowerShell execution-policy check) that had
+    nothing to do with what those tests actually verify."""
     result = subprocess.run(
         [sys.executable, "-m", "quor"],
         capture_output=True,
@@ -72,15 +81,6 @@ def test_quor_no_args_exits_zero() -> None:
         encoding="utf-8",
     )
     assert result.returncode == 0
-
-
-def test_quor_no_args_prints_version() -> None:
-    result = subprocess.run(
-        [sys.executable, "-m", "quor"],
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-    )
     assert "quor" in result.stdout
     assert __version__ in result.stdout
 
