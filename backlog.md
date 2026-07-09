@@ -696,6 +696,46 @@ for the approval gate to be enforced.
 
 ## Priority: Medium
 
+### QB-033
+
+**Priority:** Medium
+**Category:** Engineering
+
+**Title:** Close `__main__.py`'s test coverage gap (TD-010)
+
+**Problem:**
+Found during the 2026-07-06 pre-release tech-debt audit (TD-010): `__main__.py` had the lowest test
+coverage in the codebase (72%), concentrated in two branches — the "unknown hook adapter" branch
+(`_run_hook()`, then lines ~46-48) and the `_run_dispatch()` CLI-entry wrapper (lines ~73-81). Not the
+safety-critical top-level `except Exception` fail-open guard itself (already covered), but worth
+closing given `__main__.py` is the single highest-blast-radius file if it ever does break silently.
+Root cause: the existing `TestMainRouting` tests (`tests/unit/test_adapters.py`) always mock
+`_run_hook`/`_run_dispatch` entirely at the call site to test `main()`'s routing logic in isolation —
+so neither function's real body was ever actually exercised by any test.
+
+**Desired outcome:**
+Two small tests — one invoking `quor hook <unknown-adapter>`, one invoking the plain CLI dispatch
+path (`quor git status`-shaped argv) end-to-end — per the audit's own suggested fix.
+
+**Resolution:**
+Added `TestMainRealExecution` to `tests/unit/test_adapters.py`, right after `TestMainRouting`:
+- `test_run_hook_unknown_adapter_echoes_original_and_warns`: calls the real `_run_hook()` (not
+  mocked) with an unknown adapter name, confirms the original stdin bytes are written back to
+  stdout unchanged and the warning appears on stderr — reusing the existing `_FakeStdout` helper.
+- `test_run_dispatch_real_execution_exits_with_real_code`: calls the real `_run_dispatch()` (not
+  mocked) with a real `git status` invocation, confirms it exits with the real code `run_dispatch()`
+  returned — exercising the real tracking-DB-open/dispatch/tracking-close/`sys.exit` body, not a
+  mocked stand-in.
+
+**Status:** Resolved — implemented on `feature/td-tier5-engineering-hygiene`. `__main__.py` coverage
+went from 72% to 92%; the remaining 4 uncovered lines are the Python-version guard (only reachable by
+actually running an unsupported Python version, which can't be tested without a real old interpreter)
+and the `if __name__ == "__main__":` idiom itself (only runs via a real script invocation, not via
+pytest import) — both appropriately out of scope, matching the audit's own framing that this was "a
+minor gap, not a hidden safety-critical hole."
+
+---
+
 ### QB-031
 
 **Priority:** Medium
@@ -830,11 +870,24 @@ hardcoding a string — the standard approach for this exact problem — falling
 string only for the editable/uninstalled case if needed), **and** a test exists that fails the build
 if the two ever diverge again, so this can't silently regress the way it could have going into 0.3.0.
 
-**Status:** Partially resolved — `tests/unit/test_version.py::test_version_matches_pyproject` now
-fails the build if `quor.__version__` and `pyproject.toml`'s version ever diverge (confirmed: fails
-with a mismatch injected, passes once reverted). The single-source-of-truth half (deriving
-`__version__` from `importlib.metadata` instead of a second hardcoded string) is still open — the
-two values are still independently maintained, just now guarded by a test instead of unguarded.
+**Status:** Resolved (Tier 5 engineering hygiene pass). `tests/unit/test_version.py::test_version_matches_pyproject`
+already guarded against divergence (confirmed: fails with a mismatch injected, passes once reverted);
+the remaining single-source-of-truth half is now also done. `quor/__init__.py::__version__` is
+derived via `importlib.metadata.version("quor")` at import time, falling back to a hardcoded string
+only when no distribution is found at all (a source checkout never `pip install`'d). Verified this
+resolves correctly against the real editable install (`importlib.metadata.version("quor")` ==
+pyproject.toml's version == `python -m quor`'s printed output, all "0.3.0"). Two new tests added:
+`test_version_derived_from_installed_metadata` (the happy path) and
+`test_version_falls_back_when_package_not_found` (the fallback branch, via `importlib.reload()` with
+`importlib.metadata.version` patched to raise — the happy path alone wouldn't exercise it, per Rule 1's
+boundary-case requirement).
+
+One accepted trade-off worth knowing: for an editable (`pip install -e .`) install, `importlib.metadata`
+reads the version captured in `.dist-info` at install time, not live from `pyproject.toml` — so bumping
+`pyproject.toml`'s version now also requires re-running `pip install -e .` (or equivalent) for
+`test_version_matches_pyproject` to see the new value locally. This is the standard, universally-accepted
+trade-off of this approach (not a bug), and doesn't affect real end users installing a built wheel from
+PyPI, where the version is baked in correctly at build time.
 
 ---
 
