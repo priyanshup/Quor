@@ -1,0 +1,37 @@
+============================= test session starts ==============================
+platform linux -- Python 3.11.0, pytest-7.4.0, pluggy-1.0.0, django-4.2.7
+rootdir: /workspace/storefront
+plugins: django-4.5.2, cov-5.0.0
+collecting ...
+collected 4 items
+
+PASSED tests/test_views.py::test_homepage_renders
+FAILED tests/test_views.py::test_checkout_view
+
+================================= FAILURES ====================================
+_____________________________ test_checkout_view _______________________________
+
+    def test_checkout_view(client):
+        response = client.get("/checkout/")
+>       assert response.status_code == 200
+E       Exception: KeyError
+
+Traceback (most recent call last):
+  File "/workspace/storefront/tests/test_views.py", line 22, in test_checkout_view
+    response = client.get("/checkout/")
+  File "/usr/lib/python3.11/site-packages/django/test/client.py", line 815, in get
+    response = super().get(path, data=data, secure=secure, headers=headers, **extra)
+  File "/usr/lib/python3.11/site-packages/django/test/client.py", line 421, in get
+    return self.generic("GET", path, secure=secure, **r)
+  File "/usr/lib/python3.11/site-packages/django/core/handlers/exception.py", line 55, in inner
+    response = get_response(request)
+  File "/usr/lib/python3.11/site-packages/django/core/handlers/base.py", line 197, in _get_response
+    response = wrapped_callback(request, *callback_args, **callback_kwargs)
+  File "/workspace/storefront/storefront/views.py", line 48, in checkout_view
+    cart = request.session["cart"]
+KeyError: 'cart'
+
+tests/test_views.py:22: KeyError
+=========================== short test summary info ============================
+FAILED tests/test_views.py::test_checkout_view - KeyError: 'cart'
+1 failed, 1 passed in 0.63s

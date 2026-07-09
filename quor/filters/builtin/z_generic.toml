@@ -11,6 +11,23 @@ match_command = '.'
 type = "remove_ansi"
 
 [[filter.stages]]
+# Stack trace frame dedup (docs/archive/product-discovery/competitive-research.md
+# Opportunity 6): any command can crash with an unhandled Python exception —
+# a raw script, a Flask/Django dev server, etc. — not just pytest, which has
+# its own copy of this same stage in pytest.toml. Only the frame header line
+# is stripped; its indented source-code line has no distinguishing marker of
+# its own and is left as-is (Safety Rule #3: when uncertain, keep it).
+type = "strip_lines"
+patterns = [
+    '(?i)^\s*File "[^"]*(?:site-packages|dist-packages)[^"]*", line \d+, in',
+]
+preserve_patterns = [
+    'Traceback',
+    'Error',
+    'Exception',
+]
+
+[[filter.stages]]
 type = "deduplicate_consecutive"
 
 [[filter.stages]]
@@ -32,3 +49,9 @@ must_contain = ["line_a", "line_b", "line_c"]
 description = "Content within token limit unchanged"
 input = "short output"
 must_contain = ["short output"]
+
+[[filter.tests]]
+description = "Framework traceback frames stripped for a non-pytest crash (e.g. Flask dev server); user frame and exception preserved"
+input = "Traceback (most recent call last):\n  File \"/home/user/myproject/app.py\", line 10, in <module>\n    main()\n  File \"/usr/lib/python3.11/site-packages/flask/app.py\", line 1234, in wsgi_app\n    response = self.full_dispatch_request()\nZeroDivisionError: division by zero"
+must_contain = ["Traceback", "app.py\", line 10, in <module>", "ZeroDivisionError"]
+must_not_contain = ["site-packages/flask"]

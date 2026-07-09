@@ -122,6 +122,16 @@ min_reduction_pct = 40.0
 must_contain = ["FAILED tests/test_payment.py::test_charge_duplicate", "DID NOT RAISE"]
 
 [[case]]
+id = "pytest-framework-traceback-frames"
+category = "pytest"
+ecosystem = "Python"
+command = "pytest"
+sample_file = "samples/pytest/003_framework_traceback_frames.txt"
+expected_filter = "pytest"
+min_reduction_pct = 15.0
+must_contain = ["KeyError: 'cart'", "storefront/views.py\", line 48, in checkout_view", "FAILED tests/test_views.py::test_checkout_view"]
+
+[[case]]
 id = "mypy-repeated-type-error"
 category = "mypy"
 ecosystem = "Python"

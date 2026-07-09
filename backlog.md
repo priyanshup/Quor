@@ -12,6 +12,63 @@ group — do not just append to the end of the file.
 
 ## Priority: High
 
+### QB-032
+
+**Priority:** High
+**Category:** Feature
+
+**Title:** Stack trace frame dedup for Python tracebacks (site-packages/dist-packages)
+
+**Problem:**
+Per the competitive research (`docs/archive/product-discovery/competitive-research.md`, Opportunity
+6, ranked #6): "Django/Flask/pytest stack traces are 90% framework frames. Removing them is safe,
+mechanical, and high-value... implementation effort: Low... RTK doesn't have this. Appeals directly
+to the Python developer segment Distill/Quor targets." Quor's `pytest` and `generic` filters
+previously had no compression at all for traceback frame content — `preserve_patterns` protected the
+`Traceback` header and error lines, but individual `File "...", line N, in ...` frames (the bulk of a
+real Django/Flask traceback) passed through completely untouched.
+
+**Desired outcome:**
+Framework/library traceback frames (Django, Flask, pytest's own internals, any installed package)
+compressed out of view, while the user's own project frames and the actual exception always survive.
+
+**Resolution (per Rule 4 — consulted the competitive research first; its own recommended approach,
+"pattern matching against site-packages paths," is exactly what was implemented, no new research
+needed):**
+- Added one new `strip_lines` pattern to both `pytest.toml` and `z_generic.toml`:
+  `(?i)^\s*File "[^"]*(?:site-packages|dist-packages)[^"]*", line \d+, in` — matches a traceback
+  frame header whose path contains `site-packages` or `dist-packages`, which unambiguously means
+  third-party/installed code on every platform (never a user's own project). Verified against real
+  Linux, Windows, and venv-style paths before writing the filter config, including negative cases
+  (the user's own project path, and a bare stdlib frame) to confirm no false positives.
+- **Deliberately scoped down from a fancier "remove the whole frame" version.** A traceback frame is
+  two lines (the `File "..."` header plus its indented source-code snippet); `strip_lines` evaluates
+  each line independently with no lookback, so only the header line — which unambiguously identifies
+  itself via the path — is compressed. The source-code snippet line has no distinguishing marker of
+  its own and is left untouched rather than risk dropping real content on a shakier heuristic (Safety
+  Rule #3: "when uncertain whether to remove a line, keep it"). Bare stdlib frames (no
+  `site-packages`/`dist-packages` in the path) are also deliberately not matched — Windows' stdlib
+  path has no equally unambiguous marker (a user folder literally named `lib` would false-positive).
+  No new pipeline stage was needed — this is a filter-config-only addition, same pattern as every
+  other built-in filter.
+- `z_generic.toml` previously had no `strip_lines` stage or `preserve_patterns` at all; added both
+  (protecting `Traceback`/`Error`/`Exception`) so the same dedup applies to a non-pytest Python crash
+  (a raw script, `flask run`, etc.) — the other half of the "Django/Flask" framing in the research,
+  not just pytest.
+
+Regression tests: new inline `[[filter.tests]]` in both `pytest.toml` and `z_generic.toml` (realistic
+Django-style traceback, asserting the framework frame is gone while the user frame and exception
+survive). New benchmark case `pytest-framework-traceback-frames`
+(`tests/benchmarks/samples/pytest/003_framework_traceback_frames.txt` + manifest entry) — 40.9%
+compression, correctness verified, baseline updated. `docs/final/COMMAND_SUPPORT.md` updated for both
+changed filters per the project's own filter-change convention.
+
+**Status:** Resolved — implemented on `feature/td-tier4-differentiation-roadmap`. Full `pytest
+tests/` (993 passed), `pytest tests/ -m integration` (9 passed), `ruff check`, `mypy quor/`, `quor
+verify` (44/44), and the compression benchmark suite (29 cases, 0 regressions) all pass.
+
+---
+
 ### QB-028
 
 **Priority:** High
@@ -567,14 +624,52 @@ Token-efficient reading of DOCX, PDF, Markdown, and text documents by extracting
 headings, tables, numbered lists, requirements, decisions — instead of returning raw document text
 whenever possible.
 
-**Status:** Blocked pending feasibility investigation into whether Claude Code can intercept native
-Read/File tool output. Implementation will begin only after this investigation is complete.
-
 **Context (Batch 5 design review):** Quor's only integration point today is the Claude Code
 `PreToolUse` hook registered for the Bash matcher (`quor/cli/commands/init.py`); most PDF/DOCX
 reading inside Claude Code uses native Read/File tools, not Bash, so Quor never receives those
 requests under the current architecture. The feasibility investigation is a prerequisite for this
 item, not separate product work — no backlog ID is tracked for it.
+
+**Feasibility investigation (2026-07-09, Tier 4): confirmed feasible.** Verified directly against
+Claude Code's official hooks reference (`code.claude.com/docs/en/hooks`), not inferred from memory:
+
+- The `matcher` field for `PostToolUse` (and `PreToolUse`) is a regex against **tool name**, and
+  `Read` is a valid, documented match value — the same mechanism already used for `Bash`. No special
+  case is needed to target the Read tool specifically (`"matcher": "Read"`, or `"Read|Edit|Write"` to
+  cover more of the file-access surface later).
+- A `PostToolUse` hook receives `tool_name`, `tool_input`, and **`tool_response`** — the last of
+  which carries the tool's actual result (e.g. the file content Read just returned). This is the
+  piece that makes compression possible at all: the hook sees the real content, not just the request.
+- Critically, a `PostToolUse` hook **can replace that result** before Claude ever sees it, via:
+  ```json
+  {"hookSpecificOutput": {"hookEventName": "PostToolUse", "updatedToolOutput": "..."}}
+  ```
+  The official docs describe this exact mechanism as being "used for redaction or transformation use
+  cases" — which is precisely what this item needs. One important caveat found during the same
+  research: `updatedToolOutput` being honored for *all* tools (not only MCP-provided ones) was itself
+  a comparatively recent change, so a minimum Claude Code version requirement applies — this needs
+  pinning down precisely (and a `quor doctor` check added for it, mirroring the existing dependency
+  checks) before this ships, not assumed.
+
+**Architectural implication for whoever implements this next:** this is a genuinely different
+integration shape than the existing Bash path, not a small extension of it. Today, Quor's PreToolUse
+hook rewrites the *command* so its own dispatcher runs the real subprocess and compresses the output
+before Claude sees it (`quor/adapters/dispatcher.py`). For Read, Claude Code performs the read itself
+(including whatever internal PDF/DOCX-to-text handling it already does) — there's no subprocess for
+Quor to wrap. The natural shape is a `PostToolUse` hook that receives already-read content and
+transforms it via `updatedToolOutput`, which is actually a *closer* fit to the existing
+`ContentMask`/`FilterRegistry` pipeline than the Bash path is (pipeline stages already just take text
+in, return text out — no subprocess model needed here at all). Concretely this means: a new hook
+adapter entry point alongside the existing Claude Bash adapter (`quor/adapters/claude.py`), a new
+`PostToolUse`/`Read` entry that `quor init --claude` would need to additionally register in
+`settings.json`, and new content-type-aware stages/filters for DOCX/PDF/Markdown structure extraction
+(the actual feature this item describes) — none of which exists yet. The investigation only answers
+"is this possible," not "build it now."
+
+**Status:** Unblocked — feasibility confirmed. Still not scheduled for implementation; this remains a
+substantial, multi-part feature (new hook adapter, new settings.json registration, new document-type
+parsers/stages) that needs its own scoped design pass (per CLAUDE.md Rule 4) before work begins, not
+a quick follow-on to the investigation itself.
 
 ---
 
