@@ -84,11 +84,28 @@ def _print_body(report: GainReport) -> None:
     saved_fraction = (
         report.tokens_saved / report.tokens_before if report.tokens_before else 0.0
     )
-    console.print("[bold]YOU SAVED[/bold]")
-    console.print(
-        f"[bold green]~{format_count(report.tokens_saved)} tokens "
-        f"({format_percentage(saved_fraction)})[/bold green]"
-    )
+    if report.tokens_saved < 0:
+        # Small, already-clean output can legitimately net negative: the tee
+        # recovery footer (a fixed ~33-token cost) can exceed genuine
+        # compression savings when there's very little to compress (QB-017).
+        # Not a bug — but bold green "YOU SAVED -12 tokens" reads as one, so
+        # this is styled and worded as a net figure instead of a win.
+        console.print("[bold]NET TOKENS[/bold]")
+        console.print(
+            f"[bold yellow]~{format_count(report.tokens_saved)} tokens "
+            f"({format_percentage(saved_fraction)})[/bold yellow]"
+        )
+        console.print(
+            "[dim]A negative net is possible on already-small, already-clean output — "
+            "the recovery footer that lets you retrieve the full original can cost more "
+            "than compression saved. This does not mean compression failed.[/dim]"
+        )
+    else:
+        console.print("[bold]YOU SAVED[/bold]")
+        console.print(
+            f"[bold green]~{format_count(report.tokens_saved)} tokens "
+            f"({format_percentage(saved_fraction)})[/bold green]"
+        )
     console.print()
     console.rule(style="dim")
 
@@ -107,4 +124,4 @@ def _print_body(report: GainReport) -> None:
         console.rule(style="dim")
 
     console.print()
-    console.print("[dim]* Token estimates use the existing char/4 approximation.[/dim]")
+    console.print("[dim]* Token estimates use the char/4 approximation (±20%), not a real tokenizer.[/dim]")

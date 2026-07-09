@@ -248,7 +248,9 @@ Run `quor init --claude` — this is expected on any install where the hook hasn
 
 **`quor doctor` shows a red `✗` for "No conflicting PreToolUse hooks"**
 
-Another tool already has a `PreToolUse` hook registered in Claude Code's `settings.json`. Run `quor init --claude` again to review and resolve the conflict; Quor will not silently overwrite another tool's hook.
+Another tool (a competing token-optimizer like RTK/Zap, Headroom AI, Comet, or similar) already has a `PreToolUse` Bash hook registered in Claude Code's `settings.json`. **This is not safe to ignore.** Claude Code has no supported way for two `PreToolUse` hooks to both rewrite the same Bash command — depending on registration order, one hook's rewrite can be silently dropped ([anthropics/claude-code#15897](https://github.com/anthropics/claude-code/issues/15897), a known limitation, not something Quor can work around). With two hook tools active, Quor's compression, the other tool's, or both may simply not apply — with no error telling you so.
+
+Only one `PreToolUse` Bash hook tool should be active at a time. Run `quor init --claude` again to see exactly which other hook is registered, then disable that tool (or remove its entry from `settings.json`) — "review the conflict" means resolve it, not run both.
 
 **Checking which version of Quor is installed**
 

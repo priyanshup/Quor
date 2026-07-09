@@ -601,6 +601,48 @@ for the approval gate to be enforced.
 
 ## Priority: Medium
 
+### QB-031
+
+**Priority:** Medium
+**Category:** Documentation
+
+**Title:** Strengthen PreToolUse hook coexistence warnings (TD-009)
+
+**Problem:**
+Found during the 2026-07-06 pre-release tech-debt audit (TD-009): `quor doctor` and `quor init
+--claude` both detect another tool's `PreToolUse` Bash hook and warn about it, but the wording only
+described a vague "double-rewriting risk" and told the user to "review" the conflict — never stating
+plainly that only one such hook tool can safely be active at a time, or that the correct action is to
+disable the other one. This intersects a real, unfixable-by-Quor Claude Code limitation
+([anthropics/claude-code#15897](https://github.com/anthropics/claude-code/issues/15897), closed as a
+known limitation): one hook's `updatedInput` can be silently dropped when two are registered for the
+same matcher. This is a first-run experience risk for exactly the audience most likely to try Quor
+first — developers already using a competing hook tool (RTK/Zap, Headroom AI, Comet).
+
+**Desired outcome:**
+State plainly, in both the CLI warning text and `README.md`, that only one `PreToolUse` Bash hook
+tool should be active at a time, that Claude Code has no supported way to run two safely, and that
+the warning means "disable the other tool," not "safe to ignore."
+
+**Resolution:**
+Not a code-behavior fix — a wording one, in three places:
+- `quor/cli/commands/doctor.py::_check_hook_collision()`'s warning detail now explains the actual
+  risk (silent rewrite drop) and says explicitly to disable the other tool, not just "review."
+- `quor/cli/commands/init.py`'s conflict warning (shown during `quor init --claude`) replaced
+  "Proceed only if you understand the risk" (which reads as permission to proceed) with an explicit
+  "this is not safe to leave as-is" statement.
+- `README.md`'s troubleshooting entry for the same doctor check expanded to name the specific Claude
+  Code limitation (linked), name example competing tools, and state the required action plainly.
+
+No test asserted the old exact wording for either CLI warning (checked first), so both were changed
+directly; the one existing test that does assert an exact substring
+(`test_doctor_reports_collision`'s `"1 other Bash hook(s) detected"`) was preserved as a prefix so it
+still passes unmodified.
+
+**Status:** Resolved — implemented on `feature/td-tier3-trust-credibility`.
+
+---
+
 ### QB-029
 
 **Priority:** Medium
@@ -1167,12 +1209,22 @@ shown separately without changing what "final_tokens" has historically meant. Ei
 schema/display decision, not just a code fix, which is why this is deferred rather than bundled into
 QB-017 immediately below or fixed ad hoc.
 
-**Status:** Deferred investigation. No immediate fix. Revisit as part of a future `quor gain` /
-tracking metrics redesign, not as a standalone bug fix — the current behavior is internally
-consistent and arguably defensible (the footer genuinely is extra text sent to the AI's context), so
-the right fix depends on a product decision about what "tokens saved" should mean, not just a code
-change. Unrelated to, and not fixed by, the separate `project_path` case-sensitivity and GLOB
-sibling-leakage fixes to `quor/tracking/db.py` made alongside this entry.
+**Status:** Partially resolved (Tier 3 trust/credibility pass). The underlying metrics-definition
+question — distinguishing genuine pipeline compression from tee-footer overhead in the data model
+itself — is still deferred; that still needs the product decision described above and is not
+attempted here. What *was* fixed, as a presentation-only "quick win" (`quor/cli/commands/gain.py`,
+which is documented as presentation-only and never computes a metric):
+- When `tokens_saved` is negative, `quor gain` no longer shows it as a celebratory bold-green "YOU
+  SAVED -12 tokens" (which reads as a broken feature to a new user). It now shows "NET TOKENS" in a
+  neutral style, with an inline note explaining that a negative net is possible on already-small,
+  already-clean output and does not mean compression failed.
+- Closed `RELEASE_CRITERIA.md`'s **B-S01** gate literally: the footnote now states the actual ±20%
+  uncertainty figure (`count_tokens()`'s own documented accuracy) instead of just saying
+  "approximation" without a number — also directly the "honest token metrics" gap identified in the
+  competitive research (`docs/archive/product-discovery/competitive-research.md`'s Opportunity 5).
+
+Regression test added: `tests/unit/test_cli.py::TestGain::test_negative_net_shown_as_net_not_saved`.
+No changes to `quor/tracking/db.py` or the `GainReport`/`InvocationRecord` schema — purely display.
 
 ---
 

@@ -193,6 +193,8 @@ risk for exactly the audience most likely to try Quor first (developers already 
 text that only one PreToolUse Bash hook tool should be active at a time, and that `quor doctor`'s
 warning means "disable the other one," not "safe to ignore."
 
+**Status:** Resolved — see QB-031 in `backlog.md`. Fixed on `feature/td-tier3-trust-credibility`.
+
 ### TD-010 — `__main__.py` has the lowest test coverage in the codebase (72%)
 
 **What:** Missing coverage is concentrated in the "unknown hook adapter" branch (lines ~46-48) and

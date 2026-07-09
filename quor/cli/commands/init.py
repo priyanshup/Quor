@@ -77,8 +77,10 @@ def init(
             label = f" ({tool_name})" if tool_name else ""
             console.print(f"  [yellow]• {cmd!r}{label}[/yellow]")
         console.print(
-            "[yellow]  Installing Quor alongside it is untested and may cause commands to be "
-            "double-rewritten or fail. Proceed only if you understand the risk.[/yellow]"
+            "[yellow]  Only one PreToolUse Bash hook tool can safely be active at a time — "
+            "Claude Code has no supported way to run two, and one tool's rewrite can be "
+            "silently dropped with no error. This is not safe to leave as-is: disable the "
+            "other tool before relying on Quor, don't run both side by side.[/yellow]"
         )
 
     # Default confirmation is False when conflicts exist (fail-safe).
