@@ -1,0 +1,25 @@
+PASS  src/utils/formatCurrency.test.js
+PASS  src/utils/slugify.test.js
+FAIL  src/cart/cart.test.js
+  ● cart totals › applies discount code
+    expect(received).toBe(expected)
+
+    Expected: 90
+    Received: 100
+
+      12 |   const cart = new Cart([{ price: 100 }]);
+      13 |   cart.applyDiscount('SAVE10');
+    > 14 |   expect(cart.total()).toBe(90);
+         |                        ^
+      15 | });
+
+      at Object.<anonymous> (src/cart/cart.test.js:14:24)
+      at Runtime._execModule (node_modules/jest-runtime/build/index.js:1439:24)
+      at Runtime._loadModule (node_modules/jest-runtime/build/index.js:1023:12)
+
+PASS  src/cart/shipping.test.js
+Test Suites: 1 failed, 3 passed, 4 total
+Tests:       1 failed, 11 passed, 12 total
+Snapshots:   0 total
+Time:        2.184 s
+Ran all test suites.

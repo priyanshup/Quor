@@ -1,0 +1,18 @@
+• Packages in scope: web, docs
+• Running build in 2 packages
+• Remote caching disabled
+
+web:build: cache miss, executing 3d2f8a9b1c4e5678
+web:build: > web@1.0.0 build
+web:build: > next build
+web:build: Failed to compile.
+web:build: Error: Argument of type 'string' is not assignable to parameter of type 'number'.
+web:build: ELIFECYCLE  Command failed with exit code 1.
+docs:build: cache hit, replaying output 9f8e7d6c5b4a3210
+docs:build: > docs@1.0.0 build
+docs:build: > next build
+docs:build: Compiled successfully
+
+ Tasks:    1 successful, 2 total
+Cached:    1 cached, 2 total
+  Time:    3.204s

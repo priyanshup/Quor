@@ -1,0 +1,10 @@
+ ✓ src/utils/formatCurrency.test.ts (4)
+ ✓ src/utils/slugify.test.ts (3)
+ ✓ src/cart/cart.test.ts (2)
+ ✓ src/cart/shipping.test.ts (2)
+ ✓ src/checkout/checkout.test.ts (5)
+
+ Test Files  5 passed (5)
+      Tests  16 passed (16)
+   Start at  10:05:00
+   Duration  1.88s

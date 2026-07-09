@@ -223,11 +223,19 @@ must_contain = ["hello world", "(oo)"]
 
 [[case]]
 id = "npx-prettier-check-failure"
-category = "npx"
+# QB-006C: prettier now has its own dedicated filter (node.toml), so
+# `npx prettier ...` routes there instead of the generic `npx` filter —
+# category/expected_filter updated accordingly. Known limitation: the
+# prettier filter doesn't strip npx's own auto-install preamble line ("npm
+# warn exec ..." on this sample's first line) — the same documented gap the
+# eslint filter already has for the same reason: once routed past the
+# wrapper, that generic wrapper-noise concern is intentionally out of scope
+# for the tool-specific filter. min_reduction_pct lowered to reflect this.
+category = "prettier"
 ecosystem = "JavaScript"
 command = "npx prettier --check ."
 sample_file = "samples/npx/002_prettier_check_failure.txt"
-expected_filter = "npx"
+expected_filter = "prettier"
 min_reduction_pct = 5.0
 must_contain = ["Code style issues found in 2 files", "src/components/Cart.jsx"]
 
@@ -270,6 +278,120 @@ sample_file = "samples/yarn/002_build_script_failure.txt"
 expected_filter = "yarn"
 min_reduction_pct = 15.0
 must_contain = ["error Command failed with exit code 2."]
+
+[[case]]
+id = "prettier-check-many-files"
+category = "prettier"
+ecosystem = "JavaScript"
+command = "prettier --check ."
+sample_file = "samples/prettier/001_check_many_files.txt"
+expected_filter = "prettier"
+min_reduction_pct = 5.0
+must_contain = ["Code style issues found in 5 files", "src/components/Cart.jsx", "src/utils/slugify.js"]
+
+[[case]]
+id = "tsc-repeated-type-error"
+category = "tsc"
+ecosystem = "JavaScript"
+# tsc's filter has no group_repeated stage (see node.toml's comment on why
+# shape-based collapsing is unsafe for tsc), so all 4 distinct-location
+# diagnostics survive individually; only the summary line and blank lines
+# are stripped.
+command = "tsc --noEmit"
+sample_file = "samples/tsc/001_repeated_type_error.txt"
+expected_filter = "tsc"
+min_reduction_pct = 5.0
+must_contain = ["error TS2345", "error TS2322"]
+
+[[case]]
+id = "tsc-distinct-errors"
+category = "tsc"
+ecosystem = "JavaScript"
+command = "npx tsc --noEmit"
+sample_file = "samples/tsc/002_distinct_errors_no_repetition.txt"
+expected_filter = "tsc"
+min_reduction_pct = 0.0
+must_contain = ["TS2551", "TS7006", "TS2769"]
+
+[[case]]
+id = "jest-failing-suite"
+category = "jest"
+ecosystem = "JavaScript"
+command = "jest"
+sample_file = "samples/jest/001_failing_suite.txt"
+expected_filter = "jest"
+min_reduction_pct = 15.0
+must_contain = ["FAIL  src/cart/cart.test.js", "Expected: 90", "Received: 100", "Tests:       1 failed, 11 passed, 12 total"]
+
+[[case]]
+id = "jest-all-passing"
+category = "jest"
+ecosystem = "JavaScript"
+command = "npx jest"
+sample_file = "samples/jest/002_all_passing.txt"
+expected_filter = "jest"
+min_reduction_pct = 0.0
+must_contain = ["Tests:       23 passed, 23 total"]
+
+[[case]]
+id = "vitest-failing-suite"
+category = "vitest"
+ecosystem = "JavaScript"
+command = "vitest run"
+sample_file = "samples/vitest/001_failing_suite.txt"
+expected_filter = "vitest"
+min_reduction_pct = 15.0
+must_contain = ["× applies discount code", "expected 100 to be 90", "Tests  1 failed | 10 passed (11)"]
+
+[[case]]
+id = "vitest-all-passing"
+category = "vitest"
+ecosystem = "JavaScript"
+command = "npx vitest run"
+sample_file = "samples/vitest/002_all_passing.txt"
+expected_filter = "vitest"
+min_reduction_pct = 0.0
+must_contain = ["Tests  16 passed (16)"]
+
+[[case]]
+id = "next-successful-build"
+category = "next"
+ecosystem = "JavaScript"
+command = "next build"
+sample_file = "samples/next/001_successful_build.txt"
+expected_filter = "next"
+min_reduction_pct = 15.0
+must_contain = ["Route (app)", "5.3 kB         92 kB", "First Load JS shared by all"]
+
+[[case]]
+id = "next-type-error-build-failure"
+category = "next"
+ecosystem = "JavaScript"
+command = "next build"
+sample_file = "samples/next/002_type_error_build_failure.txt"
+expected_filter = "next"
+min_reduction_pct = 0.0
+must_contain = ["Failed to compile.", "Type error: Argument of type 'string'"]
+
+[[case]]
+id = "turbo-multi-package-build"
+category = "turbo"
+ecosystem = "JavaScript"
+command = "turbo run build"
+sample_file = "samples/turbo/001_multi_package_build.txt"
+expected_filter = "turbo"
+min_reduction_pct = 5.0
+must_contain = ["web:build: Compiled successfully", "Tasks:    3 successful, 3 total", "web:build: cache miss", "docs:build: cache miss"]
+
+[[case]]
+id = "turbo-wrapped-task-failure"
+category = "turbo"
+ecosystem = "JavaScript"
+command = "turbo run build"
+sample_file = "samples/turbo/002_wrapped_task_failure.txt"
+expected_filter = "turbo"
+min_reduction_pct = 5.0
+must_contain = ["web:build: Failed to compile.", "web:build: Error: Argument of type 'string'", "Tasks:    1 successful, 2 total"]
 
 [[case]]
 id = "cat-nginx-config-comments"

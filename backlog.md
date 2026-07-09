@@ -152,9 +152,87 @@ a retention/adoption investment once there's an actual user base to retain.
 
 ## Completed Work
 
-*34 resolved items.*
+*35 resolved items.*
 
 ### High Priority
+
+#### QB-006C — Rounding out Node.js/TypeScript toolchain coverage (tsc, jest, vitest, prettier, next, turbo)
+
+**Effort:** Large · **Value:** High · **Category:** Feature
+
+QB-006A/QB-006B gave Quor generic npm/npx/pnpm/yarn noise-stripping plus ESLint-aware routing, but
+the rest of the everyday JS/TS toolchain — the TypeScript compiler, the two dominant test runners,
+the formatter, and the two most common monorepo/framework CLIs — still passed through untouched.
+This closes that gap: each of `tsc`, `jest`, `vitest`, `prettier`, `next`, and `turbo` now gets
+either its own dedicated filter or, where the tool's output is genuinely identical to one Quor
+already understands, a reuse of the existing filter.
+
+<details>
+<summary>Technical details</summary>
+
+**Problem:** `tsc`, `jest`, `vitest`, `prettier`, `next`, and `turbo` were all absent from
+`_KNOWN_BASE_COMMANDS` — invoked bare or through a wrapper, none of them were ever rewritten or
+filtered, regardless of the npm/npx/pnpm/yarn wrapper-routing QB-006B already added for `eslint`.
+`docs/final/COMMAND_SUPPORT.md` explicitly flagged `tsc` (and, implicitly, the others) as
+unsupported.
+
+**Desired outcome:** Extend `_KNOWN_BASE_COMMANDS` and `quor/filters/builtin/node.toml` to cover
+the highest-value remaining Node ecosystem tools, reusing existing filters/stages wherever the
+output shape genuinely matches, and adding a new dedicated filter only where it doesn't — without
+any schema, tracking, or fail-open behavior changes.
+
+**Resolution:**
+- **Reused, no new filter:** `next lint` runs ESLint under the hood and produces byte-identical
+  stylish-formatter output, so it's routed to the existing `eslint` filter block (added to that
+  block's own `match_command`, not a new block) — a pure reuse, zero new stage config.
+- **New dedicated filters (all in `node.toml`, all reachable bare *and* through
+  `npx`/`npm exec`/`pnpm exec`/`pnpm dlx`/`yarn exec`/bare `yarn <tool>`):**
+  - `tsc` — strips the `Found N errors...` summary and blank lines; capped at 400 tokens.
+    Deliberately **no `group_repeated` stage**: tried first with mypy's shape-based design, but
+    benchmark testing caught a real correctness bug — shape-based grouping on the generic
+    `error TS\d+:` pattern merges *unrelated* diagnostics that merely share that shape, unlike
+    mypy's narrower "same message, different line" case. Dropped it, matching ruff's existing "no
+    repetition collapsing" precedent for heterogeneous diagnostics.
+  - `jest` / `vitest` — two separate filters, not one shared: real output characteristics
+    genuinely differ (ASCII `PASS`/`FAIL` + `Test Suites:`/`Tests:` summary vs. unicode
+    `✓`/`×`/`❯`/`→` + `Test Files`/`Tests` summary). Both strip passing-test lines and
+    `node_modules`-internal stack frames (mirroring pytest's `site-packages`/`dist-packages`
+    treatment), never touch failure detail, and short-circuit on an all-passing run.
+  - `prettier` — low-noise by nature; strips only the "Checking formatting..." banner, preserves
+    every `[warn]` file line, the summary, and any error text.
+  - `next` — strips build/dev step-progress banners ("Creating an optimized production build...",
+    etc.), never touches the route-size table, compile success/failure, or type errors. Unlike
+    `npm`/`turbo`, it *does* get a `max_tokens` safety net — it's Next's own fixed pipeline
+    (bounded shape like `tsc`/`eslint`), not a wrapper around an arbitrary user script.
+  - `turbo` — strips only its own `•` preamble bullets; a wrapped task's own output
+    (`pkg:task: ...` prefixed) is never pattern-matched. Deliberately **no `max_tokens`** (same
+    "wraps arbitrary underlying scripts" reasoning as `npm`) and, after the same benchmark-driven
+    discovery as `tsc`, **no `group_repeated`** either — shape-based grouping on
+    `cache (miss|hit)` would merge a hit and a miss from two *different* packages, hiding which
+    package actually missed cache.
+- **Word-boundary hardening:** every new bare-command pattern uses `(?=\s|$)` instead of `\b`
+  (e.g. `^tsc(?=\s|$)`, not `^tsc\b`) — a plain `\b` would incorrectly match real, unrelated
+  binaries like `tsc-watch` or `jest-environment-jsdom`, since `\b` fires on the word/non-word
+  boundary between `c`/`t` and a following `-`. Added regression tests for this specifically.
+- **Classifier:** `tsc`, `jest`, `vitest`, `prettier`, `next`, `turbo` added to
+  `_KNOWN_BASE_COMMANDS` in `quor/rewrite/rules.py`.
+- **Benchmarks:** 12 new manifest cases (2 each) across `tsc`/`jest`/`vitest`/`next`/`turbo`, plus
+  a new `prettier` case; the pre-existing `npx-prettier-check-failure` case was reclassified from
+  the generic `npx` category to `prettier` now that prettier has its own filter, with an updated
+  (lower, but still correct) baseline — the compression drop for that specific sample is expected
+  and documented: the prettier filter doesn't strip a wrapping `npx`'s own auto-install preamble,
+  the same out-of-scope wrapper-layer gap `eslint`'s filter already has.
+- **Docs:** `docs/final/COMMAND_SUPPORT.md` updated (known-command list, filter table, ordering
+  rules, benchmark coverage count, removed `tsc` from the "not currently supported" list).
+
+**Status:** Resolved. `pytest tests/` (all green except one pre-existing, unrelated failure —
+`test_version_matches_pyproject`, a stale local `importlib.metadata` install artifact predating
+this work), `quor verify` (67/67 inline filter tests), `ruff check quor/ tests/`, `mypy quor/`, and
+the compression benchmark suite (40 cases, 0 unexplained regressions) all pass.
+
+</details>
+
+---
 
 #### QB-032 — Cleaning up error messages from Python test failures
 

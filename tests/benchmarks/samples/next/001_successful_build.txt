@@ -1,0 +1,18 @@
+  ▲ Next.js 14.2.3
+
+   Creating an optimized production build ...
+ ✓ Compiled successfully
+   Linting and checking validity of types ...
+   Collecting page data ...
+   Generating static pages (7/7)
+   Finalizing page optimization ...
+
+Route (app)                              Size     First Load JS
+┌ ○ /                                    5.3 kB         92 kB
+├ ○ /_not-found                          871 B          87 kB
+├ ○ /about                               182 B          87.2 kB
+├ ○ /cart                                3.1 kB         90 kB
+└ ○ /checkout                            4.8 kB         91.7 kB
++ First Load JS shared by all            87 kB
+
+○  (Static)  automatically rendered as static HTML

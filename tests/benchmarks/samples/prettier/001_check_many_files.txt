@@ -1,0 +1,7 @@
+Checking formatting...
+[warn] src/components/Cart.jsx
+[warn] src/components/Checkout.jsx
+[warn] src/components/Header.jsx
+[warn] src/utils/formatCurrency.js
+[warn] src/utils/slugify.js
+[warn] Code style issues found in 5 files. Run Prettier with --write to fix.
