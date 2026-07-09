@@ -1,0 +1,14 @@
+ ✓ src/utils/formatCurrency.test.ts (4)
+ ✓ src/utils/slugify.test.ts (3)
+ ❯ src/cart/cart.test.ts (2)
+   ✓ adds items to cart
+   × applies discount code
+     → expected 100 to be 90
+      at src/cart/cart.test.ts:14:24
+      at internal (node_modules/vitest/dist/index.js:1:1)
+ ✓ src/cart/shipping.test.ts (2)
+
+ Test Files  1 failed | 3 passed (4)
+      Tests  1 failed | 10 passed (11)
+   Start at  10:00:00
+   Duration  1.42s

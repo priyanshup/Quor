@@ -1,0 +1,9 @@
+src/models/user.ts(5,10): error TS2551: Property 'emial' does not exist on type 'User'. Did you mean 'email'?
+src/models/order.ts(22,5): error TS7006: Parameter 'total' implicitly has an 'any' type.
+src/routes/checkout.ts(60,14): error TS2769: No overload matches this call.
+Found 3 errors in 3 files.
+
+Errors  Files
+     1  src/models/user.ts:5
+     1  src/models/order.ts:22
+     1  src/routes/checkout.ts:60

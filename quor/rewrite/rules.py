@@ -25,6 +25,16 @@ _KNOWN_BASE_COMMANDS: frozenset[str] = frozenset(
                     # resolution/install preamble is generic, tool-agnostic noise
         "pnpm",     # same
         "yarn",     # same
+        "tsc",      # QB-006C: bare TypeScript compiler invocation — also
+                    # reachable wrapped (npx tsc, pnpm exec tsc, ...), see the
+                    # "tsc" filter block in node.toml
+        "jest",     # QB-006C: bare Jest invocation — also reachable wrapped
+        "vitest",   # QB-006C: bare Vitest invocation — also reachable wrapped
+        "prettier", # QB-006C: bare Prettier invocation — also reachable wrapped
+        "next",     # QB-006C: Next.js CLI (build/dev/start/lint) — a base
+                    # command in its own right, not a wrapped tool
+        "turbo",    # QB-006C: Turborepo task runner — same, wraps arbitrary
+                    # per-package scripts but is itself the invoked command
     }
 )
 

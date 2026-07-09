@@ -1,0 +1,19 @@
+• Packages in scope: web, docs, ui
+• Running build in 3 packages
+• Remote caching disabled
+
+web:build: cache miss, executing 3d2f8a9b1c4e5678
+docs:build: cache miss, executing 9f8e7d6c5b4a3210
+ui:build: cache miss, executing 1a2b3c4d5e6f7890
+web:build: > web@1.0.0 build
+web:build: > next build
+web:build: Compiled successfully
+docs:build: > docs@1.0.0 build
+docs:build: > next build
+docs:build: Compiled successfully
+ui:build: > ui@1.0.0 build
+ui:build: > tsc -p .
+
+ Tasks:    3 successful, 3 total
+Cached:    0 cached, 3 total
+  Time:    5.821s

@@ -935,3 +935,293 @@ class TestYarnFilterSafety:
         assert "success Saved lockfile." in rendered
         assert "Done in 12.34s." in rendered
         assert "Resolving packages" not in rendered
+
+
+# ---------------------------------------------------------------------------
+# tsc filter (QB-006C)
+# ---------------------------------------------------------------------------
+
+
+class TestTscFilterSafety:
+    """Real tsc diagnostic output: distinct diagnostics never merged or
+    dropped, only the summary line is removed."""
+
+    MULTI_ERROR_OUTPUT = (
+        "src/a.ts(1,1): error TS2345: Argument of type 'string' is not assignable to parameter of type 'number'.\n"
+        "src/b.ts(2,1): error TS2322: Type 'number' is not assignable to type 'string'.\n"
+        "src/c.ts(3,1): error TS7006: Parameter 'x' implicitly has an 'any' type.\n"
+        "Found 3 errors in 3 files.\n"
+    )
+
+    def test_all_distinct_diagnostics_are_not_compress(self) -> None:
+        result = _trace("tsc --noEmit", self.MULTI_ERROR_OUTPUT)
+        for fragment in ("TS2345", "TS2322", "TS7006"):
+            decisions = _decisions_for(result, fragment)
+            assert decisions, f"Expected line with {fragment!r} in mask"
+            assert Decision.COMPRESS not in decisions
+
+    def test_diagnostics_never_merged_despite_shared_shape(self) -> None:
+        """Regression: an earlier design used group_repeated with shape-based
+        matching, which silently merged unrelated errors sharing the generic
+        `error TS\\d+:` shape. tsc's filter has no group_repeated stage for
+        exactly this reason — verify all three distinct lines survive."""
+        rendered = _apply("tsc --noEmit", self.MULTI_ERROR_OUTPUT)
+        assert rendered.count("error TS") == 3
+        assert "(×" not in rendered  # noqa: RUF001
+
+    def test_summary_line_is_compress(self) -> None:
+        result = _trace("tsc --noEmit", self.MULTI_ERROR_OUTPUT)
+        decisions = _decisions_for(result, "Found 3 errors in 3 files.")
+        assert decisions
+        assert Decision.COMPRESS in decisions
+
+    def test_clean_run_returns_empty_unchanged(self) -> None:
+        """Real tsc prints nothing at all on a clean run."""
+        rendered = _apply("tsc --noEmit", "")
+        assert rendered == ""
+
+
+# ---------------------------------------------------------------------------
+# jest filter (QB-006C)
+# ---------------------------------------------------------------------------
+
+
+class TestJestFilterSafety:
+    """Real jest failing-suite output: PASS lines stripped, FAIL/assertion
+    detail and node_modules-vs-user stack frames handled correctly."""
+
+    FAILING_OUTPUT = (
+        "PASS  src/foo.test.js\n"
+        "FAIL  src/bar.test.js\n"
+        "  ● Bar suite › does a thing\n"  # noqa: RUF001
+        "    expect(received).toBe(expected)\n"
+        "    Expected: 5\n"
+        "    Received: 4\n"
+        "      at Object.<anonymous> (src/bar.test.js:10:20)\n"
+        "      at Runtime._execModule (node_modules/jest-runtime/build/index.js:1439:24)\n"
+        "Test Suites: 1 failed, 1 passed, 2 total\n"
+        "Tests:       1 failed, 5 passed, 6 total\n"
+    )
+
+    def test_pass_lines_are_compress(self) -> None:
+        result = _trace("jest", self.FAILING_OUTPUT)
+        decisions = _decisions_for(result, "PASS  src/foo.test.js")
+        assert decisions
+        assert Decision.COMPRESS in decisions
+
+    def test_fail_and_assertion_detail_never_compressed(self) -> None:
+        result = _trace("jest", self.FAILING_OUTPUT)
+        for fragment in ("FAIL  src/bar.test.js", "Expected: 5", "Received: 4"):
+            decisions = _decisions_for(result, fragment)
+            assert decisions, f"Expected line with {fragment!r} in mask"
+            assert Decision.COMPRESS not in decisions
+
+    def test_user_stack_frame_never_compressed_but_node_modules_frame_is(self) -> None:
+        result = _trace("npx jest", self.FAILING_OUTPUT)
+        user_frame = _decisions_for(result, "src/bar.test.js:10:20")
+        assert user_frame
+        assert Decision.COMPRESS not in user_frame
+
+        lib_frame = _decisions_for(result, "node_modules/jest-runtime")
+        assert lib_frame
+        assert Decision.COMPRESS in lib_frame
+
+    def test_clean_run_all_passing_unchanged(self) -> None:
+        clean = "PASS  src/foo.test.js\nTests:       1 passed, 1 total\n"
+        rendered = _apply("jest", clean)
+        assert rendered == clean
+
+
+# ---------------------------------------------------------------------------
+# vitest filter (QB-006C)
+# ---------------------------------------------------------------------------
+
+
+class TestVitestFilterSafety:
+    """Real vitest failing-suite output (unicode symbol reporter): passing
+    checkmarks stripped, failing marker/detail and summary preserved."""
+
+    FAILING_OUTPUT = (
+        " ✓ src/foo.test.ts (3)\n"
+        " ❯ src/bar.test.ts (2)\n"  # noqa: RUF001
+        "   ✓ adds numbers\n"
+        "   × subtracts numbers\n"  # noqa: RUF001
+        "     → expected 3 to be 4\n"
+        "      at internal (node_modules/vitest/dist/index.js:1:1)\n"
+        " Test Files  1 failed | 1 passed (2)\n"
+        "      Tests  1 failed | 4 passed (5)\n"
+    )
+
+    def test_passing_checkmarks_are_compress(self) -> None:
+        result = _trace("vitest run", self.FAILING_OUTPUT)
+        decisions = _decisions_for(result, "src/foo.test.ts (3)")
+        assert decisions
+        assert Decision.COMPRESS in decisions
+
+    def test_failing_marker_and_detail_never_compressed(self) -> None:
+        result = _trace("vitest run", self.FAILING_OUTPUT)
+        for fragment in ("subtracts numbers", "expected 3 to be 4", "Test Files  1 failed"):
+            decisions = _decisions_for(result, fragment)
+            assert decisions, f"Expected line with {fragment!r} in mask"
+            assert Decision.COMPRESS not in decisions
+
+    def test_node_modules_frame_is_compress(self) -> None:
+        result = _trace("npx vitest run", self.FAILING_OUTPUT)
+        decisions = _decisions_for(result, "node_modules/vitest")
+        assert decisions
+        assert Decision.COMPRESS in decisions
+
+    def test_clean_run_all_passing_unchanged(self) -> None:
+        clean = " ✓ src/foo.test.ts (2)\n Test Files  1 passed (1)\n"
+        rendered = _apply("vitest run", clean)
+        assert rendered == clean
+
+
+# ---------------------------------------------------------------------------
+# prettier filter (QB-006C)
+# ---------------------------------------------------------------------------
+
+
+class TestPrettierFilterSafety:
+    """Real prettier --check output: banner stripped, warn files and
+    summary survive; syntax errors always survive."""
+
+    CHECK_OUTPUT = (
+        "Checking formatting...\n"
+        "[warn] src/foo.js\n"
+        "[warn] src/bar.js\n"
+        "[warn] Code style issues found in 2 files. Run Prettier with --write to fix.\n"
+    )
+
+    def test_banner_is_compress(self) -> None:
+        result = _trace("prettier --check .", self.CHECK_OUTPUT)
+        decisions = _decisions_for(result, "Checking formatting...")
+        assert decisions
+        assert Decision.COMPRESS in decisions
+
+    def test_warn_files_and_summary_never_compressed(self) -> None:
+        result = _trace("prettier --check .", self.CHECK_OUTPUT)
+        for fragment in ("src/foo.js", "src/bar.js", "Code style issues found in 2 files"):
+            decisions = _decisions_for(result, fragment)
+            assert decisions, f"Expected line with {fragment!r} in mask"
+            assert Decision.COMPRESS not in decisions
+
+    def test_syntax_error_never_compressed(self) -> None:
+        error_output = "[error] src/broken.js: SyntaxError: Unexpected token (10:2)\n"
+        result = _trace("npx prettier .", error_output)
+        decisions = _decisions_for(result, "SyntaxError: Unexpected token")
+        assert decisions
+        assert Decision.COMPRESS not in decisions
+
+    def test_clean_run_unchanged(self) -> None:
+        clean = "Checking formatting...\nAll matched files use Prettier code style!\n"
+        rendered = _apply("prettier --check .", clean)
+        assert "All matched files use Prettier code style!" in rendered
+
+
+# ---------------------------------------------------------------------------
+# next filter (QB-006C)
+# ---------------------------------------------------------------------------
+
+
+class TestNextFilterSafety:
+    """Real next build output: step banners stripped, route table and
+    compile-failure/type-error output always survive."""
+
+    SUCCESSFUL_BUILD_OUTPUT = (
+        "  ▲ Next.js 14.2.3\n"
+        "\n"
+        "   Creating an optimized production build ...\n"
+        " ✓ Compiled successfully\n"
+        "   Linting and checking validity of types ...\n"
+        "\n"
+        "Route (app)                              Size     First Load JS\n"
+        "┌ ○ /                                    5.3 kB         92 kB\n"
+        "+ First Load JS shared by all            87 kB\n"
+    )
+
+    FAILING_BUILD_OUTPUT = (
+        "   Creating an optimized production build ...\n"
+        "Failed to compile.\n"
+        "\n"
+        "./src/app/page.tsx:10:5\n"
+        "Type error: Argument of type 'string' is not assignable to parameter of type 'number'.\n"
+    )
+
+    def test_step_banners_are_compress(self) -> None:
+        result = _trace("next build", self.SUCCESSFUL_BUILD_OUTPUT)
+        decisions = _decisions_for(result, "Creating an optimized production build")
+        assert decisions
+        assert Decision.COMPRESS in decisions
+
+    def test_route_table_never_compressed(self) -> None:
+        result = _trace("next build", self.SUCCESSFUL_BUILD_OUTPUT)
+        for fragment in ("Route (app)", "5.3 kB         92 kB", "First Load JS shared by all"):
+            decisions = _decisions_for(result, fragment)
+            assert decisions, f"Expected line with {fragment!r} in mask"
+            assert Decision.COMPRESS not in decisions
+
+    def test_build_failure_and_type_error_never_compressed(self) -> None:
+        result = _trace("next build", self.FAILING_BUILD_OUTPUT)
+        for fragment in ("Failed to compile.", "Type error: Argument of type 'string'"):
+            decisions = _decisions_for(result, fragment)
+            assert decisions, f"Expected line with {fragment!r} in mask"
+            assert Decision.COMPRESS not in decisions
+
+
+# ---------------------------------------------------------------------------
+# turbo filter (QB-006C)
+# ---------------------------------------------------------------------------
+
+
+class TestTurboFilterSafety:
+    """Real turbo multi-package output: preamble bullets stripped, per-package
+    task output and task summary always survive, mixed cache hit/miss lines
+    never merged."""
+
+    MULTI_PACKAGE_OUTPUT = (
+        "• Packages in scope: web, docs\n"
+        "• Running build in 2 packages\n"
+        "• Remote caching disabled\n"
+        "\n"
+        "web:build: cache miss, executing abc123\n"
+        "docs:build: cache hit, replaying def456\n"
+        "web:build: > next build\n"
+        "web:build: Failed to compile.\n"
+        "web:build: Error: something broke\n"
+        "\n"
+        " Tasks:    1 successful, 2 total\n"
+        "Cached:    1 cached, 2 total\n"
+        "  Time:    3.821s\n"
+    )
+
+    def test_preamble_bullets_are_compress(self) -> None:
+        result = _trace("turbo run build", self.MULTI_PACKAGE_OUTPUT)
+        decisions = _decisions_for(result, "Packages in scope")
+        assert decisions
+        assert Decision.COMPRESS in decisions
+
+    def test_wrapped_task_failure_never_compressed(self) -> None:
+        result = _trace("turbo run build", self.MULTI_PACKAGE_OUTPUT)
+        for fragment in ("web:build: Failed to compile.", "web:build: Error: something broke"):
+            decisions = _decisions_for(result, fragment)
+            assert decisions, f"Expected line with {fragment!r} in mask"
+            assert Decision.COMPRESS not in decisions
+
+    def test_mixed_cache_status_lines_never_merged(self) -> None:
+        """Regression: an earlier design used group_repeated with shape-based
+        matching on `cache (miss|hit)`, which would merge a hit and a miss
+        from two different packages together. Verify both survive distinctly."""
+        result = _trace("turbo run build", self.MULTI_PACKAGE_OUTPUT)
+        for fragment in ("web:build: cache miss", "docs:build: cache hit"):
+            decisions = _decisions_for(result, fragment)
+            assert decisions, f"Expected line with {fragment!r} in mask"
+            assert Decision.COMPRESS not in decisions
+        rendered = _apply("turbo run build", self.MULTI_PACKAGE_OUTPUT)
+        assert "(×" not in rendered  # noqa: RUF001
+
+    def test_task_summary_never_compressed(self) -> None:
+        result = _trace("turbo run build", self.MULTI_PACKAGE_OUTPUT)
+        decisions = _decisions_for(result, "Tasks:    1 successful, 2 total")
+        assert decisions
+        assert Decision.COMPRESS not in decisions

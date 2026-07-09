@@ -1,21 +1,34 @@
-# quor built-in filter: Node.js ecosystem wrapper noise (QB-006A) and
-# tool-aware routing through the wrapper (QB-006B)
+# quor built-in filter: Node.js ecosystem wrapper noise (QB-006A), tool-aware
+# routing through the wrapper (QB-006B), and dedicated filters for the rest of
+# the high-value Node/JS toolchain (QB-006C: tsc, jest, vitest, prettier,
+# next, turbo).
 #
 # Generic-only for the npm/npx/pnpm/yarn blocks: strips noise that these
 # wrappers themselves print on every invocation (progress ticks, funding/audit
 # nags, deprecation warning spam, step banners) regardless of what subcommand
 # or wrapped script is running.
 #
-# QB-006B (this file's FIRST filter block, "eslint"): when the wrapped tool's
-# name is *literally present in the command string* (`npx eslint`, `npm exec
-# eslint`, `pnpm exec/dlx eslint`, `yarn exec eslint`, bare `yarn eslint`),
-# route to that tool's own filter instead of the generic wrapper filter — pure
-# command-string pattern matching, no content-based routing, no package.json
-# inspection. `[[filter]]` blocks in a TOML file are tried in declaration
-# order (see FilterRegistry.find()'s first-match-wins semantics), so the
-# eslint block MUST stay before the generic npm/npx/pnpm/yarn blocks below —
-# the same specificity-via-ordering idiom used for cat-python.toml vs cat.toml
-# in QB-005, just within one file instead of across two.
+# QB-006B/QB-006C (this file's tool-aware blocks — eslint, tsc, jest, vitest,
+# prettier): when the wrapped tool's name is *literally present in the command
+# string* (`npx eslint`, `npm exec eslint`, `pnpm exec/dlx eslint`, `yarn exec
+# eslint`, bare `yarn eslint`), route to that tool's own filter instead of the
+# generic wrapper filter — pure command-string pattern matching, no
+# content-based routing, no package.json inspection. Each of these tools is
+# also directly known as a bare invocation (`tsc`, `jest`, `vitest`,
+# `prettier` — see `_KNOWN_BASE_COMMANDS` in quor/rewrite/rules.py), since all
+# four are commonly run directly (globally installed, or via a `node_modules/
+# .bin`-augmented PATH) as well as through a wrapper. `[[filter]]` blocks in a
+# TOML file are tried in declaration order (see FilterRegistry.find()'s
+# first-match-wins semantics), so every tool-aware block MUST stay before the
+# generic npm/npx/pnpm/yarn blocks below — the same specificity-via-ordering
+# idiom used for cat-python.toml vs cat.toml in QB-005, just within one file
+# instead of across two.
+#
+# `next lint` is also routed to the eslint filter (added to the eslint
+# block's own match_command, not a separate block): Next.js's `next lint`
+# subcommand runs ESLint under the hood and produces byte-identical stylish
+# output, so this is a pure reuse of the existing filter — no new stages, no
+# duplicated stage config. See §"eslint" below.
 #
 # `npm test` / `npm run build` / `npm run lint` / any `<wrapper> run <script>`
 # form is deliberately NOT matched here and never will be: the script name is
@@ -31,16 +44,24 @@
 # other built-in filters: they can all wrap an arbitrary-length underlying
 # command (`npm test`, `npm run build`, `npx jest`, `pnpm run x`, `yarn
 # build`), and a token-budget stage would risk truncating that wrapped tool's
-# real, actionable output. The eslint filter below DOES use max_tokens,
-# because once routed there the wrapped tool is *known* (ESLint's own output
-# shape), matching the same precedent as mypy/ruff in build.toml.
+# real, actionable output. The same reasoning applies to `turbo` below — it
+# executes arbitrary per-package scripts, so it also has no max_tokens stage.
+# `next` (build/dev/start) is different: unlike npm/turbo it isn't a generic
+# wrapper around an arbitrary user-defined script, it's Next.js's own fixed
+# build/dev pipeline (bounded output shape, like tsc/eslint), so it gets a
+# max_tokens safety net like the other tool-aware filters below.
+# eslint/tsc/jest/vitest/prettier all use max_tokens because once routed
+# there the wrapped tool is *known* (a fixed output shape), matching the same
+# precedent as mypy/ruff in build.toml.
 #
 # Composed entirely from existing stage types (remove_ansi, group_repeated,
 # strip_lines, deduplicate_consecutive, max_tokens) — no new stage, no
 # registry/dispatcher/Pipeline/Engine/ContentMask/StageHandler change.
 # Requires npm/npx/pnpm/yarn to be known base commands rather than
 # transparent prefixes (see quor/rewrite/rules.py, QB-006A) so their output is
-# ever routed through Quor at all; QB-006B adds no further classifier change.
+# ever routed through Quor at all; tsc/jest/vitest/prettier/next/turbo are
+# added as known base commands in their own right for QB-006C (some are also
+# reachable wrapped, matched by the same filter's match_command regex).
 schema_version = 1
 
 # ---------------------------------------------------------------------------
@@ -49,7 +70,7 @@ schema_version = 1
 
 [[filter]]
 name = "eslint"
-match_command = '^(npx|npm exec|pnpm exec|pnpm dlx|yarn exec|yarn)\s+(-\S+\s+)*(--\s+)?eslint(?=\s|$)'
+match_command = '^(npx|npm exec|pnpm exec|pnpm dlx|yarn exec|yarn)\s+(-\S+\s+)*(--\s+)?eslint(?=\s|$)|^next\s+lint(?=\s|$)'
 abort_unless = ["error", "warning", "problem"]
 on_empty = "eslint: no issues found."
 
@@ -105,6 +126,256 @@ must_contain = ["1:1", "2:1", "3:1", "4:1", "✖ 4 problems (4 errors, 0 warning
 description = "Fixable-with-fix note and single violation preserved"
 input = "/src/b.js\n  5:10  error  Unexpected console statement  no-console\n\n✖ 1 problem (1 error, 0 warnings)\n  1 error and 0 warnings potentially fixable with the `--fix` option.\n"
 must_contain = ["no-console", "✖ 1 problem", "potentially fixable"]
+
+[[filter.tests]]
+description = "QB-006C: next lint (ESLint under the hood) routes to this same filter"
+input = "./src/index.js\n  12:5   error    'foo' is defined but never used  no-unused-vars\n\n✖ 1 problem (1 error, 0 warnings)\n"
+must_contain = ["no-unused-vars", "✖ 1 problem (1 error, 0 warnings)"]
+
+# ---------------------------------------------------------------------------
+# tsc — TypeScript compiler diagnostics (QB-006C)
+# ---------------------------------------------------------------------------
+
+[[filter]]
+name = "tsc"
+match_command = '^tsc(?=\s|$)|^(npx|npm exec|pnpm exec|pnpm dlx|yarn exec|yarn)\s+(-\S+\s+)*(--\s+)?tsc(?=\s|$)'
+abort_unless = ["error", "Error"]
+on_empty = "tsc: no issues found."
+
+[[filter.stages]]
+type = "remove_ansi"
+
+[[filter.stages]]
+type = "strip_lines"
+# Deliberately no group_repeated stage, unlike mypy in build.toml — tried
+# first, but rejected after benchmark testing exposed a real correctness
+# problem: shape-based grouping (exact_match=false) treats *any* two lines
+# matching the same generic `error TS\d+:` shape as "the same repetition",
+# regardless of whether the error code/message actually matches. mypy's
+# single-project-message-repetition scenario rarely hits this because its
+# samples/tests happen to keep distinct errors non-adjacent, but tsc
+# realistically produces long runs of genuinely *different* diagnostics
+# back-to-back (one per file, one per call site) far more often — so the
+# same shape-based collapsing would silently merge unrelated errors and
+# lose their distinct text. Same conclusion ruff.toml already reached for
+# lint violations ("No repetition collapsing... a lint rule violated 50
+# times produces 50 lines, unlike mypy") — tsc gets the same treatment.
+patterns = [
+    '^Found \d+ errors?( in \d+ files?)?\.?$',
+    '^\s*$',
+]
+preserve_patterns = [
+    # Deliberately specific to the real diagnostic-line shape
+    # (`error TSxxxx:`), not a bare `(?i)error` — the latter would also
+    # match (and thus protect from stripping) the "Found N errors" summary
+    # line itself, since "errors" contains "error". Same reasoning as
+    # mypy's `error:` preserve pattern in build.toml.
+    'error TS\d+:',
+]
+
+[[filter.stages]]
+type = "max_tokens"
+limit = 400
+strategy = "tail"
+
+[[filter.tests]]
+description = "Diagnostics and summary line preserved for bare tsc"
+input = "src/foo.ts(10,5): error TS2345: Argument of type 'string' is not assignable to parameter of type 'number'.\nFound 1 error in 1 file.\n"
+must_contain = ["error TS2345", "Argument of type 'string'"]
+
+[[filter.tests]]
+description = "abort_unless: clean run (tsc prints nothing on success) is untouched"
+input = ""
+must_contain = []
+
+[[filter.tests]]
+description = "Summary line stripped when errors are present"
+input = "src/foo.ts(10,5): error TS2345: Argument of type 'string' is not assignable to parameter of type 'number'.\nFound 1 error in 1 file.\n"
+must_not_contain = ["Found 1 error"]
+
+[[filter.tests]]
+description = "Distinct diagnostics on different lines/files all preserved, never merged"
+input = "src/a.ts(1,1): error TS2345: Argument mismatch.\nsrc/b.ts(2,1): error TS2322: Type mismatch.\nsrc/c.ts(3,1): error TS7006: Implicit any.\nFound 3 errors in 3 files.\n"
+must_contain = ["src/a.ts(1,1)", "src/b.ts(2,1)", "src/c.ts(3,1)", "TS2345", "TS2322", "TS7006"]
+must_not_contain = ["(×", "Found 3 errors"]
+
+[[filter.tests]]
+description = "Routed correctly via npx/pnpm wrapper forms"
+input = "src/index.ts(3,7): error TS7006: Parameter 'x' implicitly has an 'any' type.\nFound 1 error in 1 file.\n"
+must_contain = ["TS7006"]
+
+# ---------------------------------------------------------------------------
+# jest — test runner (QB-006C)
+# ---------------------------------------------------------------------------
+
+[[filter]]
+name = "jest"
+match_command = '^jest(?=\s|$)|^(npx|npm exec|pnpm exec|pnpm dlx|yarn exec|yarn)\s+(-\S+\s+)*(--\s+)?jest(?=\s|$)'
+abort_unless = ["FAIL ", "●"]
+on_empty = "jest: no issues found."
+
+[[filter.stages]]
+type = "remove_ansi"
+
+[[filter.stages]]
+type = "strip_lines"
+patterns = [
+    '^PASS\s+\S',
+    '^Ran all test suites',
+    # Framework-internal stack frames through node_modules — same
+    # user-frame-vs-library-frame distinction pytest.toml makes for
+    # site-packages/dist-packages; the failing assertion and the user's own
+    # frame always survive since only lines mentioning node_modules match.
+    '(?i)^\s*at .*node_modules[\\/]',
+]
+preserve_patterns = [
+    '^FAIL\s',
+    '●',
+    '(?i)error',
+    'AssertionError',
+    'Expected:',
+    'Received:',
+    '^Test Suites:',
+    '^Tests:',
+]
+
+[[filter.stages]]
+type = "deduplicate_consecutive"
+
+[[filter.stages]]
+type = "max_tokens"
+limit = 500
+strategy = "tail"
+
+[[filter.tests]]
+description = "PASS suite lines stripped; FAIL and failure detail preserved"
+input = "PASS  src/foo.test.js\nFAIL  src/bar.test.js\n  ● Bar suite › does a thing\n    expect(received).toBe(expected)\n    Expected: 5\n    Received: 4\nTest Suites: 1 failed, 1 passed, 2 total\nTests:       1 failed, 5 passed, 6 total\n"
+must_contain = ["FAIL  src/bar.test.js", "Expected: 5", "Received: 4", "Tests:       1 failed, 5 passed, 6 total"]
+must_not_contain = ["PASS  src/foo.test.js"]
+
+[[filter.tests]]
+description = "abort_unless: all-passing run returned unchanged"
+input = "PASS  src/foo.test.js\nPASS  src/bar.test.js\nTest Suites: 2 passed, 2 total\nTests:       6 passed, 6 total\nRan all test suites.\n"
+must_contain = ["PASS  src/foo.test.js", "Ran all test suites."]
+
+[[filter.tests]]
+description = "node_modules internal frames stripped; user's own frame kept"
+input = "FAIL  src/bar.test.js\n  ● does a thing\n    Error: boom\n      at Object.<anonymous> (src/bar.test.js:10:20)\n      at Runtime._execModule (node_modules/jest-runtime/build/index.js:1439:24)\n"
+must_contain = ["src/bar.test.js:10:20", "Error: boom"]
+must_not_contain = ["node_modules/jest-runtime"]
+
+[[filter.tests]]
+description = "Routed correctly via yarn bare shorthand"
+input = "FAIL  src/a.test.js\nTests:       1 failed, 0 passed, 1 total\n"
+must_contain = ["FAIL  src/a.test.js"]
+
+# ---------------------------------------------------------------------------
+# vitest — test runner with distinct symbol-based reporter output (QB-006C)
+# ---------------------------------------------------------------------------
+
+[[filter]]
+name = "vitest"
+match_command = '^vitest(?=\s|$)|^(npx|npm exec|pnpm exec|pnpm dlx|yarn exec|yarn)\s+(-\S+\s+)*(--\s+)?vitest(?=\s|$)'
+abort_unless = ["×", "FAIL"]
+on_empty = "vitest: no issues found."
+
+[[filter.stages]]
+type = "remove_ansi"
+
+[[filter.stages]]
+type = "strip_lines"
+patterns = [
+    '^\s*✓\s',
+    '(?i)^\s*at .*node_modules[\\/]',
+]
+preserve_patterns = [
+    '×',
+    '❯',
+    '→',
+    '(?i)error',
+    'expected',
+    '^\s*Test Files',
+    '^\s*Tests\s',
+    '^\s*Duration',
+]
+
+[[filter.stages]]
+type = "deduplicate_consecutive"
+
+[[filter.stages]]
+type = "max_tokens"
+limit = 500
+strategy = "tail"
+
+[[filter.tests]]
+description = "Passing checkmarks stripped; failing marker and detail preserved"
+input = " ✓ src/foo.test.ts (3)\n ❯ src/bar.test.ts (2)\n   ✓ adds numbers\n   × subtracts numbers\n     → expected 3 to be 4\n Test Files  1 failed | 1 passed (2)\n      Tests  1 failed | 3 passed (4)\n"
+must_contain = ["× subtracts numbers", "expected 3 to be 4", "Test Files  1 failed | 1 passed (2)"]
+must_not_contain = ["✓ src/foo.test.ts", "✓ adds numbers"]
+
+[[filter.tests]]
+description = "abort_unless: all-passing run returned unchanged"
+input = " ✓ src/foo.test.ts (2)\n Test Files  1 passed (1)\n      Tests  2 passed (2)\n"
+must_contain = ["✓ src/foo.test.ts (2)"]
+
+[[filter.tests]]
+description = "node_modules internal frames stripped from a failing test"
+input = " ❯ src/bar.test.ts (1)\n   × fails\n     → boom\n      at internal (node_modules/vitest/dist/index.js:1:1)\n"
+must_contain = ["× fails", "boom"]
+must_not_contain = ["node_modules/vitest"]
+
+[[filter.tests]]
+description = "Distinct unicode summary format (not confused with jest's ASCII format)"
+input = " ❯ src/bar.test.ts (1)\n   × fails\n Test Files  1 failed (1)\n      Tests  1 failed (1)\n"
+must_contain = ["Test Files  1 failed (1)", "Tests  1 failed (1)"]
+
+# ---------------------------------------------------------------------------
+# prettier — code formatter, low-noise by nature (QB-006C)
+# ---------------------------------------------------------------------------
+
+[[filter]]
+name = "prettier"
+match_command = '^prettier(?=\s|$)|^(npx|npm exec|pnpm exec|pnpm dlx|yarn exec|yarn)\s+(-\S+\s+)*(--\s+)?prettier(?=\s|$)'
+abort_unless = ["[warn]", "Code style issues", "error", "Error"]
+on_empty = "prettier: no issues found."
+
+[[filter.stages]]
+type = "remove_ansi"
+
+[[filter.stages]]
+type = "strip_lines"
+patterns = [
+    '^Checking formatting\.\.\.$',
+]
+preserve_patterns = [
+    '\[warn\]',
+    'Code style issues',
+    '(?i)error',
+]
+
+[[filter.stages]]
+type = "deduplicate_consecutive"
+
+[[filter.stages]]
+type = "max_tokens"
+limit = 400
+strategy = "tail"
+
+[[filter.tests]]
+description = "Checking-formatting banner stripped; warn files and summary preserved"
+input = "Checking formatting...\n[warn] src/foo.js\n[warn] src/bar.js\n[warn] Code style issues found in 2 files. Run Prettier with --write to fix.\n"
+must_contain = ["[warn] src/foo.js", "[warn] src/bar.js", "Code style issues found in 2 files"]
+must_not_contain = ["Checking formatting..."]
+
+[[filter.tests]]
+description = "abort_unless: clean --check run returned unchanged"
+input = "Checking formatting...\nAll matched files use Prettier code style!\n"
+must_contain = ["All matched files use Prettier code style!"]
+
+[[filter.tests]]
+description = "Syntax error output preserved"
+input = "[error] src/broken.js: SyntaxError: Unexpected token (10:2)\n"
+must_contain = ["SyntaxError: Unexpected token"]
 
 # ---------------------------------------------------------------------------
 # npm — install/ci/update/audit/etc. wrapper noise
@@ -320,4 +591,127 @@ must_not_contain = ["Resolving packages", "Fetching packages", "Linking dependen
 description = "Repeated peer-dependency warnings collapse; command failure preserved"
 input = "warning \"eslint > file-entry-cache@6.0.1\" has unmet peer dependency \"flat-cache@^3.0.4\".\nwarning \"eslint > table@6.8.1\" has unmet peer dependency \"ajv@^8.0.1\".\nerror Command failed with exit code 1.\n"
 must_contain = ["unmet peer dependency", "(×2)", "error Command failed with exit code 1."]
+
+# ---------------------------------------------------------------------------
+# next — Next.js CLI: build/dev/start step noise (QB-006C)
+#
+# `next lint` is NOT handled here — it's routed to the eslint filter above
+# (added to that filter's own match_command), since it runs ESLint under the
+# hood and produces identical output. Because the eslint `[[filter]]` block
+# is declared earlier in this file, first-match-wins already sends `next
+# lint` there before this broader `next` block is ever considered — no
+# negative lookahead needed, same ordering idiom as everywhere else in this
+# file.
+# ---------------------------------------------------------------------------
+
+[[filter]]
+name = "next"
+match_command = '^next(?=\s|$)'
+
+[[filter.stages]]
+type = "remove_ansi"
+
+[[filter.stages]]
+type = "strip_lines"
+patterns = [
+    '^\s*▲ Next\.js',
+    '(?i)^\s*Creating an optimized production build \.\.\.\s*$',
+    '(?i)^\s*Linting and checking validity of types \.\.\.\s*$',
+    '(?i)^\s*Collecting page data \.\.\.\s*$',
+    '(?i)^\s*Generating static pages \(\d+/\d+\)\s*$',
+    '(?i)^\s*Finalizing page optimization \.\.\.\s*$',
+    '^\s*$',
+]
+preserve_patterns = [
+    '(?i)error',
+    '(?i)warning',
+    '(?i)failed to compile',
+    'Route \(',
+    'First Load JS',
+    '✓ Compiled',
+]
+
+[[filter.stages]]
+type = "deduplicate_consecutive"
+
+[[filter.stages]]
+type = "max_tokens"
+limit = 500
+strategy = "tail"
+
+[[filter.tests]]
+description = "Step banners stripped; route size table and compiled marker preserved"
+input = "  ▲ Next.js 14.2.3\n\n   Creating an optimized production build ...\n ✓ Compiled successfully\n   Linting and checking validity of types ...\n   Collecting page data ...\n   Generating static pages (5/5)\n   Finalizing page optimization ...\n\nRoute (app)                              Size     First Load JS\n┌ ○ /                                    5.3 kB         92 kB\n└ ○ /about                               182 B          87.2 kB\n+ First Load JS shared by all            87 kB\n"
+must_contain = ["✓ Compiled successfully", "Route (app)", "5.3 kB         92 kB", "First Load JS shared by all"]
+must_not_contain = ["Creating an optimized production build", "Collecting page data", "Generating static pages"]
+
+[[filter.tests]]
+description = "Build failure and type error preserved"
+input = "  ▲ Next.js 14.2.3\n\n   Creating an optimized production build ...\nFailed to compile.\n\n./src/app/page.tsx:10:5\nType error: Argument of type 'string' is not assignable to parameter of type 'number'.\n"
+must_contain = ["Failed to compile.", "Type error: Argument of type 'string'"]
+must_not_contain = ["Creating an optimized production build"]
+
+[[filter.tests]]
+description = "Repeated hot-reload compiled lines during next dev collapse via dedup"
+input = " ✓ Compiled /page in 120ms\n ✓ Compiled /page in 120ms\n ✓ Compiled /page in 95ms\n"
+must_contain = ["✓ Compiled /page in 120ms", "✓ Compiled /page in 95ms"]
+
+# ---------------------------------------------------------------------------
+# turbo — Turborepo task runner: wraps arbitrary per-package scripts (QB-006C)
+#
+# Like npm/npx/pnpm/yarn above, turbo executes arbitrary user-defined scripts
+# per package/task — so, same reasoning, no max_tokens stage here: it would
+# risk truncating a wrapped task's real, actionable output. Only turbo's own
+# preamble/cache-status lines are touched; a wrapped task's own output
+# (prefixed `package:task: `) is never pattern-matched by this filter.
+# ---------------------------------------------------------------------------
+
+[[filter]]
+name = "turbo"
+match_command = '^turbo(?=\s|$)'
+
+[[filter.stages]]
+type = "remove_ansi"
+
+[[filter.stages]]
+type = "strip_lines"
+# Deliberately no group_repeated stage here (tried first, then rejected —
+# same conclusion as tsc above): shape-based grouping on
+# `<pkg>:<task>: cache (miss|hit)` would collapse a "cache hit" and a
+# "cache miss" line from two *different* packages together just because
+# they share the shape, silently hiding which specific package actually
+# missed cache — real information a monorepo build debugging session
+# needs. Each per-package cache-status line is left as its own line, same
+# treatment `git status`'s per-file lines get.
+patterns = [
+    '^• (Packages in scope|Running \S+ in \d+ packages?|Remote caching)',
+]
+preserve_patterns = [
+    '(?i)error',
+    '(?i)failed',
+    '^FAIL\b',
+    '^\s*Tasks:',
+    '^Cached:',
+    '^\s*Time:',
+]
+
+[[filter.stages]]
+type = "deduplicate_consecutive"
+
+[[filter.tests]]
+description = "Preamble bullets stripped; task summary preserved"
+input = "• Packages in scope: web, docs\n• Running build in 2 packages\n• Remote caching disabled\n\nweb:build: > next build\ndocs:build: > next build\n\n Tasks:    2 successful, 2 total\nCached:    0 cached, 2 total\n  Time:    3.821s\n"
+must_contain = ["web:build: > next build", "Tasks:    2 successful, 2 total", "Time:    3.821s"]
+must_not_contain = ["Packages in scope", "Running build in 2 packages", "Remote caching disabled"]
+
+[[filter.tests]]
+description = "Per-package cache-status lines survive individually, mixed hit/miss never merged"
+input = "web:build: cache miss, executing abc123\ndocs:build: cache hit, replaying def456\nutils:build: cache miss, executing 789xyz\n\n Tasks:    3 successful, 3 total\n"
+must_contain = ["web:build: cache miss", "docs:build: cache hit", "utils:build: cache miss", "Tasks:    3 successful, 3 total"]
+must_not_contain = ["(×"]
+
+[[filter.tests]]
+description = "Wrapped task's own failure output survives untouched"
+input = "web:build: > next build\nweb:build: Failed to compile.\nweb:build: Error: something broke\n\n Tasks:    0 successful, 1 total\n"
+must_contain = ["web:build: Failed to compile.", "web:build: Error: something broke", "Tasks:    0 successful, 1 total"]
 must_not_contain = ["table@6.8.1"]
