@@ -42,6 +42,10 @@ Quor does not change what a command does, what it's allowed to access, or what i
 4. **Important information is preserved.** Failures, diffs, errors, and anything matching a "protect" rule are never removed, no matter what else a filter is configured to strip.
 5. **The optimized output is sent to the AI assistant.** A smaller, higher-signal version of the same output — never a summarized or reworded one.
 
+Two other things happen automatically, both to stderr only — the AI's actual context (stdout) is never affected by either:
+- **Secret detection.** If a known token pattern (GitHub, AWS, Slack, a private key header) survives compression, Quor warns on stderr. It never redacts or removes the secret — this is a heads-up, not a filter.
+- **First-run tips.** Your first 5 filtered commands each print a one-line stats summary to stderr (tokens before/after, and a pointer to `quor gain`). Silent from the 6th command onward.
+
 ---
 
 ## Performance & Token Reduction

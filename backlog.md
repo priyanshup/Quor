@@ -805,8 +805,40 @@ they get implemented and tested per this project's Rule 1 (test requirement) and
 (competitor-first design, given the competitive-research cross-reference above) before Public Alpha is
 declared complete.
 
-**Status:** Open — not yet scheduled. Flagged by the gate walk, not fixed as part of it (implementing
-two new features was out of scope for a gate-walk-and-record task).
+**Resolution:** Both implemented as dispatcher-level, cross-cutting concerns (like `tee.py` — neither
+touches `ContentMask`/`Pipeline`/`StageHandler`), per Rule 4's consultation of the competitive
+research cited above:
+
+- **PA-F07:** `quor/pipeline/secrets.py::scan_for_secrets()` — a small, deliberately narrow set of
+  high-confidence token patterns (GitHub, AWS access key ID, Slack, private key headers), not generic
+  entropy-based heuristics, matching the research's own "Medium FP" caution for this category.
+  Detection only — never redacts. Called from `quor/adapters/dispatcher.py` right before every
+  `sys.stdout.write` (both the passthrough and filtered branches, since a secret can appear in either),
+  wrapped in the same fail-open `try/except` pattern as every other dispatcher-level concern.
+- **PA-F08:** `quor/pipeline/onboarding.py::record_filtered_command()` — a small atomically-written
+  counter file (tempfile + `os.replace`, the same pattern as `init.py`'s settings writes), scoped
+  globally per machine rather than per-project (onboarding describes a new user's first experience
+  with the tool, not with any one project). Deliberately lighter-weight than tee's SQLite-based state
+  file: the stakes of a lost race here are a cosmetic double-print at most, not data corruption, so
+  tee's WAL-mode machinery would be disproportionate. Called from the dispatcher's filtered
+  (non-passthrough) branch only, matching "first 5 *filtered* commands."
+
+**Found and fixed during implementation, before it shipped:** dogfooding the onboarding tip
+immediately surfaced the exact QB-017 phenomenon in a new place — a small/already-clean output's tee
+footer overhead produced a tip reading "compressed 'mypy' output from 34 to 55 tokens (~-62%
+smaller)," which would look exactly like a broken feature in a new user's very first impression of
+the tool. Fixed with the same reframing QB-017 already applied to `quor gain`: a net-negative result
+is shown as a neutral "already small/clean output" note instead of a misleading negative percentage.
+
+Tests: `tests/unit/test_secrets.py` (10 tests), `tests/unit/test_onboarding.py` (7 tests, 100%
+coverage, including the corrupted-state-file and write-failure boundary cases per Rule 1), plus three
+new dispatcher-level tests in `tests/unit/test_adapters.py::TestDispatcher` (a real secret surviving
+compression warns but stdout is never redacted; no false-positive warning on clean output; 5
+consecutive filtered dispatches each tip, the 6th is silent).
+
+**Status:** Resolved — implemented on `feature/qb-029-secret-detection-onboarding`. Full `pytest
+tests/` (1020 passed), `pytest tests/ -m integration` (9 passed), `ruff check`, `mypy quor/`, and
+`quor verify` (44/44) all pass.
 
 ---
 

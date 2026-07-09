@@ -37,12 +37,12 @@ evidence below, or (IA-F03 only) the closest available proxy — a real,
 unmocked hook-payload round trip for all five listed commands, which is not
 identical to a live interactive session but exercises the same code path.
 
+**Update (2026-07-09, QB-029): PA-F07 and PA-F08 are now implemented** — see
+their entries below. Both were confirmed missing entirely (zero grep matches)
+at the time of this walk; both now have real code, tests, and evidence.
+
 **Result: Public Alpha does not pass yet.** Real, concrete gaps found (not
 just unverified — actually missing or failing):
-- **PA-F07 (secret detection) and PA-F08 (onboarding mode) are not
-  implemented at all** — confirmed by grep, zero matches for either feature
-  anywhere in `quor/`. These are documented Public Alpha requirements with no
-  corresponding code.
 - **PA-Q06 cannot pass as literally written** — `quor doctor --timing` does
   not exist as a flag (confirmed by grep). The underlying latency is fine
   (measured in-process hook parse+rewrite at ~0.03ms median, well under the
@@ -150,10 +150,10 @@ The bar for Public Alpha is: "Safe for other developers to try. Will not break t
   Evidence: implemented and tested per QB-013; also directly observed throughout this session's own dogfooding (every large command output in this conversation was tee'd, e.g. the coverage/pytest output files read back during this very gate walk).
 - [x] **PA-F06** `quor validate` completes in <1 second on a config with 10 filters (timed).
   Evidence: timed live this session — 16.1ms against the real built-in registry (well under 1s; not specifically a 10-filter config, but the full built-in set is already more than 10 filters).
-- [ ] **PA-F07** Secret detection: an output line containing a GitHub token pattern (`ghp_...`) causes a warning to stderr. Hook output (stdout) is unaffected.
-  **Fails — not implemented.** `grep -ri "secret\|ghp_"` across `quor/` returns zero matches. This is a real gap, not just unverified.
-- [ ] **PA-F08** Onboarding mode: first 5 filtered commands print brief stats to stderr. Command 6 is silent.
-  **Fails — not implemented.** `grep -i "onboarding"` across `quor/` returns zero matches. Real gap.
+- [x] **PA-F07** Secret detection: an output line containing a GitHub token pattern (`ghp_...`) causes a warning to stderr. Hook output (stdout) is unaffected.
+  Evidence: implemented (QB-029) — `quor/pipeline/secrets.py::scan_for_secrets()`, called from `quor/adapters/dispatcher.py` for every dispatch (both passthrough and filtered branches). `tests/unit/test_secrets.py` (10 tests) plus a real dispatcher-level test confirming a `ghp_...` token surviving compression triggers a warning while stdout still contains the secret verbatim (never redacted).
+- [x] **PA-F08** Onboarding mode: first 5 filtered commands print brief stats to stderr. Command 6 is silent.
+  Evidence: implemented (QB-029) — `quor/pipeline/onboarding.py::record_filtered_command()`, called from the dispatcher's filtered (non-passthrough) branch only. `tests/unit/test_onboarding.py` (7 tests, 100% coverage) plus a real dispatcher-level test confirming 5 consecutive filtered dispatches each print a tip and the 6th is silent.
 - [ ] **PA-F09** 3 non-builder developers have installed and used Quor without reported hook failures.
   Not verifiable from this environment — requires other people.
 
