@@ -12,15 +12,26 @@ raises) `updatedToolOutput` is omitted and Claude Code keeps the original
 Read result — the same "omit the key rather than emit an empty/wrong value"
 discipline ADR-030 established for `updatedInput`.
 
-Only `.md`/`.markdown`/`.txt`/`.rst` files actually compress today (QB-007B's
-`markdown`/`document-text` filters) — everything else (DOCX, PDF, code
-files, no extension, ...) passes through unchanged. This is enforced by an
-explicit filter-name allowlist (`_READ_SUPPORTED_FILTER_NAMES`), not by the
-absence of a `FilterRegistry` match: the Bash-oriented `generic` filter
-matches literally every non-empty string (including any file path), so
-without the allowlist an unsupported file would be silently routed through
-a shell-output filter never designed for document content. See that
-constant's own comment for the full rationale.
+`.md`/`.markdown`/`.txt`/`.rst` files compress directly (QB-007B's
+`markdown`/`document-text` filters), matched by file path exactly as before.
+This is enforced by an explicit filter-name allowlist
+(`_READ_SUPPORTED_FILTER_NAMES`), not by the absence of a `FilterRegistry`
+match: the Bash-oriented `generic` filter matches literally every non-empty
+string (including any file path), so without the allowlist an unsupported
+file would be silently routed through a shell-output filter never designed
+for document content. See that constant's own comment for the full
+rationale.
+
+`.docx`/`.pdf` files (QB-007E4) take a second path: the binary document is
+first converted to Markdown-shaped text by `quor/pipeline/extract`
+(QB-007E1/E2/E3, reused here completely unchanged — see
+`_compress_extracted_document`'s own docstring), and *that* text is then run
+through the exact same `markdown` `FilterConfig` the `.md` path already
+uses — looked up by name via `FilterRegistry.all_filters()`, not by a new
+`docx.toml`/`pdf.toml` file path pattern, so there is still only one
+Markdown-compression filter in the entire system. Everything else (code
+files, no extension, an extraction failure, ...) still passes through
+unchanged, exactly as before QB-007E4.
 
 Called by __main__._run_hook() (adapter name "claude-read"), which
 guarantees:
@@ -44,7 +55,9 @@ from typing import Any
 import orjson
 
 from quor.adapters.base import PostToolUseHookInput
+from quor.config.model import FilterConfig
 from quor.filters.registry import FilterRegistry
+from quor.pipeline.extract.registry import extract
 from quor.tracking.db import TrackingDB, track_invocation
 
 # ---------------------------------------------------------------------------
@@ -76,9 +89,28 @@ _UTF8_BOM = "﻿"
 # never designed for, or tested against, arbitrary document content, and
 # exactly the kind of accidental scope expansion QB-007C's requirements
 # explicitly rule out ("unsupported file types pass through unchanged").
-# Extend this set (not FilterRegistry itself) when QB-007D/E add DOCX/PDF
-# filters.
+# Extend this set (not FilterRegistry itself) if a future format needs its
+# own dedicated filter — QB-007E4's DOCX/PDF integration deliberately does
+# NOT add to this set; extracted DOCX/PDF text is routed to the existing
+# "markdown" entry by name (see _MARKDOWN_FILTER_NAME), not matched as a
+# file path, so it never needs its own filter-name allowlist entry.
 _READ_SUPPORTED_FILTER_NAMES: frozenset[str] = frozenset({"markdown", "document-text"})
+
+# Extensions routed through quor/pipeline/extract (QB-007E1/E2/E3) before
+# filtering — the mirror of _READ_SUPPORTED_FILTER_NAMES above, but for the
+# extraction path rather than the direct file-path-match path. Kept here
+# (not read from quor.pipeline.extract.registry's own routing table) for
+# the same reason _READ_SUPPORTED_FILTER_NAMES is adapter-local rather than
+# derived from FilterRegistry: this adapter decides what it will *attempt*,
+# independent of what the lower layer happens to support today.
+_EXTRACTION_EXTENSIONS: frozenset[str] = frozenset({".docx", ".pdf"})
+
+# The one filter extracted DOCX/PDF Markdown-shaped text is compressed
+# with — the existing "markdown" FilterConfig (quor/filters/builtin/
+# markdown.toml), looked up by name via FilterRegistry.all_filters(), not
+# matched against a file path the way the direct .md/.txt path is. No
+# docx.toml/pdf.toml exists or is created — see module docstring.
+_MARKDOWN_FILTER_NAME = "markdown"
 
 
 def run_hook(*, tracking: TrackingDB | None = None) -> None:
@@ -163,6 +195,13 @@ def _compress_read_output(
         `filter_name=<name>, was_passthrough=False` — a filter was
         genuinely attempted, same as dispatcher tracking `filter_config.name`
         even when `_apply_content_filter` itself caught an error.
+
+    QB-007E4: a `.docx`/`.pdf` file path (`_EXTRACTION_EXTENSIONS`) is
+    diverted to `_compress_extracted_document` before any of the above —
+    see that function's own docstring for its tracking/fail-open contract,
+    which mirrors this one exactly (extraction failure ≈ "no filter
+    matched"; a successful extraction ≈ "the markdown filter matched").
+    Every other extension keeps using the exact code below, unmodified.
     """
     tool_response = hook_input.tool_response
     file_path = hook_input.tool_input.file_path
@@ -183,6 +222,15 @@ def _compress_read_output(
             t0=t0,
         )
         return None
+
+    if Path(file_path).suffix.lower() in _EXTRACTION_EXTENSIONS:
+        return _compress_extracted_document(
+            file_path=file_path,
+            tool_response=tool_response,
+            tracking=tracking,
+            t0=t0,
+            command=command,
+        )
 
     try:
         registry = FilterRegistry(project_root=Path.cwd())
@@ -222,3 +270,109 @@ def _compress_read_output(
     if rendered == tool_response:
         return None
     return rendered
+
+
+def _compress_extracted_document(
+    *,
+    file_path: str,
+    tool_response: str,
+    tracking: TrackingDB | None,
+    t0: float,
+    command: str,
+) -> str | None:
+    """DOCX/PDF branch of `_compress_read_output` (QB-007E4).
+
+    Desired pipeline (per QB-007E4's own spec):
+        Read request → claude_read.py → extract(file_path) →
+        FilterRegistry ("markdown", by name) → Pipeline → updatedToolOutput
+
+    `quor.pipeline.extract.registry.extract()` is reused completely
+    unchanged — it already guarantees fail-open (returns `None`, never
+    raises) for a missing dependency, corrupt/encrypted file, or any other
+    extraction failure; that `None` is treated exactly like "no filter
+    matched" in the non-extraction path above. The `try/except` around the
+    call is defense-in-depth (mirroring every other call in this file),
+    not a sign that `extract()`'s own contract is doubted.
+
+    Once extraction succeeds, the resulting Markdown-shaped text is run
+    through the *existing* `"markdown"` `FilterConfig`
+    (`quor/filters/builtin/markdown.toml`) — looked up by name via
+    `FilterRegistry.all_filters()`, not matched against `file_path` (which
+    is still `"report.docx"`, not something `markdown.toml`'s
+    `^\\S+\\.(md|markdown)$` pattern would ever match). No new filter file,
+    no new routing system, no new stage — `FilterRegistry.apply()` is
+    called exactly as it already is everywhere else.
+
+    Tracking mirrors `_compress_read_output`'s own contract precisely:
+      - extraction returns `None` → `filter_name=None, was_passthrough=True`
+        — nothing was applied, same as "no filter matched" above.
+      - extraction succeeds (whether or not the markdown filter changes the
+        result, or even if applying it fails and falls back to the
+        unfiltered extracted text) → `filter_name="markdown",
+        was_passthrough=False` — a filter was genuinely attempted, same as
+        the non-extraction path tracks `filter_config.name` even when
+        `_apply_content_filter`-equivalent handling caught an error.
+      - `original_tokens` is always derived from the *original*
+        `tool_response` (the raw Read result before extraction), and
+        `final_tokens` from whatever is actually returned as
+        `updatedToolOutput` (or, on a filter failure, the unfiltered
+        extracted text that was actually returned) — `track_invocation()`
+        computes both via `count_tokens()` exactly as it already does for
+        every other producer; no tracking-side change was needed.
+
+    Returns `None` (omit `updatedToolOutput`) if extraction failed, or if
+    the final result happens to equal the original `tool_response` byte
+    for byte (mirrors ADR-030's "omit if unchanged" rule) — never raises.
+    """
+    try:
+        extracted = extract(Path(file_path))
+    except Exception as exc:  # noqa: BLE001 — fail-open: extraction must never surface here
+        warnings.warn(f"[quor] Read extraction error: {exc}", stacklevel=2)
+        extracted = None
+
+    if extracted is None:
+        track_invocation(
+            tracking,
+            command=command,
+            original=tool_response,
+            filtered=tool_response,
+            filter_name=None,
+            was_passthrough=True,
+            t0=t0,
+        )
+        return None
+
+    try:
+        registry = FilterRegistry(project_root=Path.cwd())
+        filter_config = _find_filter_by_name(registry, _MARKDOWN_FILTER_NAME)
+        rendered = registry.apply(filter_config, extracted) if filter_config is not None else extracted
+    except Exception as exc:  # noqa: BLE001 — fail-open: never let a filter error surface
+        warnings.warn(f"[quor] Read filter error: {exc}", stacklevel=2)
+        rendered = extracted
+
+    track_invocation(
+        tracking,
+        command=command,
+        original=tool_response,
+        filtered=rendered,
+        filter_name=_MARKDOWN_FILTER_NAME,
+        was_passthrough=False,
+        t0=t0,
+    )
+
+    if rendered == tool_response:
+        return None
+    return rendered
+
+
+def _find_filter_by_name(registry: FilterRegistry, name: str) -> FilterConfig | None:
+    """Look up a `FilterConfig` by its `name` field (project > user > builtin
+    priority, same as `FilterRegistry.find()`'s own tier order) rather than
+    by matching a command/file-path string — `FilterRegistry` has no
+    built-in "find by name" method, so this composes it from the existing
+    public `all_filters()` rather than adding one. `FilterRegistry` itself
+    is not modified."""
+    for _tier, filter_config in registry.all_filters():
+        if filter_config.name == name:
+            return filter_config
+    return None

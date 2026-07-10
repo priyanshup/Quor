@@ -16,11 +16,15 @@ from __future__ import annotations
 
 import io
 import sys
+import warnings
+from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
+import docx
 import orjson
 import pytest
+from reportlab.pdfgen import canvas
 
 from quor.adapters.claude_read import run_hook
 from quor.filters.registry import FilterRegistry
@@ -124,7 +128,7 @@ class TestSupportedTypesCompress:
 class TestUnsupportedTypesPassThrough:
     @pytest.mark.parametrize(
         "file_path",
-        ["report.docx", "report.pdf", "script.py", "config.json", "LICENSE", "image.png"],
+        ["script.py", "config.json", "LICENSE", "image.png"],
     )
     def test_unsupported_large_file_never_compresses(self, file_path: str) -> None:
         """Regression guard for the generic-filter scope-leak: FilterRegistry's
@@ -133,13 +137,186 @@ class TestUnsupportedTypesPassThrough:
         only quor/filters/builtin/{markdown,document-text}.toml are in
         scope for Read. A large payload is used specifically so that if the
         allowlist regressed, this test would catch real (not just
-        theoretical) compression happening."""
+        theoretical) compression happening.
+
+        `.docx`/`.pdf` are deliberately NOT parametrized here as of
+        QB-007E4 — they are no longer "unsupported": they're routed to
+        extraction. See TestDocxPdfExtraction below for their dedicated
+        coverage (a fake, nonexistent "report.docx" path would still pass
+        this specific assertion today, since extraction fails open for a
+        missing file — but for the wrong reason, no longer "this extension
+        has no filter at all," and that distinction is exactly what a
+        regression test must not paper over)."""
         large_content = "line of filler text. " * 10_000
         result = _run_hook(_read_payload(file_path, large_content))
         assert "updatedToolOutput" not in result["hookSpecificOutput"]
 
     def test_no_extension_passes_through(self) -> None:
         result = _run_hook(_read_payload("Makefile", "line of filler text. " * 10_000))
+        assert "updatedToolOutput" not in result["hookSpecificOutput"]
+
+
+# ---------------------------------------------------------------------------
+# DOCX/PDF extraction end to end (QB-007E4)
+#
+# Unlike every test above, extraction reads the real file from disk via
+# `extract(Path(file_path))` — the Read tool's own `tool_response` is not
+# used as extraction input at all, only as the "original" for tracking and
+# the unchanged-content comparison. Every fixture here is therefore a real
+# file written to `tmp_path`, with `file_path` in the payload pointing at
+# its real (absolute) location.
+# ---------------------------------------------------------------------------
+
+
+def _large_docx(tmp_path: Path, name: str = "report.docx") -> Path:
+    """A real .docx large enough (repeated body paragraphs) to exceed the
+    markdown filter's 2000-token budget once extracted, so compression
+    genuinely fires — mirrors _LARGE_MARKDOWN/_LARGE_TEXT's own purpose
+    above, just authored as a binary document instead of raw text."""
+    d = docx.Document()
+    d.add_heading("Design Notes", level=1)
+    d.add_paragraph("REQ-1: must survive extraction and compression.")
+    for _ in range(150):
+        d.add_paragraph("This is an ordinary sentence of filler prose repeated many times.")
+    d.add_heading("Late Heading", level=2)
+    d.add_paragraph("Final paragraph.")
+    path = tmp_path / name
+    d.save(str(path))
+    return path
+
+
+def _large_pdf(tmp_path: Path, name: str = "report.pdf") -> Path:
+    path = tmp_path / name
+    c = canvas.Canvas(str(path), pagesize=(500, 3000))
+    c.setFont("Helvetica-Bold", 20)
+    c.drawString(72, 2950, "Design Notes")
+    c.setFont("Helvetica", 11)
+    y = 2910
+    c.drawString(72, y, "REQ-1: must survive extraction and compression.")
+    y -= 20
+    for _ in range(150):
+        c.drawString(72, y, "This is an ordinary sentence of filler prose repeated many times.")
+        y -= 16
+    c.setFont("Helvetica-Bold", 16)
+    c.drawString(72, y, "Late Heading")
+    y -= 20
+    c.setFont("Helvetica", 11)
+    c.drawString(72, y, "Final paragraph.")
+    c.save()
+    return path
+
+
+class TestDocxPdfExtraction:
+    def test_large_docx_extracts_and_compresses(self, tmp_path: Path) -> None:
+        path = _large_docx(tmp_path)
+        result = _run_hook(_read_payload(str(path), "<binary Read result placeholder>"))
+        hook_specific = result["hookSpecificOutput"]
+        updated = hook_specific.get("updatedToolOutput")
+        assert isinstance(updated, str)
+        assert "# Design Notes" in updated
+        assert "REQ-1: must survive extraction and compression." in updated
+
+    def test_large_pdf_extracts_and_compresses(self, tmp_path: Path) -> None:
+        path = _large_pdf(tmp_path)
+        result = _run_hook(_read_payload(str(path), "<binary Read result placeholder>"))
+        hook_specific = result["hookSpecificOutput"]
+        updated = hook_specific.get("updatedToolOutput")
+        assert isinstance(updated, str)
+        assert "# Design Notes" in updated
+        assert "REQ-1: must survive extraction and compression." in updated
+
+    def test_docx_protected_structure_survives_compression(self, tmp_path: Path) -> None:
+        """Same guarantee QB-007B's filters already give the direct .md
+        path — proves the extracted text is genuinely routed through the
+        real `markdown` filter, not just passed through verbatim."""
+        path = _large_docx(tmp_path)
+        result = _run_hook(_read_payload(str(path), "placeholder"))
+        updated = result["hookSpecificOutput"]["updatedToolOutput"]
+        assert "REQ-1: must survive extraction and compression." in updated
+        assert "## Late Heading" in updated
+
+    def test_nonexistent_docx_path_fails_open(self, tmp_path: Path) -> None:
+        """Extraction returning None (file doesn't exist) behaves exactly
+        like an unsupported type — updatedToolOutput is omitted, no
+        exception."""
+        missing = tmp_path / "does_not_exist.docx"
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            result = _run_hook(_read_payload(str(missing), "original content"))
+        assert "updatedToolOutput" not in result["hookSpecificOutput"]
+
+    def test_corrupt_docx_fails_open(self, tmp_path: Path) -> None:
+        path = tmp_path / "corrupt.docx"
+        path.write_bytes(b"not a real docx file")
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            result = _run_hook(_read_payload(str(path), "original content"))
+        assert "updatedToolOutput" not in result["hookSpecificOutput"]
+
+    def test_corrupt_pdf_fails_open(self, tmp_path: Path) -> None:
+        path = tmp_path / "corrupt.pdf"
+        path.write_bytes(b"not a real pdf file")
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            result = _run_hook(_read_payload(str(path), "original content"))
+        assert "updatedToolOutput" not in result["hookSpecificOutput"]
+
+    def test_extraction_exception_fails_open_not_raises(self, tmp_path: Path) -> None:
+        """A raising extract() (defense-in-depth path, since extract()'s
+        own contract says it never raises) must not propagate — mirrors
+        TestFailOpenOnFilterFailure's coverage for the filter layer."""
+        path = _large_docx(tmp_path)
+        with (
+            patch(
+                "quor.adapters.claude_read.extract",
+                side_effect=RuntimeError("synthetic extraction failure"),
+            ),
+            pytest.warns(UserWarning, match="Read extraction error"),
+        ):
+            result = _run_hook(_read_payload(str(path), "original content"))
+        assert "updatedToolOutput" not in result["hookSpecificOutput"]
+
+    def test_small_docx_still_returns_extracted_text(self, tmp_path: Path) -> None:
+        """Unlike a small .md file (already markdown, so an under-budget
+        compression is a genuine no-op), a small DOCX still returns
+        updatedToolOutput — extraction itself already transformed the
+        content from whatever the raw tool_response was to clean Markdown,
+        independent of whether the *subsequent* markdown-filter step had
+        anything left to compress."""
+        d = docx.Document()
+        d.add_heading("Title", level=1)
+        d.add_paragraph("Just a short paragraph with nothing special.")
+        path = tmp_path / "small.docx"
+        d.save(str(path))
+
+        result = _run_hook(_read_payload(str(path), "irrelevant original"))
+        updated = result["hookSpecificOutput"].get("updatedToolOutput")
+        assert updated == "# Title\n\nJust a short paragraph with nothing special."
+
+    def test_docx_omits_update_when_tool_response_already_matches_extracted_text(
+        self, tmp_path: Path
+    ) -> None:
+        """The real "omit if unchanged" case for the extraction path: if
+        `tool_response` happens to already equal the final extracted (and
+        filtered) text exactly, updatedToolOutput is still correctly
+        omitted — the comparison is against the true final output, not
+        against some intermediate extraction-only value."""
+        d = docx.Document()
+        d.add_heading("Title", level=1)
+        d.add_paragraph("Just a short paragraph with nothing special.")
+        path = tmp_path / "small.docx"
+        d.save(str(path))
+
+        already_extracted = "# Title\n\nJust a short paragraph with nothing special."
+        result = _run_hook(_read_payload(str(path), already_extracted))
+        assert "updatedToolOutput" not in result["hookSpecificOutput"]
+
+    def test_unsupported_extension_still_passes_through(self, tmp_path: Path) -> None:
+        """A real file that isn't .docx/.pdf/.md/.txt/.rst still never
+        reaches extract() or any filter, exactly as before QB-007E4."""
+        path = tmp_path / "script.py"
+        path.write_text("print('hello')\n", encoding="utf-8")
+        result = _run_hook(_read_payload(str(path), "line of filler text. " * 10_000))
         assert "updatedToolOutput" not in result["hookSpecificOutput"]
 
 

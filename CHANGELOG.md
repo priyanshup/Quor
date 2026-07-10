@@ -90,6 +90,23 @@ All notable changes to Quor are documented here. Format loosely follows
   the full algorithm, the bug writeup, and stated limitations (geometry-based inference only, same
   no-nested-lists/no-emphasis limitations as DOCX, undecodable bullet glyphs fall through to plain
   paragraphs rather than being lost).
+- **Added: DOCX/PDF Reads now genuinely compress end to end (QB-007E4).**
+  `quor/adapters/claude_read.py` now calls `extract()` for `.docx`/`.pdf` Reads and routes the
+  result through the existing `markdown` `FilterConfig` — looked up by name via
+  `FilterRegistry.all_filters()`, since a `.docx`/`.pdf` command string would never match
+  `markdown.toml`'s file-path pattern — no `docx.toml`/`pdf.toml`, no new stage, no new routing
+  system. `original_tokens` is measured from the raw Read `tool_response`; `final_tokens` from
+  whatever is actually returned, reusing `track_invocation()`'s existing call signature unchanged.
+  **Found and fixed a real gap while wiring the benchmark manifest, surfaced to the user rather
+  than silently resolved:** the benchmark harness had no extraction step at all, so it could not
+  genuinely benchmark a binary `.docx`/`.pdf` sample file — fixed with a minimal extraction branch
+  in `run_case()`. The QB-007E2/E3 benchmark fixtures are now wired into `manifest.toml`/
+  `baseline.json` (4 new cases, purely additive — `docx-design-doc-long` 16.0%, `docx-readme-short`
+  0.0%, `pdf-design-doc-long` 43.2%, `pdf-notes-short` 0.0%; the two long fixtures needed more
+  content to demonstrate real compression, since `max_tokens`' budget is only charged against
+  non-protected content). `Pipeline`, `ContentMask`, `FilterRegistry`, and the extraction framework
+  itself (`quor/pipeline/extract/`) are all reused completely unchanged. See QB-007E4 in
+  `backlog.md` for the full architectural writeup.
 - **`quor gain` now explains negative-token rows instead of just softening
   their display.** Confirmed via a new invariant test
   (`TestFilterNeverExpandsOutput`) that no built-in filter stage can itself

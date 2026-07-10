@@ -8,6 +8,7 @@ import sqlite3
 import subprocess
 import threading
 import time
+import warnings
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -1069,6 +1070,153 @@ class TestReadTracking:
         report = query_gain(db_path, tmp_path)
         assert report.total_invocations == 3
         assert report.tokens_saved > 0
+        assert report.passthrough_count == 0
+
+    # -----------------------------------------------------------------
+    # DOCX/PDF extraction tracking (QB-007E4) — no schema/tracking-side
+    # change was needed: track_invocation() is called exactly the same
+    # way for the extraction path as for the direct markdown/text path
+    # above; these tests exist to prove that in practice, not because the
+    # tracking code itself differs.
+    # -----------------------------------------------------------------
+
+    def test_docx_extraction_and_compression_tracked(self, tmp_path: Path) -> None:
+        """original_tokens reflects the raw tool_response (the pre-
+        extraction Read result); final_tokens reflects the actually-
+        returned, extracted-and-compressed Markdown — not any
+        intermediate, extraction-only value."""
+        import docx
+
+        from quor.adapters.claude_read import _compress_read_output
+
+        d = docx.Document()
+        d.add_heading("Design Notes", level=1)
+        d.add_paragraph("REQ-1: must survive extraction and compression.")
+        for _ in range(150):
+            d.add_paragraph("This is an ordinary sentence of filler prose, repeated.")
+        docx_path = tmp_path / "report.docx"
+        d.save(str(docx_path))
+
+        db_path = tmp_path / "quor.db"
+        tracking = TrackingDB(db_path=db_path)
+        raw_tool_response = "<binary Read result placeholder>"
+        hook_input = self._hook_input(str(docx_path), raw_tool_response)
+
+        result = _compress_read_output(hook_input, tracking)
+        assert result is not None
+
+        tracking.flush()
+        tracking.close()
+
+        with sqlite3.connect(str(db_path)) as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute("SELECT * FROM invocations LIMIT 1").fetchone()
+        assert row is not None
+        assert row["command"] == f"Read: {docx_path}"
+        assert row["filter_name"] == "markdown"
+        assert row["was_passthrough"] == 0
+        assert row["original_tokens"] == count_tokens(raw_tool_response)
+        assert row["final_tokens"] == count_tokens(result)
+
+    def test_pdf_extraction_and_compression_tracked(self, tmp_path: Path) -> None:
+        from reportlab.pdfgen import canvas
+
+        from quor.adapters.claude_read import _compress_read_output
+
+        pdf_path = tmp_path / "report.pdf"
+        c = canvas.Canvas(str(pdf_path), pagesize=(500, 3000))
+        c.setFont("Helvetica-Bold", 20)
+        c.drawString(72, 2950, "Design Notes")
+        c.setFont("Helvetica", 11)
+        y = 2910
+        for _ in range(150):
+            c.drawString(72, y, "This is an ordinary sentence of filler prose, repeated.")
+            y -= 16
+        c.save()
+
+        db_path = tmp_path / "quor.db"
+        tracking = TrackingDB(db_path=db_path)
+        raw_tool_response = "<binary Read result placeholder>"
+        hook_input = self._hook_input(str(pdf_path), raw_tool_response)
+
+        result = _compress_read_output(hook_input, tracking)
+        assert result is not None
+
+        tracking.flush()
+        tracking.close()
+
+        with sqlite3.connect(str(db_path)) as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute("SELECT * FROM invocations LIMIT 1").fetchone()
+        assert row is not None
+        assert row["filter_name"] == "markdown"
+        assert row["was_passthrough"] == 0
+        assert row["original_tokens"] == count_tokens(raw_tool_response)
+        assert row["final_tokens"] == count_tokens(result)
+
+    def test_extraction_failure_tracked_as_passthrough(self, tmp_path: Path) -> None:
+        """A .docx path that fails to extract (here: doesn't exist on disk)
+        is tracked exactly like "no filter matched" — filter_name=None,
+        was_passthrough=True — not as a special extraction-specific
+        outcome."""
+        from quor.adapters.claude_read import _compress_read_output
+
+        db_path = tmp_path / "quor.db"
+        tracking = TrackingDB(db_path=db_path)
+        missing_path = tmp_path / "does_not_exist.docx"
+        raw_tool_response = "original content"
+        hook_input = self._hook_input(str(missing_path), raw_tool_response)
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            result = _compress_read_output(hook_input, tracking)
+        assert result is None
+
+        tracking.flush()
+        tracking.close()
+
+        with sqlite3.connect(str(db_path)) as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute("SELECT * FROM invocations LIMIT 1").fetchone()
+        assert row is not None
+        assert row["filter_name"] is None
+        assert row["was_passthrough"] == 1
+        assert row["original_tokens"] == count_tokens(raw_tool_response)
+        assert row["final_tokens"] == count_tokens(raw_tool_response)
+
+    def test_multiple_docx_pdf_reads_aggregate_with_markdown_reads(self, tmp_path: Path) -> None:
+        """DOCX/PDF rows aggregate into the same project totals as direct
+        .md rows — no Read-format-specific aggregation path exists, same
+        guarantee test_multiple_read_operations_aggregate already proves
+        for markdown/text."""
+        import docx
+
+        from quor.adapters.claude_read import _compress_read_output
+
+        d = docx.Document()
+        d.add_heading("Notes", level=1)
+        for _ in range(150):
+            d.add_paragraph("This is an ordinary sentence of filler prose, repeated.")
+        docx_path = tmp_path / "notes.docx"
+        d.save(str(docx_path))
+
+        db_path = tmp_path / "quor.db"
+        tracking = TrackingDB(db_path=db_path)
+        large_content = "line of filler text. " * 10_000
+
+        with patch("pathlib.Path.cwd", return_value=tmp_path):
+            _compress_read_output(
+                self._hook_input(str(docx_path), "placeholder"), tracking
+            )
+            _compress_read_output(
+                self._hook_input(str(tmp_path / "a.md"), large_content), tracking
+            )
+
+        tracking.flush()
+        tracking.close()
+
+        report = query_gain(db_path, tmp_path)
+        assert report.total_invocations == 2
         assert report.passthrough_count == 0
 
 
