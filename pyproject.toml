@@ -51,12 +51,25 @@ dev = [
     # local and CI resolve the identical version (see DECISIONS.md).
     "mypy==2.2.0",
     "ruff==0.15.20",
+    # python-docx (QB-007E2) is listed here too, not just in `documents`
+    # below, so contributors running the full test suite get real DOCX
+    # fixture coverage (tests/unit/test_extract_docx.py) without a separate
+    # `quor[documents]` install step.
+    "python-docx>=1.1.0,<2.0.0",
     # The quor-test-stage fixture (tests/fixtures/test_plugin) is deliberately
     # NOT listed here as a `file:` dependency: a relative file:// URL is baked
     # verbatim into published package metadata, and breaks for anyone who
     # installs quor[dev] from PyPI rather than from a source checkout (the
     # path doesn't exist outside the repo). It's installed as a separate step
     # in CI and in local dev setup instead — see CONTRIBUTING.md.
+]
+documents = [
+    # DOCX structure extraction (QB-007E2). Core install keeps working
+    # without this extra — quor/pipeline/extract/docx.py's extract_docx()
+    # fails open (returns None, warns, never raises) if it's absent; see
+    # ADR-014's `quor[ml]`-style extras precedent, the template this group
+    # follows.
+    "python-docx>=1.1.0,<2.0.0",
 ]
 
 [project.scripts]
@@ -112,6 +125,12 @@ ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
 module = ["quor_test_stage", "quor_test_stage.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# python-docx (QB-007E2, quor[documents]) is optional at runtime — mypy must
+# still succeed for anyone running `mypy quor/` without it installed.
+module = ["docx", "docx.*"]
 ignore_missing_imports = true
 
 # ---------------------------------------------------------------------------

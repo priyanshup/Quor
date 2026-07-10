@@ -301,11 +301,47 @@ prose, where distinct TODOs or list items can share a superficial shape without 
 
 ---
 
+## 9. Document extraction — DOCX (QB-007E1/E2)
+
+Structurally different from everything in §1–§8: this is not a `FilterRegistry` entry and is not
+reachable from a real Read call today. `quor/pipeline/extract/` is a separate preprocessing layer
+— extension-routed, fail-open, and explicitly **not** a `StageHandler` — that will eventually sit
+*before* `FilterRegistry`/`Pipeline` for binary document types the Read hook can't compress
+directly (unlike `.md`/`.txt`/`.rst`, which are already plain text and need no extraction at all;
+see §8). As of QB-007E2, `.docx` is the only extension with a real handler; wiring `extract()` into
+`quor/adapters/claude_read.py` remains out of scope (deferred to QB-007E3/E4 — see `backlog.md`'s
+QB-007E2 entry).
+
+**Public API:** `quor.pipeline.extract.registry.extract(file_path: Path) -> str | None`. `None`
+always means "fail open, proceed as if this layer didn't exist" — an unregistered extension, a
+registered-but-unimplemented handler (`.pdf`, QB-007E3), or a handler that raised for any reason.
+
+| Extension | Handler | Converts to | Does NOT convert | Known limitations |
+|---|---|---|---|---|
+| `.docx` | `extract_docx()` ([docx.py](../../quor/pipeline/extract/docx.py)) | Headings (`Heading 1`–`6` → ATX `#`–`######`), paragraphs, bullet lists (`- `), numbered lists (sequential, restarting per contiguous run), GitHub-style tables (`\|`-escaped, multi-paragraph cells joined with `<br>`), contiguous code-style paragraphs (style name or explicit monospace font) as fenced blocks with indentation preserved | Document properties/comments/headers/footers (excluded by construction — never read, not filtered), images, footnotes/endnotes, run-level emphasis (bold/italic) | No nested/multi-level lists (Word's `numPr`/`ilvl` numbering XML is not resolved — every level flattens); merged table cells repeat their text across every spanned column (Markdown has no colspan syntax); monospace detection only catches an explicit per-run font override, not a theme-level or style-implied convention |
+| `.pdf` | stub (`registry.py`), always raises `NotImplementedError` | Nothing — QB-007E3, not started | everything | riskiest sub-item — PDF heading/table detection is heuristic, with no semantic ground truth to anchor it |
+
+**Fail-open, tested at every layer:** missing `python-docx` (`quor[documents]`, optional — core
+install works without it), a corrupt file, an invalid zip, a truncated or nonexistent file, or any
+other unexpected parser exception all return `None` with a warning; `extract_docx()` never raises,
+independent of whatever calls it (`registry.extract()` wraps every handler in the same guarantee
+too, defense-in-depth for `.docx`, load-bearing for the still-stubbed `.pdf`).
+
+**Benchmark fixtures, not yet wired in:** two representative `.docx` samples exist under
+`tests/benchmarks/samples/docx/` (`001_design_doc_ranking_cache.docx`,
+`002_short_client_readme.docx`, mirroring §7's markdown long/short pair) but are not yet referenced
+from `manifest.toml`/`baseline.json` — there is no live compression path to benchmark until
+`extract()` is wired into the Read hook. Adding that manifest coverage is QB-007E4's job.
+
+---
+
 ## Cross-references
 
 - `quor/rewrite/rules.py` — command-detection ground truth.
 - `quor/filters/registry.py` — precedence/lookup implementation (`FilterRegistry.find()`).
 - `quor/filters/builtin/*.toml` — filter behavior ground truth.
+- `quor/pipeline/extract/registry.py` — document extraction routing/fail-open contract (§9).
+- `quor/pipeline/extract/docx.py` — DOCX-to-Markdown conversion algorithm (§9).
 - `CONTRIBUTING.md` — "Writing New Filters" for the full authoring workflow and PR checklist.
 - `docs/final/CLAUDE.md` — "The ContentMask Pipeline" for stage semantics, "Filter Configuration
   Format" for the TOML schema.

@@ -41,8 +41,10 @@ Markdown and plain-text compression is implemented and, as of QB-007C, actually 
 Read hook — a supported document read by Claude is compressed for real, not just at the filter
 layer — and, as of QB-007D, that savings shows up in `quor gain` alongside Bash savings. As of
 QB-007E1, the extension-routed preprocessing framework DOCX/PDF extraction will plug into also
-exists — not the extraction itself, which is still not implemented (QB-007E2/E3). See "Sub-items"
-below for exactly what's done and what isn't.
+exists, and as of QB-007E2, `.docx` files are genuinely converted to Markdown-shaped text —
+though not yet wired into the live Read hook (that remains PDF's dependency, QB-007E3/E4, and a
+deliberate later decision either way). See "Sub-items" below for exactly what's done and what
+isn't.
 
 <details>
 <summary>Technical details</summary>
@@ -107,17 +109,22 @@ regression to one piece rather than one large "DOCX+PDF+deps" PR:
   fail-open preprocessing layer DOCX/PDF extraction will plug into — `.docx`/`.pdf` handlers are
   stubs that always raise `NotImplementedError`; no extraction, no optional dependencies yet. See
   "QB-007E1 technical details" below.
-- **QB-007E2 — DOCX extraction.** Not started. Depends on QB-007E1. Implements `.docx` structure
-  extraction (headings, tables, lists) as a real handler in `quor/pipeline/extract/registry.py`,
-  adding `python-docx` (or similar) as an optional dependency.
+- **QB-007E2 — DOCX extraction.** Implemented (2026-07-10). `.docx` files are now genuinely
+  converted to Markdown-shaped plain text (headings, paragraphs, bullet/numbered lists,
+  GitHub-style tables, contiguous code-style paragraphs as fenced blocks) via `python-docx`, added
+  as a new optional dependency group, `quor[documents]`. Still not wired into the live Read hook
+  or `FilterRegistry`. See "QB-007E2 technical details" below.
 - **QB-007E3 — PDF extraction.** Not started. Depends on QB-007E1. The riskiest sub-item — PDF
   heading/table detection is heuristic, with no semantic ground truth to anchor it.
 - **QB-007E4 — Benchmarking, tuning, and documentation.** Not started. Depends on QB-007E2/E3.
-  Benchmark manifest coverage (per CLAUDE.md's "Before Opening a PR" requirements), compression
-  tuning, and `docs/final/COMMAND_SUPPORT.md` updates for the two new filters/extractors.
+  Benchmark manifest coverage (per CLAUDE.md's "Before Opening a PR" requirements — QB-007E2 added
+  two representative `.docx` sample fixtures under `tests/benchmarks/samples/docx/` but
+  deliberately did not wire them into `manifest.toml`/`baseline.json`, since there is no live
+  compression path to benchmark yet), compression tuning, wiring `extract()` into the Read hook,
+  and `docs/final/COMMAND_SUPPORT.md` updates for the two new filters/extractors.
 
-**Status:** In progress — QB-007A/B/C/D/E1 implemented (none committed/merged to `main` yet);
-QB-007E2 onward not scheduled.
+**Status:** In progress — QB-007A/B/C/D/E1/E2 implemented (none committed/merged to `main` yet);
+QB-007E3 onward not scheduled.
 
 </details>
 
@@ -405,6 +412,106 @@ case-insensitivity and suffix-only matching, not substring search), registry con
 - The routing table has no case for files whose real content type doesn't match their extension
   (e.g. a `.docx` that's actually plain text) — not relevant while both handlers are unconditional
   stubs, but worth deciding explicitly once QB-007E2 adds real parsing.
+
+</details>
+
+<details>
+<summary>QB-007E2 technical details</summary>
+
+**What shipped:** `.docx`'s stub in `quor/pipeline/extract/registry.py` is replaced with a real
+handler, `extract_docx()`, in a new sibling module `quor/pipeline/extract/docx.py` — QB-007E1's own
+"revisit module splitting once a handler needs a richer interface" note is exactly what triggered
+this split; `registry.py` stays a pure routing table (`{".docx": extract_docx, ".pdf":
+_extract_pdf}`) and gained no DOCX-specific logic. `python-docx` (`>=1.1.0,<2.0.0`) is added as a
+new optional dependency group, `quor[documents]` — and separately listed in `dev` too, so
+contributors running the full test suite get real fixture coverage without a second install step
+— following ADR-014's already-anticipated (but until now uninstantiated) `quor[ml]`-style extras
+template, exactly as QB-007E1 said this phase would. A `[[tool.mypy.overrides]]` entry
+(`ignore_missing_imports` for `docx`/`docx.*`) keeps `mypy quor/` green whether or not the extra is
+installed in a given environment — the same pattern already used for `regex` and
+`quor_test_stage`.
+
+**Conversion algorithm:** walks `document.element.body` directly (not `document.paragraphs`/
+`.tables`, which are separate flat lists that lose the true interleaving of paragraphs and tables)
+— this is python-docx's own documented recipe for in-document-order iteration, not a novel
+technique. Each block is classified by paragraph style name: `"Heading 1"`.."Heading 6"` → ATX
+`#`.."######"`; `"List Bullet"`* → `- `; `"List Number"`* → a sequential counter that increments
+within a contiguous run and resets to 1 whenever a different block type interrupts it (valid,
+readable raw Markdown for an LLM to read directly — not merely valid for HTML rendering, where a
+repeated literal `1.` would also render correctly but read confusingly as plain text); anything
+else falls through as a normal paragraph. Tables render as GitHub-style Markdown, first row always
+treated as the header (python-docx has no general "is this a header row" signal), `|` escaped in
+cell content, multi-paragraph cells joined with `<br>`. Code-style paragraphs are detected two
+ways — a style name containing "code" (case-insensitive), or every run in the paragraph having an
+explicit monospace font override (Consolas, Courier New, etc.) — and contiguous code paragraphs
+merge into a single fenced block, with leading whitespace (indentation) deliberately preserved
+even though every other branch strips it (indentation is semantically meaningful in code, not in
+prose). Verified empirically, not assumed: `paragraph.text` already includes hyperlink visible text
+in the installed python-docx version (confirmed via a hand-built `w:hyperlink` fixture), so no
+special-casing was needed there.
+
+**Fail-open, self-contained:** unlike the passthrough-registration in QB-007E1 (where fail-open was
+purely `registry.extract()`'s job), `extract_docx()` catches its own exceptions — missing
+`python-docx` (a specific, actionable warning naming `quor[documents]`), and everything else
+(corrupt file, invalid zip, unreadable/missing file, any other parser exception) via one generic
+try/except, matching this task's explicit requirement that `_extract_docx` itself never raise,
+independent of whatever calls it. `registry.extract()`'s own wrapper is unchanged and still there
+as a second layer (load-bearing for the `.pdf` stub, defense-in-depth for `.docx`).
+
+**Metadata exclusion:** `document.core_properties` (author, revision, timestamps) is never read at
+all — not extracted-then-stripped, simply never touched, since only `document.element.body`'s
+paragraphs/tables are walked. Comments and headers/footers are excluded the same way: they live in
+separate document parts python-docx's body-walk never visits.
+
+**Design pass (Rule 4 — competitor-first):** confirmed via the archived research and QB-007E1's own
+audit that no prior conclusion existed on DOCX library choice or python-docx object-model walking —
+this is new groundwork. Reused `quor/filters/builtin/markdown.toml`'s exact `preserve_patterns`
+regexes (`^#{1,6}\s+\S`, `^\s*[-*+]\s+\S`, `^\s*\d+[.)]\s+\S`) as the target shape for extractor
+output, so a supported document's extracted headings/lists are structurally recognizable to the
+existing filter once wired in.
+
+**What was deliberately not touched:** `Pipeline`, `FilterRegistry`, `ContentMask`, and
+`quor/adapters/claude_read.py` — `extract()` is still not called from anywhere in production;
+wiring it into the Read hook remains out of scope (QB-007E3/E4). No `manifest.toml`/`baseline.json`
+changes — two representative `.docx` sample fixtures were added
+(`tests/benchmarks/samples/docx/001_design_doc_ranking_cache.docx`,
+`002_short_client_readme.docx`, mirroring the existing markdown long/short benchmark pair) but not
+wired into the benchmark harness, since there is no live compression path to measure yet — that is
+QB-007E4's job.
+
+**Verification:** full `pytest tests/`, `quor verify`, `ruff check quor/ tests/`, `mypy quor/` all
+green. New coverage: `tests/unit/test_extract_docx.py` (headings 1–6, single-line flattening,
+non-Heading styles falling through correctly, plain paragraphs, empty-paragraph handling, hyperlink
+text, bullet lists, numbered lists with restart-after-interruption, GitHub-style tables including
+pipe-escaping/multi-paragraph-cell/`<br>`/document-order-with-surrounding-paragraphs/empty-table,
+contiguous code-block merging with indentation preservation, style-name-only code detection,
+unstyled-paragraph-is-not-code, empty document (`""`, not `None`), whitespace-only document,
+not-a-zip/wrong-internal-structure/truncated/nonexistent-file fail-open, missing-dependency
+fail-open with the actionable message, and the same behavior verified again through
+`registry.extract()`'s full dispatch path) — all built from real fixtures generated with
+python-docx itself, not mocks. `tests/unit/test_extract.py`'s QB-007E1 "supported but not
+implemented" coverage was narrowed to `.pdf` only (still a real stub); its routing/fail-open/
+registry tests, which patch `_EXTRACTORS` directly, were unaffected by `.docx` becoming real.
+Also verified directly (not just by absence of an import error): `quor` imports cleanly and
+`extract()` degrades correctly for every extension, including `.docx`, with `python-docx`
+completely absent from `sys.modules`.
+
+**Limitations (carried forward, not resolved by this phase):**
+- No nested/multi-level list support — all bullet levels flatten to `- `, all numbered levels to
+  one flat, restarting counter; Word's actual `numPr`/`ilvl` numbering XML is not resolved.
+- No run-level emphasis (bold/italic) is preserved — "do not invent new formatting" was read as
+  scoping this phase to the structural elements the task explicitly listed, not as license to add
+  `**`/`*` markers unrequested; revisit if a future phase needs it.
+- Monospace-font code detection only catches an explicit *per-run* font override; a document-wide
+  theme font or a custom style that merely *implies* monospace without "code" in its name is not
+  detected.
+- Merged table cells repeat their text across every grid column they visually span (Markdown has no
+  colspan syntax to represent a true merge) rather than emitting the value once.
+- Images, footnotes/endnotes, and headers/footers are silently absent from output — not OCR'd, not
+  extracted, not represented as placeholders.
+- Not wired into the Read hook — every limitation already listed under QB-007A/B/C (unconfirmed
+  minimum Claude Code version, unmeasured Windows hook timeout budget) remains unmeasured for a
+  DOCX-sized document specifically, since none has run through the real hook path yet.
 
 </details>
 

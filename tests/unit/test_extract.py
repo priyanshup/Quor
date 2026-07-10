@@ -1,9 +1,13 @@
-"""Unit tests for quor/pipeline/extract/registry.py — QB-007E1.
+"""Unit tests for quor/pipeline/extract/registry.py — QB-007E1/E2.
 
-Covers the document extraction framework's routing and fail-open contract:
-no DOCX/PDF extraction is implemented yet (QB-007E2/E3), so these tests
-exercise the *architecture* — extension routing, the registry table, and
-the guarantee that extract() never raises — not real extraction output.
+Covers the document extraction framework's routing and fail-open contract —
+extension routing, the registry table, and the guarantee that extract()
+never raises — using `.pdf` (still an unimplemented stub, QB-007E3) as the
+"registered but not implemented" case. Most tests here patch `_EXTRACTORS`
+directly with a fake handler, so they exercise the *architecture* in
+isolation, independent of whichever real handler happens to be registered.
+`.docx` is real as of QB-007E2 — see `tests/unit/test_extract_docx.py` for
+its dedicated coverage (real fixtures, real conversion output).
 """
 
 from __future__ import annotations
@@ -47,24 +51,17 @@ class TestUnknownExtension:
 
 
 # ---------------------------------------------------------------------------
-# Supported extension, not yet implemented (QB-007E1 stubs)
+# Supported extension, not yet implemented (`.pdf`, QB-007E3 stub)
 # ---------------------------------------------------------------------------
 
 
 class TestSupportedButNotImplemented:
-    def test_docx_returns_none(self) -> None:
-        assert extract(Path("report.docx")) is None
-
     def test_pdf_returns_none(self) -> None:
         assert extract(Path("spec.pdf")) is None
 
-    def test_docx_not_implemented_does_not_warn(self, recwarn: pytest.WarningsRecorder) -> None:
+    def test_pdf_not_implemented_does_not_warn(self, recwarn: pytest.WarningsRecorder) -> None:
         """NotImplementedError is an expected, known state — not a bug — so
         it must be absorbed silently, unlike a genuine extraction failure."""
-        extract(Path("report.docx"))
-        assert len(recwarn) == 0
-
-    def test_pdf_not_implemented_does_not_warn(self, recwarn: pytest.WarningsRecorder) -> None:
         extract(Path("spec.pdf"))
         assert len(recwarn) == 0
 

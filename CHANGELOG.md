@@ -55,6 +55,21 @@ All notable changes to Quor are documented here. Format loosely follows
   all untouched — `extract()` isn't called from anywhere yet. No new dependencies. See QB-007E1 in
   `backlog.md` for full detail, including why DOCX/PDF extraction was split into four smaller,
   independently mergeable pieces (QB-007E1–E4) instead of one large PR.
+- **Added: real DOCX-to-Markdown extraction (QB-007E2).** `quor/pipeline/extract/docx.py`'s
+  `extract_docx()` fills in QB-007E1's `.docx` stub for real, using a new optional dependency,
+  `python-docx` (`quor[documents]`; core install keeps working without it). Converts headings
+  (`Heading 1`–`6` → `#`–`######`), paragraphs, bullet/numbered lists, GitHub-style tables
+  (`|`-escaped, multi-paragraph cells joined with `<br>`), and contiguous code-style paragraphs
+  (style name or explicit monospace font) into fenced blocks with indentation preserved — walking
+  `document.element.body` directly so paragraph/table order is preserved, not python-docx's
+  separate `document.paragraphs`/`.tables` flat lists. Document properties, comments, and
+  headers/footers are excluded by construction (never read), not filtered after the fact. Fully
+  fail-open on its own — missing `python-docx`, a corrupt file, an invalid zip, or any other parser
+  exception all return `None` with a warning, and `extract_docx()` never raises regardless of what
+  calls it. Still not wired into the Read hook, `FilterRegistry`, or `Pipeline` — all three, plus
+  `quor/adapters/claude_read.py`, remain untouched. See QB-007E2 in `backlog.md` for the full
+  algorithm, design trade-offs, and stated limitations (no nested lists, no bold/italic emphasis,
+  merged table cells repeat rather than span, images/footnotes/headers/footers silently absent).
 - **`quor gain` now explains negative-token rows instead of just softening
   their display.** Confirmed via a new invariant test
   (`TestFilterNeverExpandsOutput`) that no built-in filter stage can itself
