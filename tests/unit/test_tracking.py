@@ -10,6 +10,7 @@ import threading
 import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 import orjson
@@ -861,6 +862,214 @@ class TestDispatcherTracking:
         assert row is not None
         assert row[0] == 1       # passthrough
         assert row[1] is None    # no filter
+
+
+# ---------------------------------------------------------------------------
+# Read hook integration with tracking (QB-007D) — Read becomes another
+# producer of InvocationRecord via the same track_invocation() helper
+# TestDispatcherTracking above exercises through run_dispatch(). These tests
+# call quor.adapters.claude_read._compress_read_output() directly, the same
+# way TestDispatcherTracking calls run_dispatch() directly, and then read
+# the result back out of the real SQLite/JSONL stores — no Read-specific
+# storage or aggregation exists anywhere in this path.
+# ---------------------------------------------------------------------------
+
+
+class TestReadTracking:
+    def _hook_input(self, file_path: str, tool_response: object) -> Any:
+        from quor.adapters.base import PostToolUseHookInput
+
+        return PostToolUseHookInput.model_validate(
+            {
+                "tool_name": "Read",
+                "tool_input": {"file_path": file_path},
+                "tool_response": tool_response,
+            }
+        )
+
+    def test_compressed_read_tracked(self, tmp_path: Path) -> None:
+        """An oversized markdown document that genuinely compresses is
+        tracked with the matched filter name and was_passthrough=False,
+        exactly like a compressed Bash invocation."""
+        from quor.adapters.claude_read import _compress_read_output
+
+        db_path = tmp_path / "quor.db"
+        tracking = TrackingDB(db_path=db_path)
+        large_content = "line of filler text. " * 10_000
+        hook_input = self._hook_input("notes.md", large_content)
+
+        result = _compress_read_output(hook_input, tracking)
+        assert result is not None
+        assert len(result) < len(large_content)
+
+        tracking.flush()
+        tracking.close()
+
+        with sqlite3.connect(str(db_path)) as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute("SELECT * FROM invocations LIMIT 1").fetchone()
+        assert row is not None
+        assert row["command"] == "Read: notes.md"
+        assert row["filter_name"] == "markdown"
+        assert row["was_passthrough"] == 0
+        assert row["original_tokens"] > row["final_tokens"]
+
+    def test_unchanged_read_tracked(self, tmp_path: Path) -> None:
+        """A small markdown document under the filter's compression budget
+        is tracked (filter matched, was_passthrough=False) even though
+        updatedToolOutput ends up omitted because nothing changed."""
+        from quor.adapters.claude_read import _compress_read_output
+
+        db_path = tmp_path / "quor.db"
+        tracking = TrackingDB(db_path=db_path)
+        small_content = "# Heading\n\nBody text.\n"
+        hook_input = self._hook_input("notes.md", small_content)
+
+        result = _compress_read_output(hook_input, tracking)
+        assert result is None  # nothing to report — content unchanged
+
+        tracking.flush()
+        tracking.close()
+
+        with sqlite3.connect(str(db_path)) as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute("SELECT * FROM invocations LIMIT 1").fetchone()
+        assert row is not None
+        assert row["command"] == "Read: notes.md"
+        assert row["filter_name"] == "markdown"
+        assert row["was_passthrough"] == 0
+        assert row["original_tokens"] == row["final_tokens"]
+
+    def test_unsupported_file_type_tracked(self, tmp_path: Path) -> None:
+        """A file type outside the Read allowlist (here: a .py file, which
+        FilterRegistry still routes to the Bash-oriented `generic` filter)
+        is tracked as a passthrough — no document filter is genuinely
+        applied to it, matching how dispatcher tracks a Bash command that
+        matched no filter at all."""
+        from quor.adapters.claude_read import _compress_read_output
+
+        db_path = tmp_path / "quor.db"
+        tracking = TrackingDB(db_path=db_path)
+        hook_input = self._hook_input("script.py", "print('hello')\n")
+
+        result = _compress_read_output(hook_input, tracking)
+        assert result is None
+
+        tracking.flush()
+        tracking.close()
+
+        with sqlite3.connect(str(db_path)) as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute("SELECT * FROM invocations LIMIT 1").fetchone()
+        assert row is not None
+        assert row["command"] == "Read: script.py"
+        assert row["filter_name"] is None
+        assert row["was_passthrough"] == 1
+
+    def test_no_matching_filter_tracked(self, tmp_path: Path) -> None:
+        """A file path FilterRegistry cannot route at all (whitespace in the
+        path defeats every built-in filter's whitespace-free anchor) is
+        also tracked as a passthrough."""
+        from quor.adapters.claude_read import _compress_read_output
+
+        db_path = tmp_path / "quor.db"
+        tracking = TrackingDB(db_path=db_path)
+        hook_input = self._hook_input("My Documents/notes.md", "content\n")
+
+        result = _compress_read_output(hook_input, tracking)
+        assert result is None
+
+        tracking.flush()
+        tracking.close()
+
+        with sqlite3.connect(str(db_path)) as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute(
+                "SELECT filter_name, was_passthrough FROM invocations LIMIT 1"
+            ).fetchone()
+        assert row is not None
+        assert row["was_passthrough"] == 1
+
+    def test_tracking_failure_stays_fail_open(self, tmp_path: Path) -> None:
+        """A tracking write failure must never affect what the Read hook
+        returns — mirrors dispatcher's own tracking fail-open guarantee."""
+        from quor.adapters.claude_read import _compress_read_output
+
+        tracking = TrackingDB(db_path=tmp_path / "quor.db")
+        large_content = "line of filler text. " * 10_000
+        hook_input = self._hook_input("notes.md", large_content)
+
+        with (
+            patch.object(tracking, "record", side_effect=RuntimeError("disk full")),
+            pytest.warns(UserWarning, match="tracking record error"),
+        ):
+            result = _compress_read_output(hook_input, tracking)
+
+        tracking.close()
+        assert result is not None
+        assert len(result) < len(large_content)
+
+    def test_jsonl_fallback_for_read(self, tmp_path: Path) -> None:
+        from quor.adapters.claude_read import _compress_read_output
+
+        db_path = tmp_path / "quor.db"
+        jsonl_path = tmp_path / "invocations.jsonl"
+        tracking = TrackingDB(db_path=db_path, jsonl_path=jsonl_path)
+        hook_input = self._hook_input("notes.md", "# Heading\n\nBody text.\n")
+
+        _compress_read_output(hook_input, tracking)
+        tracking.flush()
+        tracking.close()
+
+        lines = jsonl_path.read_bytes().splitlines()
+        assert len(lines) == 1
+        parsed = orjson.loads(lines[0])
+        assert parsed["command"] == "Read: notes.md"
+        assert parsed["filter_name"] == "markdown"
+
+    def test_project_identity_matches_bash_rows(self, tmp_path: Path) -> None:
+        """A Read row and a Bash row recorded for the same project must
+        resolve to the same project_key_normalized — Read reuses
+        Path.cwd().as_posix(), the identical project-resolution rule
+        dispatcher.py already uses, with no Read-specific logic."""
+        from quor.adapters.claude_read import _compress_read_output
+
+        db_path = tmp_path / "quor.db"
+        tracking = TrackingDB(db_path=db_path)
+
+        with patch("pathlib.Path.cwd", return_value=tmp_path):
+            hook_input = self._hook_input("notes.md", "# Heading\n\nBody text.\n")
+            _compress_read_output(hook_input, tracking)
+            tracking.record(_sample_record(project_path=tmp_path.as_posix()))
+
+        tracking.flush()
+        tracking.close()
+
+        report = query_gain(db_path, tmp_path)
+        assert report.total_invocations == 2
+
+    def test_multiple_read_operations_aggregate(self, tmp_path: Path) -> None:
+        """Several Read calls in the same project sum into one project's
+        totals via the exact same query_gain() aggregation Bash rows use —
+        no Read-specific aggregation path exists."""
+        from quor.adapters.claude_read import _compress_read_output
+
+        db_path = tmp_path / "quor.db"
+        tracking = TrackingDB(db_path=db_path)
+        large_content = "line of filler text. " * 10_000
+
+        with patch("pathlib.Path.cwd", return_value=tmp_path):
+            for name in ("a.md", "b.md", "c.txt"):
+                hook_input = self._hook_input(name, large_content)
+                _compress_read_output(hook_input, tracking)
+
+        tracking.flush()
+        tracking.close()
+
+        report = query_gain(db_path, tmp_path)
+        assert report.total_invocations == 3
+        assert report.tokens_saved > 0
+        assert report.passthrough_count == 0
 
 
 # ---------------------------------------------------------------------------
