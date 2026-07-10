@@ -1121,3 +1121,102 @@ boolean parameter: the allowlist reuses `StageHandler.stage_type` (already requi
   prominently in `engine.py`'s own module docstring, not just here.
 - See `backlog.md`'s `QB-036` entry for the full validation record.
 
+## ADR-036: Multi-Agent Adapter Architecture — `AgentAdapter` Protocol + Registry (QB-035A)
+
+**Status:** Decided (design only — no code implements this yet)
+**Date:** 2026-07-10
+
+**Context:**
+QB-035 (Support more AI coding tools, and more programming languages) named Cursor, GitHub Copilot
+Agent, and Gemini CLI as future targets but was deliberately left unscheduled pending real,
+sustained usage validation of the Claude-Code-only v1 — a decision `ANTI_GOALS.md` #12 formalizes
+("No multi-agent support in V1... Cursor, Copilot CLI, Gemini Code Assist... are V2") and
+`ROADMAP.md` v2.0 names explicitly ("Cursor adapter", "Copilot CLI adapter", "Adapter detection in
+`quor doctor`"). QB-035A asked, as a design-only phase with no runtime changes, how Quor's
+architecture should generalize to support more than one agent without duplicating compression
+logic or branching on agent names throughout the codebase.
+
+Reading every relevant module before designing anything (`quor/rewrite/`, `quor/filters/registry.py`,
+`quor/pipeline/` in full, `quor/tracking/db.py`, both existing adapters, `__main__.py`, `init.py`,
+`doctor.py`) found that Quor's core is **already fully agent-agnostic** — zero references to
+"claude" or any agent concept anywhere in the rewrite classifier, `FilterRegistry`, `Pipeline`,
+any `StageHandler`, `extract()`, or `InvocationRecord`. All agent-name coupling was found
+concentrated in exactly four places: `__main__.py`'s hardcoded `_HOOK_ADAPTERS` set and if/else,
+`init.py`'s Claude-Code-settings.json-specific logic behind a single `--claude` flag, `doctor.py`'s
+hardcoded Claude-specific check functions, and `quor/adapters/base.py`'s Claude-Code-shaped Pydantic
+models sitting alongside an already-declared but entirely unused `HookAdapter` Protocol.
+`PROJECT_BIBLE.md`'s original architecture diagram already labels that Protocol as intentional
+("HookAdapter Protocol, HookInput, HookOutput") — this generalization was planned from the project's
+first architecture pass, never implemented past the reference adapter.
+
+**Options considered:**
+- **Leave `run_hook() -> None` (direct `sys.stdin`/`sys.stdout` I/O) as the adapter contract, add a
+  registry around it:** rejected — every existing adapter test already has to monkeypatch both
+  streams to exercise it; a registry alone would not retire the duplicated BOM-stripping logic
+  independently re-implemented in both `claude.py` and `claude_read.py` today, and every future
+  adapter would keep re-copying that same boilerplate.
+- **A `bytes`-in/`bytes`-out `handle_event(event, raw_stdin: bytes, tracking) -> bytes | None`
+  contract, with exactly one place (`__main__._run_hook()`) owning stream I/O:** chosen. Makes every
+  adapter a pure, directly unit-testable function; retires the duplicated stdin-handling boilerplate
+  as part of the QB-035B migration; requires no change to the existing outer fail-open guard in
+  `__main__.py`, which already holds `original_bytes` and already falls back to writing them
+  unchanged on any exception.
+- **An open, string-keyed event system** (arbitrary event names per agent) **vs. a small, closed
+  `AgentEvent` enum with two values** (`COMMAND_INTERCEPT`, `CONTENT_INTERCEPT`) **mapped from each
+  agent's own event names:** the closed enum was chosen — both values already exist today under
+  Claude Code's own names (`PreToolUse`/Bash, `PostToolUse`/Read); an open system would be exactly
+  the speculative abstraction CLAUDE.md's Rule 4 and this project's repeated "no speculative
+  abstractions" discipline warn against. A third event kind remains a non-breaking additive enum
+  member later, not a redesign.
+- **A single shared "generic hook payload" Pydantic model vs. keeping `HookInput`/`ToolInput`/etc.
+  fully adapter-local:** adapter-local was chosen. A shared generic payload model would either have
+  to lowest-common-denominator every future agent's fields or grow an unbounded `extra="allow"`
+  grab-bag; keeping each adapter's payload models next to that adapter, with only the `bytes`
+  boundary shared, applies the same "don't branch on agent identity" principle to data shape, not
+  just control flow.
+- **Two discovery mechanisms (a hardcoded built-in dict plus a `quor.hook_adapter` entry-point
+  group) vs. entry-points only:** the dual mechanism was chosen, mirroring
+  `_STAGE_HANDLERS`/`quor.compression_stage` (ADR-026) and `PluginRegistry`/`quor.plugin` exactly —
+  Quor's own built-in Claude Code integration should not need to be an installable plugin of itself,
+  while third-party agent adapters get the same fail-open, cached discovery every other extension
+  point already provides.
+
+**Decision:**
+`quor/adapters/base.py` gains `AgentEvent` (a two-value `StrEnum`), the `AgentAdapter` Protocol
+(`agent_id`/`display_name`/`api_version` class attributes; `supported_events` property;
+`handle_event()`, `install()`, `doctor_checks()` methods), and thin `InstallContext`/
+`InstallResult`/`DoctorContext`/`DoctorCheck` dataclasses/type-alias — mirroring `Plugin`'s existing
+`kw_only`, frozen-dataclass conventions (ADR-026) exactly. A new `quor/adapters/registry.py`
+provides `AdapterRegistry`, structurally identical to `plugin_loader.py`'s existing discovery
+(cached, fail-open per entry, built-in dict + `quor.hook_adapter` entry-point group). `__main__.py`,
+`quor doctor`, and `quor init` are redesigned (not yet implemented) to resolve through this registry
+instead of hardcoding Claude Code, with `init`/`doctor` remaining the only two CLI commands touched
+— no seventh command is introduced, respecting CLAUDE.md's fixed six-command rule. The existing,
+unused `HookAdapter` Protocol is superseded and slated for removal once `AgentAdapter` lands.
+`ClaudeAdapter` is designed as a thin wrapper around today's `claude.py`/`claude_read.py`, required
+to produce byte-for-byte identical output to today's behavior, proven via the same before/after
+equivalence discipline QB-005B established for the AST parser framework refactor — not a rewrite of
+either file's actual logic.
+
+**Consequences:**
+- No runtime code changes in this phase (QB-035A) — this ADR records a design decision for
+  QB-035B–F to implement, not a shipped change. `ANTI_GOALS.md` #12 is not violated: no agent
+  support is added; only an internal extension point is designed.
+- The hook argv shape (`quor hook claude` → `quor hook <agent_id> <event>`) is a real backward-
+  compatibility risk for already-installed hook scripts once QB-035C implements the `__main__.py`
+  migration — the design document recommends permanent argv aliases (`"claude"`/`"claude-read"` →
+  resolved agent/event pairs) as the default resolution, but this is not decided as final until
+  QB-035C actually implements it against a real pre-existing hook script.
+- Whether Cursor, Copilot Agent, or Gemini CLI actually expose anything resembling
+  `COMMAND_INTERCEPT`/`CONTENT_INTERCEPT` is unverified by this design — an empirical observation
+  (Cursor sending a doubled UTF-8 BOM, already handled in both existing adapters and documented in
+  `PROJECT_BIBLE.md` item 9) is suggestive, not confirmatory, and QB-035F must independently verify
+  a real target agent's hook contract before implementing it, mirroring QB-005C's own mandatory
+  pre-flight compatibility gate applied to a parser library.
+- `quor explain` has no equivalent for `CONTENT_INTERCEPT`-shaped events (e.g. "explain how a Read
+  of this file would compress") — an existing, pre-dating-this-ADR gap, explicitly out of scope for
+  QB-035A–E and not resolved by this decision.
+- See `docs/design/QB-035A-multi-agent-adapter-design.md` for the full design (event model
+  rationale, lifecycle model, complete interface signatures, every file eventually needing
+  modification, and the phased QB-035B–F backlog breakdown) and `backlog.md`'s `QB-035A` entry for
+  the validation record.
