@@ -35,7 +35,7 @@ from quor.pipeline.tee import (
     record_tee_success,
     write_tee,
 )
-from quor.tracking.db import InvocationRecord, TrackingDB, count_tokens
+from quor.tracking.db import TrackingDB, count_tokens, track_invocation
 
 if TYPE_CHECKING:
     # Deferred at runtime (see _setup_plugins/_run_pre_filter_plugins/
@@ -86,9 +86,9 @@ def run_dispatch(args: list[str], tracking: TrackingDB | None = None) -> int:
     # --- Passthrough when no filter matches ---
     if filter_config is None or registry is None:
         _teardown_plugins(plugin_registry, plugin_ctx)
-        _track(
+        track_invocation(
             tracking,
-            cmd_str=cmd_str,
+            command=cmd_str,
             original=captured,
             filtered=pre_output,
             filter_name=None,
@@ -117,9 +117,9 @@ def run_dispatch(args: list[str], tracking: TrackingDB | None = None) -> int:
     filtered = _apply_tee(filter_config, captured=captured, final_output=filtered)
 
     _teardown_plugins(plugin_registry, plugin_ctx)
-    _track(
+    track_invocation(
         tracking,
-        cmd_str=cmd_str,
+        command=cmd_str,
         original=captured,
         filtered=filtered,
         filter_name=filter_config.name,
@@ -410,30 +410,3 @@ def _teardown_plugins(
             plugin_registry.shutdown_all()
     except Exception as exc:  # noqa: BLE001
         warnings.warn(f"[quor] plugin shutdown error: {exc}", stacklevel=1)
-
-
-def _track(
-    tracking: TrackingDB | None,
-    *,
-    cmd_str: str,
-    original: str,
-    filtered: str,
-    filter_name: str | None,
-    was_passthrough: bool,
-    t0: float,
-) -> None:
-    if tracking is None:
-        return
-    try:
-        rec = InvocationRecord(
-            command=cmd_str,
-            project_path=Path.cwd().as_posix(),
-            original_tokens=count_tokens(original),
-            final_tokens=count_tokens(filtered),
-            filter_name=filter_name,
-            was_passthrough=was_passthrough,
-            duration_ms=(time.monotonic() - t0) * 1000,
-        )
-        tracking.record(rec)
-    except Exception as exc:  # noqa: BLE001
-        warnings.warn(f"[quor] tracking record error: {exc}", stacklevel=1)

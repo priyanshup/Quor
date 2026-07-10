@@ -39,7 +39,8 @@ genuinely separate, multi-part project (a new integration point, plus new handli
 document type), so it's being built as a sequence of small, independently mergeable pieces:
 Markdown and plain-text compression is implemented and, as of QB-007C, actually wired into the live
 Read hook — a supported document read by Claude is compressed for real, not just at the filter
-layer. See "Sub-items" below for exactly what's done and what isn't.
+layer — and, as of QB-007D, that savings shows up in `quor gain` alongside Bash savings. See
+"Sub-items" below for exactly what's done and what isn't.
 
 <details>
 <summary>Technical details</summary>
@@ -91,11 +92,15 @@ mergeable sub-items so each can be reviewed/tested/merged on its own:
 - **QB-007C — Activate the Read hook.** Implemented (2026-07-10). Wires QB-007A's adapter to
   QB-007B's filters via the existing `FilterRegistry`/`Pipeline` — a supported Read now actually
   returns compressed content via `updatedToolOutput`. See "QB-007C technical details" below.
-- **QB-007D — DOCX structure extraction.** Not started. Depends on QB-007A/B/C.
-- **QB-007E — PDF structure extraction.** Not started. Depends on QB-007A/B/C; the riskiest
+- **QB-007D — Read tracking integration.** Implemented (2026-07-10). Read invocations now
+  participate in the existing tracking pipeline (SQLite, JSONL, `quor gain`) exactly like Bash
+  invocations, via a single shared recorder — no schema change, no Read-specific storage. See
+  "QB-007D technical details" below.
+- **QB-007E — DOCX structure extraction.** Not started. Depends on QB-007A/B/C/D.
+- **QB-007F — PDF structure extraction.** Not started. Depends on QB-007A/B/C/D; the riskiest
   sub-item — PDF heading/table detection is heuristic, with no semantic ground truth to anchor it.
 
-**Status:** In progress — QB-007A/B/C implemented (none committed/merged to `main` yet); QB-007D
+**Status:** In progress — QB-007A/B/C/D implemented (none committed/merged to `main` yet); QB-007E
 onward not scheduled.
 
 </details>
@@ -250,6 +255,11 @@ extraction library, new stage types, optional dependencies, and hook *registrati
 `PreToolUse`/Bash hook (`quor/adapters/claude.py`, `quor/adapters/dispatcher.py`) was not modified
 at all.
 
+**Update (QB-007D):** tracking/SQLite/`quor gain` integration is no longer untouched — see
+"QB-007D technical details" below for what changed. Everything else in this list (DOCX/PDF,
+extraction libraries, new stage types, optional dependencies, hook registration) remains exactly
+as scoped here.
+
 **Verification:** full `pytest tests/`, `quor verify`, `ruff check quor/ tests/`, `mypy quor/` —
 see the QB-007C implementation session record for exact results.
 
@@ -259,10 +269,65 @@ see the QB-007C implementation session record for exact results.
   about whether/when a real Claude Code binary invokes it.
 - The real `PostToolUse` hook timeout budget on Windows remains unmeasured. This is now more
   directly relevant than it was for QB-007A/B, since a large document's compression genuinely runs
-  inside the hook's own request path — worth measuring before QB-007D/E (DOCX/PDF, which will be
+  inside the hook's own request path — worth measuring before QB-007E/F (DOCX/PDF, which will be
   slower) are scoped.
 - All QB-007B fenced-code-block/RST-heading/whitespace-path limitations are unchanged and now
   affect real, live compression rather than only the filter layer.
+
+</details>
+
+<details>
+<summary>QB-007D technical details</summary>
+
+**What shipped:** Read invocations now flow through the exact same tracking pipeline Bash
+invocations already use — SQLite (`quor.db`), JSONL fallback (`invocations.jsonl`), and therefore
+`quor gain` — with no schema change and no Read-specific storage or aggregation anywhere.
+
+The only structural change: `dispatcher.py`'s previously-private `_track()` helper (build an
+`InvocationRecord`, call `TrackingDB.record()`, fail-open on any exception) was promoted to a
+public function, `track_invocation()`, in `quor/tracking/db.py` — the module that already owns
+`InvocationRecord`/`TrackingDB`/`count_tokens`, and the natural home once a second producer needed
+the identical logic. `dispatcher.py` now calls `track_invocation()` instead of its old private
+method; behavior for Bash tracking is byte-for-byte unchanged (verified: `TestDispatcherTracking`
+in `tests/unit/test_tracking.py` required no changes). `quor/adapters/claude_read.py`'s
+`_compress_read_output()` calls the same `track_invocation()` at every exit point that represents
+a genuine Read invocation, recording `command="Read: {file_path}"` (an empty `file_path` is the one
+case treated as "nothing happened" and left untracked, mirroring `run_dispatch([])`'s early return
+before dispatching or tracking anything). `run_hook()` gained an optional `tracking: TrackingDB |
+None = None` keyword (default `None` so every pre-existing direct caller/test is unaffected);
+`__main__._run_hook()` constructs a `TrackingDB` via `get_tracking_db()` and passes it in for the
+`"claude-read"` adapter only, closing it in a `finally` — exactly the same pattern
+`_run_dispatch()` already uses for Bash, now visible in both branches of `_run_hook()`.
+
+**Passthrough/filter-name split (mirrors dispatcher.py's `_lookup_filter`/`_apply_content_filter`
+split exactly):** no match, or a match outside `_READ_SUPPORTED_FILTER_NAMES` (including a
+`FilterRegistry` construction/lookup error) → `filter_name=None, was_passthrough=True`. A supported
+filter matched — whether or not applying it changed the content, or even raised (fail-open falls
+back to the original response) → `filter_name=<name>, was_passthrough=False`. This means an
+*unchanged* compression (small document under budget) is tracked identically to how dispatcher
+tracks an unchanged Bash filter application: a filter was genuinely attempted, so it's not counted
+as a passthrough, even though `updatedToolOutput` itself is correctly omitted.
+
+**What was deliberately not touched:** `schema.sql`, `_SCHEMA_VERSION`, `InvocationRecord`'s
+fields, `query_gain()`, `normalize_project_path()`, the JSONL write format, and `quor gain`'s CLI
+rendering — none of these needed, or received, any change. A Read row is aggregated into `quor
+gain` purely because it's an ordinary row in the same `invocations` table; no Read-specific
+reporting path exists or was added.
+
+**Verification:** full `pytest tests/`, `quor verify`, `ruff check quor/ tests/`, `mypy quor/` all
+green. New coverage: `tests/unit/test_tracking.py::TestReadTracking` (compressed/unchanged/
+unsupported/no-match/filter-failure tracking, SQLite row shape, JSONL fallback, project-identity
+parity with Bash rows, multi-Read aggregation via `query_gain()`) and
+`tests/unit/test_cli.py::TestGain::test_read_activity_included_alongside_bash` (a Read row and a
+Bash row in the same `quor gain` window, no special-casing).
+
+**Limitations (carried forward, not resolved by this phase):**
+- Every Read hook invocation now opens and closes a `TrackingDB` (background thread + SQLite
+  connection) exactly once, the same per-invocation cost the Bash dispatch path already pays for
+  every command — not a new cost class, but now paid on every Read too. Not measured against the
+  unmeasured `PostToolUse` timeout budget noted under QB-007C.
+- All QB-007A/B/C limitations (unconfirmed minimum Claude Code version, unmeasured Windows hook
+  timeout budget, fenced-code-block/RST-heading/whitespace-path filter limitations) are unchanged.
 
 </details>
 

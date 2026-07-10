@@ -28,11 +28,15 @@ guarantees:
 - Any exception raised here is caught by __main__ and returns original bytes
   (a second, outermost fail-open layer on top of the one in
   `_compress_read_output` below)
+- A TrackingDB is constructed and passed in as `tracking` (QB-007D), exactly
+  as `__main__._run_dispatch()` already does for the Bash path — see
+  `_compress_read_output`'s own docstring for what gets recorded and when.
 """
 
 from __future__ import annotations
 
 import sys
+import time
 import warnings
 from pathlib import Path
 from typing import Any
@@ -41,6 +45,7 @@ import orjson
 
 from quor.adapters.base import PostToolUseHookInput
 from quor.filters.registry import FilterRegistry
+from quor.tracking.db import TrackingDB, track_invocation
 
 # ---------------------------------------------------------------------------
 # Hook script template — written by `quor init --claude` (QB-007A)
@@ -76,7 +81,7 @@ _UTF8_BOM = "﻿"
 _READ_SUPPORTED_FILTER_NAMES: frozenset[str] = frozenset({"markdown", "document-text"})
 
 
-def run_hook() -> None:
+def run_hook(*, tracking: TrackingDB | None = None) -> None:
     """Process one PostToolUse/Read hook call.
 
     Reads JSON from sys.stdin (already set up by __main__._run_hook).
@@ -84,6 +89,11 @@ def run_hook() -> None:
     Raises on parse/validation errors — caller (__main__) handles fail-open
     for those; content-routing/compression failures are handled locally by
     `_compress_read_output`, which never raises.
+
+    `tracking` is optional (defaults to None, a no-op) so existing callers
+    that don't care about tracking — direct unit tests, in particular — are
+    unaffected; `__main__._run_hook()` passes a real `TrackingDB` in
+    production, exactly as `_run_dispatch()` already does for Bash.
     """
     raw = sys.stdin.read()
 
@@ -98,7 +108,7 @@ def run_hook() -> None:
 
     hook_specific: dict[str, Any] = {"hookEventName": "PostToolUse"}
 
-    compressed = _compress_read_output(hook_input)
+    compressed = _compress_read_output(hook_input, tracking)
     if compressed is not None:
         hook_specific["updatedToolOutput"] = compressed
 
@@ -106,7 +116,9 @@ def run_hook() -> None:
     sys.stdout.buffer.flush()
 
 
-def _compress_read_output(hook_input: PostToolUseHookInput) -> str | None:
+def _compress_read_output(
+    hook_input: PostToolUseHookInput, tracking: TrackingDB | None
+) -> str | None:
     """Return compressed content if (and only if) a filter matched *and*
     actually changed the content; return None in every other case.
 
@@ -130,24 +142,82 @@ def _compress_read_output(hook_input: PostToolUseHookInput) -> str | None:
         guard) so a single bad filter can't take down routing for every
         other Read call in the same process; mirrors
         `quor/adapters/dispatcher.py`'s own filter-layer try/except.
+
+    Tracking (QB-007D): every branch that represents a genuine Read
+    invocation — i.e. `file_path` is non-empty — calls `track_invocation()`
+    exactly once before returning, mirroring how `dispatcher.py` tracks
+    every Bash invocation it dispatches. The `command` column gets
+    `"Read: {file_path}"` so Read rows are self-describing next to Bash
+    rows in the same table; no schema change, no new storage. A `file_path`
+    of "" is the one case treated as "nothing happened" and left untracked
+    — the same way `dispatcher.run_dispatch([])` returns before dispatching
+    or tracking anything for empty `args`.
+
+    The passthrough/filter-name split mirrors `dispatcher.py`'s own
+    `_lookup_filter`/`_apply_content_filter` split exactly:
+      - no match, or a match outside `_READ_SUPPORTED_FILTER_NAMES`
+        (including a `FilterRegistry` construction/lookup error) →
+        `filter_name=None, was_passthrough=True` — nothing was applied.
+      - a supported filter matched, whether or not applying it changed the
+        content or raised (fail-open falls back to the original response) →
+        `filter_name=<name>, was_passthrough=False` — a filter was
+        genuinely attempted, same as dispatcher tracking `filter_config.name`
+        even when `_apply_content_filter` itself caught an error.
     """
     tool_response = hook_input.tool_response
-    if not isinstance(tool_response, str):
-        return None
-
     file_path = hook_input.tool_input.file_path
     if not file_path:
+        return None
+
+    t0 = time.monotonic()
+    command = f"Read: {file_path}"
+
+    if not isinstance(tool_response, str):
+        track_invocation(
+            tracking,
+            command=command,
+            original="",
+            filtered="",
+            filter_name=None,
+            was_passthrough=True,
+            t0=t0,
+        )
         return None
 
     try:
         registry = FilterRegistry(project_root=Path.cwd())
         filter_config = registry.find(file_path)
-        if filter_config is None or filter_config.name not in _READ_SUPPORTED_FILTER_NAMES:
-            return None
+    except Exception as exc:  # noqa: BLE001 — fail-open: never let a filter error surface
+        warnings.warn(f"[quor] Read filter error: {exc}", stacklevel=2)
+        filter_config = None
+
+    if filter_config is None or filter_config.name not in _READ_SUPPORTED_FILTER_NAMES:
+        track_invocation(
+            tracking,
+            command=command,
+            original=tool_response,
+            filtered=tool_response,
+            filter_name=None,
+            was_passthrough=True,
+            t0=t0,
+        )
+        return None
+
+    try:
         rendered = registry.apply(filter_config, tool_response)
     except Exception as exc:  # noqa: BLE001 — fail-open: never let a filter error surface
         warnings.warn(f"[quor] Read filter error: {exc}", stacklevel=2)
-        return None
+        rendered = tool_response
+
+    track_invocation(
+        tracking,
+        command=command,
+        original=tool_response,
+        filtered=rendered,
+        filter_name=filter_config.name,
+        was_passthrough=False,
+        t0=t0,
+    )
 
     if rendered == tool_response:
         return None

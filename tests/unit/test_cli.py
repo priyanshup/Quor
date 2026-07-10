@@ -156,6 +156,51 @@ class TestGain:
         assert "git-status" in output
         assert "* Token estimates use the char/4 approximation (±20%), not a real tokenizer." in output
 
+    def test_read_activity_included_alongside_bash(self, tmp_path: Path) -> None:
+        """QB-007D: a Read-produced row (command="Read: ...") requires no
+        special-casing anywhere in `quor gain` — it aggregates into the same
+        totals and Top savings table as a Bash row, purely because both are
+        ordinary InvocationRecord rows in the same table."""
+        from quor.tracking.db import InvocationRecord, TrackingDB
+
+        db_path = tmp_path / "data" / "quor.db"
+        db = TrackingDB(db_path=db_path)
+        db.record(
+            InvocationRecord(
+                command="git status",
+                project_path=tmp_path.as_posix(),
+                original_tokens=100,
+                final_tokens=20,
+                filter_name="git-status",
+                was_passthrough=False,
+                duration_ms=5.0,
+            )
+        )
+        db.record(
+            InvocationRecord(
+                command="Read: docs/design.md",
+                project_path=tmp_path.as_posix(),
+                original_tokens=3700,
+                final_tokens=2600,
+                filter_name="markdown",
+                was_passthrough=False,
+                duration_ms=8.0,
+            )
+        )
+        db.flush()
+        db.close()
+
+        with patch("platformdirs.user_data_dir", return_value=str(tmp_path / "data")):
+            result = runner.invoke(app, ["gain", "--project", str(tmp_path), "--days", "30"])
+
+        assert result.exit_code == 0
+        output = result.output
+        assert "Commands processed" in output
+        assert "2" in output  # total_invocations, both rows counted
+        assert "markdown" in output  # Read's filter shows up in Top savings
+        assert "git-status" in output
+        assert "YOU SAVED" in output
+
     def test_zero_saved_filter_hidden_from_top_savings(self, tmp_path: Path) -> None:
         """A filter that saved nothing must not appear in Top savings."""
         from quor.tracking.db import InvocationRecord, TrackingDB

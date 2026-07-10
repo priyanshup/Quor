@@ -234,7 +234,7 @@ not command routing).
 
 ---
 
-## 8. Read/file-path routing — Markdown and plain-text documents (QB-007B/C)
+## 8. Read/file-path routing — Markdown and plain-text documents (QB-007B/C/D)
 
 Everything in §1–§7 above describes routing a **Bash command string** through the classifier and
 then `FilterRegistry`. QB-007B introduces a second, structurally different use of the same
@@ -242,7 +242,10 @@ then `FilterRegistry`. QB-007B introduces a second, structurally different use o
 involved at all (there is no command to rewrite — see `backlog.md`'s QB-007 entry for why Read
 needs an entirely different hook shape than Bash). QB-007C wires this into the live
 `PostToolUse`/Read hook — as of QB-007C, a supported document read by Claude Code is genuinely
-compressed via `updatedToolOutput`, not just at the filter-testing layer.
+compressed via `updatedToolOutput`, not just at the filter-testing layer. QB-007D wires the same
+Read path into tracking: every Read invocation is recorded with `command="Read: {file_path}"` in
+the same `invocations` table Bash commands use, so it shows up in `quor gain` with no special
+handling — see `backlog.md`'s QB-007D entry for the full detail.
 
 **Adapter-side allowlist (QB-007C), important for understanding what actually runs:**
 `quor/adapters/claude_read.py` only ever applies a filter whose name is `markdown` or

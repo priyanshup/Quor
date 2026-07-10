@@ -36,6 +36,15 @@ All notable changes to Quor are documented here. Format loosely follows
   QB-007B's documented `cat.md` routing-collision limitation for real Read calls. No tracking/
   `quor gain`/DOCX/PDF/new-dependency work — exactly as scoped. See QB-007C in `backlog.md` for
   full detail.
+- **Added: Read invocations now participate in tracking and `quor gain` (QB-007D).** Every Read
+  call reaching `quor/adapters/claude_read.py` is now recorded as an `InvocationRecord` — same
+  `command` column (`"Read: {file_path}"`), same SQLite/JSONL dual-write, same token accounting,
+  same fail-open guarantee — via a single new shared helper, `track_invocation()`
+  (`quor/tracking/db.py`), promoted out of `dispatcher.py`'s previously-private `_track()` so both
+  the Bash dispatcher and the Read hook call the exact same recording logic instead of duplicating
+  it. No schema change, no new table, no Read-specific storage or aggregation: `quor gain` picks up
+  Read rows automatically because they're ordinary rows in the same `invocations` table. See QB-007D
+  in `backlog.md` for full detail.
 - **`quor gain` now explains negative-token rows instead of just softening
   their display.** Confirmed via a new invariant test
   (`TestFilterNeverExpandsOutput`) that no built-in filter stage can itself

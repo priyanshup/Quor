@@ -54,12 +54,20 @@ def _run_hook() -> None:
         sys.stdin = io.TextIOWrapper(io.BytesIO(original_bytes), encoding="utf-8")
 
         if adapter == "claude":
-            from quor.adapters.claude import run_hook
-        else:
-            # "claude-read" — PostToolUse/Read (QB-007A)
-            from quor.adapters.claude_read import run_hook
+            from quor.adapters.claude import run_hook as run_claude_hook
 
-        run_hook()
+            run_claude_hook()
+        else:
+            # "claude-read" — PostToolUse/Read (QB-007A/C), tracked (QB-007D)
+            # exactly like _run_dispatch() below tracks Bash invocations.
+            from quor.adapters.claude_read import run_hook as run_claude_read_hook
+            from quor.tracking.db import get_tracking_db
+
+            tracking = get_tracking_db()
+            try:
+                run_claude_read_hook(tracking=tracking)
+            finally:
+                tracking.close()
     except Exception as exc:  # noqa: BLE001 — hook must never raise
         sys.stdout.buffer.write(original_bytes)
         print(f"[quor] Hook error — returning original: {exc}", file=sys.stderr)

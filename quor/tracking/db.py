@@ -4,6 +4,8 @@ Public API:
     InvocationRecord       — frozen dataclass, one per pipeline run
     GainReport             — aggregated token-savings summary
     TrackingDB             — background-thread writer (non-blocking)
+    track_invocation()     — shared fail-open recorder for every InvocationRecord
+                              producer (Bash dispatcher, Read hook, ...)
     query_gain()           — read-side: produce a GainReport from SQLite
     normalize_project_path() — canonical project identity (query_gain's matching rule)
     get_tracking_db()      — factory: create TrackingDB in the platformdirs data dir
@@ -17,6 +19,7 @@ import queue
 import re
 import sqlite3
 import threading
+import time
 import warnings
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -284,6 +287,48 @@ class TrackingDB:
         line = orjson.dumps(rec.to_dict()) + b"\n"
         with open(self._jsonl_path, "ab") as fh:
             fh.write(line)
+
+
+# ---------------------------------------------------------------------------
+# Shared write-side helper — one InvocationRecord per producer call
+# ---------------------------------------------------------------------------
+
+
+def track_invocation(
+    tracking: TrackingDB | None,
+    *,
+    command: str,
+    original: str,
+    filtered: str,
+    filter_name: str | None,
+    was_passthrough: bool,
+    t0: float,
+) -> None:
+    """Build an `InvocationRecord` from one pipeline run and enqueue it.
+
+    The single, shared fail-open recorder for every producer of
+    `InvocationRecord` — originally `dispatcher.py`'s private `_track()`
+    helper (Bash), promoted here so `quor/adapters/claude_read.py` (Read,
+    QB-007D) can call the exact same logic instead of duplicating it.
+    `tracking=None` is a no-op, and any exception (including one raised by
+    `tracking` itself) is swallowed with a warning — a producer's own output
+    must never be affected by a tracking failure.
+    """
+    if tracking is None:
+        return
+    try:
+        rec = InvocationRecord(
+            command=command,
+            project_path=Path.cwd().as_posix(),
+            original_tokens=count_tokens(original),
+            final_tokens=count_tokens(filtered),
+            filter_name=filter_name,
+            was_passthrough=was_passthrough,
+            duration_ms=(time.monotonic() - t0) * 1000,
+        )
+        tracking.record(rec)
+    except Exception as exc:  # noqa: BLE001
+        warnings.warn(f"[quor] tracking record error: {exc}", stacklevel=2)
 
 
 # ---------------------------------------------------------------------------
