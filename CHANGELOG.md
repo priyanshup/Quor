@@ -5,6 +5,126 @@ All notable changes to Quor are documented here. Format loosely follows
 
 ## [0.3.0] — Unreleased
 
+- **Designed: AST-aware code summarization architecture (QB-005A).** A design-only pass
+  (`docs/design/QB-005A-ast-summarization-design.md`) for extending QB-005's Python-only AST
+  compression to JavaScript/TypeScript, per CLAUDE.md Rule 4. Concludes AST parsing belongs inside
+  a `StageHandler` (not before `Pipeline`, not inside `FilterRegistry`) producing `ContentMask`
+  decisions exclusively, and recommends `tree-sitter` as a new, optional `quor[javascript]` extra
+  for JS/TS — no pure-Python parser supports current TypeScript syntax, so this mirrors the
+  already-shipped `quor[documents]` precedent (QB-007E2/E3) rather than a core dependency. No
+  architectural conflict found. Flags a pre-existing gap (Read-based `.py` access gets no AST
+  summarization today) and folds it into a phased plan (QB-005B–QB-005F). No code changed.
+- **Added: AST parser framework, Python proof of concept (QB-005B).** New package
+  `quor/pipeline/ast_summarize/` (`registry.py`: `language -> analyzer` routing;
+  `python.py`: `analyze_python()`, wrapping QB-005's `_compressible_body_lines()`/
+  `_body_line_range()` relocated unmodified). `python_ast_summarize.py` now delegates to this
+  registry instead of calling `ast.parse()` directly — its `stage_type`, config shape, and every
+  observable behavior are byte-for-byte unchanged (proven via a before/after snapshot diff across
+  14 fixtures, plus the full pre-existing `TestPythonAstSummarize` suite passing unmodified).
+  New generic stage, `code_ast_summarize` (`language: str` config field), dispatches through the
+  same registry — one shared implementation of Python's body-compression logic, not two — but is
+  not yet wired into any built-in filter (`cat-python.toml` unchanged). Unsupported-language
+  fail-open is implemented in `apply()` rather than `can_handle()`, a documented, deliberate
+  deviation from the design doc's original proposal: `can_handle(content, content_type)` has no
+  access to `StageConfig` in any existing stage, and changing that Protocol was out of scope for
+  this infrastructure-only phase. No new dependencies, no `tree-sitter`, no JS/TS parsing, no
+  Read-hook integration, no benchmark changes — exactly QB-005A's own QB-005B scope. See QB-005B
+  in `backlog.md` for the full writeup, including an unrelated local-environment note (this
+  session's own shell commands were intercepted by a locally-installed Quor hook, whose
+  25-second dispatcher subprocess timeout required running validation in batches — not a code
+  defect).
+- **Added: JavaScript AST summarization (QB-005C).** New analyzer,
+  `quor/pipeline/ast_summarize/javascript.py` (`analyze_javascript()`), registered in QB-005B's
+  framework alongside Python — `tree-sitter`/`tree-sitter-javascript` (new optional
+  `quor[javascript]` extra) parse function/method/arrow-function bodies, imports, exports, class
+  `extends` clauses, decorators, and JSDoc are preserved untouched. Implements the design's
+  mandatory ERROR-node-overlap exclusion rule: a function whose own span overlaps a tree-sitter
+  `ERROR`/`MISSING` node is never compressed, verified against two different real error-recovery
+  shapes (a malformed signature that swallows trailing code into one error node vs. a localized
+  body-only error that leaves sibling functions cleanly compressible). New filter,
+  `cat-javascript.toml` (`.js`/`.jsx`/`.mjs`/`.cjs`), reuses QB-005B's generic
+  `code_ast_summarize` stage — no JS-specific stage class. Missing `quor[javascript]`: fails open
+  per-call (empty result, actionable warning), core install and Python summarization unaffected
+  either way — verified via a before/after snapshot diff proving Python's output is still
+  byte-for-byte unchanged.
+  **Found and fixed a real, severe bug during implementation:** `tree-sitter==0.26.0` has a
+  reproducible native-level memory-corruption bug (`Node.child_by_field_name()` + point-attribute
+  access, repeated ~85+ times against one parsed tree, segfaults the process — a crash no
+  `try/except` can catch). Root-caused via bisection (not guessed), confirmed absent in `0.25.2`
+  at far larger scales, fixed by capping `pyproject.toml`'s `tree-sitter` dependency at `<0.26.0`.
+  See QB-005C in `backlog.md` for the full bisection record and node-mapping design notes.
+- **Added: TypeScript and TSX AST summarization (QB-005D).** New analyzer,
+  `quor/pipeline/ast_summarize/typescript.py` (`analyze_typescript()` for `.ts`, `analyze_tsx()`
+  for `.tsx` — two separate grammars, `tree-sitter-typescript`'s `language_typescript()`/
+  `language_tsx()`, selected strictly by file extension, never inferred from content; verified
+  empirically that JSX genuinely fails to parse under the plain `.ts` grammar). `interface`/`type`
+  alias/`enum`/`namespace` declarations, overload signatures, and abstract classes/methods are all
+  preserved whole by construction — never entered into the compress-candidate set, no special
+  "preserve" code needed. New shared module, `quor/pipeline/ast_summarize/_treesitter_utils.py`,
+  extracted from `javascript.py`'s own ERROR-node-overlap/body-range logic so both analyzers reuse
+  the identical rule rather than each reimplementing it (`javascript.py`'s own behavior re-verified
+  byte-for-byte unchanged after the extraction). New filter, `cat-typescript.toml` (two
+  `[[filter]]` blocks — `cat-typescript` for `.ts`, `cat-tsx` for `.tsx`, mirroring `node.toml`'s
+  own multi-block-per-file precedent), reuses the same `code_ast_summarize` stage
+  `cat-javascript.toml` already uses. `tree-sitter-typescript` added to the same `quor[javascript]`
+  extra (a deliberate choice, not a new `quor[typescript]` extra — see `typescript.py`'s own
+  docstring). Missing dependency, malformed syntax, and unsupported-grammar cases all verified
+  fail-open, same contract as JavaScript.
+  **Mandatory pre-flight compatibility check, run before any analyzer code was written:**
+  re-verified the QB-005C `tree-sitter==0.26.0` memory-corruption bisection specifically against
+  both TypeScript grammars (2000 flat functions, 3000 nested class+method pairs, 200 repeated
+  Language/Parser construction calls) — clean at every scale, confirming the bug does not reappear
+  and the existing `tree-sitter<0.26.0` ceiling needs no change. Verified via a before/after
+  snapshot diff that both Python's and JavaScript's output remain byte-for-byte unchanged. See
+  QB-005D in `backlog.md` for the full record.
+- **Added: JavaScript/TypeScript/TSX AST benchmark corpus and empirical evaluation (QB-005E).**
+  12 new, realistic (not synthetic-repeated) sample fixtures under `tests/benchmarks/samples/`
+  (5 JavaScript, 6 TypeScript, 1 TSX — short/medium/large files, a minified bundle, a
+  heavily-commented file, interface-heavy, decorator-heavy NestJS-style, generic-heavy, and
+  overload-heavy code) and matching `[[case]]` entries in `manifest.toml`, closing the temporary
+  benchmark-coverage gap QB-005C/QB-005D's own scope had deferred. `min_reduction_pct` floors set
+  from real measured values, not guessed. **Found and fixed two real `must_contain` bugs during
+  implementation:** one case asserted JSX body content that the AST stage correctly compresses
+  away (fixed to check the preserved signature instead), and one asserted a plain `//` comment
+  that `strip_lines` genuinely removes, unlike a JSDoc block (fixed to check JSDoc instead) — both
+  caught by tracing what actually survives compression, not by a failing test after the fact.
+  `baseline.json` updated via the framework's own `--update-baseline` workflow; a programmatic
+  diff confirmed exactly 12 entries added, 0 removed, 0 changed among the 48 pre-existing entries
+  (`cat-python`'s own two cases confirmed byte-for-byte identical). New, deliberately separate
+  script, `tests/benchmarks/ast_timing_analysis.py` (not wired into the pytest gate, not part of
+  the regression-tracked manifest), measures parser-vs-pipeline time contribution, large-file
+  scaling (roughly linear to 1000 synthetic functions), malformed-source/ERROR-node handling
+  performance (no measurable overhead), and "nothing to summarize" cost (near-zero) — using
+  synthetic inputs only for those specific operational measurements, deliberately kept separate
+  from the realistic, regression-tracked corpus. `benchmark_runner.py`/`report.py`/
+  `run_benchmarks.py`/`test_benchmarks.py` were not modified at all — the framework's own
+  "adding a filter is a pure data change" design held exactly as advertised. See QB-005E in
+  `backlog.md` for the full measured results.
+- **Added: Read-hook AST integration, closing the QB-005 phased plan (QB-005F).** Reading a
+  `.py`/`.js`/`.jsx`/`.mjs`/`.cjs`/`.ts`/`.tsx` file via Claude Code's native `Read` tool (not just
+  `cat`'d through Bash) now genuinely compresses through the same `cat-python`/`cat-javascript`/
+  `cat-typescript`/`cat-tsx` filters QB-005B–D already shipped and QB-005E already benchmarked —
+  closing the pre-existing gap QB-005A's design doc flagged in its own Section 8/9. Only
+  `quor/adapters/claude_read.py` changed: a new extension → filter-name mapping
+  (`_SOURCE_CODE_FILTER_NAMES_BY_EXTENSION`) routes a matched Read `file_path` to the right filter
+  **by name** (the same by-name lookup QB-007E4 already uses for extracted DOCX/PDF text, since a
+  bare file path can never match any of these filters' `cat `-prefixed `match_command` patterns) —
+  no new stage type, no new pipeline, no analyzer/filter behavior changes. A genuine code
+  duplication was found between this new path and QB-007E4's own post-extraction tail (by-name
+  lookup → apply → track → omit-if-unchanged) and extracted into one shared helper,
+  `_compress_via_named_filter()`, used by both — not a new routing layer, and not a third
+  copy-pasted implementation. Reuses `FilterRegistry`, the existing `code_ast_summarize`/
+  `python_ast_summarize` stages, and QB-007D's tracking exactly as-is; Python/JS/TS/TSX Read
+  invocations now aggregate into `quor gain` alongside Bash and document rows with zero
+  Read-format-specific code. Every fail-open path (unsupported extension, invalid Python syntax,
+  malformed JS/TS, missing `quor[javascript]`, a raising `FilterRegistry`) verified end to end
+  through the real Read stdin → stdout contract, not just at the analyzer layer QB-005B–D already
+  covered. A few pre-existing tests that used a `.py` path as their "this extension is
+  unsupported" fixture (predating QB-005F) were updated to a still-genuinely-unsupported extension,
+  with dedicated QB-005F coverage added instead. See QB-005F in `backlog.md` for the full record,
+  including a pre-existing, out-of-scope limitation noted (not introduced by this change): source
+  filters have no `max_tokens` `on_empty` fallback, so a pathological single-very-long-line file
+  can compress to an empty string, identical to existing Bash `cat` behavior today.
 - **Added: `PostToolUse`/`Read` hook plumbing (QB-007A).** A new adapter
   (`quor/adapters/claude_read.py`) and a second, additive hook registration
   (`claude-hook-read.ps1`, `hooks.PostToolUse`/matcher `"Read"`) let `quor init --claude` install
@@ -140,6 +260,65 @@ All notable changes to Quor are documented here. Format loosely follows
   release-readiness checklist.
 - Test count: 983 (was 614), reflecting the above plus accumulated coverage
   from QB-013 (tee), QB-018 (gain project-identity fix), and QB-019.
+- **Added: pipeline-level early exit, an optimization only (QB-036 — requested and tracked in
+  conversation as "QB-009," refiled since that ID was already a completed, unrelated item; see
+  QB-036 in `backlog.md` for the full numbering note).** `Pipeline.execute()` now skips any suffix
+  of remaining stages once the `ContentMask` is "fully decided" (no `KEEP` lines left) and every
+  one of those remaining stages is on a small, hand-audited allowlist
+  (`_STAGE_TYPES_INERT_ON_DECIDED_LINES` in `quor/pipeline/engine.py`) with an empty
+  `preserve_patterns` — never changes rendered output, only whether a stage is actually invoked.
+  **Found, and designed around, a real pre-existing subtlety while auditing every built-in stage's
+  `apply()` (not a bug fix — nothing was changed about it):** `Decision.COMPRESS` is not
+  engine-enforced immutable the way `PROTECT` is; `group_repeated`/`max_tokens`/`remove_ansi` can
+  each, if configured with `preserve_patterns`, promote an already-`COMPRESS` line back to
+  `PROTECT`, and `match_output`'s whole-render collapse can't be predicted from `Decision` state at
+  all — both are why the allowlist requires an empty `preserve_patterns` and excludes
+  `match_output` unconditionally, rather than relying on a blanket "no KEEP lines left" rule. See
+  ADR-035. `FilterRegistry.apply()` (Bash/Read hooks, benchmarks, `quor verify`) has the
+  optimization on by default; `FilterRegistry.trace()` (`quor explain`) explicitly disables it so
+  its diagnostic stage-by-stage view is completely unaffected. The skip-eligibility check itself
+  fails open (falls back to running the stage for real on any exception). Zero `StageHandler`
+  implementations, zero filter `.toml` files, and zero existing pipeline stage configs were
+  changed — the allowlist reuses `StageHandler.stage_type` and the already-existing
+  `StageConfig.preserve_patterns` field; no new abstraction was introduced. Verified byte-for-byte
+  identical output across every built-in filter's own inline tests and all 60 benchmark corpus
+  cases with the optimization forced on vs. off (`tests/unit/test_early_exit.py`,
+  `tests/benchmarks/early_exit_analysis.py` — the latter a deliberately separate script, not wired
+  into the pytest gate, mirroring `ast_timing_analysis.py`'s QB-005E precedent). Measured
+  real-world impact, reported honestly: early exit fires in 2 of 60 benchmark corpus cases (both
+  `mypy`), with an aggregate timing delta within measurement noise — `python_ast_summarize`/
+  `code_ast_summarize` are always the first stage in the filters that use them, so this
+  optimization can never skip the expensive AST parse itself, only cheap trailing stages, by
+  construction.
+- **Designed: multi-agent adapter architecture (QB-035A).** A design-only pass
+  (`docs/design/QB-035A-multi-agent-adapter-design.md`, ADR-036) for supporting AI coding agents
+  beyond Claude Code without duplicating compression logic or branching on agent names — no new
+  agent implemented, no runtime behavior changed, consistent with `ANTI_GOALS.md` #12 ("no
+  multi-agent support in V1"). **Headline finding:** `quor/rewrite/`, `FilterRegistry`, `Pipeline`
+  (all stages, `extract/`), and `quor/tracking/db.py` are already 100% agent-agnostic — verified by
+  grepping every one of them for any agent-name reference and finding none. All agent-name coupling
+  is concentrated in exactly four places: `__main__.py`'s hardcoded `_HOOK_ADAPTERS` set/if-else,
+  `init.py`'s Claude-settings.json-specific logic behind a single `--claude` flag, `doctor.py`'s
+  hardcoded Claude-specific check functions, and `quor/adapters/base.py`'s already-declared but
+  entirely unused `HookAdapter` Protocol — which `PROJECT_BIBLE.md`'s original architecture diagram
+  shows was intended as a multi-adapter extension point from the project's first design pass,
+  never implemented past the reference adapter. Proposes `AgentEvent` (a closed, two-value event
+  abstraction: `COMMAND_INTERCEPT`/`CONTENT_INTERCEPT`, mapped from Claude Code's
+  `PreToolUse`/`PostToolUse` today), the `AgentAdapter` Protocol (`bytes`-in/`bytes`-out
+  `handle_event()`, plus `install()`/`doctor_checks()` for the CLI), and `AdapterRegistry` — a
+  built-in dict plus a new `quor.hook_adapter` entry-point group, mirroring the existing
+  `quor.compression_stage`/`quor.plugin` discovery mechanism (ADR-026) exactly. **Genuine, real
+  duplication found between `claude.py` and `claude_read.py` (independently re-implemented BOM-
+  stripping and stdio boilerplate) was surfaced and explained, not fixed** — per this task's
+  explicit "stop and explain before changing anything" instruction; the proposed `bytes`-in/
+  `bytes`-out contract retires it as part of a future migration, not this phase. Also documents an
+  empirical, informally-observed data point worth recording: both existing adapters already strip a
+  doubled UTF-8 BOM specifically because Cursor is known to send one (`PROJECT_BIBLE.md` item 9) —
+  suggestive, not confirmatory, that a first additional adapter may need less novel payload-parsing
+  work than assumed; explicitly flagged as unverified and a real risk for whichever future phase
+  implements it. Full 6-step migration plan, 6 named risks, 4 design trade-offs with rejected
+  alternatives, and a complete file-by-file list of what would eventually need to change are in the
+  design doc; remaining work is split into QB-035B–F (see `backlog.md`).
 
 ## [0.2.1] — 2026-07-04
 
