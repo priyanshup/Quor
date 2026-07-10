@@ -509,6 +509,92 @@ class TestRunTests:
         fc = FilterConfig(name="demo", match_command=".*")
         assert self.reg.run_tests(fc) == []
 
+    def test_warning_suppressed_when_test_passes(self) -> None:
+        """Regression test: a passing inline test whose apply() call raises a
+        warning along the way (e.g. python_ast_summarize's own fail-open
+        path firing on a deliberately-invalid fixture, exactly like
+        cat-python.toml's "Invalid Python fails open" case) must not leak
+        that warning to the caller — run_tests() succeeding is the proof the
+        fail-open behavior worked as the fixture intended, so the warning is
+        noise, not signal. Uses the real python_ast_summarize stage as the
+        natural, real-world example (the exact scenario that motivated this
+        fix) — see test_warning_suppression_is_generic_not_special_cased
+        below for proof the mechanism itself doesn't key off this specific
+        stage or exception type."""
+        fc = FilterConfig(
+            name="demo",
+            match_command=".*",
+            stages=[{"type": "python_ast_summarize"}],
+            tests=[
+                FilterTest(
+                    description="invalid Python fails open",
+                    input="def broken(:\n    pass\n",
+                    must_contain=["def broken(:", "pass"],
+                )
+            ],
+        )
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            failures = self.reg.run_tests(fc)
+        assert failures == []
+        assert caught == [], f"expected no warnings to escape, got: {[str(w.message) for w in caught]}"
+
+    def test_warning_surfaced_when_test_fails(self) -> None:
+        """The same warning-raising scenario, but with an assertion that
+        fails — the captured warning must appear in the failure output as
+        extra debugging context, not be silently dropped."""
+        fc = FilterConfig(
+            name="demo",
+            match_command=".*",
+            stages=[{"type": "python_ast_summarize"}],
+            tests=[
+                FilterTest(
+                    description="invalid Python, deliberately wrong assertion",
+                    input="def broken(:\n    pass\n",
+                    must_contain=["this substring will never be present"],
+                )
+            ],
+        )
+        failures = self.reg.run_tests(fc)
+        assert any("must_contain" in f for f in failures)
+        assert any("warning during test" in f and "invalid syntax" in f for f in failures), (
+            f"expected the captured warning in failure output, got: {failures}"
+        )
+
+    def test_warning_suppression_is_generic_not_special_cased(self) -> None:
+        """Proves the suppress-on-pass/surface-on-fail mechanism is a
+        property of run_tests() itself, not keyed to python_ast_summarize or
+        SyntaxError specifically — any stage's warnings.warn() call is
+        handled identically."""
+        from quor.pipeline.stages.strip_lines import StripLinesStage
+
+        def _warn_then_passthrough(self: object, mask: object, config: object) -> object:
+            warnings.warn("synthetic warning unrelated to AST/SyntaxError", stacklevel=2)
+            return mask
+
+        fc = FilterConfig(
+            name="demo",
+            match_command=".*",
+            stages=[{"type": "strip_lines", "patterns": []}],
+            tests=[
+                FilterTest(
+                    description="passing test whose stage happens to warn",
+                    input="hello world",
+                    must_contain=["hello world"],
+                )
+            ],
+        )
+
+        with (
+            patch.object(StripLinesStage, "apply", _warn_then_passthrough),
+            warnings.catch_warnings(record=True) as caught,
+        ):
+            warnings.simplefilter("always")
+            failures = self.reg.run_tests(fc)
+
+        assert failures == []
+        assert caught == [], "a passing test's warning must be suppressed regardless of source"
+
 
 # ---------------------------------------------------------------------------
 # Built-in filter inline tests
