@@ -1,0 +1,100 @@
+# quor built-in filter: cat (JavaScript files) — QB-005C structural extraction
+#
+# Compresses function/method/arrow-function bodies to their signature (+
+# JSDoc, when present), keeping imports, exports, top-level constants,
+# class/function signatures, decorators, and JSDoc untouched. Must be loaded
+# before the generic `cat.toml` filter so `.js`/`.jsx`/`.mjs`/`.cjs` files
+# match here first. Built-in filters load in sorted filename order
+# (quor/filters/registry.py::_load_builtin uses sorted(glob(...))), and
+# "cat-javascript.toml" sorts before "cat.toml" lexicographically ('-' is
+# 0x2D, '.' is 0x2E) — exactly the naming convention cat-python.toml's own
+# header comment anticipated for this file. Relative order between
+# cat-javascript.toml and cat-python.toml does not matter: their
+# match_command patterns are mutually exclusive (`.py` vs
+# `.js`/`.jsx`/`.mjs`/`.cjs`), so neither can shadow the other.
+#
+# code_ast_summarize (language = "javascript") runs first — the generic,
+# multi-language stage introduced in QB-005B, dispatching to
+# quor/pipeline/ast_summarize/javascript.py via the shared registry. This
+# reuses the *stage*; it is not a JavaScript-specific stage class, unlike
+# python_ast_summarize (a deliberate, documented QB-005 vs QB-005B
+# difference — see backlog.md's QB-005B/QB-005C entries). Then the exact
+# same strip_lines / deduplicate_consecutive / max_tokens stack
+# cat-python.toml already uses, per
+# docs/design/QB-005A-ast-summarization-design.md Section 9's own QB-005C
+# scope ("same ... tail cat-python.toml already uses") — reused verbatim,
+# not reinvented, including the pattern list. code_ast_summarize never
+# touches comment lines at all (tree-sitter's comment nodes are
+# deliberately not consulted by this stage — see javascript.py's module
+# docstring), so strip_lines still does real, needed work here: it strips
+# ordinary `//` comments and blank-line noise while preserving
+# TODO/FIXME/HACK/XXX/NOTE/WARN, exactly as it does for cat-python.toml.
+#
+# Known, inherited limitation (not new to this filter — see backlog.md's
+# QB-005C entry for the full writeup): strip_lines' `'^\s*#[^!]'` pattern
+# (reused verbatim from cat-python.toml/cat.toml) was written for Python's
+# `#` comment syntax and can misfire on a JS/TS private class field
+# declaration line (`#counter = 0;`), which also starts with `#` but is not
+# a comment. This exact pattern already ships unchanged in cat.toml today
+# for any `.js` file that doesn't match a dedicated filter, so this is a
+# pre-existing, inherited risk being reused for consistency with
+# cat-python.toml (per the design's explicit instruction to reuse this
+# stage stack verbatim), not a new one introduced here.
+schema_version = 1
+
+[[filter]]
+name = "cat-javascript"
+match_command = '^cat\s+(-\S+\s+)*\S*\.(js|jsx|mjs|cjs)\b'
+
+[[filter.stages]]
+type = "code_ast_summarize"
+language = "javascript"
+
+[[filter.stages]]
+type = "strip_lines"
+patterns = [
+    '^\s*#[^!]',
+    '^\s*//\s',
+    '^\s*--\s',
+    '^\s*;\s',
+]
+preserve_patterns = [
+    '^#!/',
+    'TODO',
+    'FIXME',
+    'HACK',
+    'XXX',
+    'NOTE',
+    'WARN',
+]
+
+[[filter.stages]]
+type = "deduplicate_consecutive"
+
+[[filter.stages]]
+type = "max_tokens"
+limit = 800
+strategy = "both"
+
+[[filter.tests]]
+description = "Function body compressed; signature and JSDoc preserved"
+input = "/**\n * Add two numbers.\n */\nfunction add(x, y) {\n  const total = x + y;\n  return total;\n}\n"
+must_contain = ["function add(x, y) {", "Add two numbers."]
+must_not_contain = ["const total = x + y"]
+
+[[filter.tests]]
+description = "Imports, exports, and module-level constants are never touched"
+input = "import { foo } from \"bar\";\n\nconst DEFAULT_TIMEOUT = 30;\n\nfunction run() {\n  doWork();\n  return true;\n}\n"
+must_contain = ["import { foo } from \"bar\";", "const DEFAULT_TIMEOUT = 30;"]
+must_not_contain = ["doWork()"]
+
+[[filter.tests]]
+description = "Invalid JavaScript fails open — original content returned unchanged"
+input = "function broken(: {\n  return 1;\n}\n"
+must_contain = ["function broken(:", "return 1;"]
+
+[[filter.tests]]
+description = "Class method bodies compressed; class/method signatures and extends clause preserved"
+input = "export class Widget extends Base {\n  constructor(x) {\n    this.x = x;\n  }\n\n  render() {\n    return this.x;\n  }\n}\n"
+must_contain = ["export class Widget extends Base {", "constructor(x) {", "render() {"]
+must_not_contain = ["this.x = x;", "return this.x;"]

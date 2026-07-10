@@ -168,12 +168,26 @@ trade-off, update the baseline (see above) and say why in the PR.
 ## Filter coverage
 
 As of ADR-032 (`docs/final/DECISIONS.md`), every currently-implemented built-in filter has at
-least 2 manifest cases: `git-status`, `git-log`, `git-diff`, `pytest`, `mypy`, `ruff`, `eslint`,
-`npm`, `npx`, `pnpm`, `yarn`, `cat`, `cat-python`, and `generic` (28 cases across 14 categories).
-This closes the gap this section used to describe (`eslint`/`npm`/`npx`/`pnpm`/`yarn` were the
-original omissions from QB-011; `ruff` and `cat`/`cat-python` were found missing during the same
-follow-up pass). Every filter added after this point must include its own benchmark case before
-merge — see `docs/final/COMMAND_SUPPORT.md` §7.
+least 2 manifest cases. This closes the gap this section used to describe (`eslint`/`npm`/`npx`/
+`pnpm`/`yarn` were the original omissions from QB-011; `ruff` and `cat`/`cat-python` were found
+missing during the same follow-up pass). `cat-javascript`/`cat-typescript`/`cat-tsx` (QB-005C/D)
+shipped without benchmark coverage as a temporary, explicitly-documented exception — QB-005E has
+since closed that gap too, adding 12 cases across those 3 categories (60 cases across 27
+categories total). Every filter added after this point must include its own benchmark case
+before merge — see `docs/final/COMMAND_SUPPORT.md` §7.
+
+## AST summarization timing analysis (QB-005E)
+
+`ast_timing_analysis.py` is a second, deliberately separate script from the rest of this suite —
+run it directly (`python -m tests.benchmarks.ast_timing_analysis`), it is not wired into
+`test_benchmarks.py`'s pytest gate. It breaks down, for every Python/JavaScript/TypeScript/TSX
+benchmark case, how much time is spent in raw parsing (`analyze_*()`) versus the AST
+`StageHandler`'s own bookkeeping versus the rest of the filter pipeline (`strip_lines`/
+`deduplicate_consecutive`/`max_tokens`/render), and separately measures large-file scaling,
+malformed-source/ERROR-node handling performance, and files with nothing to summarize — using
+deliberately synthetic inputs for the scaling/malformed cases, since those measure operational
+characteristics, not compression realism, and are intentionally kept out of the regression-tracked
+corpus in `manifest.toml`. See `backlog.md`'s QB-005E entry for the measured results.
 
 ## Future benchmark expansion
 

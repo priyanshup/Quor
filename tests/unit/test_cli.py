@@ -154,7 +154,12 @@ class TestGain:
         assert "~80 tokens (80%)" in output
         assert "Top savings" in output
         assert "git-status" in output
-        assert "* Token estimates use the char/4 approximation (±20%), not a real tokenizer." in output
+        assert "estimated via the char/4 approximation" in output
+        assert "±20% versus a real tokenizer" in output
+        # This scenario has zero Read-hook rows, so the "not
+        # represented" notice must appear.
+        assert "No Read-hook activity has been recorded" in output
+        assert "quor init --claude" in output
 
     def test_read_activity_included_alongside_bash(self, tmp_path: Path) -> None:
         """QB-007D: a Read-produced row (command="Read: ...") requires no
@@ -200,6 +205,9 @@ class TestGain:
         assert "markdown" in output  # Read's filter shows up in Top savings
         assert "git-status" in output
         assert "YOU SAVED" in output
+        # A genuine Read row is present, so the "no Read-hook
+        # activity" notice must not appear.
+        assert "No Read-hook activity has been recorded" not in output
 
     def test_docx_read_activity_pools_with_markdown_in_top_savings(self, tmp_path: Path) -> None:
         """QB-007E4: a DOCX/PDF Read is tracked with filter_name="markdown"
@@ -246,6 +254,8 @@ class TestGain:
         # Top savings pools both rows' markdown savings into one line:
         # (1000-800) + (5000-3000) = 2200 total saved for "markdown".
         assert "2.2k" in output
+        # Both rows are Read-produced, so the notice must not appear.
+        assert "No Read-hook activity has been recorded" not in output
 
     def test_zero_saved_filter_hidden_from_top_savings(self, tmp_path: Path) -> None:
         """A filter that saved nothing must not appear in Top savings."""
@@ -331,7 +341,7 @@ class TestGain:
 
         assert result.exit_code == 0
         assert "Compression achieved" not in result.output
-        assert "Recovery/overhead" not in result.output
+        assert "Recovery-footer overhead" not in result.output
         assert "had output grow instead of shrink" not in result.output
 
     def test_mixed_rows_shows_compression_breakdown_with_correct_values(
@@ -375,7 +385,7 @@ class TestGain:
         assert result.exit_code == 0
         assert "Compression achieved" in result.output
         assert "~800 tokens" in result.output   # gross_savings, not net
-        assert "Recovery/overhead" in result.output
+        assert "Recovery-footer overhead" in result.output
         assert "~22 tokens" in result.output    # gross_overhead
         assert "YOU SAVED" in result.output     # net (800 - 22 = 778) is still positive
         assert "1 of 2 commands (50%) had output grow instead of shrink" in result.output
@@ -469,6 +479,151 @@ class TestGain:
         # nonsensical figure the old net-based denominator would produce).
         assert "pytest" in result.output
         assert "(100%)" in result.output
+
+    def test_no_read_hook_activity_notice_shown_for_bash_only_window(
+        self, tmp_path: Path
+    ) -> None:
+        """The dedicated notice, verbatim, when read_hook_invocations
+        == 0 for an otherwise-populated report — mentions the specific
+        Read-only feature families and the exact fix command."""
+        from quor.tracking.db import InvocationRecord, TrackingDB
+
+        db_path = tmp_path / "data" / "quor.db"
+        db = TrackingDB(db_path=db_path)
+        db.record(
+            InvocationRecord(
+                command="git status",
+                project_path=tmp_path.as_posix(),
+                original_tokens=100,
+                final_tokens=20,
+                filter_name="git-status",
+                was_passthrough=False,
+                duration_ms=5.0,
+            )
+        )
+        db.flush()
+        db.close()
+
+        with patch("platformdirs.user_data_dir", return_value=str(tmp_path / "data")):
+            result = runner.invoke(app, ["gain", "--project", str(tmp_path), "--days", "30"])
+
+        assert result.exit_code == 0
+        output = result.output
+        assert "No Read-hook activity has been recorded in this window" in output
+        assert "Markdown/plain-text compression" in output
+        assert "DOCX/PDF extraction" in output
+        assert "AST summarization" in output
+        assert "`quor init --claude`" in output
+
+    def test_no_read_hook_notice_absent_when_read_rows_present(self, tmp_path: Path) -> None:
+        """The inverse: as soon as at least one Read row exists, the notice
+        must not appear, regardless of how many Bash rows are also present."""
+        from quor.tracking.db import InvocationRecord, TrackingDB
+
+        db_path = tmp_path / "data" / "quor.db"
+        db = TrackingDB(db_path=db_path)
+        db.record(
+            InvocationRecord(
+                command="git status",
+                project_path=tmp_path.as_posix(),
+                original_tokens=100,
+                final_tokens=20,
+                filter_name="git-status",
+                was_passthrough=False,
+                duration_ms=5.0,
+            )
+        )
+        db.record(
+            InvocationRecord(
+                command="Read: app.py",
+                project_path=tmp_path.as_posix(),
+                original_tokens=400,
+                final_tokens=250,
+                filter_name="cat-python",
+                was_passthrough=False,
+                duration_ms=3.0,
+            )
+        )
+        db.flush()
+        db.close()
+
+        with patch("platformdirs.user_data_dir", return_value=str(tmp_path / "data")):
+            result = runner.invoke(app, ["gain", "--project", str(tmp_path), "--days", "30"])
+
+        assert result.exit_code == 0
+        assert "No Read-hook activity has been recorded" not in result.output
+
+    def test_mode_optimize_shown_without_clarification(self, tmp_path: Path) -> None:
+        """The common/default-expectation mode gets no extra caveat text —
+        only non-"optimize" values are annotated."""
+        from quor.config.model import QuorUserConfig
+        from quor.tracking.db import InvocationRecord, TrackingDB
+
+        db_path = tmp_path / "data" / "quor.db"
+        db = TrackingDB(db_path=db_path)
+        db.record(
+            InvocationRecord(
+                command="git status",
+                project_path=tmp_path.as_posix(),
+                original_tokens=100,
+                final_tokens=20,
+                filter_name="git-status",
+                was_passthrough=False,
+                duration_ms=5.0,
+            )
+        )
+        db.flush()
+        db.close()
+
+        with (
+            patch("platformdirs.user_data_dir", return_value=str(tmp_path / "data")),
+            patch(
+                "quor.cli.commands.gain.load_user_config",
+                return_value=QuorUserConfig(mode="optimize"),
+            ),
+        ):
+            result = runner.invoke(app, ["gain", "--project", str(tmp_path), "--days", "30"])
+
+        assert result.exit_code == 0
+        assert "Mode: optimize" in result.output
+        assert "affects third-party plugins only" not in result.output
+
+    def test_mode_audit_gets_plugin_only_clarification(self, tmp_path: Path) -> None:
+        """The "Mode: audit" line sitting directly above compression stats
+        must not read as though it qualifies them — it doesn't, since only
+        third-party plugins ever read this value."""
+        from quor.config.model import QuorUserConfig
+        from quor.tracking.db import InvocationRecord, TrackingDB
+
+        db_path = tmp_path / "data" / "quor.db"
+        db = TrackingDB(db_path=db_path)
+        db.record(
+            InvocationRecord(
+                command="git status",
+                project_path=tmp_path.as_posix(),
+                original_tokens=100,
+                final_tokens=20,
+                filter_name="git-status",
+                was_passthrough=False,
+                duration_ms=5.0,
+            )
+        )
+        db.flush()
+        db.close()
+
+        with (
+            patch("platformdirs.user_data_dir", return_value=str(tmp_path / "data")),
+            patch(
+                "quor.cli.commands.gain.load_user_config",
+                return_value=QuorUserConfig(mode="audit"),
+            ),
+        ):
+            result = runner.invoke(app, ["gain", "--project", str(tmp_path), "--days", "30"])
+
+        assert result.exit_code == 0
+        assert "Mode: audit" in result.output
+        assert "affects third-party plugins only" in result.output
+        assert "always reflect real, applied compression regardless of mode" in result.output
 
 
 # ---------------------------------------------------------------------------

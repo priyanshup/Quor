@@ -128,7 +128,7 @@ class TestSupportedTypesCompress:
 class TestUnsupportedTypesPassThrough:
     @pytest.mark.parametrize(
         "file_path",
-        ["script.py", "config.json", "LICENSE", "image.png"],
+        ["config.json", "LICENSE", "image.png", "main.rs"],
     )
     def test_unsupported_large_file_never_compresses(self, file_path: str) -> None:
         """Regression guard for the generic-filter scope-leak: FilterRegistry's
@@ -146,7 +146,13 @@ class TestUnsupportedTypesPassThrough:
         this specific assertion today, since extraction fails open for a
         missing file — but for the wrong reason, no longer "this extension
         has no filter at all," and that distinction is exactly what a
-        regression test must not paper over)."""
+        regression test must not paper over).
+
+        `.py`/`.js`/`.jsx`/`.mjs`/`.cjs`/`.ts`/`.tsx` are likewise
+        deliberately NOT parametrized here as of QB-005F — they are also no
+        longer "unsupported": they're routed to the AST-summarization
+        filters by name. See tests/unit/test_read_hook_ast_summarization.py
+        for their dedicated coverage."""
         large_content = "line of filler text. " * 10_000
         result = _run_hook(_read_payload(file_path, large_content))
         assert "updatedToolOutput" not in result["hookSpecificOutput"]
@@ -312,10 +318,18 @@ class TestDocxPdfExtraction:
         assert "updatedToolOutput" not in result["hookSpecificOutput"]
 
     def test_unsupported_extension_still_passes_through(self, tmp_path: Path) -> None:
-        """A real file that isn't .docx/.pdf/.md/.txt/.rst still never
-        reaches extract() or any filter, exactly as before QB-007E4."""
-        path = tmp_path / "script.py"
-        path.write_text("print('hello')\n", encoding="utf-8")
+        """A real file that isn't .docx/.pdf/.md/.txt/.rst — and, as of
+        QB-005F, isn't a mapped source-code extension either — still never
+        reaches extract() or any filter, exactly as before QB-007E4.
+
+        `.py` was this test's example prior to QB-005F; it is now a
+        genuinely supported source-code extension (routed to `cat-python`
+        by name), so a garbage-filler `.py` fixture like this one would
+        legitimately compress — see
+        tests/unit/test_read_hook_ast_summarization.py for that dedicated
+        coverage instead."""
+        path = tmp_path / "data.json"
+        path.write_text('{"greeting": "hello"}\n', encoding="utf-8")
         result = _run_hook(_read_payload(str(path), "line of filler text. " * 10_000))
         assert "updatedToolOutput" not in result["hookSpecificOutput"]
 

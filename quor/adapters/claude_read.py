@@ -29,9 +29,26 @@ first converted to Markdown-shaped text by `quor/pipeline/extract`
 through the exact same `markdown` `FilterConfig` the `.md` path already
 uses — looked up by name via `FilterRegistry.all_filters()`, not by a new
 `docx.toml`/`pdf.toml` file path pattern, so there is still only one
-Markdown-compression filter in the entire system. Everything else (code
-files, no extension, an extraction failure, ...) still passes through
-unchanged, exactly as before QB-007E4.
+Markdown-compression filter in the entire system.
+
+`.py`/`.js`/`.jsx`/`.mjs`/`.cjs`/`.ts`/`.tsx` files (QB-005F) take a third
+path, for the same structural reason as `.docx`/`.pdf`: the `cat-python`/
+`cat-javascript`/`cat-typescript`/`cat-tsx` filters (QB-005B-D) already exist
+and already wrap the AST-summarization pipeline, but their `match_command`
+patterns are all shaped like `^cat\\s+...\\.py\\b` — a literal `cat `-prefixed
+command string a bare Read `file_path` (e.g. `"src/app.py"`) can never
+match. So, exactly like the extracted-document path, the matching filter is
+looked up **by name** (`_SOURCE_CODE_FILTER_NAMES_BY_EXTENSION`, keyed by
+extension) instead of by `FilterRegistry.find(file_path)`. Unlike the
+document path there is no extraction step — the Read `tool_response` is
+already the plain source text — so both the content to filter and the
+content to compare against are the same `tool_response` value. Both this
+path and the document path share their post-lookup "apply, track, omit if
+unchanged" tail via `_compress_via_named_filter()`, added in QB-005F when
+this exact duplication was identified between the two by-name paths.
+Everything else (unsupported extensions, no extension, an extraction
+failure, a missing AST dependency, a parse/filter failure, ...) still passes
+through unchanged, exactly as before QB-005F.
 
 Called by __main__._run_hook() (adapter name "claude-read"), which
 guarantees:
@@ -111,6 +128,28 @@ _EXTRACTION_EXTENSIONS: frozenset[str] = frozenset({".docx", ".pdf"})
 # matched against a file path the way the direct .md/.txt path is. No
 # docx.toml/pdf.toml exists or is created — see module docstring.
 _MARKDOWN_FILTER_NAME = "markdown"
+
+# Extension -> builtin filter name, for source-code Read files (QB-005F).
+# Mirrors _MARKDOWN_FILTER_NAME's by-name lookup, not _READ_SUPPORTED_FILTER_NAMES'
+# path-match lookup — see module docstring for why: cat-python.toml/
+# cat-javascript.toml/cat-typescript.toml's `match_command` patterns all
+# require a literal "cat "-prefixed command string, which a bare Read
+# file_path can never match via FilterRegistry.find(). Each of these filters
+# already exists (QB-005B/C/D) and already wraps the AST-summarization
+# pipeline (code_ast_summarize/python_ast_summarize stages) — this mapping
+# only makes them *reachable* from the Read hook; no new filter is added
+# here. ".jsx"/".mjs"/".cjs" all share cat-javascript, exactly as that
+# filter's own match_command already treats them as one language for the
+# Bash path.
+_SOURCE_CODE_FILTER_NAMES_BY_EXTENSION: dict[str, str] = {
+    ".py": "cat-python",
+    ".js": "cat-javascript",
+    ".jsx": "cat-javascript",
+    ".mjs": "cat-javascript",
+    ".cjs": "cat-javascript",
+    ".ts": "cat-typescript",
+    ".tsx": "cat-tsx",
+}
 
 
 def run_hook(*, tracking: TrackingDB | None = None) -> None:
@@ -201,6 +240,15 @@ def _compress_read_output(
     see that function's own docstring for its tracking/fail-open contract,
     which mirrors this one exactly (extraction failure ≈ "no filter
     matched"; a successful extraction ≈ "the markdown filter matched").
+
+    QB-005F: a source-code file path whose extension is a key in
+    `_SOURCE_CODE_FILTER_NAMES_BY_EXTENSION` is diverted straight to
+    `_compress_via_named_filter` (no extraction step, no separate branch
+    function — the shared helper is called directly, since there's nothing
+    else this branch needs to do first). Tracking/fail-open contract is the
+    same shared helper both this path and `_compress_extracted_document`
+    use, so it mirrors both exactly.
+
     Every other extension keeps using the exact code below, unmodified.
     """
     tool_response = hook_input.tool_response
@@ -223,10 +271,23 @@ def _compress_read_output(
         )
         return None
 
-    if Path(file_path).suffix.lower() in _EXTRACTION_EXTENSIONS:
+    suffix = Path(file_path).suffix.lower()
+
+    if suffix in _EXTRACTION_EXTENSIONS:
         return _compress_extracted_document(
             file_path=file_path,
             tool_response=tool_response,
+            tracking=tracking,
+            t0=t0,
+            command=command,
+        )
+
+    source_filter_name = _SOURCE_CODE_FILTER_NAMES_BY_EXTENSION.get(suffix)
+    if source_filter_name is not None:
+        return _compress_via_named_filter(
+            content=tool_response,
+            original=tool_response,
+            filter_name=source_filter_name,
             tracking=tracking,
             t0=t0,
             command=command,
@@ -296,29 +357,31 @@ def _compress_extracted_document(
 
     Once extraction succeeds, the resulting Markdown-shaped text is run
     through the *existing* `"markdown"` `FilterConfig`
-    (`quor/filters/builtin/markdown.toml`) — looked up by name via
-    `FilterRegistry.all_filters()`, not matched against `file_path` (which
-    is still `"report.docx"`, not something `markdown.toml`'s
-    `^\\S+\\.(md|markdown)$` pattern would ever match). No new filter file,
-    no new routing system, no new stage — `FilterRegistry.apply()` is
-    called exactly as it already is everywhere else.
+    (`quor/filters/builtin/markdown.toml`) via `_compress_via_named_filter`
+    — looked up by name via `FilterRegistry.all_filters()`, not matched
+    against `file_path` (which is still `"report.docx"`, not something
+    `markdown.toml`'s `^\\S+\\.(md|markdown)$` pattern would ever match). No
+    new filter file, no new routing system, no new stage —
+    `FilterRegistry.apply()` is called exactly as it already is everywhere
+    else.
 
     Tracking mirrors `_compress_read_output`'s own contract precisely:
       - extraction returns `None` → `filter_name=None, was_passthrough=True`
         — nothing was applied, same as "no filter matched" above.
-      - extraction succeeds (whether or not the markdown filter changes the
-        result, or even if applying it fails and falls back to the
-        unfiltered extracted text) → `filter_name="markdown",
-        was_passthrough=False` — a filter was genuinely attempted, same as
-        the non-extraction path tracks `filter_config.name` even when
-        `_apply_content_filter`-equivalent handling caught an error.
+      - extraction succeeds → delegated to `_compress_via_named_filter`,
+        which tracks `filter_name="markdown", was_passthrough=False`
+        whether or not the markdown filter changes the result, or even if
+        applying it fails and falls back to the unfiltered extracted text —
+        a filter was genuinely attempted, same as the non-extraction path
+        tracks `filter_config.name` even when `_apply_content_filter`-
+        equivalent handling caught an error.
       - `original_tokens` is always derived from the *original*
-        `tool_response` (the raw Read result before extraction), and
-        `final_tokens` from whatever is actually returned as
-        `updatedToolOutput` (or, on a filter failure, the unfiltered
-        extracted text that was actually returned) — `track_invocation()`
-        computes both via `count_tokens()` exactly as it already does for
-        every other producer; no tracking-side change was needed.
+        `tool_response` (the raw Read result before extraction, passed as
+        `_compress_via_named_filter`'s `original`), and `final_tokens` from
+        whatever is actually returned as `updatedToolOutput` (or, on a
+        filter failure, the unfiltered extracted text that was actually
+        returned) — `track_invocation()` computes both via `count_tokens()`
+        exactly as it already does for every other producer.
 
     Returns `None` (omit `updatedToolOutput`) if extraction failed, or if
     the final result happens to equal the original `tool_response` byte
@@ -342,25 +405,71 @@ def _compress_extracted_document(
         )
         return None
 
+    return _compress_via_named_filter(
+        content=extracted,
+        original=tool_response,
+        filter_name=_MARKDOWN_FILTER_NAME,
+        tracking=tracking,
+        t0=t0,
+        command=command,
+    )
+
+
+def _compress_via_named_filter(
+    *,
+    content: str,
+    original: str,
+    filter_name: str,
+    tracking: TrackingDB | None,
+    t0: float,
+    command: str,
+) -> str | None:
+    """Look up `filter_name` by name (not by `FilterRegistry.find()`'s
+    command/path-pattern match), apply it to `content`, track the
+    invocation, and return the rendered result — or `None` if it's
+    unchanged from `original`. Never raises.
+
+    Extracted in QB-005F from `_compress_extracted_document`'s own
+    post-extraction tail, once the source-code Read path (below) needed the
+    identical "by-name lookup -> apply -> track -> omit if unchanged"
+    sequence. The only real difference between the two callers is *how*
+    `content` was obtained (extracted from a binary document vs. already
+    plain source text) — everything after that point was byte-for-byte
+    identical duplicated code, so only that shared tail was extracted, not
+    a new generic routing/dispatch layer.
+
+    `content` and `original` are deliberately separate parameters because
+    they differ for `_compress_extracted_document` (`content` is the
+    extracted Markdown text, `original` is the raw pre-extraction
+    `tool_response`, so tracking's token-savings numbers stay anchored to
+    what Claude actually received from Read) but are the same value for the
+    source-code path (there is no extraction step, so both are
+    `tool_response`).
+
+    Every failure mode (registry construction, filter lookup, `apply()`)
+    falls open to `content` unchanged, exactly like every other filter call
+    in this module — a warning is emitted, nothing raises past this
+    function.
+    """
     try:
         registry = FilterRegistry(project_root=Path.cwd())
-        filter_config = _find_filter_by_name(registry, _MARKDOWN_FILTER_NAME)
-        rendered = registry.apply(filter_config, extracted) if filter_config is not None else extracted
+        filter_config = _find_filter_by_name(registry, filter_name)
+        rendered = registry.apply(filter_config, content) if filter_config is not None else content
     except Exception as exc:  # noqa: BLE001 — fail-open: never let a filter error surface
         warnings.warn(f"[quor] Read filter error: {exc}", stacklevel=2)
-        rendered = extracted
+        rendered = content
 
     track_invocation(
         tracking,
         command=command,
-        original=tool_response,
+        original=original,
         filtered=rendered,
-        filter_name=_MARKDOWN_FILTER_NAME,
+        filter_name=filter_name,
         was_passthrough=False,
         t0=t0,
     )
 
-    if rendered == tool_response:
+    if rendered == original:
         return None
     return rendered
 

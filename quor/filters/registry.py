@@ -23,6 +23,10 @@ from quor.pipeline.content_type import detect
 from quor.pipeline.engine import Pipeline, PipelineResult, StageEntry
 from quor.pipeline.mask import ContentMask
 from quor.pipeline.stages.base import StageConfig
+from quor.pipeline.stages.code_ast_summarize import (
+    CodeAstSummarizeConfig,
+    CodeAstSummarizeStage,
+)
 from quor.pipeline.stages.deduplicate_consecutive import (
     DeduplicateConsecutiveConfig,
     DeduplicateConsecutiveStage,
@@ -50,6 +54,7 @@ _STAGE_HANDLERS: dict[str, tuple[type, type[StageConfig]]] = {
     "regex_replace": (RegexReplaceStage, RegexReplaceConfig),
     "match_output": (MatchOutputStage, MatchOutputConfig),
     "python_ast_summarize": (PythonAstSummarizeStage, PythonAstSummarizeConfig),
+    "code_ast_summarize": (CodeAstSummarizeStage, CodeAstSummarizeConfig),
 }
 
 _BUILTIN_DIR = Path(__file__).parent / "builtin"
@@ -232,12 +237,26 @@ class FilterRegistry:
         """Run the pipeline and return the full per-stage trace (for `quor explain`).
 
         Unlike `apply()`, this does not honor abort_unless/abort_if/on_empty —
-        it always runs every stage so the trace shows what each stage would do.
+        it always runs every stage so the trace shows what each stage would
+        do. This also means QB-036's early-exit optimization is deliberately
+        disabled here (`early_exit=False`): early exit only ever changes
+        *which stages actually run*, never the rendered content, but `quor
+        explain`'s whole purpose is showing what every configured stage does
+        — an early-exited stage would show "skipped — early exit: ..."
+        instead of its real per-stage line count, which is exactly the
+        diagnostic information this command exists to surface. `apply()`
+        below (the real compression path — Bash/Read hooks, benchmarks,
+        `quor verify`) keeps the optimization at its default (on).
         """
-        return self._run_pipeline(filter_config, content, content_type)
+        return self._run_pipeline(filter_config, content, content_type, early_exit=False)
 
     def _run_pipeline(
-        self, filter_config: FilterConfig, content: str, content_type: str = ""
+        self,
+        filter_config: FilterConfig,
+        content: str,
+        content_type: str = "",
+        *,
+        early_exit: bool = True,
     ) -> PipelineResult:
         detected = content_type or detect(content).value
 
@@ -249,41 +268,70 @@ class FilterRegistry:
             except ConfigError as exc:
                 warnings.warn(f"[quor] Skipping invalid stage: {exc}", stacklevel=2)
 
-        return Pipeline(entries).execute(mask, raw_content=content, content_type=detected)
+        return Pipeline(entries).execute(
+            mask, raw_content=content, content_type=detected, early_exit=early_exit
+        )
 
     # ------------------------------------------------------------------
     # Inline test runner
     # ------------------------------------------------------------------
 
     def run_tests(self, filter_config: FilterConfig) -> list[str]:
-        """Run all inline FilterTest entries. Returns list of failure messages."""
+        """Run all inline FilterTest entries. Returns list of failure messages.
+
+        Warnings raised while applying a test's input (e.g. a stage's own
+        fail-open path firing on a deliberately-invalid fixture, like
+        cat-python.toml's "Invalid Python fails open" case) are captured
+        per-test rather than left to print unconditionally to stderr. A
+        *passing* test proves whatever happened — including any fail-open
+        warning along the way — was exactly what the fixture intended, so
+        the warning is discarded; a *failing* test keeps its captured
+        warnings, appended to that test's own failure messages, since they
+        may be useful context for an unexpected failure. This is generic —
+        no stage type, exception type, or warning category is
+        special-cased; every `warnings.warn()` call from anywhere in the
+        pipeline is handled identically. Real compression (`apply()` called
+        directly by the dispatcher/Read hook, not through this method) is
+        entirely unaffected — warnings there still print normally.
+        """
         failures: list[str] = []
         for i, test in enumerate(filter_config.tests):
             label = f"[{filter_config.name}] test {i + 1}: {test.description!r}"
-            try:
-                output = self.apply(filter_config, test.input)
-            except Exception as exc:  # noqa: BLE001
-                failures.append(f"{label} — EXCEPTION: {exc}")
-                continue
+            test_failures: list[str] = []
 
-            for expected in test.must_contain:
-                if expected not in output:
-                    failures.append(
-                        f"{label} — must_contain {expected!r} not found in output"
-                    )
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always")
+                try:
+                    output: str | None = self.apply(filter_config, test.input)
+                except Exception as exc:  # noqa: BLE001
+                    test_failures.append(f"{label} — EXCEPTION: {exc}")
+                    output = None
 
-            for forbidden in test.must_not_contain:
-                if forbidden in output:
-                    failures.append(
-                        f"{label} — must_not_contain {forbidden!r} found in output"
-                    )
+            if output is not None:
+                for expected in test.must_contain:
+                    if expected not in output:
+                        test_failures.append(
+                            f"{label} — must_contain {expected!r} not found in output"
+                        )
 
-            if test.compression_target is not None and test.input:
-                ratio = 1.0 - len(output) / len(test.input)
-                if ratio < test.compression_target:
-                    failures.append(
-                        f"{label} — compression_target {test.compression_target:.0%} "
-                        f"not met (got {ratio:.0%})"
-                    )
+                for forbidden in test.must_not_contain:
+                    if forbidden in output:
+                        test_failures.append(
+                            f"{label} — must_not_contain {forbidden!r} found in output"
+                        )
+
+                if test.compression_target is not None and test.input:
+                    ratio = 1.0 - len(output) / len(test.input)
+                    if ratio < test.compression_target:
+                        test_failures.append(
+                            f"{label} — compression_target {test.compression_target:.0%} "
+                            f"not met (got {ratio:.0%})"
+                        )
+
+            if test_failures:
+                test_failures.extend(
+                    f"{label} — warning during test: {w.message}" for w in caught
+                )
+                failures.extend(test_failures)
 
         return failures

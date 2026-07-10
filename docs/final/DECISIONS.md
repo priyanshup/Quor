@@ -1038,3 +1038,185 @@ without a schema change, even though QB-007A never does.
   scoped in detail until they are.
 - See `backlog.md`'s `QB-007` entry for the full sub-item breakdown (QB-007A–E) and the design
   pass this ADR formalizes.
+
+## ADR-035: Pipeline Early Exit — Conservative, Hand-Audited `stage_type` Allowlist (QB-036)
+
+**Status:** Decided
+**Date:** 2026-07-10
+
+**Context:**
+QB-036 asked for an optimization layer inside `Pipeline.execute()` that skips remaining stages
+once further processing cannot change `ContentMask.render()`'s output — with the hard constraint
+that observable output must remain byte-for-byte identical for every existing test and the entire
+benchmark corpus. Reading every built-in stage's `apply()` in full (required before writing any
+code) surfaced a fact not previously written down anywhere: `Decision.COMPRESS` is *not*
+engine-enforced immutable the way `PROTECT` is — `_enforce_protect` only restores `PROTECT`. Three
+built-in stages (`group_repeated`, `max_tokens`, `remove_ansi`) apply their own `preserve_patterns`
+pass with a condition of `decision is not PROTECT` rather than excluding `COMPRESS` too, so *if*
+one of them is configured with `preserve_patterns` that happens to match an already-`COMPRESS`
+line, that line is promoted back to `PROTECT` and reappears in `render()`. Separately,
+`match_output` collapses the entire rendered text based on whether it matches a regex, independent
+of any per-line `Decision` at all. Neither is a bug introduced by this task, and neither is fixed
+by it (out of scope — "avoid changing stage implementations unless absolutely necessary"); both
+had to be designed *around* to keep the optimization provably safe.
+
+**Options considered:**
+- **A blanket rule** ("once every line has decision != KEEP, skip everything remaining"),
+  applied uniformly regardless of stage type: rejected — provably unsafe given the
+  `group_repeated`/`max_tokens`/`remove_ansi`/`match_output` behavior above. No built-in filter
+  shipped today actually configures `preserve_patterns` on anything but `strip_lines` (verified
+  across every `quor/filters/builtin/*.toml`), so this would happen to work today, but the engine
+  cannot assume that stays true for a project/user filter it has never seen.
+- **A new `StageHandler` Protocol field** (e.g. `inert_on_decided_lines: ClassVar[bool]`) that
+  every stage class declares: rejected — requires editing every one of the nine built-in
+  `StageHandler` classes, directly contradicting this task's explicit "avoid changing every
+  StageHandler unless absolutely necessary" scope constraint, for information the engine can
+  already determine by reading the stages once, by hand, itself.
+- **A hand-audited, conservative allowlist of `stage_type` strings inside `quor/pipeline/
+  engine.py`, gated additionally by each stage instance's own (already-existing)
+  `StageConfig.preserve_patterns` field being empty:** chosen. Zero stage files changed. The
+  allowlist excludes `match_output` unconditionally (its behavior can never be predicted from
+  `Decision` state alone) and treats a non-empty `preserve_patterns` on *any* remaining stage as
+  disqualifying, regardless of whether that specific stage type's own bug is exploitable by that
+  pattern — correct by construction rather than by trusting today's specific quirk inventory.
+  Third-party/plugin/`file://` stages are never eligible (their `stage_type` is never in the
+  allowlist) — the engine cannot vouch for code it has never read.
+
+**Decision:**
+`Pipeline.execute()` gains an `early_exit: bool = True` keyword-only parameter. After each stage
+(and before the first), if the current mask has zero `Decision.KEEP` lines remaining and every
+not-yet-run stage is both a known-safe `stage_type` and configured with an empty
+`preserve_patterns`, every remaining stage is marked `was_skipped=True` (skip_reason describing
+"early exit") without `can_handle()`/`apply()` ever being invoked — `len(stage_results)` still
+equals the configured stage count, exactly as it already does for a `can_handle()`-False or
+raising stage. The skip-eligibility check itself is wrapped in a `try`/`except`; any exception
+there falls back to running the stage normally (a warning is logged), so a bug in the optimization
+can degrade performance but never correctness. `FilterRegistry.apply()` (the real compression path
+— Bash/Read hooks, benchmarks, `quor verify`) keeps the default (on); `FilterRegistry.trace()`
+(`quor explain`'s diagnostic stage-by-stage view) explicitly passes `early_exit=False`, since that
+command's entire purpose is showing what every configured stage does — an early-exited stage would
+show "skipped — early exit" instead of its real per-stage line count, which is exactly the
+information `quor explain` exists to surface. No new abstraction was introduced beyond this one
+boolean parameter: the allowlist reuses `StageHandler.stage_type` (already required) and
+`StageConfig.preserve_patterns` (already a base-class field every stage config inherits).
+
+**Consequences:**
+- Verified byte-for-byte identical `render()` output with `early_exit` on vs. forced off across
+  every one of the 60 cases in `tests/benchmarks/manifest.toml`, plus every built-in filter's own
+  inline `[[filter.tests]]` input (`tests/unit/test_early_exit.py`,
+  `tests/benchmarks/early_exit_analysis.py`).
+- Early exit fires narrowly in practice: 2 of 60 real benchmark corpus cases actually skip a
+  stage (both `mypy` cases, where `group_repeated` collapses everything before `max_tokens` runs).
+  Measured aggregate timing impact across the corpus is within measurement noise (sub-millisecond,
+  no consistent net direction) — this task's own honest performance finding, not oversold.
+- A structural limitation worth recording: `python_ast_summarize`/`code_ast_summarize` are always
+  the *first* stage in the filters that use them (`cat-python.toml`, `cat-javascript.toml`,
+  `cat-typescript.toml`), so early exit — which only ever skips stages that haven't run yet — can
+  never skip the expensive AST parse itself, only the cheap bookkeeping stages after it. The
+  highest-cost operation in the AST-summarization filters is therefore unaffected by this
+  optimization by construction, not by oversight.
+- If a future built-in stage is added, or an existing one's `preserve_patterns` handling changes to
+  reconsider already-`COMPRESS` lines, `_STAGE_TYPES_INERT_ON_DECIDED_LINES` in `engine.py` must be
+  reviewed — it is a deliberately hand-maintained, not auto-derived, list. This is documented
+  prominently in `engine.py`'s own module docstring, not just here.
+- See `backlog.md`'s `QB-036` entry for the full validation record.
+
+## ADR-036: Multi-Agent Adapter Architecture — `AgentAdapter` Protocol + Registry (QB-035A)
+
+**Status:** Decided (design only — no code implements this yet)
+**Date:** 2026-07-10
+
+**Context:**
+QB-035 (Support more AI coding tools, and more programming languages) named Cursor, GitHub Copilot
+Agent, and Gemini CLI as future targets but was deliberately left unscheduled pending real,
+sustained usage validation of the Claude-Code-only v1 — a decision `ANTI_GOALS.md` #12 formalizes
+("No multi-agent support in V1... Cursor, Copilot CLI, Gemini Code Assist... are V2") and
+`ROADMAP.md` v2.0 names explicitly ("Cursor adapter", "Copilot CLI adapter", "Adapter detection in
+`quor doctor`"). QB-035A asked, as a design-only phase with no runtime changes, how Quor's
+architecture should generalize to support more than one agent without duplicating compression
+logic or branching on agent names throughout the codebase.
+
+Reading every relevant module before designing anything (`quor/rewrite/`, `quor/filters/registry.py`,
+`quor/pipeline/` in full, `quor/tracking/db.py`, both existing adapters, `__main__.py`, `init.py`,
+`doctor.py`) found that Quor's core is **already fully agent-agnostic** — zero references to
+"claude" or any agent concept anywhere in the rewrite classifier, `FilterRegistry`, `Pipeline`,
+any `StageHandler`, `extract()`, or `InvocationRecord`. All agent-name coupling was found
+concentrated in exactly four places: `__main__.py`'s hardcoded `_HOOK_ADAPTERS` set and if/else,
+`init.py`'s Claude-Code-settings.json-specific logic behind a single `--claude` flag, `doctor.py`'s
+hardcoded Claude-specific check functions, and `quor/adapters/base.py`'s Claude-Code-shaped Pydantic
+models sitting alongside an already-declared but entirely unused `HookAdapter` Protocol.
+`PROJECT_BIBLE.md`'s original architecture diagram already labels that Protocol as intentional
+("HookAdapter Protocol, HookInput, HookOutput") — this generalization was planned from the project's
+first architecture pass, never implemented past the reference adapter.
+
+**Options considered:**
+- **Leave `run_hook() -> None` (direct `sys.stdin`/`sys.stdout` I/O) as the adapter contract, add a
+  registry around it:** rejected — every existing adapter test already has to monkeypatch both
+  streams to exercise it; a registry alone would not retire the duplicated BOM-stripping logic
+  independently re-implemented in both `claude.py` and `claude_read.py` today, and every future
+  adapter would keep re-copying that same boilerplate.
+- **A `bytes`-in/`bytes`-out `handle_event(event, raw_stdin: bytes, tracking) -> bytes | None`
+  contract, with exactly one place (`__main__._run_hook()`) owning stream I/O:** chosen. Makes every
+  adapter a pure, directly unit-testable function; retires the duplicated stdin-handling boilerplate
+  as part of the QB-035B migration; requires no change to the existing outer fail-open guard in
+  `__main__.py`, which already holds `original_bytes` and already falls back to writing them
+  unchanged on any exception.
+- **An open, string-keyed event system** (arbitrary event names per agent) **vs. a small, closed
+  `AgentEvent` enum with two values** (`COMMAND_INTERCEPT`, `CONTENT_INTERCEPT`) **mapped from each
+  agent's own event names:** the closed enum was chosen — both values already exist today under
+  Claude Code's own names (`PreToolUse`/Bash, `PostToolUse`/Read); an open system would be exactly
+  the speculative abstraction CLAUDE.md's Rule 4 and this project's repeated "no speculative
+  abstractions" discipline warn against. A third event kind remains a non-breaking additive enum
+  member later, not a redesign.
+- **A single shared "generic hook payload" Pydantic model vs. keeping `HookInput`/`ToolInput`/etc.
+  fully adapter-local:** adapter-local was chosen. A shared generic payload model would either have
+  to lowest-common-denominator every future agent's fields or grow an unbounded `extra="allow"`
+  grab-bag; keeping each adapter's payload models next to that adapter, with only the `bytes`
+  boundary shared, applies the same "don't branch on agent identity" principle to data shape, not
+  just control flow.
+- **Two discovery mechanisms (a hardcoded built-in dict plus a `quor.hook_adapter` entry-point
+  group) vs. entry-points only:** the dual mechanism was chosen, mirroring
+  `_STAGE_HANDLERS`/`quor.compression_stage` (ADR-026) and `PluginRegistry`/`quor.plugin` exactly —
+  Quor's own built-in Claude Code integration should not need to be an installable plugin of itself,
+  while third-party agent adapters get the same fail-open, cached discovery every other extension
+  point already provides.
+
+**Decision:**
+`quor/adapters/base.py` gains `AgentEvent` (a two-value `StrEnum`), the `AgentAdapter` Protocol
+(`agent_id`/`display_name`/`api_version` class attributes; `supported_events` property;
+`handle_event()`, `install()`, `doctor_checks()` methods), and thin `InstallContext`/
+`InstallResult`/`DoctorContext`/`DoctorCheck` dataclasses/type-alias — mirroring `Plugin`'s existing
+`kw_only`, frozen-dataclass conventions (ADR-026) exactly. A new `quor/adapters/registry.py`
+provides `AdapterRegistry`, structurally identical to `plugin_loader.py`'s existing discovery
+(cached, fail-open per entry, built-in dict + `quor.hook_adapter` entry-point group). `__main__.py`,
+`quor doctor`, and `quor init` are redesigned (not yet implemented) to resolve through this registry
+instead of hardcoding Claude Code, with `init`/`doctor` remaining the only two CLI commands touched
+— no seventh command is introduced, respecting CLAUDE.md's fixed six-command rule. The existing,
+unused `HookAdapter` Protocol is superseded and slated for removal once `AgentAdapter` lands.
+`ClaudeAdapter` is designed as a thin wrapper around today's `claude.py`/`claude_read.py`, required
+to produce byte-for-byte identical output to today's behavior, proven via the same before/after
+equivalence discipline QB-005B established for the AST parser framework refactor — not a rewrite of
+either file's actual logic.
+
+**Consequences:**
+- No runtime code changes in this phase (QB-035A) — this ADR records a design decision for
+  QB-035B–F to implement, not a shipped change. `ANTI_GOALS.md` #12 is not violated: no agent
+  support is added; only an internal extension point is designed.
+- The hook argv shape (`quor hook claude` → `quor hook <agent_id> <event>`) is a real backward-
+  compatibility risk for already-installed hook scripts once QB-035C implements the `__main__.py`
+  migration — the design document recommends permanent argv aliases (`"claude"`/`"claude-read"` →
+  resolved agent/event pairs) as the default resolution, but this is not decided as final until
+  QB-035C actually implements it against a real pre-existing hook script.
+- Whether Cursor, Copilot Agent, or Gemini CLI actually expose anything resembling
+  `COMMAND_INTERCEPT`/`CONTENT_INTERCEPT` is unverified by this design — an empirical observation
+  (Cursor sending a doubled UTF-8 BOM, already handled in both existing adapters and documented in
+  `PROJECT_BIBLE.md` item 9) is suggestive, not confirmatory, and QB-035F must independently verify
+  a real target agent's hook contract before implementing it, mirroring QB-005C's own mandatory
+  pre-flight compatibility gate applied to a parser library.
+- `quor explain` has no equivalent for `CONTENT_INTERCEPT`-shaped events (e.g. "explain how a Read
+  of this file would compress") — an existing, pre-dating-this-ADR gap, explicitly out of scope for
+  QB-035A–E and not resolved by this decision.
+- See `docs/design/QB-035A-multi-agent-adapter-design.md` for the full design (event model
+  rationale, lifecycle model, complete interface signatures, every file eventually needing
+  modification, and the phased QB-035B–F backlog breakdown) and `backlog.md`'s `QB-035A` entry for
+  the validation record.

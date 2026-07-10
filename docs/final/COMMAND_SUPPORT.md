@@ -79,8 +79,17 @@ filter actually processes the output. Precedence has two layers:
 **Within a tier, first match wins**, in load order. There is no explicit priority field —
 specificity is achieved entirely through **file and block ordering**:
 
-- `cat-python.toml` sorts before `cat.toml` (`-` is `0x2D`, `.` is `0x2E`), so a `.py` file
-  matches the AST-aware filter first; anything else falls through to the generic `cat` filter.
+- `cat-python.toml`, `cat-javascript.toml` (QB-005C), and `cat-typescript.toml` (QB-005D) all sort
+  before `cat.toml` (`-` is `0x2D`, `.` is `0x2E`), so a `.py`/`.js`/`.jsx`/`.mjs`/`.cjs`/`.ts`/
+  `.tsx` file matches an AST-aware filter first; anything else falls through to the generic `cat`
+  filter. Relative order among the three AST-aware filter files does not matter — their
+  `match_command` patterns are mutually exclusive by extension, so none can shadow another.
+  `cat-typescript.toml` itself contains **two** `[[filter]]` blocks (`cat-typescript` for `.ts`,
+  `cat-tsx` for `.tsx`) rather than two files — mirrors `node.toml`'s own established
+  multiple-`[[filter]]`-blocks-per-file precedent; the two extensions route to two different
+  `code_ast_summarize` `language` values (`"typescript"` vs `"tsx"`) because
+  `tree-sitter-typescript` exposes two separate grammars that must be selected by extension, never
+  inferred from file content.
 - `z_generic.toml` is prefixed `z_` specifically so it sorts last among built-ins — its
   `match_command = '.'` matches literally everything, so it must never load before a more
   specific filter has had a chance to match.
@@ -139,7 +148,10 @@ for the exact patterns.
 | `next build`/`next dev`/`next start` (anything not routed to `eslint` via `next lint`) | `next` ([node.toml](../../quor/filters/builtin/node.toml)) | Strips version banner and step-progress lines ("Creating an optimized production build...", "Collecting page data...", etc.); dedupes; caps to 500 tokens (`tail`) | Never strips `error`/`warning`/`Failed to compile`/`Route (`/`First Load JS`/`✓ Compiled` lines | A successful build — step banners removed, the route size table and `✓ Compiled successfully` survive intact | Unlike `npm`/`turbo`, `next` gets a `max_tokens` safety net — it's Next.js's own fixed build/dev pipeline (bounded shape like `tsc`/`eslint`), not a wrapper around an arbitrary user script |
 | `turbo ...` | `turbo` ([node.toml](../../quor/filters/builtin/node.toml)) | Strips the `• Packages in scope`/`• Running ... in N packages`/`• Remote caching` preamble bullets; dedupes | Never strips `error`/`failed`/`FAIL`, or the `Tasks:`/`Cached:`/`Time:` summary lines; per-package `<pkg>:<task>: ...` lines (including cache hit/miss status) are never pattern-matched, so a wrapped task's own output always survives | 3-package build — preamble bullets removed, every per-package line and the task summary kept | No `max_tokens` stage (like `npm`) — `turbo` wraps arbitrary per-package scripts. **Deliberately no `group_repeated`** either (QB-006C) — shape-based grouping on `cache (miss|hit)` would merge a hit and a miss from two *different* packages together, hiding which package actually missed cache |
 | `cat <file>.py [-n\|--number\|-b\|--number-nonblank]` | `cat-python` ([cat-python.toml](../../quor/filters/builtin/cat-python.toml)) | Compresses function/method **bodies** to signature + docstring via stdlib `ast` parsing (QB-005); also applies the same comment-stripping/dedup/cap as `cat` below | Never touches imports, module-level constants, class/function signatures, decorators, or docstrings; on invalid syntax, fails open and returns the file completely unmodified | A 200-line file with 10 short functions — bodies collapse to signatures, imports/constants untouched | stdlib `ast` only — no type inference, no cross-file analysis; comments inside a compressed function body are also removed (comments have no AST node, so `python_ast_summarize` can't distinguish them, but this is caught by the plain-text pass anyway since the body line is gone) |
-| `cat <file>` (anything not matched by `cat-python` above) | `cat` ([cat.toml](../../quor/filters/builtin/cat.toml)) | Strips `#`/`//`/`--`/`;`-style comment lines; caps to 800 tokens (`both`) | Never strips shebangs, or lines containing `TODO`/`FIXME`/`HACK`/`XXX`/`NOTE`/`WARN` | A config file with inline comments — comments removed, actual settings kept | Comment-pattern matching is generic across languages; a comment style not covered by `#`/`//`/`--`/`;` (e.g. `/* */` block comments) is not stripped |
+| `cat <file>.(js\|jsx\|mjs\|cjs) [-n\|--number\|-b\|--number-nonblank]` | `cat-javascript` ([cat-javascript.toml](../../quor/filters/builtin/cat-javascript.toml)) | Compresses function/method/arrow-function **bodies** to signature (+ leading JSDoc, when present) via `tree-sitter`/`tree-sitter-javascript` parsing (QB-005C, optional `quor[javascript]` extra — fails open, returns the file unmodified, if the extra isn't installed); also applies the same comment-stripping/dedup/cap stack as `cat`/`cat-python` above, via the shared `code_ast_summarize` stage (QB-005B), not a JS-specific stage class | Never touches imports, exports, module-level constants, class/function/method signatures, `extends` clauses, decorators, or JSDoc; a function whose own span overlaps a tree-sitter `ERROR`/`MISSING` node is excluded from compression entirely, even if the rest of the file parses cleanly; on a file tree-sitter cannot parse at all, fails open and returns the file completely unmodified | A 200-line file with 10 short functions and a JSDoc-commented one — bodies collapse to signatures, imports/JSDoc untouched; a file with one malformed function still compresses every other function normally | `tree-sitter`/`tree-sitter-javascript` only — no type inference, no cross-file analysis, no CommonJS (`module.exports = ...`) recognition, no recognition of a function declared inside a conditional block (`if`/`try`), no recognition of a class *expression* (`const X = class {...}`, only the `class X {...}` declaration form); comments inside a compressed function body are also removed, same reasoning as `cat-python` above. **Known, inherited limitation:** the shared `strip_lines` comment pattern (`^\s*#[^!]`) can misfire on a private class field declaration (`#counter = 0;`), which also starts with `#` but is not a comment — this exact pattern already ships unchanged in `cat.toml`/`cat-python.toml` today, so this is a pre-existing risk being reused for consistency, not a new one |
+| `cat <file>.ts [-n\|--number\|-b\|--number-nonblank]` | `cat-typescript` ([cat-typescript.toml](../../quor/filters/builtin/cat-typescript.toml)) | Compresses function/method/arrow-function **bodies** to signature (+ JSDoc, when present) via `tree-sitter`/`tree-sitter-typescript`'s `language_typescript()` grammar (QB-005D, same `quor[javascript]` extra as `cat-javascript`); `interface`/`type` alias/`enum`/`namespace` declarations, overload signatures, and abstract methods are all preserved whole by construction (never entered into the compress-candidate set — see `typescript.py`'s own module docstring); same comment-stripping/dedup/cap stack as `cat-python`/`cat-javascript`, via the shared `code_ast_summarize` stage | Never touches imports, exports, module-level constants, class/interface/function/method signatures, `extends`/`implements` clauses, decorators, `interface`/`type`/`enum` bodies, or JSDoc; ERROR-node-overlap exclusion identical to `cat-javascript`; a namespace's contents are never recursed into (deliberate, documented scope limitation — a function declared inside one is preserved whole, not compressed) | A file with an interface, an overload triple, an abstract class, and a decorated component — interface/overload-signatures/abstract-signature survive untouched, only real method bodies collapse | Same `tree-sitter`-only limitations as `cat-javascript` (no CommonJS, no conditionally-declared functions, no class expressions), plus: no recursion into namespace bodies; generic type parameters (`<T>`) are part of the preserved signature text, never separately analyzed |
+| `cat <file>.tsx [-n\|--number\|-b\|--number-nonblank]` | `cat-tsx` ([cat-typescript.toml](../../quor/filters/builtin/cat-typescript.toml)) | Identical to `cat-typescript` above but via `tree-sitter-typescript`'s `language_tsx()` grammar (JSX support) | Same as `cat-typescript`, plus: JSX element content inside a compressed body is removed with it, same as any other body content | A React-style component with typed props returning JSX — signature preserved, JSX-returning body compressed | Grammar selection is strictly by file extension (`.tsx` here, `.ts` for `cat-typescript`), never inferred from content — empirically confirmed during QB-005D that JSX genuinely fails to parse under the plain `.ts` grammar, and an angle-bracket type assertion (`<T>x`) is genuinely ambiguous with JSX, which is exactly why two separate grammars/filter blocks exist rather than one |
+| `cat <file>` (anything not matched by `cat-python`/`cat-javascript`/`cat-typescript`/`cat-tsx` above) | `cat` ([cat.toml](../../quor/filters/builtin/cat.toml)) | Strips `#`/`//`/`--`/`;`-style comment lines; caps to 800 tokens (`both`) | Never strips shebangs, or lines containing `TODO`/`FIXME`/`HACK`/`XXX`/`NOTE`/`WARN` | A config file with inline comments — comments removed, actual settings kept | Comment-pattern matching is generic across languages; a comment style not covered by `#`/`//`/`--`/`;` (e.g. `/* */` block comments) is not stripped |
 | Anything else that passed the rewrite check (§1) | `generic` ([z_generic.toml](../../quor/filters/builtin/z_generic.toml)) | Strips ANSI escapes; strips framework-internal traceback frames (same `site-packages`/`dist-packages` pattern as `pytest` above — covers a raw script or dev server crashing outside pytest, e.g. `flask run`); dedupes consecutive lines; caps to 1000 tokens (`tail`) | `Traceback`/`Error`/`Exception` lines are protected; otherwise no command-specific pattern knowledge — nothing else is specially protected beyond what survives dedup/ANSI-strip/budget | A `flask run` crash with an unhandled exception through several Django/Flask internals — the framework `File` lines are removed, the user's own frame and exception survive | This is the widest net and the least intelligent filter — a command that would benefit from a dedicated filter (e.g. `terraform plan`, `tsc`, `docker build`) still only gets generic treatment until someone writes one; see §5 |
 
 **Not currently supported at all** (not in `_KNOWN_BASE_COMMANDS`, so never rewritten, regardless
@@ -218,19 +230,24 @@ header comment for field-by-field documentation. This runs automatically as part
 `pytest tests/` (via `tests/benchmarks/test_benchmarks.py`), so a missing or regressed case fails
 CI, not just a manual review step.
 
-**Current benchmark coverage (ADR-032):** every currently-implemented built-in filter —
-`git-status`, `git-log`, `git-diff`, `pytest`, `mypy`, `ruff`, `eslint`, `npm`, `npx`, `pnpm`,
-`yarn`, `tsc`, `jest`, `vitest`, `prettier`, `next`, `turbo`, `cat`, `cat-python`, and `generic` —
-has at least 2 manifest cases in `tests/benchmarks/manifest.toml` (40 cases across 20 categories
-total) with a committed baseline entry. The `ruff`/`eslint`/`npm`/`npx`/`pnpm`/`yarn`/`cat`/
-`cat-python` cases were added in the same pass that closed a gap this document originally
+**Current benchmark coverage (ADR-032):** every currently-implemented built-in filter has at
+least 2 manifest cases in `tests/benchmarks/manifest.toml` (60 cases across 27 categories total,
+as of QB-005E) with a committed baseline entry. The `ruff`/`eslint`/`npm`/`npx`/`pnpm`/`yarn`/
+`cat`/`cat-python` cases were added in the same pass that closed a gap this document originally
 flagged — see ADR-032 in `docs/final/DECISIONS.md` for the full history. The `tsc`/`jest`/
 `vitest`/`prettier`/`next`/`turbo` cases were added for QB-006C; that pass also reclassified the
 existing `npx-prettier-check-failure` case from the generic `npx` category to `prettier` once
 prettier got its own filter, with an updated (lower) baseline reflecting the new filter's own
 compression on that sample. `markdown`/`document-text` (4 cases, 2 categories) were added for
-QB-007B — see §8 below for why these are a structurally different kind of case (file-path routing,
-not command routing).
+QB-007B, and `docx`/`pdf` (4 cases, 2 categories) for QB-007E4 — see §8 below for why these are a
+structurally different kind of case (file-path routing, not command routing).
+`cat-javascript`/`cat-typescript`/`cat-tsx` (12 cases across those 3 categories) were added for
+QB-005E, closing the temporary benchmark-coverage gap QB-005C/QB-005D's own scope had explicitly
+deferred (both phases excluded benchmark work by design, per
+`docs/design/QB-005A-ast-summarization-design.md` Section 9's phased plan) — correctness for
+those three filters was already covered by their own inline `[[filter.tests]]` and unit test
+suites throughout that gap; only measured compression numbers were the open item, and that gap
+is now closed, not merely narrowed.
 
 ---
 
@@ -251,10 +268,12 @@ handling — see `backlog.md`'s QB-007D entry for the full detail.
 `quor/adapters/claude_read.py` only ever applies a filter whose name is `markdown` or
 `document-text` (`_READ_SUPPORTED_FILTER_NAMES`) — *not* whatever `FilterRegistry.find()` happens
 to return. This matters because the built-in `generic` filter (§3) matches literally any non-empty
-string, including any unsupported Read file path (`report.docx`, `script.py`, ...); without this
+string, including any unsupported Read file path (`report.docx`, `config.json`, ...); without this
 allowlist, every unsupported file type would be silently routed through a shell-output filter never
 designed for document content. The allowlist is adapter-local, not a `FilterRegistry`/schema
-change, so it has no effect on Bash routing at all.
+change, so it has no effect on Bash routing at all. (`.docx`/`.pdf` and `.py`/`.js`/`.jsx`/`.mjs`/
+`.cjs`/`.ts`/`.tsx` are *not* governed by this allowlist at all — they're intercepted by their own
+earlier, extension-based routing before `FilterRegistry.find()` is ever called; see §9 and §10.)
 
 **How routing works:** `match_command` is matched against the Read tool's bare file path string
 instead of a command string, via the exact same `FilterRegistry.find()` call described in §2 — no
@@ -355,11 +374,78 @@ reads the sample file via `extract()` (not `read_text()`) and looks up the filte
 
 ---
 
+## 10. Read/file-path routing — Source-code AST summarization (QB-005F)
+
+Structurally the same shape as §9 (by-name lookup, not `match_command` path-matching) but for a
+different reason. `.docx`/`.pdf` (§9) need by-name lookup because their content must be *extracted*
+before any filter can run at all. `.py`/`.js`/`.jsx`/`.mjs`/`.cjs`/`.ts`/`.tsx` need by-name lookup
+for a narrower reason: the filters that already compress this content —
+[cat-python.toml](../../quor/filters/builtin/cat-python.toml),
+[cat-javascript.toml](../../quor/filters/builtin/cat-javascript.toml),
+[cat-typescript.toml](../../quor/filters/builtin/cat-typescript.toml) (§2/§4's `cat-*` family,
+AST-aware since QB-005B–D) — already exist and are already correct, but their `match_command`
+patterns (e.g. `^cat\s+(-\S+\s+)*\S*\.py\b`) all require a literal `cat `-prefixed *command string*,
+which a bare Read `file_path` (e.g. `"src/app.py"`) can never match via `FilterRegistry.find()`.
+So, exactly like §9's `markdown`-by-name lookup, the matching filter is looked up **by name**
+(`_SOURCE_CODE_FILTER_NAMES_BY_EXTENSION`, keyed by extension) instead. Unlike §9 there is no
+extraction step — the Read `tool_response` is already plain source text — so both the content
+filtered and the content compared against for the "omit if unchanged" check are the same
+`tool_response` value.
+
+Both this path and §9's extraction path share their post-lookup "apply, track, omit if unchanged"
+tail via one helper, `_compress_via_named_filter()` (`quor/adapters/claude_read.py`), added in
+QB-005F when this exact duplication was identified between the two by-name paths — not a new
+generic routing layer, just the one genuinely shared sequence extracted once.
+
+| Extension(s) | Filter (by name, not path match) | Stage doing the compression | Notes |
+|---|---|---|---|
+| `.py` | `cat-python` | `python_ast_summarize` | Same filter/stage the Bash `cat some_file.py` path already uses (§2) |
+| `.js`, `.jsx`, `.mjs`, `.cjs` | `cat-javascript` | `code_ast_summarize` (`language = "javascript"`) | One filter covers all four extensions, mirroring `cat-javascript.toml`'s own `match_command` grouping |
+| `.ts` | `cat-typescript` | `code_ast_summarize` (`language = "typescript"`) | `cat-typescript.toml`'s first `[[filter]]` block |
+| `.tsx` | `cat-tsx` | `code_ast_summarize` (`language = "tsx"`) | `cat-typescript.toml`'s second `[[filter]]` block — a genuinely different tree-sitter grammar, never inferred from `.ts` content |
+
+**Fail-open paths, verified end to end through the real Read stdin → stdout contract (not just at
+the analyzer/stage layer §2/§4 already cover):** an unsupported extension never reaches this
+mapping at all and passes through exactly as before QB-005F; invalid Python syntax lets
+`analyze_python()`'s `SyntaxError` propagate to `Pipeline.execute()`'s existing per-stage fail-open
+(the AST stage is skipped, the rest of the filter still runs); malformed JavaScript/TypeScript is
+handled by tree-sitter's own error-recovering parser plus the existing ERROR-node-overlap exclusion
+rule, never an exception; a missing `quor[javascript]` install falls open exactly as it already does
+for the Bash `cat` path (empty compress set, actionable warning); a raising `FilterRegistry`
+construction/lookup/`apply()` call is caught by `_compress_via_named_filter()`'s own try/except, the
+same discipline every other call in `claude_read.py` already follows.
+
+**Tracking (QB-007D), no schema change:** exactly like every other Read path, `command="Read:
+{file_path}"`, `filter_name` is the matched `cat-*` name, `was_passthrough=False` — Python/JS/TS/TSX
+Read invocations aggregate into `quor gain` alongside Bash and document rows via the same
+`query_gain()` query, with zero source-code-specific aggregation code.
+
+**Known, pre-existing (not new) limitation:** none of `cat-python.toml`/`cat-javascript.toml`/
+`cat-typescript.toml` configure an `on_empty` fallback for their `max_tokens` stage. A source file
+that is (or degenerates to, e.g. a minified single-line bundle) one line far exceeding the
+800-token budget can compress to an empty string — identical behavior for the Bash `cat` path
+today; QB-005F did not introduce or change this, and fixing it is a filter-content decision, not a
+routing one (out of scope for QB-005F's "no analyzer/filter behavior changes" constraint).
+
+**No new benchmark cases required:** QB-005F adds no new filter and changes no compression
+behavior — it only makes the four already-benchmarked `cat-*` filters (§7's `cat-javascript`/
+`cat-typescript`/`cat-tsx` coverage, closed in QB-005E) reachable from a second entry point.
+Read-hook routing itself is covered by `tests/unit/test_read_hook_ast_summarization.py` and
+`TestReadSourceCodeTracking` in `tests/unit/test_tracking.py`, not the benchmark corpus, since
+`benchmark_runner.py` matches via `FilterRegistry.find(command)` against command strings, not Read
+file paths.
+
+---
+
 ## Cross-references
 
 - `quor/rewrite/rules.py` — command-detection ground truth.
 - `quor/filters/registry.py` — precedence/lookup implementation (`FilterRegistry.find()`).
 - `quor/filters/builtin/*.toml` — filter behavior ground truth.
+- `quor/adapters/claude_read.py` — Read-hook routing ground truth for §8/§9/§10, including
+  `_SOURCE_CODE_FILTER_NAMES_BY_EXTENSION` (§10) and `_compress_via_named_filter()` (the by-name
+  lookup/apply/track tail shared by §9 and §10).
+- `quor/pipeline/ast_summarize/registry.py` — language → analyzer routing (§10).
 - `quor/pipeline/extract/registry.py` — document extraction routing/fail-open contract (§9).
 - `quor/pipeline/extract/docx.py` — DOCX-to-Markdown conversion algorithm (§9).
 - `quor/pipeline/extract/pdf.py` — PDF-to-Markdown conversion algorithm (§9).

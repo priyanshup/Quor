@@ -433,6 +433,135 @@ expected_filter = "cat-python"
 min_reduction_pct = 10.0
 must_contain = ["import hmac", "SIGNATURE_VERSION = \"v2\"", "def verify_signature(payload: bytes, signature: str, secret: str) -> bool:", "Return True if the HMAC signature matches the payload.", "def dispatch(event_type: str, payload: dict) -> None:"]
 
+# ---------------------------------------------------------------------------
+# QB-005E: JavaScript/TypeScript/TSX AST summarization benchmarks
+# (cat-javascript/cat-typescript/cat-tsx, QB-005B–QB-005D). Mirrors the
+# cat-python cases above exactly — command routes via FilterRegistry.find()
+# through the same code_ast_summarize stage, min_reduction_pct floors set a
+# few points below the actually-measured value per README's own workflow
+# ("Adding a new benchmark case"), not as an aspirational target.
+# ---------------------------------------------------------------------------
+
+[[case]]
+id = "cat-javascript-retry-fetch-short"
+category = "cat-javascript"
+ecosystem = "JavaScript"
+command = "cat src/utils/retry-fetch.js"
+sample_file = "samples/cat-javascript/001_retry_fetch_readme_example.js"
+expected_filter = "cat-javascript"
+min_reduction_pct = 20.0
+must_contain = ["export async function retryFetch(url, options = {}, maxAttempts = DEFAULT_MAX_ATTEMPTS) {", "DEFAULT_MAX_ATTEMPTS = 3", "Fetch a URL, retrying up to"]
+
+[[case]]
+id = "cat-javascript-cart-service-medium"
+category = "cat-javascript"
+ecosystem = "JavaScript"
+command = "cat src/cart/cart-service.js"
+sample_file = "samples/cat-javascript/002_cart_service.js"
+expected_filter = "cat-javascript"
+min_reduction_pct = 40.0
+must_contain = ["export class CartService {", "addItem(sku, quantity, unitPriceCents) {", "async applyDiscountCode(code) {", "export function formatCents(cents) {", "MAX_QUANTITY_PER_ITEM = 20"]
+
+[[case]]
+id = "cat-javascript-notification-dispatch-large"
+category = "cat-javascript"
+ecosystem = "JavaScript"
+command = "cat src/notifications/dispatch-service.js"
+sample_file = "samples/cat-javascript/003_notification_dispatch_service.js"
+expected_filter = "cat-javascript"
+min_reduction_pct = 50.0
+must_contain = ["export class NotificationDispatchService extends EventEmitter {", "async dispatch(event) {", "Fan an event out to every channel", "export class WebhookSubscription {", "export function buildDefaultDispatchService(subscriptionStore) {"]
+
+[[case]]
+id = "cat-javascript-vendor-bundle-minified"
+category = "cat-javascript"
+ecosystem = "JavaScript"
+command = "cat dist/vendor-bundle.min.js"
+sample_file = "samples/cat-javascript/004_vendor_bundle_min.js"
+expected_filter = "cat-javascript"
+min_reduction_pct = 0.0
+must_contain = ["cartUtils", "formatMoney", "deepMerge"]
+
+[[case]]
+id = "cat-javascript-gateway-client-heavily-commented"
+category = "cat-javascript"
+ecosystem = "JavaScript"
+command = "cat src/payments/gateway-client.js"
+sample_file = "samples/cat-javascript/005_gateway_client_heavily_commented.js"
+expected_filter = "cat-javascript"
+min_reduction_pct = 40.0
+must_contain = ["export class GatewayClient {", "async charge(orderId, amountCents, cardToken) {", "IMPORTANT: this must be deterministic", "export function buildIdempotencyKey(orderId, attemptType) {", "export class CardDeclinedError extends Error {"]
+
+[[case]]
+id = "cat-typescript-currency-utils-short"
+category = "cat-typescript"
+ecosystem = "TypeScript"
+command = "cat src/utils/currency-utils.ts"
+sample_file = "samples/cat-typescript/001_currency_utils_short_example.ts"
+expected_filter = "cat-typescript"
+min_reduction_pct = 15.0
+must_contain = ["export function formatCurrency(cents: number, currency: string = \"USD\"): string {", "CENTS_PER_UNIT = 100"]
+
+[[case]]
+id = "cat-typescript-orders-service-large"
+category = "cat-typescript"
+ecosystem = "TypeScript"
+command = "cat src/orders/orders-service.ts"
+sample_file = "samples/cat-typescript/002_orders_service.ts"
+expected_filter = "cat-typescript"
+min_reduction_pct = 25.0
+must_contain = ["export class OrdersService {", "async createOrder(input: CreateOrderInput): Promise<Order> {", "export interface Order {", "export type OrderStatus =", "export class OrderNotFoundError extends Error {"]
+
+[[case]]
+id = "cat-typescript-domain-model-interface-heavy"
+category = "cat-typescript"
+ecosystem = "TypeScript"
+command = "cat src/domain/models.ts"
+sample_file = "samples/cat-typescript/003_domain_model_interfaces.ts"
+expected_filter = "cat-typescript"
+min_reduction_pct = 0.0
+must_contain = ["export interface Customer {", "export interface CardPaymentMethod {", "export type PaymentMethod =", "export function isCardPayment(method: PaymentMethod): method is CardPaymentMethod {"]
+
+[[case]]
+id = "cat-typescript-orders-controller-decorator-heavy"
+category = "cat-typescript"
+ecosystem = "TypeScript"
+command = "cat src/orders/orders.controller.ts"
+sample_file = "samples/cat-typescript/004_orders_controller_nestjs.ts"
+expected_filter = "cat-typescript"
+min_reduction_pct = 15.0
+must_contain = ["@Controller(\"orders\")", "@UseGuards(AuthGuard)", "export class OrdersController {", "async create(@Body() dto: CreateOrderDto) {", "@IsString()", "export class CreateOrderDto {"]
+
+[[case]]
+id = "cat-typescript-repository-generic-heavy"
+category = "cat-typescript"
+ecosystem = "TypeScript"
+command = "cat src/data/repository.ts"
+sample_file = "samples/cat-typescript/005_generic_repository_utils.ts"
+expected_filter = "cat-typescript"
+min_reduction_pct = 20.0
+must_contain = ["export class InMemoryRepository<T extends Identifiable> implements Repository<T> {", "export async function mapAsync<T, U>(", "export class Cache<K, V> {", "export type Result<T, E = Error> ="]
+
+[[case]]
+id = "cat-typescript-parsing-overload-heavy"
+category = "cat-typescript"
+ecosystem = "TypeScript"
+command = "cat src/utils/parsing.ts"
+sample_file = "samples/cat-typescript/006_parsing_overloads.ts"
+expected_filter = "cat-typescript"
+min_reduction_pct = 15.0
+must_contain = ["export function parseAmount(input: number): number;", "export function parseAmount(input: string): number;", "export class QueryBuilder {", "where(field: string, value: string): this;"]
+
+[[case]]
+id = "cat-tsx-shopping-cart-component"
+category = "cat-tsx"
+ecosystem = "TypeScript"
+command = "cat src/components/ShoppingCart.tsx"
+sample_file = "samples/cat-tsx/001_shopping_cart_component.tsx"
+expected_filter = "cat-tsx"
+min_reduction_pct = 40.0
+must_contain = ["export function ShoppingCart({ customerId }: ShoppingCartProps) {", "export interface CartLineItemProps {", "function CartLineItem({", "renders the current cart contents"]
+
 [[case]]
 id = "generic-ls-la"
 category = "generic"

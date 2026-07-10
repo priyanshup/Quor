@@ -14,6 +14,24 @@ here — this stage receives only file content, exactly like every other
 stage; it is never told the filename, and StageHandler's interface is not
 modified.
 
+QB-005B: the actual `ast` parsing/line-range logic (formerly
+`_compressible_body_lines()`/`_body_line_range()`, defined in this module)
+has moved, unmodified, to `quor/pipeline/ast_summarize/python.py` and is now
+reached through `quor/pipeline/ast_summarize/registry.py::get_analyzer()` —
+the reusable, multi-language parser framework
+`docs/design/QB-005A-ast-summarization-design.md` designs. This stage is now
+a thin, Python-specific wrapper that delegates to that shared framework
+instead of calling `ast.parse()` directly; `quor/pipeline/stages/
+code_ast_summarize.py` (the new, generic, filter-configurable stage
+QB-005B also introduces) delegates to the exact same analyzer via the exact
+same registry lookup, so there is only ever one implementation of Python's
+body-compression logic, not two. This stage's own class name, `stage_type`
+("python_ast_summarize"), config shape, and every observable behavior are
+unchanged — `cat-python.toml` requires no changes, and every pre-existing
+test in `tests/unit/test_stages.py::TestPythonAstSummarize` passes
+unmodified against this refactor (see backlog.md's QB-005B entry for the
+explicit before/after equivalence proof).
+
 `ast` is used for PARSING ONLY. This stage never regenerates, reformats, or
 rewrites source text (no `ast.unparse()`, no reformatting of kept lines) —
 every kept line is the original line, byte-for-byte. Compressed lines are
@@ -23,23 +41,25 @@ marker — this stage follows the more common "silent drop" pattern most
 built-in stages already use.
 
 Fail-open: a SyntaxError (or any other ast.parse() failure — a null byte, a
-file that isn't actually Python) is deliberately NOT caught here. It
-propagates to Pipeline.execute()'s existing per-stage fail-open handling,
-which keeps the mask exactly as it was before this stage ran — i.e. the
-original file, completely unchanged, with a warning logged. This mirrors
-every other stage's convention: only per-line, expected failure modes (like
-a regex timeout) are caught locally; a whole-stage failure relies on the
-engine's existing, already-tested fail-open guarantee rather than a second,
-redundant try/except here.
+file that isn't actually Python) is deliberately NOT caught here, nor in
+`analyze_python()`/`get_analyzer()` (see those modules' own docstrings for
+why the framework's fail-open contract deliberately differs from
+`quor/pipeline/extract`'s). It propagates to Pipeline.execute()'s existing
+per-stage fail-open handling, which keeps the mask exactly as it was before
+this stage ran — i.e. the original file, completely unchanged, with a
+warning logged. This mirrors every other stage's convention: only per-line,
+expected failure modes (like a regex timeout) are caught locally; a
+whole-stage failure relies on the engine's existing, already-tested
+fail-open guarantee rather than a second, redundant try/except here.
 """
 
 from __future__ import annotations
 
-import ast
 from typing import ClassVar
 
 from pydantic import ConfigDict
 
+from quor.pipeline.ast_summarize.registry import get_analyzer
 from quor.pipeline.mask import ContentMask, Decision, LineMask
 from quor.pipeline.stages._utils import _compile, matches_any
 from quor.pipeline.stages.base import StageConfig
@@ -71,12 +91,19 @@ class PythonAstSummarizeStage:
         # Reconstructing from mask.lines keeps a 1:1 index<->lineno mapping
         # regardless of what upstream stages already decided.
         #
-        # ast.parse() raises SyntaxError/ValueError on anything it can't
-        # parse. Deliberately not caught here — see module docstring
+        # get_analyzer("python") is always registered (see
+        # quor/pipeline/ast_summarize/registry.py) — unlike code_ast_summarize,
+        # this stage is Python-specific and never driven by a `language`
+        # config field, so "python" is never a runtime unknown here.
+        # The analyzer itself raises SyntaxError/ValueError on anything it
+        # can't parse. Deliberately not caught here — see module docstring
         # "Fail-open": Pipeline.execute() already handles this correctly.
-        tree = ast.parse("\n".join(lm.line for lm in mask.lines))
-
-        compress_lines = _compressible_body_lines(tree)
+        analyzer = get_analyzer("python")
+        if analyzer is None:  # pragma: no cover - "python" is always registered
+            raise RuntimeError(
+                "python analyzer unexpectedly missing from ast_summarize registry"
+            )
+        compress_lines = analyzer("\n".join(lm.line for lm in mask.lines))
         if not compress_lines:
             return mask
 
@@ -107,79 +134,3 @@ class PythonAstSummarizeStage:
                 new_lines.append(lm)
 
         return ContentMask(tuple(new_lines))
-
-
-def _compressible_body_lines(tree: ast.Module) -> set[int]:
-    """Return the 1-indexed line numbers that belong to a function/method
-    BODY (excluding its own signature, decorators, and docstring) and are
-    therefore eligible for compression.
-
-    Only top-level functions/methods are considered independently: once a
-    function is selected for body compression, its body is not descended
-    into any further, so a nested function's lines are covered by its
-    enclosing function's range and are never processed on their own (its
-    signature is not specially preserved — a function nested inside
-    another function is implementation detail of the outer one).
-    """
-    lines: set[int] = set()
-
-    def visit_body(stmts: list[ast.stmt]) -> None:
-        for stmt in stmts:
-            if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                lines.update(_body_line_range(stmt))
-                # Deliberately do not recurse into stmt.body — any nested
-                # def/class is already inside the range just added.
-            elif isinstance(stmt, ast.ClassDef):
-                visit_body(stmt.body)
-            elif isinstance(stmt, ast.If):
-                # Conditionally-defined top-level functions/classes, e.g.
-                # `if TYPE_CHECKING: ...` or a version-gated definition.
-                visit_body(stmt.body)
-                visit_body(stmt.orelse)
-            elif isinstance(stmt, ast.Try):
-                # try/except ImportError fallback definitions.
-                visit_body(stmt.body)
-                for handler in stmt.handlers:
-                    visit_body(handler.body)
-                visit_body(stmt.orelse)
-                visit_body(stmt.finalbody)
-            elif isinstance(stmt, (ast.With, ast.AsyncWith)):
-                visit_body(stmt.body)
-
-    visit_body(tree.body)
-    return lines
-
-
-def _body_line_range(node: ast.FunctionDef | ast.AsyncFunctionDef) -> set[int]:
-    """Lines belonging to `node`'s body, excluding its signature/decorators
-    and any leading docstring.
-
-    Empty for trivial bodies: a same-line definition (`def f(): return 1`,
-    where the body starts on the signature's own line — ContentMask is
-    line-based and cannot partially compress a single physical line), or a
-    body that is only a docstring.
-    """
-    if node.end_lineno is None or not node.body:
-        return set()
-
-    first_stmt = node.body[0]
-    docstring_present = (
-        isinstance(first_stmt, ast.Expr)
-        and isinstance(first_stmt.value, ast.Constant)
-        and isinstance(first_stmt.value.value, str)
-    )
-    remaining = node.body[1:] if docstring_present else node.body
-    if not remaining:
-        return set()
-
-    start = remaining[0].lineno
-    if start <= node.lineno:
-        # Same-line body (`def f(): return 1`): the body shares its line with
-        # the signature. ContentMask is line-based, so this line can't be
-        # partially compressed without touching the signature — leave it alone.
-        return set()
-
-    end = node.end_lineno
-    if start > end:
-        return set()
-    return set(range(start, end + 1))
