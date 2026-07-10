@@ -1,13 +1,13 @@
-"""Unit tests for quor/pipeline/extract/registry.py — QB-007E1/E2.
+"""Unit tests for quor/pipeline/extract/registry.py — QB-007E1/E2/E3.
 
 Covers the document extraction framework's routing and fail-open contract —
 extension routing, the registry table, and the guarantee that extract()
-never raises — using `.pdf` (still an unimplemented stub, QB-007E3) as the
-"registered but not implemented" case. Most tests here patch `_EXTRACTORS`
-directly with a fake handler, so they exercise the *architecture* in
-isolation, independent of whichever real handler happens to be registered.
-`.docx` is real as of QB-007E2 — see `tests/unit/test_extract_docx.py` for
-its dedicated coverage (real fixtures, real conversion output).
+never raises. Most tests here patch `_EXTRACTORS` directly with a fake
+handler, so they exercise the *architecture* in isolation, independent of
+whichever real handler happens to be registered. `.docx` and `.pdf` are
+both real as of QB-007E2/E3 — see `tests/unit/test_extract_docx.py` and
+`tests/unit/test_extract_pdf.py` for their dedicated coverage (real
+fixtures, real conversion output).
 """
 
 from __future__ import annotations
@@ -51,18 +51,30 @@ class TestUnknownExtension:
 
 
 # ---------------------------------------------------------------------------
-# Supported extension, not yet implemented (`.pdf`, QB-007E3 stub)
+# Supported extension, not yet implemented — the NotImplementedError
+# contract itself. No currently-registered extension is a stub any more
+# (`.docx`/`.pdf` are both real as of QB-007E2/E3), but the mechanism a
+# *future* format could rely on (QB-007E1's original design) must keep
+# working — proven here the same way the rest of this file proves routing/
+# fail-open behavior: patch in a fake stub handler, independent of whatever
+# real extensions happen to be registered.
 # ---------------------------------------------------------------------------
 
 
 class TestSupportedButNotImplemented:
-    def test_pdf_returns_none(self) -> None:
-        assert extract(Path("spec.pdf")) is None
+    @staticmethod
+    def _raises_not_implemented(_: Path) -> str | None:
+        raise NotImplementedError("not implemented yet")
 
-    def test_pdf_not_implemented_does_not_warn(self, recwarn: pytest.WarningsRecorder) -> None:
+    def test_unimplemented_stub_returns_none(self) -> None:
+        with patch.dict(_EXTRACTORS, {".docx": self._raises_not_implemented}):
+            assert extract(Path("report.docx")) is None
+
+    def test_not_implemented_does_not_warn(self, recwarn: pytest.WarningsRecorder) -> None:
         """NotImplementedError is an expected, known state — not a bug — so
         it must be absorbed silently, unlike a genuine extraction failure."""
-        extract(Path("spec.pdf"))
+        with patch.dict(_EXTRACTORS, {".docx": self._raises_not_implemented}):
+            extract(Path("report.docx"))
         assert len(recwarn) == 0
 
 

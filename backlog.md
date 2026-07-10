@@ -41,10 +41,9 @@ Markdown and plain-text compression is implemented and, as of QB-007C, actually 
 Read hook — a supported document read by Claude is compressed for real, not just at the filter
 layer — and, as of QB-007D, that savings shows up in `quor gain` alongside Bash savings. As of
 QB-007E1, the extension-routed preprocessing framework DOCX/PDF extraction will plug into also
-exists, and as of QB-007E2, `.docx` files are genuinely converted to Markdown-shaped text —
-though not yet wired into the live Read hook (that remains PDF's dependency, QB-007E3/E4, and a
-deliberate later decision either way). See "Sub-items" below for exactly what's done and what
-isn't.
+exists, and as of QB-007E2/E3, both `.docx` and `.pdf` are genuinely converted to Markdown-shaped
+text — though neither is wired into the live Read hook yet (that's QB-007E4, and a deliberate
+later decision either way). See "Sub-items" below for exactly what's done and what isn't.
 
 <details>
 <summary>Technical details</summary>
@@ -114,17 +113,21 @@ regression to one piece rather than one large "DOCX+PDF+deps" PR:
   GitHub-style tables, contiguous code-style paragraphs as fenced blocks) via `python-docx`, added
   as a new optional dependency group, `quor[documents]`. Still not wired into the live Read hook
   or `FilterRegistry`. See "QB-007E2 technical details" below.
-- **QB-007E3 — PDF extraction.** Not started. Depends on QB-007E1. The riskiest sub-item — PDF
-  heading/table detection is heuristic, with no semantic ground truth to anchor it.
+- **QB-007E3 — PDF extraction.** Implemented (2026-07-10). `.pdf` files are now genuinely
+  converted to Markdown-shaped plain text via `pdfplumber` (same `quor[documents]` extra) — the
+  riskiest sub-item, exactly as anticipated: PDF has no structural document model the way DOCX
+  does, so headings/paragraphs/lists are inferred purely from font-size and position heuristics,
+  not an authored style. Still not wired into the live Read hook or `FilterRegistry`. See
+  "QB-007E3 technical details" below.
 - **QB-007E4 — Benchmarking, tuning, and documentation.** Not started. Depends on QB-007E2/E3.
-  Benchmark manifest coverage (per CLAUDE.md's "Before Opening a PR" requirements — QB-007E2 added
-  two representative `.docx` sample fixtures under `tests/benchmarks/samples/docx/` but
-  deliberately did not wire them into `manifest.toml`/`baseline.json`, since there is no live
-  compression path to benchmark yet), compression tuning, wiring `extract()` into the Read hook,
-  and `docs/final/COMMAND_SUPPORT.md` updates for the two new filters/extractors.
+  Benchmark manifest coverage (per CLAUDE.md's "Before Opening a PR" requirements — QB-007E2/E3
+  added representative `.docx`/`.pdf` sample fixtures under `tests/benchmarks/samples/{docx,pdf}/`
+  but deliberately did not wire them into `manifest.toml`/`baseline.json`, since there is no live
+  compression path to benchmark yet), compression tuning, and wiring `extract()` into the Read
+  hook.
 
-**Status:** In progress — QB-007A/B/C/D/E1/E2 implemented (none committed/merged to `main` yet);
-QB-007E3 onward not scheduled.
+**Status:** In progress — QB-007A/B/C/D/E1/E2/E3 implemented (none committed/merged to `main` yet);
+QB-007E4 not scheduled.
 
 </details>
 
@@ -512,6 +515,116 @@ completely absent from `sys.modules`.
 - Not wired into the Read hook — every limitation already listed under QB-007A/B/C (unconfirmed
   minimum Claude Code version, unmeasured Windows hook timeout budget) remains unmeasured for a
   DOCX-sized document specifically, since none has run through the real hook path yet.
+
+</details>
+
+<details>
+<summary>QB-007E3 technical details</summary>
+
+**What shipped:** `.pdf`'s stub in `quor/pipeline/extract/registry.py` is replaced with a real
+handler, `extract_pdf()`, in a new sibling module `quor/pipeline/extract/pdf.py` — same module
+split QB-007E2 established for DOCX, for the same reason (real per-format logic belongs in its
+own module, not in the routing table). `pdfplumber` (`>=0.11.0,<1.0.0`) is added to the existing
+`quor[documents]` extra alongside `python-docx`, plus `dev` (for real-fixture test coverage). A
+new dev-only dependency, `reportlab` (`>=4.0.0,<6.0.0`), was also added — write-only, never
+imported by `quor` itself (pdfplumber cannot author PDFs, unlike python-docx which both reads and
+writes DOCX), used solely to generate real `.pdf` test/benchmark fixtures with controlled font
+sizes and layout. New `[[tool.mypy.overrides]]` entry for `pdfplumber`/`pdfplumber.*`, matching
+the `docx` override's reasoning.
+
+**Why PDF is structurally harder than DOCX, concretely:** DOCX has an explicit document object
+model — `paragraph.style.name` literally says `"Heading 2"`. PDF has none; `pdfplumber` exposes
+only character geometry (`top`/`bottom`/`x0`/`x1`) and font metadata (`size`, `fontname`) per
+glyph. Every structural signal here is inferred, not read:
+- **Headings** are inferred from font size alone, exactly as the task specified ("larger font →
+  higher heading level," "simple, deterministic heuristics only"): the most common line size
+  across the whole document is taken as "body text," every distinct size larger than that is
+  ranked into a heading tier (largest → level 1, clamped at level 6), consistently across pages
+  (computed once, in a first pass, not re-derived per page).
+- **Paragraphs** are reconstructed from `pdfplumber.extract_text_lines()` (which already groups
+  characters into visual lines) by merging consecutive lines whose vertical gap is small relative
+  to font size (calibrated empirically against generated fixtures: ~0.3× size within a wrapped
+  paragraph vs. ~0.9×+ size between genuinely distinct blocks) into one paragraph; a larger gap
+  starts a new one. The same gap heuristic also merges wrapped continuation lines into bullet/
+  numbered/code blocks, not just plain paragraphs.
+- **Bullets/numbers** are recognized by regex against each line's own leading text (`•`/`◦`/`▪`/
+  `‣`/`●`/`○`/`·`/ASCII `-`/`*`/`+` for bullets; `\d+[.)]` for numbers) — unlike DOCX, a PDF's
+  visible number is *already* part of its rendered text (Word's auto-numbering isn't), so the
+  number itself is reused verbatim; the delimiter is still normalized (bullets always render as
+  `-`, numbers always as `N.`, matching DOCX's own normalization philosophy).
+- **Tables** use `pdfplumber.Page.find_tables()` directly (GitHub-style Markdown output, `|`
+  escaped, same as DOCX) — its bounding boxes are also used to exclude a table's own cell text
+  from separately appearing as stray paragraph lines, since `extract_text_lines()` and
+  `find_tables()` both see the same underlying characters.
+- **Code** is detected by font-name substring match (`courier`, `consolas`, `mono`, ... —
+  case-insensitive, since PDF font names are frequently subset-mangled, e.g.
+  `"ABCDEF+CourierNewPSMT"`) and merges contiguous monospace lines into one fenced block. Leading
+  indentation — which `extract_text_lines(strip=True)` strips from the text itself — is
+  reconstructed from each line's `x0` relative to the *code block's own first line* (never an
+  assumed page margin, which varies per document and would mis-indent every line if guessed
+  wrong), divided by the monospace font's own (exact, not approximate) character width.
+
+**A real bug found and fixed during implementation, with a regression test — not a hypothetical:**
+building the benchmark fixtures (below) surfaced a genuine defect in the font-size heuristic.
+`pdfminer` can fail to decode a bullet glyph to a real Unicode codepoint (no `ToUnicode` CMap —
+observed with `reportlab`'s own default `ListFlowable` bullets, and a known real-world PDF
+phenomenon, not a fixture artifact) and represents it as *several* zero-width `(cid:N)` placeholder
+characters stacked at one position, at the bullet's own (often larger) font size. The original
+per-line dominant-size calculation used a raw character-COUNT mode, which let e.g. 9 phantom
+zero-width characters at 12pt outvote 6 real, visible characters at 10pt on a short line like
+"• queued" — landing that line's inferred size in a real heading tier established elsewhere in the
+document, misrendering it as `## (cid:127) queued` instead of a plain paragraph. Fixed by weighting
+the dominant-size calculation by each character's rendered *width* (`x1 - x0`) instead of a flat
+count — the phantom characters contribute zero width and can no longer out-vote real text, whatever
+their string-length happens to be. Regression-tested
+(`TestHeadings::test_undecodable_bullet_glyph_does_not_misclassify_its_line_as_a_heading`,
+verified to fail against the pre-fix count-based implementation and pass against the fix). A
+related, separate finding was folded into the same fix: code-block lines are now also excluded
+from the body/heading size sample (previously only table lines were) — a code block's font is
+frequently a different size than body prose, and letting it into the size analysis could similarly
+corrupt heading detection for the rest of the document.
+
+**Known, accepted, tested-not-hidden limitation:** the *fix above* stops an undecodable bullet
+glyph from corrupting heading detection, but such a line still cannot be recognized as a bullet at
+all — the glyph genuinely isn't a `-`/`*`/`•`/etc. in the extracted text, so it falls through to a
+plain paragraph (regression-tested,
+`TestKnownLimitations::test_undecodable_bullet_glyph_falls_through_to_plain_paragraph`). This is a
+property of the *source PDF's* own font encoding, not something a text-position/font-size heuristic
+can work around.
+
+**What was deliberately not touched:** `Pipeline`, `FilterRegistry`, `ContentMask`, and
+`quor/adapters/claude_read.py` — `extract()` is still not called from anywhere in production. No
+OCR, no ML, no PyMuPDF/`fitz`, no external services — exactly as scoped. Document metadata
+(`pdf.metadata`) is never read; images are never inspected or described. Two representative `.pdf`
+sample fixtures were added (`tests/benchmarks/samples/pdf/001_design_doc_export_pipeline.pdf`,
+`002_short_client_notes.pdf`, mirroring QB-007E2's DOCX long/short pair) but not wired into
+`manifest.toml`/`baseline.json` — QB-007E4's job, once there's a live compression path to measure.
+
+**Verification:** full `pytest tests/`, `quor verify`, `ruff check quor/ tests/`, `mypy quor/` all
+green. New coverage: `tests/unit/test_extract_pdf.py` (31 tests, built from real fixtures generated
+with `reportlab`) — font-size heading levels (including the >6-tier clamp and the no-larger-font
+case), wrapped-paragraph merging vs. genuine paragraph breaks, ASCII/star bullets, numbered lists
+(including delimiter normalization and verbatim number reuse), the Unicode-bullet-glyph regex
+contract tested directly (independent of whether a given PDF's font can round-trip the glyph),
+GitHub-style tables (including pipe escaping and document-order interleaving with surrounding
+paragraphs), monospace code-block merging with indentation reconstruction, blank/image-only pages
+(`""`, not `None`), corrupt/zip-masquerading/truncated/nonexistent-file fail-open, encrypted-PDF
+fail-open, missing-dependency fail-open with the actionable message, multi-page document-order
+preservation, the bullet/heading regression above, and the documented undecodable-bullet
+limitation. `tests/unit/test_extract.py`'s "supported but not implemented" coverage no longer names
+any specific extension (both `.docx` and `.pdf` are real now) — it patches a fake stub handler
+directly to prove the `NotImplementedError`-absorption *mechanism* itself still works, independent
+of whatever real extensions happen to be registered.
+
+**Limitations (carried forward, not resolved by this phase):**
+- Heading/paragraph/list detection is geometry-based inference, not ground truth — a PDF with
+  unusual line spacing, a body font that happens to vary in size, or heading text set in the same
+  size as body text (bolded instead, say) will not be detected the way a human reader would.
+- No nested/multi-level lists, same as DOCX — every bullet/numbered level flattens.
+- No run-level emphasis (bold/italic) preserved, same as DOCX.
+- The undecodable-bullet-glyph limitation described above.
+- Not wired into the Read hook — same unconfirmed-Claude-Code-version and unmeasured-hook-timeout
+  limitations already carried from QB-007A/B/C, now also unmeasured for a PDF-sized document.
 
 </details>
 
