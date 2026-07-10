@@ -14,6 +14,7 @@ Public API:
 
 from __future__ import annotations
 
+import contextlib
 import math
 import queue
 import re
@@ -196,7 +197,14 @@ class TrackingDB:
     # ------------------------------------------------------------------
 
     def _worker(self) -> None:
-        conn = self._connect()
+        try:
+            conn = self._connect()
+        except Exception as exc:  # noqa: BLE001 — a failed connect must not crash this thread silently
+            warnings.warn(
+                f"[quor] tracking DB unavailable, this session's writes will be dropped: {exc}",
+                stacklevel=1,
+            )
+            return
         while True:
             item = self._queue.get()
             if item is _STOP:
@@ -219,28 +227,65 @@ class TrackingDB:
     def _connect(self) -> sqlite3.Connection:
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
         conn = sqlite3.connect(str(self._db_path), check_same_thread=False)
-        # PRAGMA journal_mode=WAL requires a brief exclusive lock. If another
-        # connection already has the DB open, this can transiently fail. Retry
-        # a few times before giving up — WAL mode is still likely already set.
+        try:
+            # PRAGMA journal_mode=WAL requires a brief exclusive lock. If another
+            # connection already has the DB open, this can transiently fail. Retry
+            # a few times before giving up — WAL mode is still likely already set.
+            for attempt in range(5):
+                try:
+                    conn.execute("PRAGMA journal_mode=WAL")
+                    break
+                except sqlite3.OperationalError:
+                    conn.rollback()
+                    if attempt == 4:
+                        warnings.warn(
+                            "[quor] could not set WAL mode (database locked); "
+                            "concurrent tracking writes may be slower",
+                            stacklevel=1,
+                        )
+                    else:
+                        time.sleep(0.05 * (attempt + 1))
+            conn.execute("PRAGMA synchronous=NORMAL")
+            self._init_schema_and_cleanup(conn)
+        except BaseException:
+            # Whatever failed, this connection is unusable — close it before
+            # propagating so its lock (if any) can't linger until GC gets
+            # around to it (see _init_schema_and_cleanup's docstring for the
+            # bug this closes: an unguarded OperationalError here used to
+            # leave a half-initialized, un-closed sqlite3.Connection behind).
+            conn.close()
+            raise
+        return conn
+
+    def _init_schema_and_cleanup(self, conn: sqlite3.Connection) -> None:
+        """Apply the schema and delete stale records, retrying as one unit
+        on a transient lock.
+
+        Two TrackingDB instances initializing against the same fresh
+        database at nearly the same moment — two Claude Code sessions
+        starting together, or two writer threads in a test — can collide
+        here just as easily as on the WAL PRAGMA above, which is the only
+        statement that used to be retried. Left unguarded, the losing
+        writer's `sqlite3.OperationalError` propagated straight out of
+        `_connect()` uncaught, silently killing its worker thread (see
+        `_worker()`) and leaking its connection — the underlying cause of a
+        real, observed CI failure (`TestConcurrentWrites` intermittently
+        hit `database is locked` on a *separate* read connection, because
+        the crashed writer's connection was never closed and could still be
+        holding a lock). `conn.rollback()` before each retry clears any
+        transaction a partially-executed statement left open, so a retry
+        never starts from a dirty state.
+        """
         for attempt in range(5):
             try:
-                conn.execute("PRAGMA journal_mode=WAL")
-                break
+                self._apply_schema(conn)
+                self._cleanup_old_records(conn)
+                return
             except sqlite3.OperationalError:
+                conn.rollback()
                 if attempt == 4:
-                    warnings.warn(
-                        "[quor] could not set WAL mode (database locked); "
-                        "concurrent tracking writes may be slower",
-                        stacklevel=1,
-                    )
-                else:
-                    import time
-
-                    time.sleep(0.05 * (attempt + 1))
-        conn.execute("PRAGMA synchronous=NORMAL")
-        self._apply_schema(conn)
-        self._cleanup_old_records(conn)
-        return conn
+                    raise
+                time.sleep(0.05 * (attempt + 1))
 
     def _apply_schema(self, conn: sqlite3.Connection) -> None:
         """Create tables if they don't exist and record schema migration."""
@@ -459,7 +504,15 @@ def query_gain(
         f"(project_key_normalized = ? OR project_key_normalized LIKE ? {_LIKE_ESCAPE_CLAUSE})"
     )
 
-    with sqlite3.connect(str(db_path)) as conn:
+    # contextlib.closing, not `with sqlite3.connect(...) as conn:` — a
+    # sqlite3.Connection used as its own context manager only commits/rolls
+    # back the transaction on exit, it does NOT close the connection (a
+    # common Python sqlite3 gotcha). Left as a bare `with` before, this
+    # connection was only ever released by GC — the direct source of most
+    # of the "unclosed database" ResourceWarnings observed across the test
+    # suite. Every write below already has its own explicit conn.commit(),
+    # so nothing here relied on Connection.__exit__'s implicit commit.
+    with contextlib.closing(sqlite3.connect(str(db_path))) as conn:
         conn.row_factory = sqlite3.Row
 
         # query_gain() connects directly, independent of TrackingDB — an

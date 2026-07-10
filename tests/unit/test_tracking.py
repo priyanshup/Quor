@@ -135,6 +135,76 @@ class TestTrackingDbSqlite:
             mode = conn.execute("PRAGMA journal_mode").fetchone()[0]
         assert mode == "wal"
 
+    def test_transient_lock_during_schema_init_is_retried(self, tmp_path: Path) -> None:
+        """Regression test: two TrackingDB instances initializing against the
+        same fresh database at nearly the same moment can transiently collide
+        on schema/cleanup, not just the WAL PRAGMA (which was the only
+        statement retried before this fix). A losing writer must retry and
+        still end up with a working connection, not silently drop every
+        record for the rest of its life."""
+        db_path = tmp_path / "quor.db"
+        call_count = 0
+        real_apply_schema = TrackingDB._apply_schema
+
+        def flaky_apply_schema(self: TrackingDB, conn: sqlite3.Connection) -> None:
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise sqlite3.OperationalError("database is locked")
+            real_apply_schema(self, conn)
+
+        with patch.object(TrackingDB, "_apply_schema", flaky_apply_schema):
+            db = TrackingDB(db_path=db_path)
+            db.record(_sample_record())
+            db.flush(timeout=5.0)
+            db.close()
+
+        assert call_count >= 2, "expected at least one retry after the induced lock"
+        conn = sqlite3.connect(str(db_path))
+        try:
+            count = conn.execute("SELECT COUNT(*) FROM invocations").fetchone()[0]
+        finally:
+            conn.close()
+        assert count == 1
+
+    def test_exhausted_schema_init_retries_closes_connection_not_leak_lock(
+        self, tmp_path: Path
+    ) -> None:
+        """Regression test: if schema/cleanup initialization fails on every
+        retry (a persistent, not transient, lock), the worker thread must
+        warn and exit cleanly instead of crashing uncaught — and, critically,
+        must close its half-initialized connection rather than leaving it for
+        GC to eventually release. Asserted via the real-world symptom (a
+        fresh connection opened immediately after must not be locked out),
+        not via an internal call-count — this is the exact bug that caused
+        `TestConcurrentWrites.test_two_concurrent_writers_no_data_loss` to
+        intermittently fail in CI with `database is locked` on an unrelated,
+        separate read connection."""
+        db_path = tmp_path / "quor.db"
+
+        def always_fails(self: TrackingDB, conn: sqlite3.Connection) -> None:
+            raise sqlite3.OperationalError("database is locked")
+
+        with (
+            patch.object(TrackingDB, "_apply_schema", always_fails),
+            warnings.catch_warnings(record=True) as caught,
+        ):
+            warnings.simplefilter("always")
+            db = TrackingDB(db_path=db_path)
+            db.record(_sample_record())
+            db.flush(timeout=5.0)
+            db.close()
+
+        assert any("tracking DB unavailable" in str(w.message) for w in caught)
+
+        # The real-world symptom this fix closes: a brand-new connection,
+        # opened right after, must not find the database locked.
+        conn = sqlite3.connect(str(db_path), timeout=1.0)
+        try:
+            conn.execute("PRAGMA journal_mode=WAL")
+        finally:
+            conn.close()
+
     def test_migration_row_inserted(self, tmp_path: Path) -> None:
         db, db_path, _ = _db_and_jsonl(tmp_path)
         db.flush()
