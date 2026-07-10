@@ -876,17 +876,20 @@ class TestDispatcherTracking:
 # ---------------------------------------------------------------------------
 
 
-class TestReadTracking:
-    def _hook_input(self, file_path: str, tool_response: object) -> Any:
-        from quor.adapters.base import PostToolUseHookInput
+def _read_hook_input(file_path: str, tool_response: object) -> Any:
+    from quor.adapters.base import PostToolUseHookInput
 
-        return PostToolUseHookInput.model_validate(
-            {
-                "tool_name": "Read",
-                "tool_input": {"file_path": file_path},
-                "tool_response": tool_response,
-            }
-        )
+    return PostToolUseHookInput.model_validate(
+        {
+            "tool_name": "Read",
+            "tool_input": {"file_path": file_path},
+            "tool_response": tool_response,
+        }
+    )
+
+
+class TestReadTracking:
+    _hook_input = staticmethod(_read_hook_input)
 
     def test_compressed_read_tracked(self, tmp_path: Path) -> None:
         """An oversized markdown document that genuinely compresses is
@@ -942,16 +945,19 @@ class TestReadTracking:
         assert row["original_tokens"] == row["final_tokens"]
 
     def test_unsupported_file_type_tracked(self, tmp_path: Path) -> None:
-        """A file type outside the Read allowlist (here: a .py file, which
+        """A file type outside both the Read allowlist and the QB-005F
+        source-code extension mapping (here: a .json file, which
         FilterRegistry still routes to the Bash-oriented `generic` filter)
-        is tracked as a passthrough — no document filter is genuinely
-        applied to it, matching how dispatcher tracks a Bash command that
-        matched no filter at all."""
+        is tracked as a passthrough — no document/source-code filter is
+        genuinely applied to it, matching how dispatcher tracks a Bash
+        command that matched no filter at all. (.py was this test's example
+        prior to QB-005F; it is now a genuinely supported source-code
+        extension — see TestReadSourceCodeTracking below.)"""
         from quor.adapters.claude_read import _compress_read_output
 
         db_path = tmp_path / "quor.db"
         tracking = TrackingDB(db_path=db_path)
-        hook_input = self._hook_input("script.py", "print('hello')\n")
+        hook_input = self._hook_input("data.json", '{"hello": "world"}\n')
 
         result = _compress_read_output(hook_input, tracking)
         assert result is None
@@ -963,7 +969,7 @@ class TestReadTracking:
             conn.row_factory = sqlite3.Row
             row = conn.execute("SELECT * FROM invocations LIMIT 1").fetchone()
         assert row is not None
-        assert row["command"] == "Read: script.py"
+        assert row["command"] == "Read: data.json"
         assert row["filter_name"] is None
         assert row["was_passthrough"] == 1
 
@@ -1211,6 +1217,160 @@ class TestReadTracking:
             _compress_read_output(
                 self._hook_input(str(tmp_path / "a.md"), large_content), tracking
             )
+
+        tracking.flush()
+        tracking.close()
+
+        report = query_gain(db_path, tmp_path)
+        assert report.total_invocations == 2
+        assert report.passthrough_count == 0
+
+
+# ---------------------------------------------------------------------------
+# Source-code Read tracking (QB-005F) — no schema/tracking-side change was
+# needed here either: _compress_via_named_filter() (the helper the
+# source-code path shares with the DOCX/PDF extraction path above) calls
+# track_invocation() exactly the same way. These tests exist to prove that
+# in practice for the new by-name source-code lookup, the same way
+# TestReadTracking's extraction tests prove it for the by-name document
+# lookup.
+# ---------------------------------------------------------------------------
+
+
+class TestReadSourceCodeTracking:
+    """Uses the module-level `_read_hook_input` helper `TestReadTracking`
+    above also uses — deliberately not a subclass of `TestReadTracking`,
+    since inheriting a test class in pytest re-collects and re-runs every
+    inherited test method under the subclass too, which is not the intent
+    here (only the tiny payload-building helper is shared)."""
+
+    _hook_input = staticmethod(_read_hook_input)
+
+    _PY_SOURCE = (
+        "def fetch_data(url):\n"
+        '    """Fetch data from a URL."""\n'
+        "    response = make_request(url)\n"
+        "    return response.json()\n"
+    )
+
+    def test_python_read_tracked_with_cat_python_filter(self, tmp_path: Path) -> None:
+        from quor.adapters.claude_read import _compress_read_output
+
+        db_path = tmp_path / "quor.db"
+        tracking = TrackingDB(db_path=db_path)
+        hook_input = self._hook_input("app.py", self._PY_SOURCE)
+
+        result = _compress_read_output(hook_input, tracking)
+        assert result is not None
+        assert "response = make_request(url)" not in result
+
+        tracking.flush()
+        tracking.close()
+
+        with sqlite3.connect(str(db_path)) as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute("SELECT * FROM invocations LIMIT 1").fetchone()
+        assert row is not None
+        assert row["command"] == "Read: app.py"
+        assert row["filter_name"] == "cat-python"
+        assert row["was_passthrough"] == 0
+        assert row["original_tokens"] == count_tokens(self._PY_SOURCE)
+        assert row["final_tokens"] == count_tokens(result)
+
+    def test_javascript_read_tracked_with_cat_javascript_filter(self, tmp_path: Path) -> None:
+        from quor.adapters.claude_read import _compress_read_output
+
+        db_path = tmp_path / "quor.db"
+        tracking = TrackingDB(db_path=db_path)
+        source = (
+            "function fetchData(url) {\n"
+            "  const response = makeRequest(url);\n"
+            "  return response.json();\n"
+            "}\n"
+        )
+        hook_input = self._hook_input("app.js", source)
+
+        result = _compress_read_output(hook_input, tracking)
+        assert result is not None
+
+        tracking.flush()
+        tracking.close()
+
+        with sqlite3.connect(str(db_path)) as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute("SELECT * FROM invocations LIMIT 1").fetchone()
+        assert row is not None
+        assert row["filter_name"] == "cat-javascript"
+        assert row["was_passthrough"] == 0
+
+    def test_typescript_read_tracked_with_cat_typescript_filter(self, tmp_path: Path) -> None:
+        from quor.adapters.claude_read import _compress_read_output
+
+        db_path = tmp_path / "quor.db"
+        tracking = TrackingDB(db_path=db_path)
+        source = (
+            "function fetchData(url: string): Promise<unknown> {\n"
+            "  const response = makeRequest(url);\n"
+            "  return response.json();\n"
+            "}\n"
+        )
+        hook_input = self._hook_input("app.ts", source)
+
+        result = _compress_read_output(hook_input, tracking)
+        assert result is not None
+
+        tracking.flush()
+        tracking.close()
+
+        with sqlite3.connect(str(db_path)) as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute("SELECT * FROM invocations LIMIT 1").fetchone()
+        assert row is not None
+        assert row["filter_name"] == "cat-typescript"
+        assert row["was_passthrough"] == 0
+
+    def test_tsx_read_tracked_with_cat_tsx_filter(self, tmp_path: Path) -> None:
+        from quor.adapters.claude_read import _compress_read_output
+
+        db_path = tmp_path / "quor.db"
+        tracking = TrackingDB(db_path=db_path)
+        source = (
+            "export function Button({ label }: { label: string }) {\n"
+            '  const handleClick = () => { console.log("clicked"); };\n'
+            "  return <button onClick={handleClick}>{label}</button>;\n"
+            "}\n"
+        )
+        hook_input = self._hook_input("Button.tsx", source)
+
+        result = _compress_read_output(hook_input, tracking)
+        assert result is not None
+
+        tracking.flush()
+        tracking.close()
+
+        with sqlite3.connect(str(db_path)) as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute("SELECT * FROM invocations LIMIT 1").fetchone()
+        assert row is not None
+        assert row["filter_name"] == "cat-tsx"
+        assert row["was_passthrough"] == 0
+
+    def test_multiple_source_code_reads_aggregate_with_markdown_reads(
+        self, tmp_path: Path
+    ) -> None:
+        """Python/JS/TS/TSX rows aggregate into the same project totals as
+        direct .md rows — no source-code-specific aggregation path exists,
+        same guarantee TestReadTracking already proves for markdown/text and
+        DOCX/PDF."""
+        from quor.adapters.claude_read import _compress_read_output
+
+        db_path = tmp_path / "quor.db"
+        tracking = TrackingDB(db_path=db_path)
+        large_content = "line of filler text. " * 10_000
+
+        with patch("pathlib.Path.cwd", return_value=tmp_path):
+            _compress_read_output(self._hook_input("app.py", self._PY_SOURCE), tracking)
+            _compress_read_output(self._hook_input(str(tmp_path / "a.md"), large_content), tracking)
 
         tracking.flush()
         tracking.close()
