@@ -237,12 +237,26 @@ class FilterRegistry:
         """Run the pipeline and return the full per-stage trace (for `quor explain`).
 
         Unlike `apply()`, this does not honor abort_unless/abort_if/on_empty —
-        it always runs every stage so the trace shows what each stage would do.
+        it always runs every stage so the trace shows what each stage would
+        do. This also means QB-036's early-exit optimization is deliberately
+        disabled here (`early_exit=False`): early exit only ever changes
+        *which stages actually run*, never the rendered content, but `quor
+        explain`'s whole purpose is showing what every configured stage does
+        — an early-exited stage would show "skipped — early exit: ..."
+        instead of its real per-stage line count, which is exactly the
+        diagnostic information this command exists to surface. `apply()`
+        below (the real compression path — Bash/Read hooks, benchmarks,
+        `quor verify`) keeps the optimization at its default (on).
         """
-        return self._run_pipeline(filter_config, content, content_type)
+        return self._run_pipeline(filter_config, content, content_type, early_exit=False)
 
     def _run_pipeline(
-        self, filter_config: FilterConfig, content: str, content_type: str = ""
+        self,
+        filter_config: FilterConfig,
+        content: str,
+        content_type: str = "",
+        *,
+        early_exit: bool = True,
     ) -> PipelineResult:
         detected = content_type or detect(content).value
 
@@ -254,7 +268,9 @@ class FilterRegistry:
             except ConfigError as exc:
                 warnings.warn(f"[quor] Skipping invalid stage: {exc}", stacklevel=2)
 
-        return Pipeline(entries).execute(mask, raw_content=content, content_type=detected)
+        return Pipeline(entries).execute(
+            mask, raw_content=content, content_type=detected, early_exit=early_exit
+        )
 
     # ------------------------------------------------------------------
     # Inline test runner

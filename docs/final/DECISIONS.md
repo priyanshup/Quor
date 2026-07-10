@@ -1038,3 +1038,86 @@ without a schema change, even though QB-007A never does.
   scoped in detail until they are.
 - See `backlog.md`'s `QB-007` entry for the full sub-item breakdown (QB-007A–E) and the design
   pass this ADR formalizes.
+
+## ADR-035: Pipeline Early Exit — Conservative, Hand-Audited `stage_type` Allowlist (QB-036)
+
+**Status:** Decided
+**Date:** 2026-07-10
+
+**Context:**
+QB-036 asked for an optimization layer inside `Pipeline.execute()` that skips remaining stages
+once further processing cannot change `ContentMask.render()`'s output — with the hard constraint
+that observable output must remain byte-for-byte identical for every existing test and the entire
+benchmark corpus. Reading every built-in stage's `apply()` in full (required before writing any
+code) surfaced a fact not previously written down anywhere: `Decision.COMPRESS` is *not*
+engine-enforced immutable the way `PROTECT` is — `_enforce_protect` only restores `PROTECT`. Three
+built-in stages (`group_repeated`, `max_tokens`, `remove_ansi`) apply their own `preserve_patterns`
+pass with a condition of `decision is not PROTECT` rather than excluding `COMPRESS` too, so *if*
+one of them is configured with `preserve_patterns` that happens to match an already-`COMPRESS`
+line, that line is promoted back to `PROTECT` and reappears in `render()`. Separately,
+`match_output` collapses the entire rendered text based on whether it matches a regex, independent
+of any per-line `Decision` at all. Neither is a bug introduced by this task, and neither is fixed
+by it (out of scope — "avoid changing stage implementations unless absolutely necessary"); both
+had to be designed *around* to keep the optimization provably safe.
+
+**Options considered:**
+- **A blanket rule** ("once every line has decision != KEEP, skip everything remaining"),
+  applied uniformly regardless of stage type: rejected — provably unsafe given the
+  `group_repeated`/`max_tokens`/`remove_ansi`/`match_output` behavior above. No built-in filter
+  shipped today actually configures `preserve_patterns` on anything but `strip_lines` (verified
+  across every `quor/filters/builtin/*.toml`), so this would happen to work today, but the engine
+  cannot assume that stays true for a project/user filter it has never seen.
+- **A new `StageHandler` Protocol field** (e.g. `inert_on_decided_lines: ClassVar[bool]`) that
+  every stage class declares: rejected — requires editing every one of the nine built-in
+  `StageHandler` classes, directly contradicting this task's explicit "avoid changing every
+  StageHandler unless absolutely necessary" scope constraint, for information the engine can
+  already determine by reading the stages once, by hand, itself.
+- **A hand-audited, conservative allowlist of `stage_type` strings inside `quor/pipeline/
+  engine.py`, gated additionally by each stage instance's own (already-existing)
+  `StageConfig.preserve_patterns` field being empty:** chosen. Zero stage files changed. The
+  allowlist excludes `match_output` unconditionally (its behavior can never be predicted from
+  `Decision` state alone) and treats a non-empty `preserve_patterns` on *any* remaining stage as
+  disqualifying, regardless of whether that specific stage type's own bug is exploitable by that
+  pattern — correct by construction rather than by trusting today's specific quirk inventory.
+  Third-party/plugin/`file://` stages are never eligible (their `stage_type` is never in the
+  allowlist) — the engine cannot vouch for code it has never read.
+
+**Decision:**
+`Pipeline.execute()` gains an `early_exit: bool = True` keyword-only parameter. After each stage
+(and before the first), if the current mask has zero `Decision.KEEP` lines remaining and every
+not-yet-run stage is both a known-safe `stage_type` and configured with an empty
+`preserve_patterns`, every remaining stage is marked `was_skipped=True` (skip_reason describing
+"early exit") without `can_handle()`/`apply()` ever being invoked — `len(stage_results)` still
+equals the configured stage count, exactly as it already does for a `can_handle()`-False or
+raising stage. The skip-eligibility check itself is wrapped in a `try`/`except`; any exception
+there falls back to running the stage normally (a warning is logged), so a bug in the optimization
+can degrade performance but never correctness. `FilterRegistry.apply()` (the real compression path
+— Bash/Read hooks, benchmarks, `quor verify`) keeps the default (on); `FilterRegistry.trace()`
+(`quor explain`'s diagnostic stage-by-stage view) explicitly passes `early_exit=False`, since that
+command's entire purpose is showing what every configured stage does — an early-exited stage would
+show "skipped — early exit" instead of its real per-stage line count, which is exactly the
+information `quor explain` exists to surface. No new abstraction was introduced beyond this one
+boolean parameter: the allowlist reuses `StageHandler.stage_type` (already required) and
+`StageConfig.preserve_patterns` (already a base-class field every stage config inherits).
+
+**Consequences:**
+- Verified byte-for-byte identical `render()` output with `early_exit` on vs. forced off across
+  every one of the 60 cases in `tests/benchmarks/manifest.toml`, plus every built-in filter's own
+  inline `[[filter.tests]]` input (`tests/unit/test_early_exit.py`,
+  `tests/benchmarks/early_exit_analysis.py`).
+- Early exit fires narrowly in practice: 2 of 60 real benchmark corpus cases actually skip a
+  stage (both `mypy` cases, where `group_repeated` collapses everything before `max_tokens` runs).
+  Measured aggregate timing impact across the corpus is within measurement noise (sub-millisecond,
+  no consistent net direction) — this task's own honest performance finding, not oversold.
+- A structural limitation worth recording: `python_ast_summarize`/`code_ast_summarize` are always
+  the *first* stage in the filters that use them (`cat-python.toml`, `cat-javascript.toml`,
+  `cat-typescript.toml`), so early exit — which only ever skips stages that haven't run yet — can
+  never skip the expensive AST parse itself, only the cheap bookkeeping stages after it. The
+  highest-cost operation in the AST-summarization filters is therefore unaffected by this
+  optimization by construction, not by oversight.
+- If a future built-in stage is added, or an existing one's `preserve_patterns` handling changes to
+  reconsider already-`COMPRESS` lines, `_STAGE_TYPES_INERT_ON_DECIDED_LINES` in `engine.py` must be
+  reviewed — it is a deliberately hand-maintained, not auto-derived, list. This is documented
+  prominently in `engine.py`'s own module docstring, not just here.
+- See `backlog.md`'s `QB-036` entry for the full validation record.
+
