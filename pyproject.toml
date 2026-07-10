@@ -58,6 +58,43 @@ dev = [
     "python-docx>=1.1.0,<2.0.0",
     # pdfplumber (QB-007E3), same reasoning, for tests/unit/test_extract_pdf.py.
     "pdfplumber>=0.11.0,<1.0.0",
+    # tree-sitter / tree-sitter-javascript (QB-005C) are listed here too, not
+    # just in `javascript` below, so contributors running the full test suite
+    # get real JS parsing fixture coverage (tests/unit/test_ast_summarize.py's
+    # TestAnalyzeJavaScript) without a separate `quor[javascript]` install
+    # step — same reasoning as python-docx/pdfplumber above.
+    #
+    # tree-sitter is capped BELOW 0.26.0 deliberately, not just bounded —
+    # 0.26.0 has a real, reproducible native-level memory-corruption bug
+    # (verified during QB-005C implementation, not assumed): calling
+    # Node.child_by_field_name() followed by accessing .start_point/
+    # .end_point on the result, repeated roughly 85+ times against nodes
+    # from the same parsed tree, segfaults the whole Python process —
+    # confirmed via bisection down to the exact call pattern, confirmed
+    # absent in 0.25.2 at the same and far larger scales (2000+ nodes), and
+    # confirmed independent of traversal style (both `.children` iteration
+    # and cursor-based `TreeCursor` walking trigger it at a large enough
+    # node count). This is a genuine upstream regression, not anything in
+    # quor's own usage pattern — see backlog.md's QB-005C entry for the
+    # full bisection record. Raise this ceiling only after a released
+    # tree-sitter version is verified (not assumed) to no longer reproduce
+    # it, mirroring DECISIONS.md's exact-pin rationale for ruff/mypy (a new
+    # release silently breaking a dependency this load-bearing must be a
+    # deliberate, visible bump, not a silent `pip install` side effect).
+    "tree-sitter>=0.23.0,<0.26.0",
+    "tree-sitter-javascript>=0.23.0,<1.0.0",
+    # tree-sitter-typescript (QB-005D), same reasoning — real fixture
+    # coverage (TestAnalyzeTypeScript in tests/unit/test_ast_summarize.py)
+    # without a separate quor[javascript] install step. Re-verified against
+    # the tree-sitter<0.26.0 ceiling above: the QB-005C memory-corruption
+    # bisection (child_by_field_name() + point access, repeated 85+ times)
+    # was re-run specifically against this grammar at n=2000 (flat
+    # functions) and n=3000 (nested class+method, i.e. 6000+ field-access
+    # calls) using tree-sitter 0.25.2 — clean at both scales, confirming
+    # the bug does not reappear with the TypeScript grammar and the
+    # existing ceiling remains sufficient with no dependency-version change
+    # needed. See backlog.md's QB-005D entry for the full record.
+    "tree-sitter-typescript>=0.23.0,<1.0.0",
     # reportlab is a *write*-only PDF library, never imported by quor itself
     # (pdfplumber, quor's read-only PDF dependency, cannot author PDFs) — it
     # exists solely so the test suite can generate real PDF fixtures with
@@ -82,6 +119,33 @@ documents = [
     # quor/pipeline/extract/pdf.py's extract_pdf() returns None, warns,
     # never raises, if pdfplumber is absent.
     "pdfplumber>=0.11.0,<1.0.0",
+]
+javascript = [
+    # JavaScript AND TypeScript AST summarization (QB-005C, QB-005D — one
+    # extra covers both languages, a deliberate choice made in QB-005D, not
+    # pre-decided by the design doc: tree-sitter-typescript's wheel is
+    # small (~280 KB), a user who wants either language very likely wants
+    # both, and a second `quor[typescript]` extra would only add
+    # install-matrix permutations for a dependency-weight concern that
+    # doesn't actually apply here — see typescript.py's own module
+    # docstring for the full reasoning). Core install keeps working
+    # without this extra — quor/pipeline/ast_summarize/javascript.py's
+    # analyze_javascript() and typescript.py's analyze_typescript()/
+    # analyze_tsx() all fail open (return an empty set, warn, never raise)
+    # if the relevant package is absent; see ADR-014's `quor[ml]`-style
+    # extras precedent (the same template `documents` above follows) and
+    # docs/design/QB-005A-ast-summarization-design.md Section 5 for why
+    # tree-sitter — not a pure-Python parser — is the correct choice here.
+    # Version floor matches the modern tree-sitter Python bindings API
+    # (`Parser(language)` single-argument construction) this module relies
+    # on. tree-sitter's ceiling excludes 0.26.0 specifically — see the
+    # matching, fuller comment on the `dev` extra's own tree-sitter entry
+    # above for the verified memory-corruption bug this works around, and
+    # the QB-005D entry there for why tree-sitter-typescript did not need
+    # its own additional constraint.
+    "tree-sitter>=0.23.0,<0.26.0",
+    "tree-sitter-javascript>=0.23.0,<1.0.0",
+    "tree-sitter-typescript>=0.23.0,<1.0.0",
 ]
 
 [project.scripts]
@@ -149,6 +213,23 @@ ignore_missing_imports = true
 # pdfplumber (QB-007E3, quor[documents]) is optional at runtime — same
 # reasoning as the docx override above.
 module = ["pdfplumber", "pdfplumber.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# tree-sitter / tree-sitter-javascript / tree-sitter-typescript (QB-005C/D,
+# quor[javascript]) are optional at runtime — same reasoning as the
+# docx/pdfplumber overrides above. All are imported lazily inside
+# analyze_javascript()/analyze_typescript()/analyze_tsx(), never at module
+# top level, but mypy still needs this so `mypy quor/` succeeds whether or
+# not the extra is installed in a given environment.
+module = [
+    "tree_sitter",
+    "tree_sitter.*",
+    "tree_sitter_javascript",
+    "tree_sitter_javascript.*",
+    "tree_sitter_typescript",
+    "tree_sitter_typescript.*",
+]
 ignore_missing_imports = true
 
 # ---------------------------------------------------------------------------

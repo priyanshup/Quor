@@ -23,6 +23,10 @@ from quor.pipeline.content_type import detect
 from quor.pipeline.engine import Pipeline, PipelineResult, StageEntry
 from quor.pipeline.mask import ContentMask
 from quor.pipeline.stages.base import StageConfig
+from quor.pipeline.stages.code_ast_summarize import (
+    CodeAstSummarizeConfig,
+    CodeAstSummarizeStage,
+)
 from quor.pipeline.stages.deduplicate_consecutive import (
     DeduplicateConsecutiveConfig,
     DeduplicateConsecutiveStage,
@@ -50,6 +54,7 @@ _STAGE_HANDLERS: dict[str, tuple[type, type[StageConfig]]] = {
     "regex_replace": (RegexReplaceStage, RegexReplaceConfig),
     "match_output": (MatchOutputStage, MatchOutputConfig),
     "python_ast_summarize": (PythonAstSummarizeStage, PythonAstSummarizeConfig),
+    "code_ast_summarize": (CodeAstSummarizeStage, CodeAstSummarizeConfig),
 }
 
 _BUILTIN_DIR = Path(__file__).parent / "builtin"

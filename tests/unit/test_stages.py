@@ -17,9 +17,14 @@ from unittest.mock import patch
 import pytest
 from pydantic import ValidationError
 
+from quor.pipeline.ast_summarize import registry as ast_registry
 from quor.pipeline.engine import Pipeline, StageEntry
 from quor.pipeline.mask import ContentMask, Decision, LineMask
 from quor.pipeline.stages import _utils
+from quor.pipeline.stages.code_ast_summarize import (
+    CodeAstSummarizeConfig,
+    CodeAstSummarizeStage,
+)
 from quor.pipeline.stages.deduplicate_consecutive import (
     DeduplicateConsecutiveConfig,
     DeduplicateConsecutiveStage,
@@ -1253,3 +1258,382 @@ class TestPythonAstSummarize:
         result = self.stage.apply(mask, config)
         assert result.lines[1].decision is Decision.PROTECT
         assert result.lines[2].decision is Decision.COMPRESS
+
+
+# ---------------------------------------------------------------------------
+# code_ast_summarize (QB-005B — generic, multi-language parser framework)
+#
+# Framework-level tests (registry routing, analyze_python correctness in
+# isolation) live in tests/unit/test_ast_summarize.py, mirroring how
+# test_extract.py is separate from any stage's own test class. This class
+# tests the StageHandler itself.
+# ---------------------------------------------------------------------------
+
+
+class TestCodeAstSummarize:
+    """The new generic StageHandler. Not wired into any built-in filter yet
+    (QB-005C/QB-005D's job) — tested directly, the same way
+    quor/pipeline/extract's framework pieces were tested directly in
+    QB-007E1 before any real handler existed."""
+
+    stage = CodeAstSummarizeStage()
+
+    def _config(
+        self, language: str = "python", preserve: list[str] | None = None
+    ) -> CodeAstSummarizeConfig:
+        return CodeAstSummarizeConfig(
+            type="code_ast_summarize",
+            language=language,
+            preserve_patterns=preserve or [],
+        )
+
+    def test_empty_input(self) -> None:
+        result = self.stage.apply(ContentMask.from_text(""), self._config())
+        assert result.render() == ""
+
+    def test_wrong_config_type_raises(self) -> None:
+        with pytest.raises(TypeError, match="CodeAstSummarizeConfig"):
+            self.stage.apply(ContentMask.from_text("x = 1"), RemoveAnsiConfig(type="remove_ansi"))
+
+    def test_unsupported_language_fails_open_mask_unchanged(self) -> None:
+        """QB-005A Section 4.2's 'unsupported language' case: no analyzer
+        registered for `language` -> the mask is returned completely
+        unchanged, silently, no exception. See code_ast_summarize.py's
+        module docstring for why this lives in apply() rather than
+        can_handle() (the StageHandler Protocol's can_handle() has no
+        access to StageConfig)."""
+        source = "def f():\n    return 1\n"
+        mask = ContentMask.from_text(source)
+        config = self._config(language="cobol")
+        result = self.stage.apply(mask, config)
+        assert result.render() == source
+        assert all(lm.decision is Decision.KEEP for lm in result.lines)
+
+    def test_syntax_error_propagates_for_engine_fail_open(self) -> None:
+        mask = ContentMask.from_text("def broken(:\n    pass\n")
+        with pytest.raises(SyntaxError):
+            self.stage.apply(mask, self._config(language="python"))
+
+    def test_syntax_error_via_pipeline_fails_open_to_original(self) -> None:
+        source = "def broken(:\n    pass\n"
+        mask = ContentMask.from_text(source)
+        entry = StageEntry(handler=self.stage, config=self._config(language="python"))
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            result = Pipeline([entry]).execute(mask)
+        assert result.mask.render() == source
+        assert any("code_ast_summarize" in str(w.message) for w in caught)
+
+    def test_preserve_pattern_protects_body_line(self) -> None:
+        source = "def foo():\n    CRITICAL_MARKER = True\n    return 1\n"
+        mask = ContentMask.from_text(source)
+        config = self._config(language="python", preserve=["CRITICAL_MARKER"])
+        result = self.stage.apply(mask, config)
+        assert result.lines[1].decision is Decision.PROTECT
+        assert result.lines[2].decision is Decision.COMPRESS
+
+    # -- Equivalence with python_ast_summarize --------------------------
+    #
+    # code_ast_summarize(language="python") and PythonAstSummarizeStage both
+    # delegate to the exact same quor.pipeline.ast_summarize.python.analyze_python
+    # via the exact same registry lookup (see both stages' module docstrings).
+    # These fixtures mirror TestPythonAstSummarize's own to prove the two
+    # stages produce byte-for-byte identical decisions on Python input,
+    # which is the concrete proof that QB-005B introduced one shared
+    # implementation, not a second, divergent one.
+
+    @pytest.mark.parametrize(
+        "source",
+        [
+            "def add(x, y):\n"
+            '    """Add two numbers."""\n'
+            "    total = x + y\n"
+            "    return total\n",
+            "import os\n\nDEFAULT_TIMEOUT = 30\n\n\ndef run():\n    do_work()\n    return True\n",
+            "class Foo:\n"
+            "    @staticmethod\n"
+            "    @cached\n"
+            "    def bar(x):\n"
+            '        """Bar docstring."""\n'
+            "        y = x * 2\n"
+            "        return y\n",
+            "async def fetch(url):\n"
+            '    """Fetch a URL."""\n'
+            "    response = await client.get(url)\n"
+            "    return response\n",
+            "def f(): return 1\nx = f()\n",
+            'def f():\n    """Just a docstring."""\n',
+        ],
+    )
+    def test_identical_decisions_to_python_ast_summarize_stage(self, source: str) -> None:
+        python_stage = PythonAstSummarizeStage()
+        python_result = python_stage.apply(
+            ContentMask.from_text(source),
+            PythonAstSummarizeConfig(type="python_ast_summarize"),
+        )
+        generic_result = self.stage.apply(
+            ContentMask.from_text(source), self._config(language="python")
+        )
+        assert len(python_result.lines) == len(generic_result.lines)
+        for python_lm, generic_lm in zip(python_result.lines, generic_result.lines, strict=True):
+            assert python_lm.line == generic_lm.line
+            assert python_lm.decision is generic_lm.decision
+
+
+class TestCodeAstSummarizeJavaScript:
+    """code_ast_summarize(language="javascript") — QB-005C, via the real
+    stage/ContentMask path rather than calling analyze_javascript() directly
+    (see tests/unit/test_ast_summarize.py::TestAnalyzeJavaScript for the
+    analyzer-level battery). Not wired into any built-in filter's Python
+    class the way python_ast_summarize is — cat-javascript.toml
+    (quor/filters/builtin/) is what actually wires this stage up for real
+    use; see its own inline [[filter.tests]] for filter-level coverage."""
+
+    stage = CodeAstSummarizeStage()
+
+    def _config(self, preserve: list[str] | None = None) -> CodeAstSummarizeConfig:
+        return CodeAstSummarizeConfig(
+            type="code_ast_summarize",
+            language="javascript",
+            preserve_patterns=preserve or [],
+        )
+
+    def test_function_body_compressed_signature_preserved(self) -> None:
+        source = "function add(x, y) {\n  return x + y;\n}\n"
+        result = self.stage.apply(ContentMask.from_text(source), self._config())
+        assert result.lines[0].decision is Decision.KEEP  # function add(x, y) {
+        assert result.lines[1].decision is Decision.COMPRESS  # return x + y;
+        assert result.lines[2].decision is Decision.KEEP  # }
+
+    def test_class_extends_and_method_signatures_preserved(self) -> None:
+        source = (
+            "class Widget extends Base {\n"
+            "  constructor(x) {\n"
+            "    this.x = x;\n"
+            "  }\n"
+            "}\n"
+        )
+        result = self.stage.apply(ContentMask.from_text(source), self._config())
+        assert result.lines[0].decision is Decision.KEEP  # class Widget extends Base {
+        assert result.lines[1].decision is Decision.KEEP  # constructor(x) {
+        assert result.lines[2].decision is Decision.COMPRESS  # this.x = x;
+        assert result.lines[3].decision is Decision.KEEP  # }
+        assert result.lines[4].decision is Decision.KEEP  # }
+
+    def test_syntax_error_propagates_for_engine_fail_open(self) -> None:
+        """Unlike Python's ast.parse(), tree-sitter itself does not raise
+        on malformed input (QB-005A Section 4.1) — but a genuinely
+        unparseable byte sequence, or an environment/parser-level failure,
+        must still propagate rather than being silently swallowed here.
+        Verified via the missing-dependency path, which does raise cleanly
+        through the normal exception mechanism when forced past its own
+        internal warn-and-return-empty-set handling by patching the
+        analyzer directly (mirrors TestRegistryFailOpenContract's "fake"
+        analyzer pattern in test_ast_summarize.py)."""
+
+        def _raises(source: str) -> set[int]:
+            raise ValueError("simulated tree-sitter internal error")
+
+        with patch.dict(ast_registry._ANALYZERS, {"javascript": _raises}):
+            mask = ContentMask.from_text("function f() {\n  return 1;\n}\n")
+            with pytest.raises(ValueError, match="simulated tree-sitter internal error"):
+                self.stage.apply(mask, self._config())
+
+    def test_error_node_overlap_excludes_only_the_broken_function(self) -> None:
+        source = (
+            "function good1(x) {\n"
+            "  return x + 1;\n"
+            "}\n"
+            "\n"
+            "function alsoBroken(y) {\n"
+            "  return y +++ * ;\n"
+            "}\n"
+            "\n"
+            "function good2(z) {\n"
+            "  return z + 2;\n"
+            "}\n"
+        )
+        result = self.stage.apply(ContentMask.from_text(source), self._config())
+        assert result.lines[1].decision is Decision.COMPRESS  # good1 body
+        assert result.lines[5].decision is Decision.KEEP  # alsoBroken body: untouched
+        assert result.lines[9].decision is Decision.COMPRESS  # good2 body
+
+    def test_preserve_pattern_protects_body_line(self) -> None:
+        source = "function foo() {\n  const CRITICAL_MARKER = true;\n  return 1;\n}\n"
+        mask = ContentMask.from_text(source)
+        config = self._config(preserve=["CRITICAL_MARKER"])
+        result = self.stage.apply(mask, config)
+        assert result.lines[1].decision is Decision.PROTECT
+        assert result.lines[2].decision is Decision.COMPRESS
+
+    def test_kept_lines_are_byte_identical_to_source(self) -> None:
+        """No rewriting/reformatting ever happens — mirrors
+        TestPythonAstSummarize::test_kept_lines_are_byte_identical_to_source."""
+        source = (
+            'import { foo } from "bar";\n'
+            "\n"
+            "const CONST = 1;\n"
+            "\n"
+            "/**\n"
+            " * Process data.\n"
+            " */\n"
+            "function process(data) {\n"
+            "  const result = [];\n"
+            "  for (const item of data) {\n"
+            "    result.push(item);\n"
+            "  }\n"
+            "  return result;\n"
+            "}\n"
+        )
+        original_lines = source.split("\n")
+        result = self.stage.apply(ContentMask.from_text(source), self._config())
+        for idx, lm in enumerate(result.lines):
+            if lm.decision is not Decision.COMPRESS:
+                assert lm.line == original_lines[idx], f"line {idx} was modified"
+
+
+class TestCodeAstSummarizeTypeScript:
+    """code_ast_summarize(language="typescript") — QB-005D, via the real
+    stage/ContentMask path (see
+    tests/unit/test_ast_summarize.py::TestAnalyzeTypeScript for the
+    analyzer-level battery). Not wired into a TypeScript-specific stage
+    class — cat-typescript.toml's `cat-typescript` block is what actually
+    wires this up for real `.ts` use."""
+
+    stage = CodeAstSummarizeStage()
+
+    def _config(self, preserve: list[str] | None = None) -> CodeAstSummarizeConfig:
+        return CodeAstSummarizeConfig(
+            type="code_ast_summarize",
+            language="typescript",
+            preserve_patterns=preserve or [],
+        )
+
+    def test_function_body_compressed_signature_preserved(self) -> None:
+        source = "function add(x: number, y: number): number {\n  return x + y;\n}\n"
+        result = self.stage.apply(ContentMask.from_text(source), self._config())
+        assert result.lines[0].decision is Decision.KEEP
+        assert result.lines[1].decision is Decision.COMPRESS
+        assert result.lines[2].decision is Decision.KEEP
+
+    def test_interface_type_enum_never_entered_into_compress_set(self) -> None:
+        source = (
+            "interface Point {\n"
+            "  x: number;\n"
+            "}\n"
+            "\n"
+            "type Alias = number;\n"
+            "\n"
+            "enum Color {\n"
+            "  Red,\n"
+            "}\n"
+        )
+        result = self.stage.apply(ContentMask.from_text(source), self._config())
+        assert all(lm.decision is Decision.KEEP for lm in result.lines)
+
+    def test_abstract_method_and_overload_signatures_preserved(self) -> None:
+        source = (
+            "function overload(x: number): number;\n"
+            "function overload(x: any): any {\n"
+            "  return x;\n"
+            "}\n"
+        )
+        result = self.stage.apply(ContentMask.from_text(source), self._config())
+        assert result.lines[0].decision is Decision.KEEP
+        assert result.lines[1].decision is Decision.KEEP
+        assert result.lines[2].decision is Decision.COMPRESS
+        assert result.lines[3].decision is Decision.KEEP
+
+    def test_malformed_syntax_excludes_broken_region_without_raising(self) -> None:
+        """Unlike Python's ast.parse(), tree-sitter never raises on
+        malformed input — it recovers via ERROR nodes (QB-005A Section
+        4.1). apply() itself must not raise here; the broken function's
+        body is simply left untouched (ERROR-node-overlap exclusion),
+        while a clean sibling function still compresses normally."""
+        source = (
+            "function good(x: number): number {\n"
+            "  return x + 1;\n"
+            "}\n"
+            "\n"
+            "function broken(: {\n"
+            "  return 1;\n"
+            "}\n"
+        )
+        mask = ContentMask.from_text(source)
+        result = self.stage.apply(mask, self._config())
+        assert result.lines[1].decision is Decision.COMPRESS  # good's body
+        assert result.lines[5].decision is Decision.KEEP  # broken's body: untouched
+
+    def test_preserve_pattern_protects_body_line(self) -> None:
+        source = "function foo(): void {\n  const CRITICAL_MARKER = true;\n  return;\n}\n"
+        mask = ContentMask.from_text(source)
+        config = self._config(preserve=["CRITICAL_MARKER"])
+        result = self.stage.apply(mask, config)
+        assert result.lines[1].decision is Decision.PROTECT
+        assert result.lines[2].decision is Decision.COMPRESS
+
+    def test_kept_lines_are_byte_identical_to_source(self) -> None:
+        source = (
+            'import { foo } from "bar";\n'
+            "\n"
+            "interface Config {\n"
+            "  timeout: number;\n"
+            "}\n"
+            "\n"
+            "/**\n"
+            " * Process data.\n"
+            " */\n"
+            "function process(data: string[]): string[] {\n"
+            "  const result: string[] = [];\n"
+            "  for (const item of data) {\n"
+            "    result.push(item);\n"
+            "  }\n"
+            "  return result;\n"
+            "}\n"
+        )
+        original_lines = source.split("\n")
+        result = self.stage.apply(ContentMask.from_text(source), self._config())
+        for idx, lm in enumerate(result.lines):
+            if lm.decision is not Decision.COMPRESS:
+                assert lm.line == original_lines[idx], f"line {idx} was modified"
+
+
+class TestCodeAstSummarizeTsx:
+    """code_ast_summarize(language="tsx") — QB-005D's second TypeScript
+    grammar variant, routed by cat-typescript.toml's `cat-tsx` block."""
+
+    stage = CodeAstSummarizeStage()
+
+    def _config(self, preserve: list[str] | None = None) -> CodeAstSummarizeConfig:
+        return CodeAstSummarizeConfig(
+            type="code_ast_summarize",
+            language="tsx",
+            preserve_patterns=preserve or [],
+        )
+
+    def test_jsx_function_body_compressed(self) -> None:
+        source = (
+            "function Widget(props: { label: string }): JSX.Element {\n"
+            '  return <div className="box">{props.label}</div>;\n'
+            "}\n"
+        )
+        result = self.stage.apply(ContentMask.from_text(source), self._config())
+        assert result.lines[0].decision is Decision.KEEP
+        assert result.lines[1].decision is Decision.COMPRESS
+        assert result.lines[2].decision is Decision.KEEP
+
+    def test_typescript_and_tsx_are_genuinely_different_registrations(self) -> None:
+        """Routing `.ts` content through language="tsx" and vice versa must
+        not silently succeed as if they were interchangeable — this test
+        proves the two config values reach two different analyzer
+        functions by observing a real behavioral difference: JSX content
+        compresses under "tsx" but is excluded (ERROR-node overlap) under
+        "typescript"."""
+        jsx_source = "function Widget(): JSX.Element {\n  return <div />;\n}\n"
+        tsx_result = self.stage.apply(
+            ContentMask.from_text(jsx_source), self._config()
+        )
+        ts_config = CodeAstSummarizeConfig(type="code_ast_summarize", language="typescript")
+        ts_result = self.stage.apply(ContentMask.from_text(jsx_source), ts_config)
+        assert tsx_result.lines[1].decision is Decision.COMPRESS
+        assert ts_result.lines[1].decision is Decision.KEEP

@@ -1,0 +1,158 @@
+# quor built-in filter: cat (TypeScript files) — QB-005D structural extraction
+#
+# Compresses function/method/arrow-function bodies to their signature (+
+# JSDoc, when present), keeping imports, exports, top-level constants,
+# class/function signatures, decorators, JSDoc, and TypeScript-only
+# declarations (interface, type alias, enum, namespace) fully intact — see
+# quor/pipeline/ast_summarize/typescript.py's own module docstring for why
+# those need no special "preserve" code at all (they're never entered into
+# the compress-candidate set in the first place). Must be loaded before the
+# generic `cat.toml` filter so `.ts`/`.tsx` files match here first. Built-in
+# filters load in sorted filename order
+# (quor/filters/registry.py::_load_builtin uses sorted(glob(...))), and
+# "cat-typescript.toml" sorts before "cat.toml" lexicographically ('-' is
+# 0x2D, '.' is 0x2E) — same convention as cat-python.toml/cat-javascript.toml.
+# Relative order among cat-javascript.toml/cat-python.toml/cat-typescript.toml
+# does not matter: their match_command patterns are mutually exclusive by
+# extension, so none can shadow another.
+#
+# Two [[filter]] blocks, not two files — mirrors node.toml's own established
+# precedent for "one file, multiple [[filter]] blocks" (see that file's own
+# header comment) rather than inventing a new one. `.ts` and `.tsx` need two
+# separate blocks (not one block matching both) because they route to two
+# different `code_ast_summarize` `language` values ("typescript" vs "tsx"),
+# which in turn dispatch to tree-sitter-typescript's two separate grammars
+# (`language_typescript()`/`language_tsx()`) — grammar selection is by file
+# extension only, never inferred from content (verified empirically during
+# QB-005D: JSX syntax genuinely fails to parse under the plain
+# `language_typescript()` grammar). Since `match_command` is a per-filter
+# field, not per-stage, one block cannot conditionally pick a `language`
+# value based on which extension actually matched.
+#
+# code_ast_summarize (language = "typescript" / "tsx") runs first — the same
+# generic, multi-language stage cat-javascript.toml already uses (QB-005B),
+# not a TypeScript-specific stage class. Then the exact same
+# strip_lines / deduplicate_consecutive / max_tokens stack cat-python.toml
+# and cat-javascript.toml already use, reused verbatim in both blocks below
+# per docs/design/QB-005A-ast-summarization-design.md Section 9's own
+# instruction ("same ... tail cat-python.toml already uses") — this
+# necessarily duplicates those three stage declarations between the two
+# blocks (TOML has no include/anchor mechanism to share them), the same way
+# node.toml's own multiple [[filter]] blocks already duplicate similar
+# stage config where their real behavior needs to be independently tunable
+# per tool.
+#
+# Known, inherited limitation (not new to this filter — see
+# cat-javascript.toml's own header comment and backlog.md's QB-005C/QB-005D
+# entries for the full writeup): strip_lines' `'^\s*#[^!]'` pattern can
+# misfire on a private class field declaration (`#counter = 0;`). Reused
+# verbatim here for the same consistency reasons as cat-javascript.toml.
+schema_version = 1
+
+[[filter]]
+name = "cat-typescript"
+match_command = '^cat\s+(-\S+\s+)*\S*\.ts\b'
+
+[[filter.stages]]
+type = "code_ast_summarize"
+language = "typescript"
+
+[[filter.stages]]
+type = "strip_lines"
+patterns = [
+    '^\s*#[^!]',
+    '^\s*//\s',
+    '^\s*--\s',
+    '^\s*;\s',
+]
+preserve_patterns = [
+    '^#!/',
+    'TODO',
+    'FIXME',
+    'HACK',
+    'XXX',
+    'NOTE',
+    'WARN',
+]
+
+[[filter.stages]]
+type = "deduplicate_consecutive"
+
+[[filter.stages]]
+type = "max_tokens"
+limit = 800
+strategy = "both"
+
+[[filter.tests]]
+description = "Function body compressed; signature and JSDoc preserved"
+input = "/**\n * Add two numbers.\n */\nfunction add(x: number, y: number): number {\n  const total = x + y;\n  return total;\n}\n"
+must_contain = ["function add(x: number, y: number): number {", "Add two numbers."]
+must_not_contain = ["const total = x + y"]
+
+[[filter.tests]]
+description = "Interface, type alias, and enum declarations preserved whole"
+input = "interface Point {\n  x: number;\n  y: number;\n}\n\ntype Coordinates = [number, number];\n\nenum Color {\n  Red,\n  Green,\n}\n\nfunction origin(): Point {\n  const p = { x: 0, y: 0 };\n  return p;\n}\n"
+must_contain = ["interface Point {", "type Coordinates = [number, number];", "enum Color {", "Red,", "Green,"]
+must_not_contain = ["const p = { x: 0, y: 0 };"]
+
+[[filter.tests]]
+description = "Abstract class/method and overload signatures preserved; concrete bodies compressed"
+input = "function overload(x: number): number;\nfunction overload(x: string): string;\nfunction overload(x: any): any {\n  return x;\n}\n\nabstract class Shape {\n  abstract area(): number;\n\n  describe(): string {\n    return \"shape\";\n  }\n}\n"
+must_contain = ["function overload(x: number): number;", "abstract area(): number;", "describe(): string {"]
+must_not_contain = ["return x;", "return \"shape\";"]
+
+[[filter.tests]]
+description = "Invalid TypeScript fails open — original content returned unchanged"
+input = "function broken(: {\n  return 1;\n}\n"
+must_contain = ["function broken(:", "return 1;"]
+
+[[filter]]
+name = "cat-tsx"
+match_command = '^cat\s+(-\S+\s+)*\S*\.tsx\b'
+
+[[filter.stages]]
+type = "code_ast_summarize"
+language = "tsx"
+
+[[filter.stages]]
+type = "strip_lines"
+patterns = [
+    '^\s*#[^!]',
+    '^\s*//\s',
+    '^\s*--\s',
+    '^\s*;\s',
+]
+preserve_patterns = [
+    '^#!/',
+    'TODO',
+    'FIXME',
+    'HACK',
+    'XXX',
+    'NOTE',
+    'WARN',
+]
+
+[[filter.stages]]
+type = "deduplicate_consecutive"
+
+[[filter.stages]]
+type = "max_tokens"
+limit = 800
+strategy = "both"
+
+[[filter.tests]]
+description = "JSX function body compressed; typed props signature preserved"
+input = "interface Props {\n  label: string;\n}\n\nfunction Widget(props: Props): JSX.Element {\n  return <div className=\"box\">{props.label}</div>;\n}\n"
+must_contain = ["interface Props {", "function Widget(props: Props): JSX.Element {"]
+must_not_contain = ["return <div className=\"box\">{props.label}</div>;"]
+
+[[filter.tests]]
+description = "Imports, exports, and module-level constants are never touched"
+input = "import { foo } from \"bar\";\n\nconst DEFAULT_TIMEOUT = 30;\n\nexport function run(): boolean {\n  doWork();\n  return true;\n}\n"
+must_contain = ["import { foo } from \"bar\";", "const DEFAULT_TIMEOUT = 30;"]
+must_not_contain = ["doWork()"]
+
+[[filter.tests]]
+description = "Invalid TSX fails open — original content returned unchanged"
+input = "function broken(: {\n  return <div />;\n}\n"
+must_contain = ["function broken(:", "return <div />;"]
