@@ -10,11 +10,12 @@ Read already returns them as plain text, and QB-007B/C's `markdown`/
 not registered here; an unregistered extension fails open exactly like an
 unimplemented one.
 
-QB-007E1 builds only the routing/fail-open contract. `.docx`/`.pdf` handlers
-are stubs that always raise `NotImplementedError` — real extraction
-(optional dependencies, structure parsing) is QB-007E2 (DOCX) and QB-007E3
-(PDF). Wiring `extract()` into `claude_read.py` is also out of scope here;
-see backlog.md's QB-007E1 entry.
+QB-007E1 built the routing/fail-open contract with both handlers as stubs
+that always raised `NotImplementedError`. QB-007E2 fills in `.docx` for
+real (`quor/pipeline/extract/docx.py`, optional `python-docx` dependency,
+`quor[documents]`); `.pdf` (QB-007E3) is still a stub. Wiring `extract()`
+into `claude_read.py` remains out of scope; see backlog.md's QB-007E1/E2
+entries.
 
 Public API: `extract(file_path: Path) -> str | None`. `None` always means
 "fail open, proceed exactly as if this layer did not exist." `extract()`
@@ -27,10 +28,7 @@ import warnings
 from collections.abc import Callable
 from pathlib import Path
 
-
-def _extract_docx(file_path: Path) -> str | None:
-    """DOCX structure extraction — not implemented yet (QB-007E2)."""
-    raise NotImplementedError("DOCX extraction is not implemented yet (QB-007E2)")
+from quor.pipeline.extract.docx import extract_docx
 
 
 def _extract_pdf(file_path: Path) -> str | None:
@@ -38,13 +36,14 @@ def _extract_pdf(file_path: Path) -> str | None:
     raise NotImplementedError("PDF extraction is not implemented yet (QB-007E3)")
 
 
-# Extension-based routing table (QB-007E1). Only extensions that genuinely
-# need binary-to-text extraction are registered — `.md`/`.txt`/`.rst` are
+# Extension-based routing table. Only extensions that genuinely need
+# binary-to-text extraction are registered — `.md`/`.txt`/`.rst` are
 # deliberately absent (see module docstring); an unregistered extension and
-# a registered-but-unimplemented one both fail open to `None` via extract()
-# below, but only a registered extension is ever dispatched to a handler.
+# a registered-but-unimplemented one (still `.pdf`, QB-007E3) both fail open
+# to `None` via extract() below, but only a registered extension is ever
+# dispatched to a handler.
 _EXTRACTORS: dict[str, Callable[[Path], str | None]] = {
-    ".docx": _extract_docx,
+    ".docx": extract_docx,
     ".pdf": _extract_pdf,
 }
 
