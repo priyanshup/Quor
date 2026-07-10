@@ -726,6 +726,51 @@ class TestQueryGain:
             ).fetchone()
         assert row == ("c:/legacy-project",)
 
+    def test_read_hook_invocations_zero_when_only_bash_rows(self, tmp_path: Path) -> None:
+        """A project/window with only Bash-produced rows (no command
+        starting with the literal "Read: " prefix claude_read.py always
+        uses) must report read_hook_invocations == 0 — the signal `quor
+        gain`'s new notice checks before telling a user Read-hook features
+        aren't represented."""
+        db_path = tmp_path / "quor.db"
+        self._populate(db_path, [
+            {"command": "git status", "original_tokens": 100, "final_tokens": 20, "project_path": "/proj"},
+            {"command": "cat file.py", "original_tokens": 200, "final_tokens": 50, "project_path": "/proj"},
+        ])
+        report = query_gain(db_path, Path("/proj"))
+        assert report.total_invocations == 2
+        assert report.read_hook_invocations == 0
+
+    def test_read_hook_invocations_counts_only_read_prefixed_rows(self, tmp_path: Path) -> None:
+        """A mix of Bash and Read rows: read_hook_invocations counts exactly
+        the "Read: " ones, independent of total_invocations."""
+        db_path = tmp_path / "quor.db"
+        self._populate(db_path, [
+            {"command": "git status", "original_tokens": 100, "final_tokens": 20, "project_path": "/proj"},
+            {"command": "Read: notes.md", "original_tokens": 500, "final_tokens": 300, "project_path": "/proj"},
+            {"command": "Read: app.py", "original_tokens": 400, "final_tokens": 250, "project_path": "/proj"},
+        ])
+        report = query_gain(db_path, Path("/proj"))
+        assert report.total_invocations == 3
+        assert report.read_hook_invocations == 2
+
+    def test_read_hook_invocations_scoped_by_project_like_everything_else(self, tmp_path: Path) -> None:
+        """A Read row in a *different* project must not count toward this
+        project's read_hook_invocations — same project scoping every other
+        GainReport field already respects."""
+        db_path = tmp_path / "quor.db"
+        self._populate(db_path, [
+            {"command": "Read: notes.md", "original_tokens": 500, "final_tokens": 300, "project_path": "/other-proj"},
+            {"command": "git status", "original_tokens": 100, "final_tokens": 20, "project_path": "/proj"},
+        ])
+        report = query_gain(db_path, Path("/proj"))
+        assert report.total_invocations == 1
+        assert report.read_hook_invocations == 0
+
+    def test_read_hook_invocations_zero_on_empty_db(self, tmp_path: Path) -> None:
+        report = query_gain(tmp_path / "missing.db", tmp_path)
+        assert report.read_hook_invocations == 0
+
 
 class TestNormalizeProjectPath:
     """Direct unit coverage for the single canonical project-identity rule

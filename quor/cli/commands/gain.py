@@ -53,7 +53,22 @@ def _print_header(report: GainReport, *, project_path: Path, mode: str) -> None:
     console.print(f"[bold]Quor Gain[/bold] (Last {report.days} days)")
     console.print()
     console.print(f"Project: {project_path}")
-    console.print(f"Mode: {mode}")
+    # `mode` (quor.config.model.QuorUserConfig.mode) only ever reaches
+    # PluginContext for third-party plugins (see dispatcher.py's
+    # _setup_plugins) — registry.apply(), the call that actually produces
+    # every number below, never reads it. "Mode: audit" sitting directly
+    # above compression statistics reads like it qualifies them; it
+    # doesn't, for any mode value. Only annotated for the non-default
+    # values, since "optimize" (the common case) is exactly what a reader
+    # would already assume without a caveat.
+    if mode == "optimize":
+        console.print(f"Mode: {mode}")
+    else:
+        console.print(
+            f"Mode: {mode} [dim](affects third-party plugins only — "
+            "the compression numbers below always reflect real, applied "
+            "compression regardless of mode)[/dim]"
+        )
 
 
 def _stat_table() -> Table:
@@ -103,8 +118,15 @@ def _print_body(report: GainReport) -> None:
         console.print()
         console.rule(style="dim")
 
+    _print_read_hook_notice(report)
+
     console.print()
-    console.print("[dim]* Token estimates use the char/4 approximation (±20%), not a real tokenizer.[/dim]")
+    console.print(
+        "[dim]* Each token count (before/after) is estimated via the char/4 "
+        "approximation, accurate to roughly ±20% versus a real tokenizer — "
+        "the compression percentage itself is not separately uncertain by "
+        "±20%, since it compares two estimates computed the same way.[/dim]"
+    )
 
 
 def _print_savings(report: GainReport) -> None:
@@ -122,7 +144,7 @@ def _print_savings(report: GainReport) -> None:
         console.print()
         breakdown = _stat_table()
         breakdown.add_row("Compression achieved", f"~{format_count(report.gross_savings)} tokens")
-        breakdown.add_row("Recovery/overhead", f"~{format_count(report.gross_overhead)} tokens")
+        breakdown.add_row("Recovery-footer overhead", f"~{format_count(report.gross_overhead)} tokens")
         console.print(breakdown)
 
     console.print()
@@ -193,3 +215,31 @@ def _negative_row_explainer(report: GainReport) -> str:
             "footer with `tee = false` in that filter's config.[/dim]"
         )
     return text
+
+
+def _print_read_hook_notice(report: GainReport) -> None:
+    """Only ever printed when `report.read_hook_invocations == 0` — i.e. no
+    row in this project/window came from the PostToolUse/Read hook at all.
+
+    Every number above is real and accurate for whatever *did* run, but a
+    reader has no way to tell, from the numbers alone, that an entire class
+    of filters (Markdown/plain-text compression, DOCX/PDF extraction, and
+    AST summarization for files opened via Read rather than `cat`) simply
+    never had a chance to contribute — silence here would look identical to
+    "these features don't help much," which is not what a `0` means.
+    """
+    if report.read_hook_invocations > 0:
+        return
+    console.print()
+    console.print(
+        "[dim]No Read-hook activity has been recorded in this window, so "
+        "features that only run through Claude Code's Read hook — "
+        "Markdown/plain-text compression, DOCX/PDF extraction, and AST "
+        "summarization for files opened via Read rather than `cat` — are "
+        "not represented in the numbers above. Install the Read hook with "
+        "`quor init --claude`, then re-check after Claude Code has read "
+        "some files.[/dim]",
+        soft_wrap=True,
+    )
+    console.print()
+    console.rule(style="dim")

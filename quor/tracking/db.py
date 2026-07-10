@@ -114,6 +114,16 @@ class GainReport:
     filter_hit_rate: float         # (total - passthroughs) / total, or 0 if empty
     top_filters: list[tuple[str, int]]  # [(filter_name, tokens_saved)] top 5
     days: int
+    read_hook_invocations: int
+    """Count of rows in this window whose `command` starts with `"Read: "` —
+    i.e. produced by the PostToolUse/Read hook (QB-007D), not Bash. Zero
+    means the Read hook has never fired for this project/window, so every
+    Read-hook-only filter (`markdown`, `document-text`, `cat-javascript`,
+    `cat-typescript`, `cat-tsx`, and Python AST summarization *via Read*)
+    could not possibly be represented in the other numbers above, no matter
+    how effective those filters are — `quor gain`'s own gain-clarity pass
+    uses this to show an explicit note rather than let a `0` blend in
+    silently next to filters that *did* get a chance to run."""
 
 
 # ---------------------------------------------------------------------------
@@ -426,6 +436,7 @@ def query_gain(
             filter_hit_rate=0.0,
             top_filters=[],
             days=days,
+            read_hook_invocations=0,
         )
 
     project_key = normalize_project_path(project_path)
@@ -535,7 +546,24 @@ def query_gain(
             (project_key, subdir_pattern, since),
         ).fetchall()
 
+        # Read-hook activity in this same window (see GainReport.
+        # read_hook_invocations' own docstring for why this is tracked
+        # separately rather than left implicit): "Read: " is the exact,
+        # literal prefix claude_read.py's own command column always uses
+        # (f"Read: {file_path}") — not a heuristic, the one and only format
+        # any Read-hook row has ever been written with (QB-007D).
+        read_hook_row = conn.execute(
+            f"""SELECT COUNT(*) AS n
+               FROM invocations
+               WHERE {project_filter}
+                 AND recorded_at  >= datetime('now', ?)
+                 AND command LIKE 'Read: %'
+            """,
+            (project_key, subdir_pattern, since),
+        ).fetchone()
+
     top_filters = [(r["filter_name"], int(r["saved_sum"])) for r in top_rows]
+    read_hook_invocations = int(read_hook_row["n"])
 
     return GainReport(
         total_invocations=total,
@@ -549,6 +577,7 @@ def query_gain(
         filter_hit_rate=hit_rate,
         top_filters=top_filters,
         days=days,
+        read_hook_invocations=read_hook_invocations,
     )
 
 
