@@ -56,6 +56,14 @@ dev = [
     # fixture coverage (tests/unit/test_extract_docx.py) without a separate
     # `quor[documents]` install step.
     "python-docx>=1.1.0,<2.0.0",
+    # pdfplumber (QB-007E3), same reasoning, for tests/unit/test_extract_pdf.py.
+    "pdfplumber>=0.11.0,<1.0.0",
+    # reportlab is a *write*-only PDF library, never imported by quor itself
+    # (pdfplumber, quor's read-only PDF dependency, cannot author PDFs) — it
+    # exists solely so the test suite can generate real PDF fixtures with
+    # controlled font sizes/names/layout, the same way python-docx doubles
+    # as both quor's read dependency and its own fixture generator above.
+    "reportlab>=4.0.0,<6.0.0",
     # The quor-test-stage fixture (tests/fixtures/test_plugin) is deliberately
     # NOT listed here as a `file:` dependency: a relative file:// URL is baked
     # verbatim into published package metadata, and breaks for anyone who
@@ -70,6 +78,10 @@ documents = [
     # ADR-014's `quor[ml]`-style extras precedent, the template this group
     # follows.
     "python-docx>=1.1.0,<2.0.0",
+    # PDF structure extraction (QB-007E3). Same fail-open guarantee —
+    # quor/pipeline/extract/pdf.py's extract_pdf() returns None, warns,
+    # never raises, if pdfplumber is absent.
+    "pdfplumber>=0.11.0,<1.0.0",
 ]
 
 [project.scripts]
@@ -131,6 +143,12 @@ ignore_missing_imports = true
 # python-docx (QB-007E2, quor[documents]) is optional at runtime — mypy must
 # still succeed for anyone running `mypy quor/` without it installed.
 module = ["docx", "docx.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# pdfplumber (QB-007E3, quor[documents]) is optional at runtime — same
+# reasoning as the docx override above.
+module = ["pdfplumber", "pdfplumber.*"]
 ignore_missing_imports = true
 
 # ---------------------------------------------------------------------------

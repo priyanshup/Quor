@@ -70,6 +70,26 @@ All notable changes to Quor are documented here. Format loosely follows
   `quor/adapters/claude_read.py`, remain untouched. See QB-007E2 in `backlog.md` for the full
   algorithm, design trade-offs, and stated limitations (no nested lists, no bold/italic emphasis,
   merged table cells repeat rather than span, images/footnotes/headers/footers silently absent).
+- **Added: real PDF-to-Markdown extraction (QB-007E3).** `quor/pipeline/extract/pdf.py`'s
+  `extract_pdf()` fills in QB-007E1's `.pdf` stub for real, using a new optional dependency,
+  `pdfplumber` (same `quor[documents]` extra as `python-docx`). Unlike DOCX, PDF has no document
+  object model to read structure from — headings are inferred purely from font size (larger than
+  the document's own body-text size, ranked into levels, clamped at `######`), paragraphs are
+  reconstructed by merging lines whose vertical gap is small enough to be a wrapped continuation,
+  bullets/numbers are recognized by regex against each line's own text (the PDF's visible number
+  is reused verbatim; only the delimiter is normalized), tables use `pdfplumber`'s own table
+  detection, and monospace-font lines merge into fenced code blocks with indentation reconstructed
+  from character position. Fully fail-open on its own — missing `pdfplumber`, a corrupt file, an
+  encrypted file, or any other parser exception all return `None` with a warning, never raise.
+  **Found and fixed a real bug while building the benchmark fixtures:** an undecoded bullet glyph
+  (no `ToUnicode` CMap) can decode as several zero-width placeholder characters at the bullet's own
+  font size, which a naive character-count size heuristic let outvote real, visible body text on a
+  short line — misrendering a bullet item as a heading. Fixed by weighting dominant line size by
+  rendered character width instead of count; regression-tested against the pre-fix behavior. Still
+  not wired into the Read hook, `FilterRegistry`, or `Pipeline`. See QB-007E3 in `backlog.md` for
+  the full algorithm, the bug writeup, and stated limitations (geometry-based inference only, same
+  no-nested-lists/no-emphasis limitations as DOCX, undecodable bullet glyphs fall through to plain
+  paragraphs rather than being lost).
 - **`quor gain` now explains negative-token rows instead of just softening
   their display.** Confirmed via a new invariant test
   (`TestFilterNeverExpandsOutput`) that no built-in filter stage can itself

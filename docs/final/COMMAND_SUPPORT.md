@@ -301,37 +301,38 @@ prose, where distinct TODOs or list items can share a superficial shape without 
 
 ---
 
-## 9. Document extraction — DOCX (QB-007E1/E2)
+## 9. Document extraction — DOCX and PDF (QB-007E1/E2/E3)
 
 Structurally different from everything in §1–§8: this is not a `FilterRegistry` entry and is not
 reachable from a real Read call today. `quor/pipeline/extract/` is a separate preprocessing layer
 — extension-routed, fail-open, and explicitly **not** a `StageHandler` — that will eventually sit
 *before* `FilterRegistry`/`Pipeline` for binary document types the Read hook can't compress
 directly (unlike `.md`/`.txt`/`.rst`, which are already plain text and need no extraction at all;
-see §8). As of QB-007E2, `.docx` is the only extension with a real handler; wiring `extract()` into
-`quor/adapters/claude_read.py` remains out of scope (deferred to QB-007E3/E4 — see `backlog.md`'s
-QB-007E2 entry).
+see §8). As of QB-007E3, both `.docx` and `.pdf` have real handlers; wiring `extract()` into
+`quor/adapters/claude_read.py` remains out of scope (deferred to QB-007E4 — see `backlog.md`'s
+QB-007E2/E3 entries).
 
 **Public API:** `quor.pipeline.extract.registry.extract(file_path: Path) -> str | None`. `None`
 always means "fail open, proceed as if this layer didn't exist" — an unregistered extension, a
-registered-but-unimplemented handler (`.pdf`, QB-007E3), or a handler that raised for any reason.
+registered-but-unimplemented handler, or a handler that raised for any reason.
 
 | Extension | Handler | Converts to | Does NOT convert | Known limitations |
 |---|---|---|---|---|
 | `.docx` | `extract_docx()` ([docx.py](../../quor/pipeline/extract/docx.py)) | Headings (`Heading 1`–`6` → ATX `#`–`######`), paragraphs, bullet lists (`- `), numbered lists (sequential, restarting per contiguous run), GitHub-style tables (`\|`-escaped, multi-paragraph cells joined with `<br>`), contiguous code-style paragraphs (style name or explicit monospace font) as fenced blocks with indentation preserved | Document properties/comments/headers/footers (excluded by construction — never read, not filtered), images, footnotes/endnotes, run-level emphasis (bold/italic) | No nested/multi-level lists (Word's `numPr`/`ilvl` numbering XML is not resolved — every level flattens); merged table cells repeat their text across every spanned column (Markdown has no colspan syntax); monospace detection only catches an explicit per-run font override, not a theme-level or style-implied convention |
-| `.pdf` | stub (`registry.py`), always raises `NotImplementedError` | Nothing — QB-007E3, not started | everything | riskiest sub-item — PDF heading/table detection is heuristic, with no semantic ground truth to anchor it |
+| `.pdf` | `extract_pdf()` ([pdf.py](../../quor/pipeline/extract/pdf.py)) | Headings inferred from font size (larger than the document's own body-text size, ranked into levels, clamped at `######` — PDF has no "Heading 2" style to read, unlike DOCX), paragraphs reconstructed by merging lines with a small vertical gap, bullet lists (`•`/`◦`/`▪`/`‣`/`●`/`○`/`·`/ASCII `-`/`*`/`+` all normalize to `- `), numbered lists (the PDF's own visible number reused verbatim; delimiter normalized to `N.`), GitHub-style tables via `pdfplumber`'s own table detection, contiguous monospace-font lines as fenced code blocks with indentation reconstructed from character position | Document metadata (`pdf.metadata` — never read), images (no OCR), footnotes | Geometry-based inference only, not ground truth — unusual line spacing or a body font that varies in size can mislead it; same no-nested-lists/no-emphasis limitations as DOCX; a bullet glyph a PDF's own font can't map to a real Unicode codepoint (no `ToUnicode` CMap — a real, observed PDF phenomenon, not hypothetical) falls through to a plain paragraph rather than being recognized as a bullet |
 
-**Fail-open, tested at every layer:** missing `python-docx` (`quor[documents]`, optional — core
-install works without it), a corrupt file, an invalid zip, a truncated or nonexistent file, or any
-other unexpected parser exception all return `None` with a warning; `extract_docx()` never raises,
-independent of whatever calls it (`registry.extract()` wraps every handler in the same guarantee
-too, defense-in-depth for `.docx`, load-bearing for the still-stubbed `.pdf`).
+**Fail-open, tested at every layer:** missing `python-docx`/`pdfplumber` (`quor[documents]`,
+optional — core install works without either), a corrupt file, an invalid zip, an encrypted PDF, a
+truncated or nonexistent file, or any other unexpected parser exception all return `None` with a
+warning; both `extract_docx()` and `extract_pdf()` never raise, independent of whatever calls them
+(`registry.extract()` wraps every handler in the same guarantee too, defense-in-depth for both).
 
-**Benchmark fixtures, not yet wired in:** two representative `.docx` samples exist under
-`tests/benchmarks/samples/docx/` (`001_design_doc_ranking_cache.docx`,
-`002_short_client_readme.docx`, mirroring §7's markdown long/short pair) but are not yet referenced
-from `manifest.toml`/`baseline.json` — there is no live compression path to benchmark until
-`extract()` is wired into the Read hook. Adding that manifest coverage is QB-007E4's job.
+**Benchmark fixtures, not yet wired in:** two representative samples exist for each format —
+`tests/benchmarks/samples/docx/001_design_doc_ranking_cache.docx`/`002_short_client_readme.docx`
+and `tests/benchmarks/samples/pdf/001_design_doc_export_pipeline.pdf`/`002_short_client_notes.pdf`
+(mirroring §7's markdown long/short pair) — but neither pair is yet referenced from
+`manifest.toml`/`baseline.json`; there is no live compression path to benchmark until `extract()`
+is wired into the Read hook. Adding that manifest coverage is QB-007E4's job.
 
 ---
 
@@ -342,6 +343,7 @@ from `manifest.toml`/`baseline.json` — there is no live compression path to be
 - `quor/filters/builtin/*.toml` — filter behavior ground truth.
 - `quor/pipeline/extract/registry.py` — document extraction routing/fail-open contract (§9).
 - `quor/pipeline/extract/docx.py` — DOCX-to-Markdown conversion algorithm (§9).
+- `quor/pipeline/extract/pdf.py` — PDF-to-Markdown conversion algorithm (§9).
 - `CONTRIBUTING.md` — "Writing New Filters" for the full authoring workflow and PR checklist.
 - `docs/final/CLAUDE.md` — "The ContentMask Pipeline" for stage semantics, "Filter Configuration
   Format" for the TOML schema.
