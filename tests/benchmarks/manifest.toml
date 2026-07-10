@@ -452,3 +452,53 @@ sample_file = "samples/generic/002_build_tool_with_ansi_and_repeats.txt"
 expected_filter = "generic"
 min_reduction_pct = 5.0
 must_contain = ["Build succeeded in 2.4s", "Compiling module: payments"]
+
+# ---------------------------------------------------------------------------
+# QB-007B: Markdown / plain-text document filters. `command` here is not a
+# shell command — it is a bare file path string, matched by FilterRegistry
+# exactly as any other `command` value (see markdown.toml/document-text.toml
+# header comments and backlog.md's QB-007B entry for why file-path routing
+# reuses this same field). These filters are not yet wired into the live
+# PostToolUse/Read hook (QB-007A remains a no-op) — this benchmark coverage
+# validates the filter layer in isolation, ahead of that wiring.
+# ---------------------------------------------------------------------------
+
+[[case]]
+id = "markdown-design-doc-long"
+category = "markdown"
+ecosystem = "Documents"
+command = "docs/design-doc-notification-batching.md"
+sample_file = "samples/markdown/001_design_doc_notification_batching.md"
+expected_filter = "markdown"
+min_reduction_pct = 15.0
+must_contain = ["# Design Doc: Notification Batching for the Alerts Service", "REQ-101", "REQ-102", "REQ-103", "**Decision:**", "```python", "TODO: determine whether", "**WARNING:**", "**NOTE:**"]
+
+[[case]]
+id = "markdown-readme-short"
+category = "markdown"
+ecosystem = "Documents"
+command = "README.md"
+sample_file = "samples/markdown/002_short_readme.md"
+expected_filter = "markdown"
+min_reduction_pct = 0.0
+must_contain = ["# retry-fetch", "REQ-1", "REQ-2", "TODO: add a `jitter` option"]
+
+[[case]]
+id = "document-text-project-notes-long"
+category = "document-text"
+ecosystem = "Documents"
+command = "notes/onboarding-flow-notes.txt"
+sample_file = "samples/document-text/001_project_notes.txt"
+expected_filter = "document-text"
+min_reduction_pct = 10.0
+must_contain = ["REQ-201", "REQ-202", "REQ-203", "Decision: we will not attempt", "TODO: growth team to draft", "WARNING: if we do pursue this eventually"]
+
+[[case]]
+id = "document-text-rst-short"
+category = "document-text"
+ecosystem = "Documents"
+command = "docs/CONTRIBUTING.rst"
+sample_file = "samples/document-text/002_short_rst_doc.rst"
+expected_filter = "document-text"
+min_reduction_pct = 0.0
+must_contain = [".. code-block:: bash", "REQ-1", "TODO: add a property-based test"]

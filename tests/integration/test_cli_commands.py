@@ -167,11 +167,22 @@ class TestInitAndDoctorIntegration:
         ]
         assert any("claude-hook.ps1" in c for c in commands)
 
+        # QB-007A: the PostToolUse/Read hook is registered by the same real
+        # `init --claude` call, additively alongside PreToolUse/Bash above.
+        read_commands = [
+            h["command"]
+            for entry in data["hooks"]["PostToolUse"]
+            for h in entry["hooks"]
+        ]
+        assert any("claude-hook-read.ps1" in c for c in read_commands)
+
         # init already runs `doctor` internally (asserted above via exit_code
         # 0), but re-run it standalone too: a real, separate doctor
-        # invocation must independently see the hook script init just wrote.
+        # invocation must independently see the hook scripts init just wrote.
         doctor_result = runner.invoke(app, ["doctor", "--settings-path", str(settings_path)])
         assert doctor_result.exit_code == 0
         assert "✓ Hook script installed" in doctor_result.output
+        assert "✓ Read hook script installed" in doctor_result.output
+        assert "✓ Read hook responds correctly" in doctor_result.output
         assert "✓ Tracking DB readable/writable" in doctor_result.output
         assert "✓ Built-in filter tests pass" in doctor_result.output

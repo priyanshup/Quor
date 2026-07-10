@@ -60,6 +60,8 @@ def doctor(
     checks.append(_check_hook_script())
     checks.append(_check_hook_roundtrip())
     checks.append(_check_hook_collision(settings_path))
+    checks.append(_check_read_hook_script())
+    checks.append(_check_read_hook_roundtrip())
     checks.append(_check_sqlite())
     checks.append(_check_filters())
     checks.append(_check_mode())
@@ -147,6 +149,76 @@ def _check_hook_roundtrip() -> tuple[str, bool, str]:
         return ("Hook responds correctly", False, f"unexpected rewrite: {rewritten!r}")
     except Exception as exc:  # noqa: BLE001
         return ("Hook responds correctly", False, str(exc))
+    finally:
+        sys.stdin = old_stdin
+        sys.stdout = old_stdout
+
+
+def _check_read_hook_script() -> tuple[str, bool, str]:
+    hook_path = Path(platformdirs.user_data_dir("quor")) / "hooks" / "claude-hook-read.ps1"
+    exists = hook_path.exists()
+    detail = str(hook_path) if exists else f"not found at {hook_path} — run `quor init --claude`"
+    return ("Read hook script installed", exists, detail)
+
+
+def _check_read_hook_roundtrip() -> tuple[str, bool, str]:
+    """Capability check for the PostToolUse/Read hook (QB-007C).
+
+    Proves the live wiring actually compresses, not just that the plumbing
+    responds: a synthetic PostToolUse/Read payload for a Markdown document
+    large enough to exceed the `markdown` filter's token budget must come
+    back with `updatedToolOutput` present and strictly smaller than the
+    original. This does NOT prove the installed Claude Code binary actually
+    honors `updatedToolOutput` for Read (that requires a real Claude Code
+    session; see backlog.md's QB-007 entry) — it only proves Quor's own side
+    of the contract is well-formed and that compression is genuinely wired
+    in, not merely shape-correct.
+    """
+    import orjson
+
+    from quor.adapters.claude_read import run_hook
+
+    # Large enough to exceed markdown.toml's 2000-token max_tokens budget,
+    # so this check exercises the real compression path, not just the
+    # "no filter matched" passthrough shape.
+    large_doc = "# Title\n\n" + ("Filler prose to exceed the token budget. " * 400)
+    payload = orjson.dumps(
+        {
+            "tool_name": "Read",
+            "tool_input": {"file_path": "example.md"},
+            "tool_response": large_doc,
+        }
+    )
+    old_stdin, old_stdout = sys.stdin, sys.stdout
+    try:
+        sys.stdin = io.TextIOWrapper(io.BytesIO(payload), encoding="utf-8")
+        fake_stdout = _FakeStdout()
+        sys.stdout = fake_stdout
+        run_hook()
+        result = orjson.loads(fake_stdout.buffer.getvalue())
+        hook_specific = result.get("hookSpecificOutput", {})
+        if hook_specific.get("hookEventName") != "PostToolUse":
+            return (
+                "Read hook responds correctly",
+                False,
+                f"unexpected hookEventName: {hook_specific.get('hookEventName')!r}",
+            )
+        updated = hook_specific.get("updatedToolOutput")
+        if not isinstance(updated, str):
+            return (
+                "Read hook responds correctly",
+                False,
+                "expected updatedToolOutput for an oversized Markdown document, got none",
+            )
+        if len(updated) >= len(large_doc):
+            return (
+                "Read hook responds correctly",
+                False,
+                "updatedToolOutput was not smaller than the original document",
+            )
+        return ("Read hook responds correctly", True, "")
+    except Exception as exc:  # noqa: BLE001
+        return ("Read hook responds correctly", False, str(exc))
     finally:
         sys.stdin = old_stdin
         sys.stdout = old_stdout

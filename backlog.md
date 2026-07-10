@@ -34,9 +34,12 @@ under **Completed Work** (top of that group) and fill in Resolution/Status.
 Right now Quor only shrinks *shell/terminal command* output — it doesn't touch files Claude reads
 directly, like a PDF, a Word document, or a long Markdown file. We've confirmed it's technically
 possible to hook into that reading step and reduce those documents down to their important
-structure (headings, tables, requirements, decisions) instead of sending the whole thing. Nobody
-has built it yet — it's a genuinely separate, multi-part project (a new integration point, plus new
-handling for each document type), not a quick extension of what exists today.
+structure (headings, tables, requirements, decisions) instead of sending the whole thing. This is a
+genuinely separate, multi-part project (a new integration point, plus new handling for each
+document type), so it's being built as a sequence of small, independently mergeable pieces:
+Markdown and plain-text compression is implemented and, as of QB-007C, actually wired into the live
+Read hook — a supported document read by Claude is compressed for real, not just at the filter
+layer. See "Sub-items" below for exactly what's done and what isn't.
 
 <details>
 <summary>Technical details</summary>
@@ -74,8 +77,192 @@ point alongside `quor/adapters/claude.py`, a new `PostToolUse`/`Read` registrati
 `quor init --claude`'s `settings.json` writes, and new content-type-aware stages/filters for
 DOCX/PDF/Markdown structure extraction — none of which exists yet.
 
-**Status:** Unblocked — feasibility confirmed. Still not scheduled for implementation; needs its
-own scoped design pass (per CLAUDE.md Rule 4) before work begins.
+**Design pass (2026-07-10):** Full architecture and design completed per CLAUDE.md Rule 4 (hook
+lifecycle, content routing, filter reuse, per-element compression strategy, dependency evaluation,
+failure modes, testing strategy). Recorded as ADR-034 in DECISIONS.md. Split into independently
+mergeable sub-items so each can be reviewed/tested/merged on its own:
+
+- **QB-007A — PostToolUse/Read hook plumbing.** Implemented (2026-07-10). Originally a no-op
+  (always omitted `updatedToolOutput`); QB-007C (below) is what actually wires compression into it.
+  See "QB-007A technical details" below.
+- **QB-007B — Markdown/plain-text compression.** Implemented (2026-07-10). Filter-layer only when
+  first shipped — `markdown.toml`/`document-text.toml` were fully tested via `FilterRegistry` but
+  not yet reachable from a real Read call. See "QB-007B technical details" below.
+- **QB-007C — Activate the Read hook.** Implemented (2026-07-10). Wires QB-007A's adapter to
+  QB-007B's filters via the existing `FilterRegistry`/`Pipeline` — a supported Read now actually
+  returns compressed content via `updatedToolOutput`. See "QB-007C technical details" below.
+- **QB-007D — DOCX structure extraction.** Not started. Depends on QB-007A/B/C.
+- **QB-007E — PDF structure extraction.** Not started. Depends on QB-007A/B/C; the riskiest
+  sub-item — PDF heading/table detection is heuristic, with no semantic ground truth to anchor it.
+
+**Status:** In progress — QB-007A/B/C implemented (none committed/merged to `main` yet); QB-007D
+onward not scheduled.
+
+</details>
+
+<details>
+<summary>QB-007A technical details</summary>
+
+**What shipped:** `quor/adapters/claude_read.py` (new `PostToolUse`/`Read` hook adapter — always
+omits `updatedToolOutput`), `quor/adapters/base.py` (new `ReadToolInput`, `PostToolUseHookInput`,
+`PostToolUseHookSpecificOutput`, `PostToolUseHookOutput` models), `quor/__main__.py`
+(`_run_hook()` now dispatches on adapter name — `"claude"` or `"claude-read"`),
+`quor/cli/commands/init.py` (`quor init --claude` additively registers a second hook script and a
+`hooks.PostToolUse`/`Read` entry, independent of the existing `hooks.PreToolUse`/`Bash` entry),
+`quor/cli/commands/doctor.py` (two new checks: `Read hook script installed`,
+`Read hook responds correctly`).
+
+**No document compression, extraction, Markdown/DOCX/PDF handling, tracking integration, or new
+dependencies were added** — those are QB-007B onward, deliberately scoped separately per the
+design pass's "small, independently mergeable, minimize risk" rollout principle.
+
+**Limitations (carried forward from the design pass, not resolved by this phase):**
+- `quor doctor`'s `Read hook responds correctly` check proves Quor's own response shape is
+  well-formed; it cannot prove the installed Claude Code binary actually honors
+  `updatedToolOutput` for `Read` — that requires a real Claude Code session, outside this phase's
+  automated test coverage.
+- The minimum Claude Code version that honors `updatedToolOutput` for non-MCP tools remains
+  unconfirmed.
+- The real `PostToolUse` hook timeout budget on Windows remains unmeasured — not yet relevant
+  while this phase does no real work, but load-bearing before QB-007D/E (DOCX/PDF extraction) can
+  be scoped with confidence.
+
+**Verification:** full `pytest tests/`, `quor verify`, `ruff check quor/ tests/`, `mypy quor/` all
+green — see ADR-034 for the recorded decision and CHANGELOG.md's Unreleased section.
+
+**Update (QB-007C):** this block is preserved as-is for historical accuracy of what was true when
+QB-007A shipped alone. `updatedToolOutput` is no longer always omitted — see "QB-007C technical
+details" below for what changed.
+
+</details>
+
+<details>
+<summary>QB-007B technical details</summary>
+
+**What shipped:** two new built-in filters — `quor/filters/builtin/markdown.toml` (`.md`,
+`.markdown`) and `quor/filters/builtin/document-text.toml` (`.txt`, `.rst`) — routed by matching
+`match_command` against a bare file path string instead of a shell command string, reusing
+`FilterRegistry` exactly as-is (no new routing system, no schema change). Both filters use only
+existing stage types (`strip_lines` for `preserve_patterns`-based structure protection,
+`deduplicate_consecutive` for collapsing repeated/blank-line runs, `max_tokens` as the actual
+budget-driven compression) — no new stage types were created. `group_repeated` was deliberately
+**not** used: collapsing repeated-shape lines is safe for diagnostic tool output (its original use
+case) but unsafe for prose/document content, where distinct TODOs, list items, or requirements can
+share a superficial shape without being redundant — using it here would risk exactly the kind of
+meaning loss PROJECT_BIBLE.md's Core Principle #1 rules out.
+
+**Compression strategy:** `preserve_patterns` only, no strip (COMPRESS) patterns in either filter —
+unlike shell-command output, a hand-written document has no reliable "noise" to strip without
+risking real content loss. Headings (Markdown ATX only), bullet/numbered lists, fenced code block
+*markers*, requirement/decision IDs, decision markers, TODO/FIXME/XXX, and NOTE/WARNING/CAUTION
+callouts are all protected via `preserve_patterns`; `max_tokens` (`limit = 2000`, `strategy =
+"head"`) is the only actual compression, and only engages once a document exceeds the budget — a
+short document renders back byte-identical.
+
+**Known, accepted limitations (not fixed — see below for why):**
+- **Fenced code block interiors are not span-protected.** `strip_lines`/`max_tokens`'s
+  `preserve_patterns` matches per-line only, with no concept of "protect everything between this
+  marker and its matching close." The fence marker lines themselves are protected individually; the
+  content between them is not, and `max_tokens`'s best-effort budget can compress through the
+  middle of a large code block, leaving a fence marker without its partner (demonstrated, not just
+  described, in `tests/unit/test_document_filters.py::TestMarkdownFencedCodeBlockLimitation`).
+  Fixing this would require span-aware stage logic that does not exist in any Quor stage today —
+  explicitly out of scope per this task's own instruction to "stop and explain the limitation
+  rather than inventing new behaviour."
+- **RST's setext-style heading convention (title line + punctuation-only underline) is not
+  detected**, for the identical per-line-only-matching reason. `document-text.toml` only protects
+  RST's single-line `.. code-block::` directive, which is reliably line-matchable.
+- **A file path containing a space does not match either filter** (e.g. `My Documents\notes.md`)
+  — both patterns are anchored to a single whitespace-free token
+  (`^\S+\.(md|markdown)$`/`^\S+\.(txt|rst)$`), specifically so they can never accidentally intercept
+  a real shell command string that merely references a `.md`/`.txt` file as an argument (a command
+  string always contains a space once it has arguments). The trade-off: a spaced path safely falls
+  through to no match rather than being compressed — never a routing corruption, at the cost of
+  never compressing a document whose path contains a space.
+- **A file literally named to look like an existing Bash command (e.g. `cat.md`) can be
+  intercepted by that command's filter first**, since `FilterRegistry` is shared between Bash
+  command strings and Read file paths and built-in load order is alphabetical
+  (`cat.toml` < `document-text.toml` < `markdown.toml`). Narrow and unlikely in practice; inherent
+  to reusing `match_command`/`FilterRegistry` rather than inventing a parallel routing system
+  (explicitly out of scope per this task's requirements). Documented and regression-tested
+  (`TestKnownRoutingCollision` in `tests/unit/test_document_filters.py`), not silently accepted.
+  **Update (QB-007C):** at the live Read hook, this collision is now neutralized in practice — the
+  adapter's own filter-name allowlist (see "QB-007C technical details" below) means a Read for
+  `cat.md` safely passes through unchanged rather than being run through the `cat` filter, even
+  though `FilterRegistry.find("cat.md")` still literally returns `cat` at the routing layer. The
+  underlying `FilterRegistry`-level collision described above is unchanged and still applies to
+  any *other* caller of `FilterRegistry` that doesn't apply the same allowlist.
+
+**Benchmark coverage:** 4 new manifest cases (`markdown-design-doc-long`,
+`markdown-readme-short`, `document-text-project-notes-long`, `document-text-rst-short`) with
+committed baselines. Real, measured compression on realistic long-document samples: **29.5%** on a
+~3,700-token engineering design doc, **18.8%** on a ~2,700-token plain-text meeting-notes doc.
+Short, already-small samples (a README, an RST dev guide) show **0%** — correctly honest, not a
+bug: with no strip patterns and `max_tokens` only engaging above budget, a document that never
+exceeds the budget is never touched.
+
+**Verification:** full `pytest tests/`, `quor verify`, `ruff check quor/ tests/`, `mypy quor/` —
+see the QB-007B implementation session record for exact results.
+
+**Update (QB-007C):** these filters are no longer filter-layer-only — QB-007C (below) wires them
+into the live Read hook. All limitations above are unchanged and still apply now that compression
+is live.
+
+</details>
+
+<details>
+<summary>QB-007C technical details</summary>
+
+**What shipped:** `quor/adapters/claude_read.py::run_hook()` now genuinely routes Read output
+through `FilterRegistry`/`Pipeline` instead of always being a no-op. `tool_input.file_path` is
+matched via `FilterRegistry.find()` (same three-tier project > user > builtin lookup the Bash
+dispatcher uses, `project_root=Path.cwd()`), and if a match is found and applying it produces
+content different from `tool_response`, that result is returned via `updatedToolOutput`. In every
+other case (no match, no-op compression, or any exception) `updatedToolOutput` is omitted — the
+existing `__main__._run_hook()` outer fail-open guard is unchanged, and `_compress_read_output()`
+adds a second, more granular try/except around the routing/apply call specifically so one bad
+filter can't take down Read compression for every other file in the same process (mirrors
+`quor/adapters/dispatcher.py`'s own filter-layer try/except pattern). `quor doctor`'s
+`Read hook responds correctly` check (QB-007A) was upgraded from a shape-only check to one that
+drives a genuinely oversized document through the real hook and asserts compression actually fired
+— a meaningfully stronger capability check than before.
+
+**A real bug found and fixed during implementation — not a hypothetical:** `FilterRegistry` is
+shared between the Bash dispatch path and this new Read path, and the built-in `generic` filter
+(`z_generic.toml`, `match_command = '.'`) matches *every* non-empty string, including a Read file
+path like `report.docx` or `script.py`. Without a guard, every unsupported file type would have
+been silently routed through `generic`'s ANSI-strip/dedupe/`max_tokens` pipeline — a shell-output
+filter never designed for, or tested against, arbitrary document content, directly violating this
+task's own "unsupported file types pass through unchanged" requirement. Fixed with an explicit,
+adapter-local allowlist (`_READ_SUPPORTED_FILTER_NAMES = frozenset({"markdown", "document-text"})`)
+checked after `FilterRegistry.find()` returns a match — any match outside that set is treated as no
+match. This is a caller-side check, not a `FilterRegistry`/schema change, so Bash routing is
+completely unaffected (regression-tested in
+`tests/unit/test_read_hook_activation.py::TestRoutingPrecedenceRegressions`). As a side effect,
+this same allowlist also neutralizes QB-007B's documented `cat.md`-collision limitation for real
+Read calls (see the "Update (QB-007C)" note on that limitation above) — not by fixing the
+underlying `FilterRegistry` collision, but by refusing to apply a non-document filter regardless of
+what `find()` returns.
+
+**What was deliberately not touched:** tracking/SQLite/`quor gain` integration, DOCX/PDF, any
+extraction library, new stage types, optional dependencies, and hook *registration* (`quor init
+--claude`, `quor doctor`'s script-existence check) — all exactly as scoped. The existing
+`PreToolUse`/Bash hook (`quor/adapters/claude.py`, `quor/adapters/dispatcher.py`) was not modified
+at all.
+
+**Verification:** full `pytest tests/`, `quor verify`, `ruff check quor/ tests/`, `mypy quor/` —
+see the QB-007C implementation session record for exact results.
+
+**Limitations (carried forward, still unresolved by this phase):**
+- The minimum Claude Code version that honors `updatedToolOutput` for `Read` remains unconfirmed —
+  this phase makes the mechanism *work correctly when invoked*, it does not change what's known
+  about whether/when a real Claude Code binary invokes it.
+- The real `PostToolUse` hook timeout budget on Windows remains unmeasured. This is now more
+  directly relevant than it was for QB-007A/B, since a large document's compression genuinely runs
+  inside the hook's own request path — worth measuring before QB-007D/E (DOCX/PDF, which will be
+  slower) are scoped.
+- All QB-007B fenced-code-block/RST-heading/whitespace-path limitations are unchanged and now
+  affect real, live compression rather than only the filter layer.
 
 </details>
 

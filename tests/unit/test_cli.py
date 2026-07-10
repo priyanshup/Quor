@@ -437,6 +437,8 @@ class TestDoctor:
         hook_path = tmp_path / "hooks" / "claude-hook.ps1"
         hook_path.parent.mkdir(parents=True, exist_ok=True)
         hook_path.write_text("dummy", encoding="utf-8")
+        read_hook_path = tmp_path / "hooks" / "claude-hook-read.ps1"
+        read_hook_path.write_text("dummy", encoding="utf-8")
         settings_path = tmp_path / "settings.json"
         with patch("platformdirs.user_data_dir", return_value=str(tmp_path)):
             result = runner.invoke(app, ["doctor", "--settings-path", str(settings_path)])
@@ -447,6 +449,8 @@ class TestDoctor:
         hook_path = tmp_path / "hooks" / "claude-hook.ps1"
         hook_path.parent.mkdir(parents=True, exist_ok=True)
         hook_path.write_text("dummy", encoding="utf-8")
+        read_hook_path = tmp_path / "hooks" / "claude-hook-read.ps1"
+        read_hook_path.write_text("dummy", encoding="utf-8")
         settings_path = tmp_path / "settings.json"
         with patch("platformdirs.user_data_dir", return_value=str(tmp_path)):
             result = runner.invoke(app, ["doctor", "--settings-path", str(settings_path)])
@@ -459,6 +463,8 @@ class TestDoctor:
         hook_path = tmp_path / "hooks" / "claude-hook.ps1"
         hook_path.parent.mkdir(parents=True, exist_ok=True)
         hook_path.write_text("dummy", encoding="utf-8")
+        read_hook_path = tmp_path / "hooks" / "claude-hook-read.ps1"
+        read_hook_path.write_text("dummy", encoding="utf-8")
         settings_path = tmp_path / "settings.json"
 
         with patch("platformdirs.user_data_dir", return_value=str(tmp_path)):
@@ -477,6 +483,8 @@ class TestDoctor:
         hook_path = tmp_path / "hooks" / "claude-hook.ps1"
         hook_path.parent.mkdir(parents=True, exist_ok=True)
         hook_path.write_text("dummy", encoding="utf-8")
+        read_hook_path = tmp_path / "hooks" / "claude-hook-read.ps1"
+        read_hook_path.write_text("dummy", encoding="utf-8")
         settings_path = tmp_path / "settings.json"
 
         with patch("platformdirs.user_data_dir", return_value=str(tmp_path)):
@@ -499,6 +507,8 @@ class TestDoctor:
         hook_path = tmp_path / "hooks" / "claude-hook.ps1"
         hook_path.parent.mkdir(parents=True, exist_ok=True)
         hook_path.write_text("dummy", encoding="utf-8")
+        read_hook_path = tmp_path / "hooks" / "claude-hook-read.ps1"
+        read_hook_path.write_text("dummy", encoding="utf-8")
         settings_path = tmp_path / "settings.json"
 
         fake_report = PluginLoadReport(
@@ -519,6 +529,71 @@ class TestDoctor:
         ):
             result = runner.invoke(app, ["doctor", "--settings-path", str(settings_path)])
         assert "com.test.versioned@2.3.1" in result.output
+
+
+# ---------------------------------------------------------------------------
+# quor doctor — PostToolUse/Read hook capability checks (QB-007A)
+# ---------------------------------------------------------------------------
+
+
+class TestReadHookDoctorChecks:
+    def _write_both_hook_scripts(self, tmp_path: Path) -> None:
+        hook_path = tmp_path / "hooks" / "claude-hook.ps1"
+        hook_path.parent.mkdir(parents=True, exist_ok=True)
+        hook_path.write_text("dummy", encoding="utf-8")
+        read_hook_path = tmp_path / "hooks" / "claude-hook-read.ps1"
+        read_hook_path.write_text("dummy", encoding="utf-8")
+
+    def test_read_hook_script_missing_fails(self, tmp_path: Path) -> None:
+        """Only the Bash hook script is written — the Read hook script check
+        must independently flag itself as missing (not silently pass)."""
+        hook_path = tmp_path / "hooks" / "claude-hook.ps1"
+        hook_path.parent.mkdir(parents=True, exist_ok=True)
+        hook_path.write_text("dummy", encoding="utf-8")
+        settings_path = tmp_path / "settings.json"
+        with patch("platformdirs.user_data_dir", return_value=str(tmp_path)):
+            result = runner.invoke(app, ["doctor", "--settings-path", str(settings_path)])
+        assert result.exit_code == ExitCode.GENERAL_ERROR
+        assert "✗ Read hook script installed" in result.output
+        assert "quor init --claude" in result.output
+
+    def test_read_hook_script_present_passes(self, tmp_path: Path) -> None:
+        self._write_both_hook_scripts(tmp_path)
+        settings_path = tmp_path / "settings.json"
+        with patch("platformdirs.user_data_dir", return_value=str(tmp_path)):
+            result = runner.invoke(app, ["doctor", "--settings-path", str(settings_path)])
+        assert "✓ Read hook script installed" in result.output
+
+    def test_read_hook_roundtrip_passes_when_compression_actually_fires(
+        self, tmp_path: Path
+    ) -> None:
+        """QB-007C: the roundtrip check exercises real compression (an
+        oversized synthetic Markdown document) and must observe
+        updatedToolOutput actually being produced and smaller than the
+        input — not merely that the hook responds with valid JSON."""
+        self._write_both_hook_scripts(tmp_path)
+        settings_path = tmp_path / "settings.json"
+        with patch("platformdirs.user_data_dir", return_value=str(tmp_path)):
+            result = runner.invoke(app, ["doctor", "--settings-path", str(settings_path)])
+        assert result.exit_code == 0
+        assert "✓ Read hook responds correctly" in result.output
+
+    def test_read_hook_roundtrip_detects_wrong_hook_event_name(self, tmp_path: Path) -> None:
+        """If a future regression changes hookEventName away from
+        "PostToolUse", the capability check must catch it, not silently pass."""
+        self._write_both_hook_scripts(tmp_path)
+        settings_path = tmp_path / "settings.json"
+        with (
+            patch("platformdirs.user_data_dir", return_value=str(tmp_path)),
+            patch(
+                "quor.cli.commands.doctor._check_read_hook_roundtrip",
+                return_value=("Read hook responds correctly", False, "unexpected hookEventName: 'Bogus'"),
+            ),
+        ):
+            result = runner.invoke(app, ["doctor", "--settings-path", str(settings_path)])
+        assert result.exit_code == ExitCode.GENERAL_ERROR
+        assert "✗ Read hook responds correctly" in result.output
+        assert "unexpected hookEventName" in result.output
 
 
 # ---------------------------------------------------------------------------
@@ -604,6 +679,94 @@ class TestInit:
         content = hook_path.read_text(encoding="utf-8")
         assert sys.executable in content
         assert "quor hook claude" in content
+
+
+# ---------------------------------------------------------------------------
+# quor init --claude — PostToolUse/Read hook registration (QB-007A)
+# ---------------------------------------------------------------------------
+
+
+class TestReadHookRegistration:
+    @pytest.fixture(autouse=True)
+    def _fast_execution_policy_check(self) -> Iterator[None]:
+        """See TestInit's identical fixture — same rationale (QB-030)."""
+        proc = MagicMock(spec=subprocess.CompletedProcess)
+        proc.returncode = 0
+        proc.stdout = "RemoteSigned"
+        with patch("quor.cli.commands.init.subprocess.run", return_value=proc):
+            yield
+
+    def test_read_hook_registered_under_post_tool_use_read_matcher(self, tmp_path: Path) -> None:
+        settings_path = tmp_path / "settings.json"
+        result = runner.invoke(
+            app, ["init", "--claude", "--yes", "--settings-path", str(settings_path)]
+        )
+        assert result.exit_code == 0
+
+        data = orjson.loads(settings_path.read_bytes())
+        post_tool_use = data["hooks"]["PostToolUse"]
+        matching_entries = [
+            entry
+            for entry in post_tool_use
+            if any("claude-hook-read.ps1" in h["command"] for h in entry["hooks"])
+        ]
+        assert len(matching_entries) == 1
+        assert matching_entries[0]["matcher"] == "Read"
+
+    def test_bash_hook_untouched_by_read_hook_registration(self, tmp_path: Path) -> None:
+        """Installing the Read hook must not disturb the existing PreToolUse/
+        Bash registration, and must not itself leak into PreToolUse — the
+        two are independent, additive writes to separate settings.json keys."""
+        settings_path = tmp_path / "settings.json"
+        result = runner.invoke(
+            app, ["init", "--claude", "--yes", "--settings-path", str(settings_path)]
+        )
+        assert result.exit_code == 0
+
+        data = orjson.loads(settings_path.read_bytes())
+        pre_tool_use_commands = [
+            h["command"] for entry in data["hooks"]["PreToolUse"] for h in entry["hooks"]
+        ]
+        assert any("claude-hook.ps1" in c for c in pre_tool_use_commands)
+        assert not any("claude-hook-read.ps1" in c for c in pre_tool_use_commands)
+
+    def test_read_hook_script_embeds_sys_executable(self, tmp_path: Path) -> None:
+        settings_path = tmp_path / "settings.json"
+        with patch("platformdirs.user_data_dir", return_value=str(tmp_path / "data")):
+            result = runner.invoke(
+                app, ["init", "--claude", "--yes", "--settings-path", str(settings_path)]
+            )
+        assert result.exit_code == 0
+        read_hook_path = tmp_path / "data" / "hooks" / "claude-hook-read.ps1"
+        content = read_hook_path.read_text(encoding="utf-8")
+        assert sys.executable in content
+        assert "quor hook claude-read" in content
+
+    def test_reinstall_does_not_duplicate_read_hook_entry(self, tmp_path: Path) -> None:
+        settings_path = tmp_path / "settings.json"
+        runner.invoke(app, ["init", "--claude", "--yes", "--settings-path", str(settings_path)])
+        result = runner.invoke(
+            app, ["init", "--claude", "--yes", "--settings-path", str(settings_path)]
+        )
+        assert result.exit_code == 0
+        assert "Read hook is already registered" in result.output
+
+        data = orjson.loads(settings_path.read_bytes())
+        post_tool_use = data["hooks"]["PostToolUse"]
+        matching = [
+            entry
+            for entry in post_tool_use
+            for h in entry["hooks"]
+            if "claude-hook-read.ps1" in h["command"]
+        ]
+        assert len(matching) == 1
+
+    def test_dry_run_mentions_read_hook(self, tmp_path: Path) -> None:
+        settings_path = tmp_path / "settings.json"
+        result = runner.invoke(
+            app, ["init", "--claude", "--yes", "--settings-path", str(settings_path)]
+        )
+        assert "Read hook script" in result.output
 
 
 class TestExecutionPolicyCheck:

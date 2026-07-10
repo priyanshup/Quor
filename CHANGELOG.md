@@ -5,6 +5,37 @@ All notable changes to Quor are documented here. Format loosely follows
 
 ## [0.3.0] — Unreleased
 
+- **Added: `PostToolUse`/`Read` hook plumbing (QB-007A).** A new adapter
+  (`quor/adapters/claude_read.py`) and a second, additive hook registration
+  (`claude-hook-read.ps1`, `hooks.PostToolUse`/matcher `"Read"`) let `quor init --claude` install
+  the mechanism document compression is built on. `quor doctor` gains two checks
+  (`Read hook script installed`, `Read hook responds correctly`). Existing `PreToolUse`/`Bash`
+  behavior is untouched. Shipped alone as a deliberate no-op (always omitted `updatedToolOutput`);
+  see QB-007C below for activation. See ADR-034 and QB-007 in `backlog.md`.
+- **Added: Markdown and plain-text document filters (QB-007B).** Two new built-in filters —
+  `markdown` (`.md`, `.markdown`) and `document-text` (`.txt`, `.rst`) — route by matching a Read
+  tool file path against `FilterRegistry` exactly like a Bash command, using only existing stage
+  types (`strip_lines`, `deduplicate_consecutive`, `max_tokens`; no new stage types). Headings,
+  lists, fenced code block markers, requirement/decision IDs, and TODO/NOTE/WARNING callouts are
+  protected via `preserve_patterns`; `max_tokens` is the only actual compression, engaging only
+  once a document exceeds its 2000-token budget. Measured 29.5%/18.8% reduction on realistic
+  long-document benchmark samples, 0% on short ones (correct, not a bug — see
+  `docs/final/COMMAND_SUPPORT.md` §8). Shipped filter-layer-only, not yet reachable from a real
+  Read call; see QB-007C below for activation. See QB-007B in `backlog.md` for full detail,
+  including two documented, accepted limitations (fenced-code-block interiors are not
+  span-protected; a file path containing a space does not match either filter).
+- **Added: the Read hook now actually compresses (QB-007C).** `quor/adapters/claude_read.py`
+  wires QB-007A's hook to QB-007B's filters via the existing `FilterRegistry`/`Pipeline` — a
+  supported `.md`/`.markdown`/`.txt`/`.rst` Read now genuinely returns compressed content via
+  `updatedToolOutput` when compression changes something; every other case (unsupported type,
+  no-op compression, or any failure) correctly omits it, preserving fail-open. **Found and fixed a
+  real bug during implementation:** the built-in `generic` Bash filter matches any non-empty
+  string, so without a guard every unsupported Read file type (`.docx`, `.pdf`, `.py`, ...) would
+  have been silently routed through a shell-output filter never designed for document content —
+  fixed with an explicit, adapter-local filter-name allowlist that also incidentally neutralizes
+  QB-007B's documented `cat.md` routing-collision limitation for real Read calls. No tracking/
+  `quor gain`/DOCX/PDF/new-dependency work — exactly as scoped. See QB-007C in `backlog.md` for
+  full detail.
 - **`quor gain` now explains negative-token rows instead of just softening
   their display.** Confirmed via a new invariant test
   (`TestFilterNeverExpandsOutput`) that no built-in filter stage can itself

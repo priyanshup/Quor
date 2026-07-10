@@ -1,0 +1,76 @@
+# quor built-in filter: plain text and reStructuredText documents (QB-007B)
+#
+# Routes Read requests for plain-text (.txt) and reStructuredText (.rst)
+# files, not shell commands — see markdown.toml's header comment for the
+# full explanation of file-path routing, the whitespace-anchoring rationale,
+# and QB-007B's scope (filter layer only, not yet wired into the live
+# PostToolUse/Read hook).
+#
+# Deliberately more conservative than markdown.toml: plain .txt has no
+# reliable structural markup at all, and .rst's own heading convention
+# (a title line followed by a full-width line of repeated punctuation, e.g.
+# "Title\n=====") cannot be detected by strip_lines/max_tokens's
+# preserve_patterns — matching is strictly per-line (see
+# quor/pipeline/stages/strip_lines.py), so there is no way to express "this
+# line is a heading because the *next* line is a punctuation-only underline"
+# without span-aware stage logic that does not exist today. This is the same
+# class of known, accepted gap as markdown.toml's fenced-code-block
+# limitation — not a bug, out of scope for QB-007B. RST's `.. code-block::`
+# *directive* line is a single-line, reliably-matchable convention and is
+# protected; the directive's indented body is not (same interior-content
+# caveat as markdown's fenced code blocks).
+#
+# Compression strategy: identical philosophy to markdown.toml —
+# preserve_patterns only, no strip (COMPRESS) patterns, max_tokens as the
+# only actual budget-driven compression.
+schema_version = 1
+
+[[filter]]
+name = "document-text"
+match_command = '(?i)^\S+\.(txt|rst)$'
+on_empty = "(empty document)"
+
+  [[filter.stages]]
+  type = "strip_lines"
+  preserve_patterns = [
+      '^\s*\.\.\s+code-block::',                    # RST code-block directive
+      '^\s*[-*+]\s+\S',                             # bullet list items
+      '^\s*\d+[.)]\s+\S',                           # numbered list items
+      '\b(REQ|ADR|QB|FR|NFR|TD|PA|IA)-?\d+\b',       # requirement/decision IDs
+      '(?i)^\s*\**\s*(decision|decided)\b',          # decision markers
+      '\b(TODO|FIXME|XXX)\b',                        # TODO-style markers
+      '(?i)^\s*\**\s*(note|warning|caution|important)\b',  # callout sections
+  ]
+
+  [[filter.stages]]
+  type = "deduplicate_consecutive"
+
+  [[filter.stages]]
+  type = "max_tokens"
+  limit = 2000
+  strategy = "head"
+
+[[filter.tests]]
+description = "Bullet and numbered lists survive unmodified"
+input = "Intro paragraph.\n\n- first item\n- second item\n\n1. step one\n2. step two"
+must_contain = ["- first item", "- second item", "1. step one", "2. step two"]
+
+[[filter.tests]]
+description = "RST code-block directive line survives"
+input = "Example usage::\n\n.. code-block:: python\n\n   def f():\n       return 1"
+must_contain = [".. code-block:: python"]
+
+[[filter.tests]]
+description = "Requirement IDs and decision markers survive"
+input = "Ref: REQ-042.\n\nDecision: use approach B.\n\nSee QB-007 for background."
+must_contain = ["REQ-042", "Decision: use approach B", "QB-007"]
+
+[[filter.tests]]
+description = "TODO and NOTE/WARNING callouts survive"
+input = "Regular line.\n\nTODO: fill in the missing section.\n\nWARNING: this is unstable."
+must_contain = ["TODO: fill in the missing section", "WARNING: this is unstable"]
+
+[[filter.tests]]
+description = "Short plain-text document with no special markup passes through unchanged"
+input = "This is just a short paragraph of ordinary prose with nothing special in it."
+must_contain = ["This is just a short paragraph of ordinary prose with nothing special in it."]
