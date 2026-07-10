@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib
 import io
+import re
 import sys
 from pathlib import Path
 
@@ -11,6 +12,7 @@ import platformdirs
 import typer
 from rich.console import Console
 
+from quor.adapters.hook_manifest import HOOK_SPECS, ClaudeHookSpec
 from quor.config.loader import load_user_config
 from quor.errors import ExitCode
 from quor.filters.registry import FilterRegistry
@@ -18,6 +20,8 @@ from quor.filters.registry import FilterRegistry
 console = Console()
 
 _REQUIRED_PACKAGES = ("typer", "pydantic", "orjson", "platformdirs", "regex", "rich")
+
+_HOOK_SCHEMA_RE = re.compile(r"^# quor-hook-schema: (?P<schema_version>.+)$", re.MULTILINE)
 
 
 class _FakeStdout:
@@ -44,6 +48,23 @@ def doctor(
     ),
 ) -> None:
     """Run health checks and print a summary with colored status indicators."""
+    _run_doctor(settings_path=settings_path, reset_tee=reset_tee)
+
+
+def _run_doctor(*, settings_path: Path | None = None, reset_tee: bool = False) -> None:
+    """The actual health-check logic, callable as plain Python.
+
+    Separated from the Typer-decorated `doctor()` above so callers that need
+    to invoke this directly (`quor init --claude` runs doctor automatically
+    after installing hooks) get real Python defaults instead of `doctor()`'s
+    unresolved `typer.Option(...)` sentinels — calling a Typer command
+    function directly bypasses Typer's own CLI-parsing layer, so an unfilled
+    parameter receives the raw `OptionInfo` object (truthy) rather than its
+    resolved default. `init.py` previously called `doctor()` this way, which
+    made `reset_tee` evaluate as True unconditionally and print "Tee
+    adaptive-disable state cleared." even when `--reset-tee` was never
+    passed.
+    """
     if reset_tee:
         from quor.pipeline.tee import reset_tee_state
 
@@ -57,11 +78,14 @@ def doctor(
 
     checks.append(_check_python_version())
     checks.extend(_check_dependencies())
-    checks.append(_check_hook_script())
-    checks.append(_check_hook_roundtrip())
+    for spec in HOOK_SPECS:
+        checks.append(_check_hook_script(spec))
+        checks.append(_check_hook_registered(spec, settings_path))
+        checks.append(_check_hook_up_to_date(spec))
+        roundtrip_result = _run_roundtrip_check(spec.hook_id)
+        if roundtrip_result is not None:
+            checks.append(roundtrip_result)
     checks.append(_check_hook_collision(settings_path))
-    checks.append(_check_read_hook_script())
-    checks.append(_check_read_hook_roundtrip())
     checks.append(_check_sqlite())
     checks.append(_check_filters())
     checks.append(_check_mode())
@@ -72,7 +96,12 @@ def doctor(
     for name, ok, detail in checks:
         symbol = "[green]✓[/green]" if ok else "[red]✗[/red]"
         suffix = f" — {detail}" if detail else ""
-        console.print(f"{symbol} {name}{suffix}")
+        # soft_wrap: detail strings can embed long filesystem paths pushing
+        # an actionable snippet like `quor init --claude` past the console
+        # width — Rich's default word-wrap would otherwise split it mid-
+        # phrase across two lines, which is both harder to read and breaks
+        # a clean copy-paste of the suggested command.
+        console.print(f"{symbol} {name}{suffix}", soft_wrap=True)
         all_ok = all_ok and ok
 
     if not all_ok:
@@ -95,15 +124,89 @@ def _check_dependencies() -> list[tuple[str, bool, str]]:
     return results
 
 
-def _check_hook_script() -> tuple[str, bool, str]:
-    hook_path = Path(platformdirs.user_data_dir("quor")) / "hooks" / "claude-hook.ps1"
+def _hook_script_path(spec: ClaudeHookSpec) -> Path:
+    return Path(platformdirs.user_data_dir("quor")) / "hooks" / spec.script_name
+
+
+def _check_hook_script(spec: ClaudeHookSpec) -> tuple[str, bool, str]:
+    """Does `spec`'s script file exist on disk? Generic across HOOK_SPECS —
+    adding a hook to the manifest gets this check for free."""
+    hook_path = _hook_script_path(spec)
     exists = hook_path.exists()
     detail = str(hook_path) if exists else f"not found at {hook_path} — run `quor init --claude`"
-    return ("Hook script installed", exists, detail)
+    return (f"{spec.label} hook script installed", exists, detail)
+
+
+def _check_hook_registered(spec: ClaudeHookSpec, settings_path: Path | None) -> tuple[str, bool, str]:
+    """Does Claude Code's settings.json actually reference `spec`'s script?
+
+    Distinct from `_check_hook_script` above: a script can exist on disk
+    (e.g. left over from a prior install) without settings.json actually
+    pointing Claude Code at it — that combination previously passed
+    "Hook script installed" while Quor was not wired in at all. This check
+    closes that gap generically for every hook in HOOK_SPECS.
+    """
+    from quor.cli.commands.init import _hook_installed, _read_settings
+    from quor.errors import ConfigError
+
+    settings_file = settings_path or (Path.home() / ".claude" / "settings.json")
+    label = f"{spec.label} hook registered in settings.json"
+    if not settings_file.exists():
+        return (label, False, f"{settings_file} not found — run `quor init --claude`")
+    try:
+        settings = _read_settings(settings_file)
+    except ConfigError as exc:
+        return (label, False, str(exc))
+    if _hook_installed(settings, spec):
+        return (label, True, "")
+    return (
+        label,
+        False,
+        f"no {spec.event} entry in {settings_file} references {spec.script_name} — "
+        "run `quor init --claude`",
+    )
+
+
+def _check_hook_up_to_date(spec: ClaudeHookSpec) -> tuple[str, bool, str]:
+    """Does the installed script match `spec`'s current hook schema?
+
+    Each generated script embeds a `# quor-hook-schema: N` line (see
+    `quor.adapters.hook_manifest.render_hook_script`). Comparing that against
+    `spec.schema_version` — not `quor.__version__` — detects a hook whose
+    actual definition (template body, registration shape) is stale.
+    Deliberately decoupled from the package version: a Quor release that
+    doesn't touch this hook's template must not tell every user to reinstall
+    it, so `schema_version` only changes when `spec.template` (or how it's
+    installed) actually does. "The hook exists and is registered" is not the
+    same claim as "the hook matches its current definition," which is what
+    this check (not `_check_hook_script`/`_check_hook_registered` above)
+    answers. A script with no schema line at all (installed before this
+    check existed) is treated as outdated rather than erroring.
+    """
+    hook_path = _hook_script_path(spec)
+    label = f"{spec.label} hook up to date"
+    if not hook_path.exists():
+        # Nothing installed yet — _check_hook_script already reports this;
+        # don't double-report it as also "outdated".
+        return (label, True, "(nothing installed yet)")
+    content = hook_path.read_text(encoding="utf-8")
+    match = _HOOK_SCHEMA_RE.search(content)
+    installed_schema = match.group("schema_version").strip() if match else None
+    current_schema = str(spec.schema_version)
+    if installed_schema == current_schema:
+        return (label, True, "")
+    from_schema = installed_schema or "an older release (no schema marker)"
+    return (
+        label,
+        False,
+        f"installed hook schema is {from_schema}, current schema is {current_schema} — "
+        "run `quor init --claude` to refresh",
+    )
 
 
 def _check_hook_collision(settings_path: Path | None = None) -> tuple[str, bool, str]:
     """Warn if another tool's PreToolUse Bash hook is registered alongside Quor's."""
+    from quor.adapters.hook_manifest import BASH_HOOK_SPEC
     from quor.cli.commands.init import _find_conflicting_hooks, _read_settings
     from quor.errors import ConfigError
 
@@ -112,7 +215,7 @@ def _check_hook_collision(settings_path: Path | None = None) -> tuple[str, bool,
         return ("No conflicting PreToolUse hooks", True, "")
     try:
         settings = _read_settings(settings_file)
-        conflicts = _find_conflicting_hooks(settings)
+        conflicts = _find_conflicting_hooks(settings, bash_script_name=BASH_HOOK_SPEC.script_name)
         if conflicts:
             detail = (
                 f"{len(conflicts)} other Bash hook(s) detected — only one PreToolUse Bash hook "
@@ -152,13 +255,6 @@ def _check_hook_roundtrip() -> tuple[str, bool, str]:
     finally:
         sys.stdin = old_stdin
         sys.stdout = old_stdout
-
-
-def _check_read_hook_script() -> tuple[str, bool, str]:
-    hook_path = Path(platformdirs.user_data_dir("quor")) / "hooks" / "claude-hook-read.ps1"
-    exists = hook_path.exists()
-    detail = str(hook_path) if exists else f"not found at {hook_path} — run `quor init --claude`"
-    return ("Read hook script installed", exists, detail)
 
 
 def _check_read_hook_roundtrip() -> tuple[str, bool, str]:
@@ -222,6 +318,33 @@ def _check_read_hook_roundtrip() -> tuple[str, bool, str]:
     finally:
         sys.stdin = old_stdin
         sys.stdout = old_stdout
+
+
+def _run_roundtrip_check(hook_id: str) -> tuple[str, bool, str] | None:
+    """Dispatch to `hook_id`'s behavioral (roundtrip) check, if one exists.
+
+    Genuinely hook-specific — proving a hook actually compresses requires a
+    hook-specific synthetic payload — so this isn't part of HOOK_SPECS
+    itself (also avoids a circular import between hook_manifest.py and this
+    module). The "installed / registered / up to date" checks above are the
+    parts that generalize, and those are driven by HOOK_SPECS directly in
+    `_run_doctor`'s loop; adding a future hook without a branch here still
+    gets those three generic checks, just no behavioral verification.
+
+    Deliberately a plain if/elif calling the module-level functions by name,
+    not a dict built once at import time (`{"bash": _check_hook_roundtrip,
+    ...}`) — a dict literal captures each function object at *module import*
+    time, which silently stops seeing `unittest.mock.patch(
+    "quor.cli.commands.doctor._check_read_hook_roundtrip", ...)` in tests,
+    since patching the module attribute later doesn't reach back into an
+    already-built dict. A bare name reference inside a function body is
+    resolved fresh on every call, so it does see the patch.
+    """
+    if hook_id == "bash":
+        return _check_hook_roundtrip()
+    if hook_id == "read":
+        return _check_read_hook_roundtrip()
+    return None
 
 
 def _check_sqlite() -> tuple[str, bool, str]:

@@ -2189,6 +2189,92 @@ with required reviewers under Settings > Environments for the approval gate to b
 
 ### Medium Priority
 
+#### QB-037 — Product polish pass: verify warning, init bug, hook health, gain UI
+
+**Effort:** Medium · **Value:** Medium · **Category:** Bugfix / Product UX
+
+A pre-release cleanup pass covering four things found during the AST-work stabilization: a stray
+warning that turned out to already be fixed, a real bug in `quor init --claude` printing a message
+it shouldn't, a shallow hook health check that only looked for a file on disk, and a `quor gain`
+report that was accurate but harder to scan than it needed to be.
+
+<details>
+<summary>Technical details</summary>
+
+**1. `quor verify` warning — investigated, not a bug.** Re-traced the exact execution path
+(`engine.py`'s per-stage `warnings.warn()` → `FilterRegistry.apply()` → `run_tests()`, the only path
+`quor verify` takes) and confirmed the earlier fix (this file's prior entry, "suppress expected
+warnings during successful inline filter tests") already covers it. Reproduced `py -m quor verify`
+and `python -m quor verify` fresh, in both Git Bash and native PowerShell — clean, 88/88, no
+warning, every time. Checked for a shadow install (`pip show quor` → single editable install) and
+for project/user-level filter overrides that could bypass the fixed code path — none exist. The
+original report almost certainly predated this session's merge of the fix into `main`. No code
+change.
+
+**2. `quor init --claude` printing "Tee adaptive-disable state cleared." unconditionally — real
+bug, fixed.** Root cause (previously diagnosed, now fixed): `init.py` called the Typer-decorated
+`doctor()` function directly as plain Python, so `reset_tee` received the raw
+`typer.Option(False, "--reset-tee", ...)` sentinel object (truthy) instead of its resolved default.
+Fix: split `doctor()` into a thin Typer wrapper and a plain `_run_doctor(*, settings_path=None,
+reset_tee=False)` function with real Python defaults; `init.py` now calls `_run_doctor()` directly.
+Regression test added (`TestInit::test_does_not_print_reset_tee_message`) — fails on the pre-fix
+code, passes on the fix.
+
+**3. Hook configuration health — was file-existence-only, now version-aware.** New module
+`quor/adapters/hook_manifest.py`: a declarative `ClaudeHookSpec` per hook (event, matcher, script
+name, template) and a `HOOK_SPECS` tuple both `quor init --claude` and `quor doctor` iterate — one
+manifest entry per hook, not two hand-copied function pairs. Reused QB-035A's existing multi-agent
+design-doc conclusion (a declarative per-adapter hook list is the right shape) at V1 scope only —
+Claude Code, no new adapter Protocol, no multi-agent (ANTI_GOALS.md #12 stays intact). Closed a real
+gap: nothing previously verified that `settings.json` *actually references* Quor's hook — a script
+could exist on disk from a stale/partial install while Quor was never wired in, and `doctor` would
+still print "Hook script installed" ✓. New `_check_hook_registered` check closes this. New
+`_check_hook_up_to_date` check compares a `# quor-hook-schema: N` line embedded in each generated
+script (via `render_hook_script()`) against `spec.schema_version` — a new field on `ClaudeHookSpec`,
+deliberately **not** `quor.__version__`. Corrected after initial review: comparing against the
+package version would flag every installed hook as outdated on every Quor release, even releases
+that never touch the hook's template — `schema_version` only changes when a hook's own definition
+(template body, registration shape) actually does, so most Quor version bumps never prompt a
+reinstall. "Exists and is registered" is not the same claim as "matches its current definition,"
+which is what this check answers. A future hook needs one `ClaudeHookSpec` entry (with its own
+`schema_version`) to get all three generic checks and install support for free; only its behavioral
+(roundtrip) check still needs hand-written code, since proving a hook actually compresses inherently
+requires a hook-specific synthetic payload — that part was never claimed to generalize.
+Found and fixed a real, related UX bug along the way: `doctor`'s check-detail lines could
+word-wrap mid-phrase (e.g. splitting `` `quor init --claude` `` across a line break) when a long
+temp-directory path pushed the line past the console width — fixed by printing with
+`soft_wrap=True`, the same pattern `quor gain` already used for its own long text.
+
+**4. `quor gain` UX — dashboard redesign, no calculation changed.** Considered three layouts
+(headline-first only; two-zone notices/statistics dashboard; single-panel scorecard) and chose the
+two-zone dashboard: it's the only one that actually satisfies "separate informational notices from
+statistics" (the others interleave or cram everything into one box), while keeping every existing
+number visible (unlike the scorecard, which risks losing Top savings detail). Notices — Read-hook
+coverage gaps, recovery-footer overhead — now print together under one `NOTICE` header before any
+statistic. The savings headline (`YOU SAVED`/`NET TOKENS`) now leads the statistics section instead
+of appearing after three stacked mini-tables; those three tables (usage, tokens, and the
+gross-savings breakdown) collapsed into one compact table. Long explanatory paragraphs (the
+char/4-approximation footnote, the negative-row explainer) became one to two short lines instead of
+multi-sentence prose. The `±20%` uncertainty label stays directly on the headline number
+(ANTI_GOALS.md #24), not only in a footnote. Every existing `quor gain` unit test passes unchanged
+against the new layout (same numbers, same required substrings, just rearranged) — three new tests
+added specifically for the redesign: headline-before-stats ordering, both notices grouping under one
+`NOTICE` header, and no `NOTICE` header printing at all when there's nothing to report.
+
+**Files changed:** `quor/adapters/hook_manifest.py` (new), `quor/adapters/claude.py` +
+`quor/adapters/claude_read.py` (version marker added to hook templates), `quor/cli/commands/init.py`
+(manifest-driven install, `_run_doctor` fix), `quor/cli/commands/doctor.py` (manifest-driven checks,
+`_run_doctor` split, `soft_wrap` fix), `quor/cli/commands/gain.py` (layout redesign), plus test
+updates/additions across `tests/unit/test_cli.py`, `tests/unit/test_adapters.py`,
+`tests/unit/test_adapters_read.py`, and new `tests/unit/test_hook_manifest.py`.
+
+**Status:** Implemented on `feature/qb-037-product-polish-pass`. Not committed — awaiting explicit
+commit instruction per project workflow.
+
+</details>
+
+---
+
 #### QB-022 — Simplify the code that runs every command
 
 **Effort:** Small (~half a day) · **Value:** Low · **Category:** Engineering

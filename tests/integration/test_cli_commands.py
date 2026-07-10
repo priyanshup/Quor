@@ -181,8 +181,15 @@ class TestInitAndDoctorIntegration:
         # invocation must independently see the hook scripts init just wrote.
         doctor_result = runner.invoke(app, ["doctor", "--settings-path", str(settings_path)])
         assert doctor_result.exit_code == 0
-        assert "✓ Hook script installed" in doctor_result.output
+        assert "✓ Bash hook script installed" in doctor_result.output
         assert "✓ Read hook script installed" in doctor_result.output
+        # QB-037: a real init writes a script AND registers it, matching the
+        # current running version — both new checks should see a fully
+        # healthy install, not just "the file happens to exist".
+        assert "✓ Bash hook registered in settings.json" in doctor_result.output
+        assert "✓ Read hook registered in settings.json" in doctor_result.output
+        assert "✓ Bash hook up to date" in doctor_result.output
+        assert "✓ Read hook up to date" in doctor_result.output
         assert "✓ Read hook responds correctly" in doctor_result.output
         assert "✓ Tracking DB readable/writable" in doctor_result.output
         assert "✓ Built-in filter tests pass" in doctor_result.output

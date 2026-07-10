@@ -269,8 +269,11 @@ class TestHookTemplate:
         assert "{python}" in HOOK_PS1_TEMPLATE
 
     def test_hook_ps1_template_can_be_formatted(self) -> None:
-        rendered = HOOK_PS1_TEMPLATE.format(python=r"C:\Python\python.exe")
+        rendered = HOOK_PS1_TEMPLATE.format(python=r"C:\Python\python.exe", schema_version=1)
         assert r"C:\Python\python.exe" in rendered
+
+    def test_hook_ps1_template_has_schema_version_placeholder(self) -> None:
+        assert "{schema_version}" in HOOK_PS1_TEMPLATE
 
 
 # ---------------------------------------------------------------------------
