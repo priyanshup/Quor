@@ -319,6 +319,73 @@ All notable changes to Quor are documented here. Format loosely follows
   implements it. Full 6-step migration plan, 6 named risks, 4 design trade-offs with rejected
   alternatives, and a complete file-by-file list of what would eventually need to change are in the
   design doc; remaining work is split into QB-035B–F (see `backlog.md`).
+- **Fixed: `python_ast_summarize`'s expected fail-open warning printing during
+  `quor verify`.** `FilterRegistry.run_tests()` now captures warnings raised
+  while applying a test's input and discards them if the test passes — a
+  passing test (including one whose fixture deliberately triggers a stage's
+  own fail-open path, like `cat-python.toml`'s "Invalid Python fails open"
+  case) proves the warning was exactly what the fixture intended. A failing
+  test keeps its captured warnings appended to that test's own failure
+  message. Generic: no stage type, exception type, or warning category is
+  special-cased. Real compression (`apply()` called directly by the
+  dispatcher/Read hook, not through `run_tests()`) is unaffected — warnings
+  there still print normally.
+- **Improved: `quor gain` clarity (calculation unchanged).** Added a notice
+  when zero Read-hook invocations have ever been recorded for the selected
+  window, explaining that Read-only features (Markdown/DOCX/PDF/AST-via-Read)
+  aren't represented and that `quor init --claude` is required. Reworded the
+  char/4 token-estimation footnote so it's clear the ±20% applies to the
+  token *counts*, not that the savings percentage itself is separately
+  uncertain. Renamed "Recovery/overhead" to "Recovery-footer overhead" for
+  clarity. The "Mode: audit" line no longer reads as though it qualifies the
+  compression statistics directly beneath it — annotated only for non-default
+  mode values, since `mode` never reaches the compression path itself.
+- **Investigated: `quor verify` warning — confirmed already fixed, no
+  further change.** Re-traced the exact execution path and reproduced
+  `quor verify` fresh in two shells; clean, 0 warnings, every time. The
+  earlier fix (above) already covers this; the original report predated
+  this session's merge of that fix into `main`.
+- **Fixed: `quor init --claude` printing "Tee adaptive-disable state
+  cleared." unconditionally.** Root cause: `init.py` called the
+  Typer-decorated `doctor()` directly as plain Python, so `reset_tee`
+  received the unresolved `typer.Option(...)` sentinel (truthy) instead of
+  its real default. Split `doctor()` into a thin Typer wrapper and a plain
+  `_run_doctor(*, settings_path=None, reset_tee=False)` function with real
+  Python defaults; `init.py` now calls `_run_doctor()` directly. Regression
+  test added.
+- **Added: schema-aware hook configuration health checks.** New
+  `quor/adapters/hook_manifest.py` — a declarative `ClaudeHookSpec` per hook
+  (event, matcher, script name, template, own `schema_version`), iterated by
+  both `quor init --claude` (install) and `quor doctor` (health check)
+  instead of two hand-copied function pairs. Closes a real gap: `doctor`
+  previously only checked that a hook *script file* existed, never that
+  `settings.json` actually registered it — a stale/partial install could
+  show "Hook script installed" ✓ while Quor was never wired into Claude
+  Code. New "registered in settings.json" and "up to date" checks close
+  this; the latter compares a `# quor-hook-schema: N` line embedded in each
+  generated script against that hook's own `spec.schema_version` —
+  deliberately **not** `quor.__version__`, so a Quor release that doesn't
+  change a hook's definition never tells users to reinstall it; only a real
+  change to a hook's template/registration shape bumps its
+  `schema_version`. A future hook needs one manifest entry to get install
+  support and all three generic checks for free — only its behavioral
+  (roundtrip) check still needs hand-written code, since that inherently
+  needs a hook-specific synthetic payload. Reuses QB-035A's "declarative
+  hook list" design conclusion at V1/Claude-only scope (no multi-agent
+  Protocol, per ANTI_GOALS.md #12). Also fixed a related UX bug found along
+  the way: `doctor`'s check-detail lines could word-wrap mid-phrase
+  (splitting `` `quor init --claude` `` across a line break) when a long
+  path pushed the line past console width — fixed with `soft_wrap=True`.
+- **Redesigned: `quor gain` output as a dashboard (presentation only, no
+  calculation changed).** Notices (Read-hook coverage gaps, recovery-footer
+  overhead) now print together under one `NOTICE` header before any
+  statistic, instead of interleaved as inline paragraphs. The savings
+  headline (`YOU SAVED`/`NET TOKENS`) now leads the statistics section
+  instead of trailing three stacked mini-tables; those tables collapsed into
+  one compact table. Long explanatory paragraphs shortened to one or two
+  lines. The `±20%` uncertainty label stays directly on the headline number
+  (ANTI_GOALS.md #24). See QB-037 in `backlog.md` for the three alternative
+  layouts considered and why this one was chosen.
 
 ## [0.2.1] — 2026-07-04
 

@@ -18,25 +18,15 @@ import platformdirs
 import typer
 from rich.console import Console
 
-from quor.adapters.claude import HOOK_PS1_TEMPLATE
-from quor.adapters.claude_read import HOOK_READ_PS1_TEMPLATE
+from quor.adapters.hook_manifest import (
+    BASH_HOOK_SPEC,
+    HOOK_SPECS,
+    ClaudeHookSpec,
+    render_hook_script,
+)
 from quor.errors import ConfigError, ExitCode
 
 console = Console()
-
-_HOOK_SCRIPT_NAME = "claude-hook.ps1"
-# Identifies a Quor-generated hook entry in settings.json. The command field
-# holds `powershell ... -File "<path>\claude-hook.ps1"`, not the literal
-# "quor hook claude" (that string only appears inside the .ps1 file content),
-# so the script filename is what's actually present and matchable here.
-_HOOK_COMMAND_MARKER = _HOOK_SCRIPT_NAME
-
-# PostToolUse/Read hook (QB-007A) — a separate script/registration from the
-# PreToolUse/Bash hook above, installed additively alongside it. See the
-# QB-007 design pass in backlog.md for why this is a distinct adapter rather
-# than a branch inside the existing Bash hook.
-_HOOK_READ_SCRIPT_NAME = "claude-hook-read.ps1"
-_HOOK_READ_COMMAND_MARKER = _HOOK_READ_SCRIPT_NAME
 
 # Known tools that register PreToolUse Bash hooks — used to give a named
 # warning when Quor detects a conflict.
@@ -61,30 +51,22 @@ def init(
         raise typer.Exit()
 
     settings_file = settings_path or (Path.home() / ".claude" / "settings.json")
-    hook_script_path = Path(platformdirs.user_data_dir("quor")) / "hooks" / _HOOK_SCRIPT_NAME
-    hook_script_content = HOOK_PS1_TEMPLATE.format(python=sys.executable)
-    read_hook_script_path = (
-        Path(platformdirs.user_data_dir("quor")) / "hooks" / _HOOK_READ_SCRIPT_NAME
-    )
-    read_hook_script_content = HOOK_READ_PS1_TEMPLATE.format(python=sys.executable)
+    hooks_dir = Path(platformdirs.user_data_dir("quor")) / "hooks"
+    script_paths: dict[str, Path] = {spec.hook_id: hooks_dir / spec.script_name for spec in HOOK_SPECS}
 
     existing_settings = _read_settings(settings_file)
-    already_installed = _hook_already_installed(existing_settings)
-    read_already_installed = _hook_read_already_installed(existing_settings)
-    conflicts = _find_conflicting_hooks(existing_settings)
+    conflicts = _find_conflicting_hooks(existing_settings, bash_script_name=BASH_HOOK_SPEC.script_name)
 
     console.print("[bold]Dry run[/bold]")
-    console.print(f"  Will write hook script to: {hook_script_path}")
-    console.print(f"  Will write Read hook script to: {read_hook_script_path}")
+    for spec in HOOK_SPECS:
+        console.print(f"  Will write {spec.label} hook script to: {script_paths[spec.hook_id]}")
     console.print(f"  Will update settings file: {settings_file}")
-    if already_installed:
-        console.print(
-            "  [yellow]⚠  A Quor hook is already registered — it will be overwritten.[/yellow]"
-        )
-    if read_already_installed:
-        console.print(
-            "  [yellow]⚠  A Quor Read hook is already registered — it will be overwritten.[/yellow]"
-        )
+    for spec in HOOK_SPECS:
+        if _hook_installed(existing_settings, spec):
+            console.print(
+                f"  [yellow]⚠  A Quor {spec.label} hook is already registered — "
+                "it will be overwritten.[/yellow]"
+            )
 
     if conflicts:
         console.print(
@@ -107,22 +89,23 @@ def init(
         console.print("Aborted.")
         raise typer.Exit(code=ExitCode.GENERAL_ERROR)
 
-    _write_text_atomic(hook_script_path, hook_script_content)
-    _write_text_atomic(read_hook_script_path, read_hook_script_content)
-    new_settings = _install_hook_entry(existing_settings, hook_script_path)
-    new_settings = _install_read_hook_entry(new_settings, read_hook_script_path)
+    new_settings = existing_settings
+    for spec in HOOK_SPECS:
+        script_path = script_paths[spec.hook_id]
+        _write_text_atomic(script_path, render_hook_script(spec, python=sys.executable))
+        new_settings = _install_hook_entry(new_settings, spec, script_path)
     _write_json_atomic(settings_file, new_settings)
 
-    console.print(f"[green]✓ Hook script written to {hook_script_path}[/green]")
-    console.print(f"[green]✓ Read hook script written to {read_hook_script_path}[/green]")
+    for spec in HOOK_SPECS:
+        console.print(f"[green]✓ {spec.label} hook script written to {script_paths[spec.hook_id]}[/green]")
     console.print(f"[green]✓ {settings_file} updated[/green]")
 
     _warn_if_execution_policy_restricted()
 
     console.print("\nRunning `quor doctor`...\n")
-    from quor.cli.commands.doctor import doctor as run_doctor
+    from quor.cli.commands.doctor import _run_doctor
 
-    run_doctor(settings_path=settings_file)
+    _run_doctor(settings_path=settings_file)
 
 
 def _read_settings(path: Path) -> dict[str, Any]:
@@ -137,21 +120,30 @@ def _read_settings(path: Path) -> dict[str, Any]:
     return data
 
 
-def _hook_already_installed(settings: dict[str, Any]) -> bool:
-    pre_tool_use = settings.get("hooks", {}).get("PreToolUse", [])
-    for entry in pre_tool_use:
+def _hook_installed(settings: dict[str, Any], spec: ClaudeHookSpec) -> bool:
+    """Return True if `settings.json` already has a `spec.event` entry whose
+    command references `spec.script_name`. Generic across every hook in
+    HOOK_SPECS — the command field holds `powershell ... -File "<path>\\
+    <script_name>"`, not the literal `quor hook <name>` (that string only
+    appears inside the .ps1 file content), so the script filename is what's
+    actually present and matchable here."""
+    entries = settings.get("hooks", {}).get(spec.event, [])
+    for entry in entries:
         for h in entry.get("hooks", []):
-            if _HOOK_COMMAND_MARKER in h.get("command", ""):
+            if spec.script_name in h.get("command", ""):
                 return True
     return False
 
 
-def _find_conflicting_hooks(settings: dict[str, Any]) -> list[str]:
+def _find_conflicting_hooks(settings: dict[str, Any], *, bash_script_name: str) -> list[str]:
     """Return commands from non-Quor PreToolUse Bash hooks.
 
     Any PreToolUse entry with matcher "Bash" (or no matcher, which also catches
-    Bash commands) whose command does not contain our marker is a potential
-    conflict — it could intercept the same commands Quor rewrites.
+    Bash commands) whose command does not contain the Bash hook's marker is a
+    potential conflict — it could intercept the same commands Quor rewrites.
+    Scoped to the Bash hook specifically (not generalized across HOOK_SPECS):
+    a PostToolUse/Read hook has no equivalent "silently drops the rewrite"
+    failure mode, since Claude Code doesn't rewrite Read's own arguments.
     """
     conflicts: list[str] = []
     pre_tool_use = settings.get("hooks", {}).get("PreToolUse", [])
@@ -162,7 +154,7 @@ def _find_conflicting_hooks(settings: dict[str, Any]) -> list[str]:
             continue
         for h in entry.get("hooks", []):
             cmd = h.get("command", "")
-            if _HOOK_COMMAND_MARKER not in cmd:
+            if bash_script_name not in cmd:
                 conflicts.append(cmd)
     return conflicts
 
@@ -176,47 +168,23 @@ def _identify_hook_tool(cmd: str) -> str:
     return ""
 
 
-def _install_hook_entry(settings: dict[str, Any], hook_script_path: Path) -> dict[str, Any]:
+def _install_hook_entry(
+    settings: dict[str, Any], spec: ClaudeHookSpec, script_path: Path
+) -> dict[str, Any]:
+    """Register `spec`'s hook in `settings.json`, replacing any prior entry
+    for the same script. Additive to other hooks already registered under
+    `spec.event` (and to every other event) — installing/reinstalling one
+    hook never disturbs another's registration, generic across HOOK_SPECS."""
     new_settings = dict(settings)
     hooks = dict(new_settings.get("hooks", {}))
-    pre_tool_use = [
+    entries = [
         entry
-        for entry in hooks.get("PreToolUse", [])
-        if not any(_HOOK_COMMAND_MARKER in h.get("command", "") for h in entry.get("hooks", []))
+        for entry in hooks.get(spec.event, [])
+        if not any(spec.script_name in h.get("command", "") for h in entry.get("hooks", []))
     ]
-    command = f'powershell -ExecutionPolicy Bypass -File "{hook_script_path}"'
-    pre_tool_use.append({"matcher": "Bash", "hooks": [{"type": "command", "command": command}]})
-    hooks["PreToolUse"] = pre_tool_use
-    new_settings["hooks"] = hooks
-    return new_settings
-
-
-def _hook_read_already_installed(settings: dict[str, Any]) -> bool:
-    post_tool_use = settings.get("hooks", {}).get("PostToolUse", [])
-    for entry in post_tool_use:
-        for h in entry.get("hooks", []):
-            if _HOOK_READ_COMMAND_MARKER in h.get("command", ""):
-                return True
-    return False
-
-
-def _install_read_hook_entry(settings: dict[str, Any], hook_script_path: Path) -> dict[str, Any]:
-    """Register the PostToolUse/Read hook (QB-007A) — additive to any existing
-    `hooks.PostToolUse` entries and independent of `hooks.PreToolUse` (see
-    `_install_hook_entry` above), so installing/reinstalling this hook never
-    disturbs the Bash hook's own registration."""
-    new_settings = dict(settings)
-    hooks = dict(new_settings.get("hooks", {}))
-    post_tool_use = [
-        entry
-        for entry in hooks.get("PostToolUse", [])
-        if not any(
-            _HOOK_READ_COMMAND_MARKER in h.get("command", "") for h in entry.get("hooks", [])
-        )
-    ]
-    command = f'powershell -ExecutionPolicy Bypass -File "{hook_script_path}"'
-    post_tool_use.append({"matcher": "Read", "hooks": [{"type": "command", "command": command}]})
-    hooks["PostToolUse"] = post_tool_use
+    command = f'powershell -ExecutionPolicy Bypass -File "{script_path}"'
+    entries.append({"matcher": spec.matcher, "hooks": [{"type": "command", "command": command}]})
+    hooks[spec.event] = entries
     new_settings["hooks"] = hooks
     return new_settings
 

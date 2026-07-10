@@ -4,6 +4,14 @@ Presentation only: all numbers come straight from GainReport (quor/tracking/
 db.py). This module never computes a metric — it only formats and lays out
 ones that already exist. See quor/cli/format_utils.py for the (also
 presentation-only) number/percentage formatting helpers.
+
+Layout (QB-037 dashboard redesign): notices (Read-hook coverage gaps,
+recovery-footer overhead) print in a dedicated NOTICE block before any
+statistics, never interleaved with them — the headline savings number leads
+the statistics themselves, followed by one compact stat table (instead of
+three stacked ones) and Top savings. Long explanatory paragraphs from the
+previous layout are now one-line notes. No calculation changed; this only
+changes how existing GainReport fields are arranged and worded.
 """
 
 from __future__ import annotations
@@ -46,7 +54,7 @@ def gain(
         )
         raise typer.Exit()
 
-    _print_body(report)
+    _print_report(report)
 
 
 def _print_header(report: GainReport, *, project_path: Path, mode: str) -> None:
@@ -79,75 +87,109 @@ def _stat_table() -> Table:
     return table
 
 
-def _print_body(report: GainReport) -> None:
+def _print_report(report: GainReport) -> None:
     console.print()
     console.rule(style="dim")
 
-    usage = _stat_table()
-    usage.add_row("Commands processed", format_count(report.total_invocations))
-    usage.add_row("Filter hit rate", format_percentage(report.filter_hit_rate))
-    usage.add_row("Passthrough", format_count(report.passthrough_count))
-    console.print(usage)
-    console.print()
+    _print_notices(report)
+    _print_headline(report)
+    _print_stats(report)
+    _print_top_savings(report)
 
-    tokens = _stat_table()
-    tokens.add_row("Tokens before", f"~{format_count(report.tokens_before)}")
-    tokens.add_row("Tokens after", f"~{format_count(report.tokens_after)}")
-    console.print(tokens)
+    console.rule(style="dim")
+    console.print()
+    _print_notes()
+
+
+def _print_notices(report: GainReport) -> None:
+    """Every informational notice, together, before any statistic —
+    deliberately separate from the stats below so a reader never has to
+    guess whether a caveat qualifies the number sitting next to it (QB-037).
+    Prints nothing at all when there's nothing to say.
+    """
+    notices: list[str] = []
+
+    if report.read_hook_invocations == 0:
+        notices.append(_read_hook_notice_text())
+    if report.negative_row_count > 0:
+        notices.append(_negative_row_notice_text(report))
+
+    if not notices:
+        return
+
+    console.print()
+    console.print("[bold yellow]NOTICE[/bold yellow]")
+    for i, text in enumerate(notices):
+        console.print(text, soft_wrap=True)
+        if i < len(notices) - 1:
+            console.print()
     console.print()
     console.rule(style="dim")
 
-    _print_savings(report)
 
-    visible_filters = [(name, saved) for name, saved in report.top_filters if saved > 0]
-    if visible_filters:
-        console.print()
-        console.print("[bold]Top savings[/bold]")
-        console.print()
-        filters_table = _stat_table()
-        filters_table.add_column("pct", justify="right")
-        # Percentage of *genuine compression achieved* (gross_savings), not
-        # of the net figure — net can be small or negative even when real
-        # per-filter savings are large (QB-017: overhead elsewhere shouldn't
-        # make an unrelated filter's own contribution look distorted).
-        denominator = report.gross_savings or report.tokens_saved
-        for name, saved in visible_filters:
-            filter_fraction = saved / denominator if denominator else 0.0
-            filters_table.add_row(name, format_count(saved), f"({format_percentage(filter_fraction)})")
-        console.print(filters_table)
-        console.print()
-        console.rule(style="dim")
-
-    _print_read_hook_notice(report)
-
-    console.print()
-    console.print(
-        "[dim]* Each token count (before/after) is estimated via the char/4 "
-        "approximation, accurate to roughly ±20% versus a real tokenizer — "
-        "the compression percentage itself is not separately uncertain by "
-        "±20%, since it compares two estimates computed the same way.[/dim]"
+def _read_hook_notice_text() -> str:
+    """Shown whenever `report.read_hook_invocations == 0` — i.e. no row in
+    this project/window came from the PostToolUse/Read hook at all. Every
+    number in the report is real and accurate for whatever *did* run, but a
+    reader has no way to tell, from the numbers alone, that an entire class
+    of filters (Markdown/plain-text compression, DOCX/PDF extraction, and
+    AST summarization for files opened via Read rather than `cat`) simply
+    never had a chance to contribute — silence here would look identical to
+    "these features don't help much," which is not what a `0` means.
+    """
+    return (
+        "No Read-hook activity has been recorded in this window.\n"
+        "Markdown/plain-text compression, DOCX/PDF extraction, and AST "
+        "summarization only run through Claude Code's Read hook and aren't "
+        "represented above.\n"
+        "Run `quor init --claude` to enable Read tracking."
     )
 
 
-def _print_savings(report: GainReport) -> None:
-    """Print the net-savings headline, and — only when at least one
-    invocation actually had a negative net this window — the compression
-    breakdown and plain-language explanation of why (QB-017).
+def _negative_row_notice_text(report: GainReport) -> str:
+    """Plain-language answer to "why did some rows get bigger, and should I
+    care?" — only ever shown when report.negative_row_count > 0. Always
+    names the mechanism (recovery footer, not a compression failure); the
+    closing clause offers a concrete lever (`tee = false`) only when the
+    net for this window is actually negative, otherwise reassures that the
+    overall total is still positive (QB-017).
+    """
+    row_fraction = (
+        report.negative_row_count / report.total_invocations
+        if report.total_invocations
+        else 0.0
+    )
+    # Plural agrees with total_invocations (the noun "command(s)" is
+    # counting), not negative_row_count — "1 of 2 commands", not
+    # "1 of 2 command".
+    plural = "s" if report.total_invocations != 1 else ""
+    lever = (
+        "it doesn't affect the other commands."
+        if report.tokens_saved >= 0
+        else "turn it off per-filter with `tee = false` if it matters."
+    )
+    return (
+        f"{format_count(report.negative_row_count)} of {format_count(report.total_invocations)} "
+        f"command{plural} ({format_percentage(row_fraction)}) had output grow instead of shrink "
+        f"— the recovery footer, not a compression failure. This does not mean compression "
+        f"failed; {lever}"
+    )
 
-    Kept conditional rather than always-on: when every invocation genuinely
-    shrank (the common case), the breakdown has nothing informative to add
-    over the plain net figure, and showing it anyway would be clutter, not
-    clarity — the redesign's point is to explain the *exception*, not to
-    permanently complicate the common case.
+
+def _print_headline(report: GainReport) -> None:
+    """The one number that matters most, first: net tokens saved (or, for a
+    net-negative window, the plain net figure — never styled as a win it
+    wasn't). The gross-savings/overhead breakdown, when shown, sits directly
+    above it rather than as a separate section, since it's context for the
+    same headline, not a distinct statistic.
     """
     if report.negative_row_count > 0:
-        console.print()
         breakdown = _stat_table()
         breakdown.add_row("Compression achieved", f"~{format_count(report.gross_savings)} tokens")
         breakdown.add_row("Recovery-footer overhead", f"~{format_count(report.gross_overhead)} tokens")
         console.print(breakdown)
+        console.print()
 
-    console.print()
     saved_fraction = (
         report.tokens_saved / report.tokens_before if report.tokens_before else 0.0
     )
@@ -165,81 +207,49 @@ def _print_savings(report: GainReport) -> None:
             f"[bold green]~{format_count(report.tokens_saved)} tokens "
             f"({format_percentage(saved_fraction)})[/bold green]"
         )
-
-    if report.negative_row_count > 0:
-        console.print()
-        # soft_wrap: this is one continuous explanatory sentence, not a
-        # table cell — letting Rich's default word-wrap insert a line break
-        # mid-sentence at whatever the terminal width happens to be would
-        # both look worse and make plain substring matches on the text
-        # (tests, `quor gain | grep`) fragile against terminal width.
-        console.print(_negative_row_explainer(report), soft_wrap=True)
-
     console.print()
-    console.rule(style="dim")
 
 
-def _negative_row_explainer(report: GainReport) -> str:
-    """Plain-language answer to "why did some rows get bigger, and should I
-    care?" — only ever shown when report.negative_row_count > 0.
-
-    Always explains the mechanism (recovery footer, not a compression
-    failure). The closing sentence changes based on whether it's worth
-    doing anything about: reassurance when the overall net is still
-    positive (the overwhelmingly common case), a concrete, real lever
-    (per-filter `tee = false`, an existing FilterConfig option — see
-    ADR-023) only when the net for this window is actually negative.
-    """
-    row_fraction = (
-        report.negative_row_count / report.total_invocations
-        if report.total_invocations
-        else 0.0
-    )
-    # Plural agrees with total_invocations (the noun "command(s)" is
-    # counting), not negative_row_count — "1 of 2 commands", not
-    # "1 of 2 command".
-    plural = "s" if report.total_invocations != 1 else ""
-    text = (
-        f"[dim]{format_count(report.negative_row_count)} of {format_count(report.total_invocations)} "
-        f"command{plural} ({format_percentage(row_fraction)}) had output grow instead of shrink. "
-        "This is expected, not a bug: it's almost always the recovery footer Quor appends "
-        "so the original output stays retrievable (ADR-023), which can cost more than a "
-        "small, already-clean command had to compress in the first place. "
-        "This does not mean compression failed"
-    )
-    if report.tokens_saved >= 0:
-        text += " — the total above is already net-positive, and it doesn't affect the other commands.[/dim]"
-    else:
-        text += (
-            " — if it matters for a specific noisy command, you can turn off its recovery "
-            "footer with `tee = false` in that filter's config.[/dim]"
-        )
-    return text
+def _print_stats(report: GainReport) -> None:
+    """Every secondary number in one compact table instead of three stacked
+    ones — faster to scan, same figures."""
+    stats = _stat_table()
+    stats.add_row("Commands processed", format_count(report.total_invocations))
+    stats.add_row("Filter hit rate", format_percentage(report.filter_hit_rate))
+    stats.add_row("Passthrough", format_count(report.passthrough_count))
+    stats.add_row("Tokens before", f"~{format_count(report.tokens_before)}")
+    stats.add_row("Tokens after", f"~{format_count(report.tokens_after)}")
+    console.print(stats)
+    console.print()
 
 
-def _print_read_hook_notice(report: GainReport) -> None:
-    """Only ever printed when `report.read_hook_invocations == 0` — i.e. no
-    row in this project/window came from the PostToolUse/Read hook at all.
-
-    Every number above is real and accurate for whatever *did* run, but a
-    reader has no way to tell, from the numbers alone, that an entire class
-    of filters (Markdown/plain-text compression, DOCX/PDF extraction, and
-    AST summarization for files opened via Read rather than `cat`) simply
-    never had a chance to contribute — silence here would look identical to
-    "these features don't help much," which is not what a `0` means.
-    """
-    if report.read_hook_invocations > 0:
+def _print_top_savings(report: GainReport) -> None:
+    visible_filters = [(name, saved) for name, saved in report.top_filters if saved > 0]
+    if not visible_filters:
         return
+
+    console.print("[bold]Top savings[/bold]")
+    filters_table = _stat_table()
+    filters_table.add_column("pct", justify="right")
+    # Percentage of *genuine compression achieved* (gross_savings), not
+    # of the net figure — net can be small or negative even when real
+    # per-filter savings are large (QB-017: overhead elsewhere shouldn't
+    # make an unrelated filter's own contribution look distorted).
+    denominator = report.gross_savings or report.tokens_saved
+    for name, saved in visible_filters:
+        filter_fraction = saved / denominator if denominator else 0.0
+        filters_table.add_row(name, format_count(saved), f"({format_percentage(filter_fraction)})")
+    console.print(filters_table)
     console.print()
+
+
+def _print_notes() -> None:
+    """One line, not a paragraph — the ±20% estimation caveat ANTI_GOALS.md
+    #24 requires on every token count, kept but no longer expanded into a
+    multi-sentence justification of why the percentage itself isn't
+    separately uncertain."""
     console.print(
-        "[dim]No Read-hook activity has been recorded in this window, so "
-        "features that only run through Claude Code's Read hook — "
-        "Markdown/plain-text compression, DOCX/PDF extraction, and AST "
-        "summarization for files opened via Read rather than `cat` — are "
-        "not represented in the numbers above. Install the Read hook with "
-        "`quor init --claude`, then re-check after Claude Code has read "
-        "some files.[/dim]",
+        "[dim]· Token counts are estimated via the char/4 approximation, "
+        "±20% versus a real tokenizer.[/dim]",
         soft_wrap=True,
     )
-    console.print()
-    console.rule(style="dim")

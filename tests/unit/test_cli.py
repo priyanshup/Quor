@@ -26,6 +26,35 @@ def _make_proc(stdout: str = "", returncode: int = 0) -> MagicMock:
     return proc
 
 
+def _install_real_hooks(tmp_path: Path, settings_path: Path) -> None:
+    """Write both hook scripts with real, current-version content and a
+    settings.json that actually registers them — the full "healthy install"
+    state `doctor`'s registered/up-to-date checks (QB-037) require. Replaces
+    the old bare "dummy" script-content fixtures, which predate those checks
+    and would now read as "installed but not registered / not up to date".
+    """
+    from quor.adapters.hook_manifest import HOOK_SPECS, render_hook_script
+
+    hooks_dir = tmp_path / "hooks"
+    hooks_dir.mkdir(parents=True, exist_ok=True)
+    settings: dict[str, Any] = {"hooks": {}}
+    for spec in HOOK_SPECS:
+        script_path = hooks_dir / spec.script_name
+        script_path.write_text(render_hook_script(spec, python=sys.executable), encoding="utf-8")
+        settings["hooks"].setdefault(spec.event, []).append(
+            {
+                "matcher": spec.matcher,
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": f'powershell -ExecutionPolicy Bypass -File "{script_path}"',
+                    }
+                ],
+            }
+        )
+    settings_path.write_text(orjson.dumps(settings).decode("utf-8"), encoding="utf-8")
+
+
 # ---------------------------------------------------------------------------
 # quor validate
 # ---------------------------------------------------------------------------
@@ -625,6 +654,98 @@ class TestGain:
         assert "affects third-party plugins only" in result.output
         assert "always reflect real, applied compression regardless of mode" in result.output
 
+    def test_headline_precedes_stats_table(self, tmp_path: Path) -> None:
+        """QB-037 dashboard redesign: the savings headline is the most
+        important number and must appear before the secondary stats table,
+        not after it — a plain positional check that the reorder actually
+        happened, not just that both pieces of text exist somewhere."""
+        from quor.tracking.db import InvocationRecord, TrackingDB
+
+        db_path = tmp_path / "data" / "quor.db"
+        db = TrackingDB(db_path=db_path)
+        db.record(
+            InvocationRecord(
+                command="git status",
+                project_path=tmp_path.as_posix(),
+                original_tokens=100,
+                final_tokens=20,
+                filter_name="git-status",
+                was_passthrough=False,
+                duration_ms=5.0,
+            )
+        )
+        db.flush()
+        db.close()
+
+        with patch("platformdirs.user_data_dir", return_value=str(tmp_path / "data")):
+            result = runner.invoke(app, ["gain", "--project", str(tmp_path), "--days", "30"])
+
+        assert result.exit_code == 0
+        assert result.output.index("YOU SAVED") < result.output.index("Commands processed")
+
+    def test_notices_grouped_under_one_notice_header_before_stats(self, tmp_path: Path) -> None:
+        """When both notice conditions apply (no Read-hook activity, and a
+        negative-net window), they must appear together under one NOTICE
+        block, and that block must appear before the headline — notices are
+        never interleaved with statistics (QB-037)."""
+        from quor.tracking.db import InvocationRecord, TrackingDB
+
+        db_path = tmp_path / "data" / "quor.db"
+        db = TrackingDB(db_path=db_path)
+        db.record(
+            InvocationRecord(
+                command="git rev-parse HEAD",
+                project_path=tmp_path.as_posix(),
+                original_tokens=21,
+                final_tokens=43,
+                filter_name="git-status",
+                was_passthrough=False,
+                duration_ms=1.0,
+            )
+        )
+        db.flush()
+        db.close()
+
+        with patch("platformdirs.user_data_dir", return_value=str(tmp_path / "data")):
+            result = runner.invoke(app, ["gain", "--project", str(tmp_path), "--days", "30"])
+
+        assert result.exit_code == 0
+        output = result.output
+        assert output.count("NOTICE") == 1
+        assert "No Read-hook activity has been recorded in this window" in output
+        assert "had output grow instead of shrink" in output
+        notice_pos = output.index("NOTICE")
+        headline_pos = output.index("NET TOKENS")
+        assert notice_pos < headline_pos
+
+    def test_no_notice_header_when_nothing_to_report(self, tmp_path: Path) -> None:
+        """A window with Read-hook activity and no negative rows has nothing
+        for the notices zone to say — the NOTICE header itself must not
+        appear just because the zone exists."""
+        from quor.tracking.db import InvocationRecord, TrackingDB
+
+        db_path = tmp_path / "data" / "quor.db"
+        db = TrackingDB(db_path=db_path)
+        db.record(
+            InvocationRecord(
+                command="Read: app.py",
+                project_path=tmp_path.as_posix(),
+                original_tokens=400,
+                final_tokens=250,
+                filter_name="cat-python",
+                was_passthrough=False,
+                duration_ms=3.0,
+            )
+        )
+        db.flush()
+        db.close()
+
+        with patch("platformdirs.user_data_dir", return_value=str(tmp_path / "data")):
+            result = runner.invoke(app, ["gain", "--project", str(tmp_path), "--days", "30"])
+
+        assert result.exit_code == 0
+        assert "NOTICE" not in result.output
+
 
 # ---------------------------------------------------------------------------
 # quor verify
@@ -672,7 +793,7 @@ class TestDoctor:
     def test_clean_install_hook_missing_exits_1(self) -> None:
         result = runner.invoke(app, ["doctor"])
         assert result.exit_code == ExitCode.GENERAL_ERROR
-        assert "Hook script installed" in result.output
+        assert "hook script installed" in result.output
 
     def test_dependency_missing_reported(self) -> None:
         with patch("quor.cli.commands.doctor.importlib.import_module", side_effect=ImportError("nope")):
@@ -680,24 +801,18 @@ class TestDoctor:
         assert result.exit_code == ExitCode.GENERAL_ERROR
 
     def test_all_green_after_hook_installed(self, tmp_path: Path) -> None:
-        hook_path = tmp_path / "hooks" / "claude-hook.ps1"
-        hook_path.parent.mkdir(parents=True, exist_ok=True)
-        hook_path.write_text("dummy", encoding="utf-8")
-        read_hook_path = tmp_path / "hooks" / "claude-hook-read.ps1"
-        read_hook_path.write_text("dummy", encoding="utf-8")
         settings_path = tmp_path / "settings.json"
+        _install_real_hooks(tmp_path, settings_path)
         with patch("platformdirs.user_data_dir", return_value=str(tmp_path)):
             result = runner.invoke(app, ["doctor", "--settings-path", str(settings_path)])
         assert result.exit_code == 0
-        assert "✓ Hook script installed" in result.output
+        assert "✓ Bash hook script installed" in result.output
+        assert "✓ Bash hook registered in settings.json" in result.output
+        assert "✓ Bash hook up to date" in result.output
 
     def test_tee_enabled_by_default(self, tmp_path: Path) -> None:
-        hook_path = tmp_path / "hooks" / "claude-hook.ps1"
-        hook_path.parent.mkdir(parents=True, exist_ok=True)
-        hook_path.write_text("dummy", encoding="utf-8")
-        read_hook_path = tmp_path / "hooks" / "claude-hook-read.ps1"
-        read_hook_path.write_text("dummy", encoding="utf-8")
         settings_path = tmp_path / "settings.json"
+        _install_real_hooks(tmp_path, settings_path)
         with patch("platformdirs.user_data_dir", return_value=str(tmp_path)):
             result = runner.invoke(app, ["doctor", "--settings-path", str(settings_path)])
         assert result.exit_code == 0
@@ -706,12 +821,8 @@ class TestDoctor:
     def test_tee_disabled_after_two_consecutive_failures(self, tmp_path: Path) -> None:
         from quor.pipeline.tee import record_tee_failure
 
-        hook_path = tmp_path / "hooks" / "claude-hook.ps1"
-        hook_path.parent.mkdir(parents=True, exist_ok=True)
-        hook_path.write_text("dummy", encoding="utf-8")
-        read_hook_path = tmp_path / "hooks" / "claude-hook-read.ps1"
-        read_hook_path.write_text("dummy", encoding="utf-8")
         settings_path = tmp_path / "settings.json"
+        _install_real_hooks(tmp_path, settings_path)
 
         with patch("platformdirs.user_data_dir", return_value=str(tmp_path)):
             record_tee_failure("PermissionError: Access is denied")
@@ -726,12 +837,8 @@ class TestDoctor:
     def test_reset_tee_flag_clears_disabled_state(self, tmp_path: Path) -> None:
         from quor.pipeline.tee import get_tee_status, record_tee_failure
 
-        hook_path = tmp_path / "hooks" / "claude-hook.ps1"
-        hook_path.parent.mkdir(parents=True, exist_ok=True)
-        hook_path.write_text("dummy", encoding="utf-8")
-        read_hook_path = tmp_path / "hooks" / "claude-hook-read.ps1"
-        read_hook_path.write_text("dummy", encoding="utf-8")
         settings_path = tmp_path / "settings.json"
+        _install_real_hooks(tmp_path, settings_path)
 
         with patch("platformdirs.user_data_dir", return_value=str(tmp_path)):
             record_tee_failure("x")
@@ -750,12 +857,8 @@ class TestDoctor:
         """quor doctor lists discovered plugins with their declared version."""
         from quor.pipeline.plugin_loader import PluginInfo, PluginLoadReport
 
-        hook_path = tmp_path / "hooks" / "claude-hook.ps1"
-        hook_path.parent.mkdir(parents=True, exist_ok=True)
-        hook_path.write_text("dummy", encoding="utf-8")
-        read_hook_path = tmp_path / "hooks" / "claude-hook-read.ps1"
-        read_hook_path.write_text("dummy", encoding="utf-8")
         settings_path = tmp_path / "settings.json"
+        _install_real_hooks(tmp_path, settings_path)
 
         fake_report = PluginLoadReport(
             plugins=[
@@ -817,8 +920,8 @@ class TestReadHookDoctorChecks:
         oversized synthetic Markdown document) and must observe
         updatedToolOutput actually being produced and smaller than the
         input — not merely that the hook responds with valid JSON."""
-        self._write_both_hook_scripts(tmp_path)
         settings_path = tmp_path / "settings.json"
+        _install_real_hooks(tmp_path, settings_path)
         with patch("platformdirs.user_data_dir", return_value=str(tmp_path)):
             result = runner.invoke(app, ["doctor", "--settings-path", str(settings_path)])
         assert result.exit_code == 0
@@ -840,6 +943,103 @@ class TestReadHookDoctorChecks:
         assert result.exit_code == ExitCode.GENERAL_ERROR
         assert "✗ Read hook responds correctly" in result.output
         assert "unexpected hookEventName" in result.output
+
+
+# ---------------------------------------------------------------------------
+# quor doctor — hook configuration health: manifest-driven registered/
+# up-to-date checks (QB-037). "Script exists" (above) is necessary but not
+# sufficient — these checks close the gap between "a hook script happens to
+# be on disk" and "Claude Code's settings.json actually points at it, and it
+# matches what this version of Quor would generate today."
+# ---------------------------------------------------------------------------
+
+
+class TestHookConfigHealth:
+    def test_script_exists_but_not_registered_fails(self, tmp_path: Path) -> None:
+        """A script can be left over from a previous install (or copied by
+        hand) without settings.json referencing it at all — that must not
+        read as a healthy install."""
+        from quor.adapters.hook_manifest import HOOK_SPECS, render_hook_script
+
+        hooks_dir = tmp_path / "hooks"
+        hooks_dir.mkdir(parents=True, exist_ok=True)
+        for spec in HOOK_SPECS:
+            (hooks_dir / spec.script_name).write_text(
+                render_hook_script(spec, python=sys.executable), encoding="utf-8"
+            )
+        settings_path = tmp_path / "settings.json"
+        settings_path.write_text("{}", encoding="utf-8")  # exists, but registers nothing
+
+        with patch("platformdirs.user_data_dir", return_value=str(tmp_path)):
+            result = runner.invoke(app, ["doctor", "--settings-path", str(settings_path)])
+        assert result.exit_code == ExitCode.GENERAL_ERROR
+        assert "✗ Bash hook registered in settings.json" in result.output
+        assert "✗ Read hook registered in settings.json" in result.output
+        assert "quor init --claude" in result.output
+
+    def test_registered_and_up_to_date_when_freshly_installed(self, tmp_path: Path) -> None:
+        settings_path = tmp_path / "settings.json"
+        _install_real_hooks(tmp_path, settings_path)
+        with patch("platformdirs.user_data_dir", return_value=str(tmp_path)):
+            result = runner.invoke(app, ["doctor", "--settings-path", str(settings_path)])
+        assert "✓ Bash hook registered in settings.json" in result.output
+        assert "✓ Read hook registered in settings.json" in result.output
+        assert "✓ Bash hook up to date" in result.output
+        assert "✓ Read hook up to date" in result.output
+
+    def test_outdated_hook_script_fails_up_to_date_check(self, tmp_path: Path) -> None:
+        """A script whose embedded schema differs from the hook's current
+        `schema_version` (e.g. left over from before a template change)
+        must be flagged as outdated, not silently treated as current just
+        because it exists and is registered."""
+        import re
+
+        settings_path = tmp_path / "settings.json"
+        _install_real_hooks(tmp_path, settings_path)
+        content = (tmp_path / "hooks" / "claude-hook.ps1").read_text(encoding="utf-8")
+        stale_content = re.sub(r"# quor-hook-schema: .+", "# quor-hook-schema: 0", content)
+        (tmp_path / "hooks" / "claude-hook.ps1").write_text(stale_content, encoding="utf-8")
+
+        with patch("platformdirs.user_data_dir", return_value=str(tmp_path)):
+            result = runner.invoke(app, ["doctor", "--settings-path", str(settings_path)])
+        assert result.exit_code == ExitCode.GENERAL_ERROR
+        assert "✗ Bash hook up to date" in result.output
+        assert "installed hook schema is 0" in result.output
+        assert "quor init --claude" in result.output
+
+    def test_up_to_date_check_is_unaffected_by_package_version(self, tmp_path: Path) -> None:
+        """QB-037 correction: bumping quor.__version__ alone must never flag
+        an installed hook as outdated — only a real schema_version change
+        (in hook_manifest.py) should. A freshly-installed hook must still
+        read as up to date under a different running package version."""
+        settings_path = tmp_path / "settings.json"
+        _install_real_hooks(tmp_path, settings_path)
+
+        with (
+            patch("platformdirs.user_data_dir", return_value=str(tmp_path)),
+            patch("quor.__version__", "999.999.999"),
+        ):
+            result = runner.invoke(app, ["doctor", "--settings-path", str(settings_path)])
+        assert "✓ Bash hook up to date" in result.output
+        assert "✓ Read hook up to date" in result.output
+
+    def test_hook_with_no_schema_marker_treated_as_outdated(self, tmp_path: Path) -> None:
+        """A hook installed before this check existed has no
+        `# quor-hook-schema:` line at all — must read as outdated
+        (actionable), not error."""
+        settings_path = tmp_path / "settings.json"
+        _install_real_hooks(tmp_path, settings_path)
+        import re
+
+        content = (tmp_path / "hooks" / "claude-hook.ps1").read_text(encoding="utf-8")
+        content = re.sub(r"# quor-hook-schema: .+\n", "", content)
+        (tmp_path / "hooks" / "claude-hook.ps1").write_text(content, encoding="utf-8")
+
+        with patch("platformdirs.user_data_dir", return_value=str(tmp_path)):
+            result = runner.invoke(app, ["doctor", "--settings-path", str(settings_path)])
+        assert result.exit_code == ExitCode.GENERAL_ERROR
+        assert "✗ Bash hook up to date" in result.output
+        assert "no schema marker" in result.output
 
 
 # ---------------------------------------------------------------------------
@@ -925,6 +1125,22 @@ class TestInit:
         content = hook_path.read_text(encoding="utf-8")
         assert sys.executable in content
         assert "quor hook claude" in content
+
+    def test_does_not_print_reset_tee_message(self, tmp_path: Path) -> None:
+        """Regression test (QB-037): `init --claude` runs `doctor` internally
+        via `_run_doctor()`, not the Typer-decorated `doctor()` — calling the
+        latter directly left `reset_tee` holding the unresolved
+        `typer.Option(...)` sentinel (truthy), so this message printed on
+        every `init --claude`, even though `--reset-tee` was never passed.
+        Fails on the pre-fix code (`init.py` calling `doctor()` directly),
+        passes on the fix."""
+        settings_path = tmp_path / "settings.json"
+        with patch("platformdirs.user_data_dir", return_value=str(tmp_path / "data")):
+            result = runner.invoke(
+                app, ["init", "--claude", "--yes", "--settings-path", str(settings_path)]
+            )
+        assert result.exit_code == 0
+        assert "Tee adaptive-disable state cleared" not in result.output
 
 
 # ---------------------------------------------------------------------------
@@ -1202,7 +1418,7 @@ class TestFindConflictingHooks:
     def test_empty_settings_returns_no_conflicts(self) -> None:
         from quor.cli.commands.init import _find_conflicting_hooks
 
-        assert _find_conflicting_hooks({}) == []
+        assert _find_conflicting_hooks({}, bash_script_name="claude-hook.ps1") == []
 
     def test_quor_hook_not_reported_as_conflict(self) -> None:
         from quor.cli.commands.init import _find_conflicting_hooks
@@ -1222,14 +1438,14 @@ class TestFindConflictingHooks:
                 ]
             }
         }
-        assert _find_conflicting_hooks(settings) == []
+        assert _find_conflicting_hooks(settings, bash_script_name="claude-hook.ps1") == []
 
     def test_third_party_bash_hook_returned(self) -> None:
         from quor.cli.commands.init import _find_conflicting_hooks
 
         cmd = "zap hook bash"
         settings = _settings_with_third_party_hook(cmd)
-        conflicts = _find_conflicting_hooks(settings)
+        conflicts = _find_conflicting_hooks(settings, bash_script_name="claude-hook.ps1")
         assert cmd in conflicts
 
     def test_non_bash_matcher_ignored(self) -> None:
@@ -1246,7 +1462,7 @@ class TestFindConflictingHooks:
             }
         }
         # Non-Bash matcher cannot intercept Bash commands → not a conflict
-        assert _find_conflicting_hooks(settings) == []
+        assert _find_conflicting_hooks(settings, bash_script_name="claude-hook.ps1") == []
 
 
 # ---------------------------------------------------------------------------
