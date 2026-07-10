@@ -39,8 +39,10 @@ genuinely separate, multi-part project (a new integration point, plus new handli
 document type), so it's being built as a sequence of small, independently mergeable pieces:
 Markdown and plain-text compression is implemented and, as of QB-007C, actually wired into the live
 Read hook — a supported document read by Claude is compressed for real, not just at the filter
-layer — and, as of QB-007D, that savings shows up in `quor gain` alongside Bash savings. See
-"Sub-items" below for exactly what's done and what isn't.
+layer — and, as of QB-007D, that savings shows up in `quor gain` alongside Bash savings. As of
+QB-007E1, the extension-routed preprocessing framework DOCX/PDF extraction will plug into also
+exists — not the extraction itself, which is still not implemented (QB-007E2/E3). See "Sub-items"
+below for exactly what's done and what isn't.
 
 <details>
 <summary>Technical details</summary>
@@ -96,12 +98,26 @@ mergeable sub-items so each can be reviewed/tested/merged on its own:
   participate in the existing tracking pipeline (SQLite, JSONL, `quor gain`) exactly like Bash
   invocations, via a single shared recorder — no schema change, no Read-specific storage. See
   "QB-007D technical details" below.
-- **QB-007E — DOCX structure extraction.** Not started. Depends on QB-007A/B/C/D.
-- **QB-007F — PDF structure extraction.** Not started. Depends on QB-007A/B/C/D; the riskiest
-  sub-item — PDF heading/table detection is heuristic, with no semantic ground truth to anchor it.
 
-**Status:** In progress — QB-007A/B/C/D implemented (none committed/merged to `main` yet); QB-007E
-onward not scheduled.
+DOCX/PDF structure extraction (originally a single QB-007E, then QB-007E/F) was further split
+(2026-07-10) into four independently mergeable pieces — smaller review surface, easier to isolate a
+regression to one piece rather than one large "DOCX+PDF+deps" PR:
+
+- **QB-007E1 — Document extraction framework.** Implemented (2026-07-10). The extension-routed,
+  fail-open preprocessing layer DOCX/PDF extraction will plug into — `.docx`/`.pdf` handlers are
+  stubs that always raise `NotImplementedError`; no extraction, no optional dependencies yet. See
+  "QB-007E1 technical details" below.
+- **QB-007E2 — DOCX extraction.** Not started. Depends on QB-007E1. Implements `.docx` structure
+  extraction (headings, tables, lists) as a real handler in `quor/pipeline/extract/registry.py`,
+  adding `python-docx` (or similar) as an optional dependency.
+- **QB-007E3 — PDF extraction.** Not started. Depends on QB-007E1. The riskiest sub-item — PDF
+  heading/table detection is heuristic, with no semantic ground truth to anchor it.
+- **QB-007E4 — Benchmarking, tuning, and documentation.** Not started. Depends on QB-007E2/E3.
+  Benchmark manifest coverage (per CLAUDE.md's "Before Opening a PR" requirements), compression
+  tuning, and `docs/final/COMMAND_SUPPORT.md` updates for the two new filters/extractors.
+
+**Status:** In progress — QB-007A/B/C/D/E1 implemented (none committed/merged to `main` yet);
+QB-007E2 onward not scheduled.
 
 </details>
 
@@ -328,6 +344,67 @@ Bash row in the same `quor gain` window, no special-casing).
   unmeasured `PostToolUse` timeout budget noted under QB-007C.
 - All QB-007A/B/C limitations (unconfirmed minimum Claude Code version, unmeasured Windows hook
   timeout budget, fenced-code-block/RST-heading/whitespace-path filter limitations) are unchanged.
+
+</details>
+
+<details>
+<summary>QB-007E1 technical details</summary>
+
+**What shipped:** a new package, `quor/pipeline/extract/` (`__init__.py` empty, matching every
+other package in this codebase — `registry.py` holds the actual logic), whose entire public surface
+is one function: `extract(file_path: Path) -> str | None`. `None` always means "fail open, proceed
+exactly as if this layer did not exist" — an unregistered extension, a registered-but-unimplemented
+handler, or a handler that raised for any other reason are all indistinguishable to the caller.
+Routing is a plain `dict[str, Callable[[Path], str | None]]` keyed by lower-cased `Path.suffix`; only
+`.docx` and `.pdf` are registered, and both handlers unconditionally `raise NotImplementedError`
+(absorbed silently — an expected, known state, not a bug — while any *other* exception a future real
+handler raises is absorbed with a warning, so a genuine extraction bug is still visible). `.md`/
+`.txt`/`.rst` are deliberately **not** registered: they need no extraction (Read already returns them
+as plain text, and QB-007B/C's filters already compress them directly), so they fail open via the
+same "no handler" path as any unknown extension — proven directly by test
+(`tests/unit/test_extract.py::TestUnknownExtension::test_markdown_extension_returns_none` et al.).
+
+**Architecture — deliberately not integrated yet:** extraction is not a `StageHandler`, is never
+registered with `Pipeline`, and never touches `ContentMask` or `FilterRegistry` — none of those three
+modules were modified, at all. `quor/adapters/claude_read.py` was also **not** modified in this
+phase: `extract()` is not yet called from the Read hook. Wiring it in (so an actual `.docx`/`.pdf`
+Read routes through `extract()` before `FilterRegistry`) is deferred to QB-007E2/E3, once there's a
+real handler for `extract()` to return something other than `None` for — wiring a permanently-`None`
+call in now would be pure indirection with no observable effect, and would make it harder (not
+easier) to verify "hook behaviour unchanged" for this phase.
+
+**Design pass (Rule 4 — competitor-first):** consulted the archived competitive/landscape research
+(`docs/archive/`) and found no prior conclusions on DOCX/PDF library choice — QB-007F's (now
+QB-007E3's) own "riskiest sub-item, no semantic ground truth" note already acknowledged this gap, so
+QB-007E1 is new groundwork, not a repeat of existing research. Reused two existing precedents
+instead of inventing new ones: the plugin system's import-failure-tolerant pattern (ADR-007 "Plugin
+failures log warnings; they never halt processing", `quor/pipeline/plugin_loader.py`'s
+`ImportError`-to-`None` handling) for how this layer must degrade, and ADR-014's already-anticipated
+(but not yet instantiated) `quor[ml]`-style optional-dependency extra as the template QB-007E2/E3
+will follow when `python-docx`/a PDF library are actually added — no extras group was created in this
+phase, since no dependency exists yet to gate behind one.
+
+**What was deliberately not touched:** `Pipeline`, `FilterRegistry`, `ContentMask`,
+`quor/adapters/claude_read.py`, `pyproject.toml` (no `python-docx`/`pdfplumber`/`pypdf`, no new
+`[project.optional-dependencies]` group), and no real extraction logic of any kind — exactly as
+scoped. `base.py` was considered and omitted: with only two trivial stub handlers sharing an
+already-explicit `Callable[[Path], str | None]` type, a formal `Protocol`/ABC would be premature
+abstraction for a contract this small; revisit if QB-007E2/E3 reveal handlers need shared state or a
+richer interface than a plain function.
+
+**Verification:** full `pytest tests/`, `quor verify`, `ruff check quor/ tests/`, `mypy quor/` all
+green. New coverage: `tests/unit/test_extract.py` (23 tests) — unknown/unregistered extensions,
+supported-but-unimplemented extensions (and that `NotImplementedError` doesn't warn while other
+exceptions do), fail-open across multiple exception types, extension-based routing (including
+case-insensitivity and suffix-only matching, not substring search), registry contents, and a
+"never raises regardless of input" sweep.
+
+**Limitations (carried forward, not resolved by this phase):**
+- No real extraction exists yet — every `.docx`/`.pdf` Read still behaves exactly as it does today
+  (unsupported, passes through unchanged), because `extract()` isn't called from anywhere yet.
+- The routing table has no case for files whose real content type doesn't match their extension
+  (e.g. a `.docx` that's actually plain text) — not relevant while both handlers are unconditional
+  stubs, but worth deciding explicitly once QB-007E2 adds real parsing.
 
 </details>
 

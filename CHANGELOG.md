@@ -45,6 +45,16 @@ All notable changes to Quor are documented here. Format loosely follows
   it. No schema change, no new table, no Read-specific storage or aggregation: `quor gain` picks up
   Read rows automatically because they're ordinary rows in the same `invocations` table. See QB-007D
   in `backlog.md` for full detail.
+- **Added: document extraction framework, no extraction yet (QB-007E1).** New package
+  `quor/pipeline/extract/` with a single public function, `extract(file_path: Path) -> str | None`
+  — the extension-routed, fail-open preprocessing layer DOCX/PDF extraction will plug into. `.docx`/
+  `.pdf` are registered but their handlers always raise `NotImplementedError` (absorbed silently, no
+  warning — an expected state, not a bug); any other extension, including `.md`/`.txt`/`.rst` (which
+  need no extraction at all), fails open the same way an unregistered extension does. Not a
+  `StageHandler`; `Pipeline`, `FilterRegistry`, `ContentMask`, and `quor/adapters/claude_read.py` are
+  all untouched — `extract()` isn't called from anywhere yet. No new dependencies. See QB-007E1 in
+  `backlog.md` for full detail, including why DOCX/PDF extraction was split into four smaller,
+  independently mergeable pieces (QB-007E1–E4) instead of one large PR.
 - **`quor gain` now explains negative-token rows instead of just softening
   their display.** Confirmed via a new invariant test
   (`TestFilterNeverExpandsOutput`) that no built-in filter stage can itself
