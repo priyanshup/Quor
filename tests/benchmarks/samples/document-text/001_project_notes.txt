@@ -1,0 +1,154 @@
+Project notes: onboarding flow redesign
+=========================================
+
+Attendees: growth team, design, one engineer from platform
+Date context: mid-quarter check-in, second of three planned sessions
+
+Summary of where we are
+
+The current onboarding flow has seven distinct steps between account creation and a user
+reaching the main dashboard for the first time. Analytics from the last full quarter show
+that roughly forty percent of new signups do not complete all seven steps, and the single
+largest drop-off point is step four, the workspace-naming screen, which for reasons nobody
+on the growth team can fully explain, has a noticeably higher abandonment rate than either
+the step before it or the step after it. We spent a good portion of this session trying to
+understand why that particular screen is so much worse than its neighbors, and did not
+reach a firm conclusion, which is itself useful information: it means the problem is
+probably not obvious from looking at the screen alone, and we should instrument it more
+before redesigning it blind.
+
+Several people raised the possibility that the workspace-naming screen is simply the first
+point in the flow where a user is asked to make a decision that feels permanent, as opposed
+to the earlier steps, which are all either informational or trivially reversible. If that
+theory holds, the fix might not be about the screen's visual design at all, but about
+reducing the perceived permanence of the choice, for example by making it clear the
+workspace name can be changed later with no consequences. Nobody in the room was confident
+enough in this theory to commit engineering time to it yet, so the next step is a small
+user-research pass specifically targeting that screen before any redesign work begins.
+
+Decisions made this session
+
+Decision: we will not attempt to reduce the number of steps in the flow this quarter. Two
+earlier attempts to compress steps together (in the two quarters before this one) both
+made completion rates worse, not better, and the working theory is that compressing steps
+increases the cognitive load of each remaining step even as it reduces the total count,
+which is a wash at best. We are treating "reduce total steps" as a dead end until someone
+has a genuinely new idea for why it would work differently this time.
+
+Decision: instrumentation for the workspace-naming screen specifically will ship before
+the end of this month, ahead of any other onboarding work, because right now we are
+redesigning based on a hypothesis rather than data, and that is not how we want to spend
+engineering time on a flow this important.
+
+Requirements captured
+
+REQ-201: the instrumentation must capture, at minimum, time spent on the workspace-naming
+screen, whether the user changed the auto-suggested name or kept it, and whether the user
+navigated backward from this screen at any point before eventually completing it or
+abandoning the flow entirely.
+
+REQ-202: none of the new instrumentation may add a new network round-trip to the critical
+path of the onboarding flow itself — it must be fire-and-forget, batched, and non-blocking,
+because onboarding flow latency was itself the subject of a previous project and we do not
+want to regress the work that project already did.
+
+REQ-203: any user-research recruitment for the follow-up study must exclude users who have
+already completed onboarding within the last thirty days, to avoid recall bias from asking
+people to describe a decision they made a long time ago and may not remember accurately.
+
+Open items and action items
+
+- TODO: growth team to draft the instrumentation event schema and circulate for review
+  before implementation starts.
+- TODO: design to produce two or three alternative copy variants for the workspace-naming
+  screen's "this can be changed later" messaging, to have ready once instrumentation data
+  suggests that's actually the right lever to pull.
+- TODO: platform engineer to confirm the event-batching infrastructure mentioned in REQ-202
+  actually exists today, or whether it needs to be built as a prerequisite.
+- NOTE: the next session is scheduled for two weeks from this one, specifically timed to
+  land after the instrumentation has been live for at least a few days, so we have some
+  early signal to look at rather than starting the next conversation with zero new data.
+
+Miscellaneous discussion, not yet actionable
+
+There was a tangential conversation about whether the seven-step flow should eventually be
+replaced with a fundamentally different pattern (for example, letting users reach a
+functional-but-unconfigured dashboard immediately, and prompting for the remaining setup
+steps contextually as they're needed) rather than front-loading everything before the user
+sees any value at all. Nobody thinks this is worth pursuing this quarter given the decision
+above to focus on the workspace-naming screen specifically, but it was flagged as a
+reasonable idea to revisit once the current, narrower investigation concludes one way or
+another. WARNING: if we do pursue this eventually, it is a much larger project than
+anything discussed in this session and would need its own dedicated planning process rather
+than being folded into ongoing onboarding-flow iteration.
+
+Attendance and logistics note: two people who normally attend these sessions were out this
+week, and their input on the workspace-naming theory specifically would be valuable given
+their prior involvement in the original design of that screen. Their feedback will be
+gathered asynchronously before the next session rather than delaying this round of notes.
+
+Background context from the first session, carried forward for continuity
+
+For anyone reading these notes without having attended the first session, a short recap:
+the onboarding-flow project was originally scoped much more broadly, covering not just the
+seven-step signup flow but also the first-week email sequence and the in-app tooltip tour
+that fires the first time a user reaches the dashboard. That broader scope was deliberately
+narrowed after the first session specifically because the data available at the time was
+strong enough to justify focusing on the signup flow alone (the forty percent drop-off
+figure cited above) but much weaker for the email sequence and tooltip tour, where nobody
+could point to a specific metric showing either one was actually a problem worth solving
+right now. The decision to narrow scope was not a statement that the email sequence or
+tooltip tour are fine as they are — it was a statement that we don't yet know whether they
+are fine, and spending this quarter's engineering time on the one place where we do have
+strong evidence of a problem is the better bet. This should be revisited once the current
+narrower project concludes, not forgotten entirely.
+
+There was also a longer discussion in the first session about measurement methodology that
+is worth summarizing here for continuity, since it shapes how the forty percent figure
+should be interpreted. The number is calculated as: of all accounts created in the quarter,
+what fraction never reached the dashboard at all, at any point, even days later. This is a
+deliberately generous definition of "completed" — a user who abandoned the flow on day one
+and came back three weeks later to finish it still counts as having completed it, not
+dropped off. A stricter same-session completion metric was considered and rejected, because
+the team judged that a user who eventually gets there, even slowly, represents a
+meaningfully different (and less urgent) problem than a user who never gets there at all,
+and blending the two into one number would make it harder to tell which problem the forty
+percent figure is actually describing.
+
+One more piece of carried-forward context: the workspace-naming screen was not originally
+suspected to be the primary drop-off point going into the first session. The initial
+hypothesis, based on nothing more than intuition, was that the very first step (email
+verification) would be the worst offender, since email verification is a well-known
+industry-wide source of drop-off across many products, not specific to this one. The actual
+data surprised the room — email verification drop-off is below the flow's average, not
+above it, and the workspace-naming screen is the clear outlier. This is exactly why the
+team is being cautious about acting on intuition alone this time around, and why the
+instrumentation-first approach was chosen over jumping straight to a redesign based on a
+plausible-sounding but previously wrong guess.
+
+Additional context on why this matters beyond this one flow
+
+It is worth spending a paragraph on why this particular project has gotten more attention
+from leadership than a typical mid-sized onboarding tweak usually would. Signup completion
+rate has been cited in the last two company-wide planning reviews as one of a small number
+of metrics that leadership is tracking closely this year, alongside retention and expansion
+revenue, and this is the single largest concrete lever the growth team currently has
+identified for moving that number. That context does not change anything about the
+technical approach described above, but it does explain why this project has been given
+priority over several other reasonable candidates the growth team could otherwise have
+picked this quarter, and why the team is being unusually careful about not shipping a
+redesign based on an unverified hypothesis, given how much visibility the outcome will have.
+
+There is a reasonable question of whether this level of process — instrumentation before
+redesign, a dedicated research pass, careful measurement-methodology discussion — is
+overkill for what is, after all, a single screen in a signup flow. The counterargument that
+carried the room is that the team has already spent two prior quarters on this same general
+problem without a durable improvement, specifically because past attempts skipped the
+instrumentation step and went straight to plausible-sounding redesigns that did not hold up
+once shipped. Repeating that pattern a third time, on a problem important enough to be
+tracked at the leadership level, was judged not worth the risk of another quarter with
+nothing durable to show for it, even though the more careful approach will visibly take
+longer to produce a shipped change. This tradeoff was discussed explicitly and everyone in
+the room agreed it was the right call given the last two quarters' track record, even
+though it means leadership will need to be told, again, that a concrete redesign is still a
+quarter or more away rather than landing immediately.

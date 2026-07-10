@@ -960,3 +960,81 @@ adding a shell to the execution path.
   mocking is what let the original bug ship undetected. Skipped on non-Windows platforms, since
   `.cmd`/`.bat` shim resolution is a Windows-specific concern.
 - See `backlog.md`'s `QB-019` for the full investigation record.
+
+---
+
+## ADR-034: `PostToolUse`/`Read` Hook — a Separate Adapter, `updatedToolOutput` Omitted Until Compression Exists (QB-007A)
+
+**Status:** Decided
+**Date:** 2026-07-10
+
+**Context:**
+QB-007's feasibility investigation (2026-07-09, recorded in `backlog.md`) confirmed that
+document compression requires a fundamentally different integration shape than the existing
+`PreToolUse`/`Bash` hook: Claude Code performs the `Read` itself, so there is no subprocess for
+Quor to wrap, and the only point where Quor can intercept is `PostToolUse`, using
+`hookSpecificOutput.updatedToolOutput` — the `PostToolUse` sibling of `updatedInput` (ADR-030) —
+to substitute compressed content for the real `tool_response` before Claude sees it. A full
+design pass (2026-07-10) worked out the complete architecture (content routing, filter reuse,
+per-format extraction, dependency choices, failure modes) and deliberately split it into small,
+independently mergeable sub-items so each carries its own review/test/merge cycle rather than
+landing as one large, high-risk change. This ADR records the decisions made for the first of
+those — QB-007A, hook-registration plumbing only, no compression logic.
+
+**Options considered (adapter placement):**
+- **Branch inside `quor/adapters/claude.py`** on a `hook_event_name` field, reusing the existing
+  Bash adapter module for both `PreToolUse` and `PostToolUse`: rejected — it would add untested
+  new code paths inside the one module every existing Bash-hook test and every merged PR since
+  Phase 5 already depends on, for a payload shape and failure mode that share nothing structural
+  with the Bash path (no subprocess, no command rewrite, no `tool_input.command`).
+- **A separate adapter module, `quor/adapters/claude_read.py`**, with its own hook script and its
+  own `settings.json` registration under `hooks.PostToolUse`/matcher `"Read"`: chosen. Zero
+  regression surface on the Bash path; the two hook registrations are additive and independent
+  (`_install_hook_entry()` and the new `_install_read_hook_entry()` each only touch their own key
+  under `hooks`).
+
+**Options considered (QB-007A scope):**
+- **Ship hook plumbing and a first compression filter together:** rejected — conflates two
+  genuinely separate risks (does the mechanism work at all vs. does the compression logic behave
+  correctly) into one PR, and repeats the exact mistake ADR-030 documents: a bug in the
+  plumbing/response-shape layer is easy to miss when it's reviewed alongside unrelated filter
+  logic.
+- **Ship hook plumbing alone, always omitting `updatedToolOutput`:** chosen. This phase is
+  deliberately a no-op — `quor/adapters/claude_read.py::run_hook()` parses and validates the
+  `PostToolUseHookInput` payload (catching malformed input via the same fail-open path
+  `__main__._run_hook()` already provides for the Bash adapter) but never reads or transforms
+  `tool_response`, and never sets `updatedToolOutput`. This isolates and de-risks the two
+  load-bearing unknowns flagged by the design pass — the minimum Claude Code version that honors
+  `updatedToolOutput` for `Read`, and the real `PostToolUse` hook timeout budget — before any
+  extraction-library or filter-authoring work is committed to.
+
+**Decision:**
+`quor/__main__.py::_run_hook()` now dispatches on the hook adapter name passed as `sys.argv[2]`:
+`"claude"` → the existing Bash adapter, `"claude-read"` → the new
+`quor.adapters.claude_read.run_hook()`. `quor init --claude` writes a second PowerShell hook
+script (`claude-hook-read.ps1`, invoking `quor hook claude-read`) and registers it under
+`hooks.PostToolUse` with `matcher: "Read"`, additively alongside the existing
+`hooks.PreToolUse`/`Bash` entry — installing or reinstalling one never disturbs the other.
+`quor doctor` gains two checks: `Read hook script installed` (file existence, mirroring
+`_check_hook_script`) and `Read hook responds correctly` (an in-process roundtrip, mirroring
+`_check_hook_roundtrip`, that additionally asserts `updatedToolOutput` is never present — the
+QB-007A no-op contract). New Pydantic models (`ReadToolInput`, `PostToolUseHookInput`,
+`PostToolUseHookSpecificOutput`, `PostToolUseHookOutput`) in `quor/adapters/base.py` mirror the
+existing `ToolInput`/`HookInput`/`HookSpecificOutput`/`HookOutput` models, including
+`PostToolUseHookOutput.hookSpecificOutput.updatedToolOutput` — modeled now so QB-007B+ can set it
+without a schema change, even though QB-007A never does.
+
+**Consequences:**
+- No changes to `quor/adapters/claude.py`, `quor/adapters/dispatcher.py`, `quor/pipeline/`, or
+  `quor/filters/` — this ADR is additive-only with respect to the existing Bash path.
+- `quor doctor`'s new capability check can only prove Quor's own response shape is well-formed —
+  it cannot prove the installed Claude Code binary actually honors `updatedToolOutput` for `Read`.
+  Learning directly from ADR-030's own history (an in-process-only test suite let a
+  response-shape bug ship once already), a real end-to-end verification against an actual
+  installed Claude Code binary remains a manual, non-automated gate for this phase and is not
+  claimed as covered by the automated test suite.
+- The minimum Claude Code version requirement and the real `PostToolUse` hook timeout budget
+  remain open questions, unresolved by this ADR — QB-007D/E (DOCX/PDF extraction) should not be
+  scoped in detail until they are.
+- See `backlog.md`'s `QB-007` entry for the full sub-item breakdown (QB-007A–E) and the design
+  pass this ADR formalizes.

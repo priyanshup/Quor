@@ -228,7 +228,73 @@ flagged — see ADR-032 in `docs/final/DECISIONS.md` for the full history. The `
 `vitest`/`prettier`/`next`/`turbo` cases were added for QB-006C; that pass also reclassified the
 existing `npx-prettier-check-failure` case from the generic `npx` category to `prettier` once
 prettier got its own filter, with an updated (lower) baseline reflecting the new filter's own
-compression on that sample.
+compression on that sample. `markdown`/`document-text` (4 cases, 2 categories) were added for
+QB-007B — see §8 below for why these are a structurally different kind of case (file-path routing,
+not command routing).
+
+---
+
+## 8. Read/file-path routing — Markdown and plain-text documents (QB-007B/C)
+
+Everything in §1–§7 above describes routing a **Bash command string** through the classifier and
+then `FilterRegistry`. QB-007B introduces a second, structurally different use of the same
+`FilterRegistry`: routing a **Read tool file path** directly, with no classifier/rewrite layer
+involved at all (there is no command to rewrite — see `backlog.md`'s QB-007 entry for why Read
+needs an entirely different hook shape than Bash). QB-007C wires this into the live
+`PostToolUse`/Read hook — as of QB-007C, a supported document read by Claude Code is genuinely
+compressed via `updatedToolOutput`, not just at the filter-testing layer.
+
+**Adapter-side allowlist (QB-007C), important for understanding what actually runs:**
+`quor/adapters/claude_read.py` only ever applies a filter whose name is `markdown` or
+`document-text` (`_READ_SUPPORTED_FILTER_NAMES`) — *not* whatever `FilterRegistry.find()` happens
+to return. This matters because the built-in `generic` filter (§3) matches literally any non-empty
+string, including any unsupported Read file path (`report.docx`, `script.py`, ...); without this
+allowlist, every unsupported file type would be silently routed through a shell-output filter never
+designed for document content. The allowlist is adapter-local, not a `FilterRegistry`/schema
+change, so it has no effect on Bash routing at all.
+
+**How routing works:** `match_command` is matched against the Read tool's bare file path string
+instead of a command string, via the exact same `FilterRegistry.find()` call described in §2 — no
+new routing system, no schema change. Both new filters anchor their pattern to the entire routed
+string being a single whitespace-free token (`^\S+\.(md|markdown)$` / `^\S+\.(txt|rst)$`)
+specifically so they can never accidentally intercept a real Bash command string that merely
+references a `.md`/`.txt` file as an argument — a command string always contains a space once it
+has arguments (e.g. `pytest tests/notes.md`), so only a bare path can match. See
+`quor/filters/builtin/markdown.toml`'s header comment for the full rationale, and
+`tests/unit/test_document_filters.py::TestBashRoutingUnaffected` for the regression coverage
+proving this.
+
+**Known routing collision (accepted, documented):** because `FilterRegistry` is shared between
+Bash commands and Read paths, and built-in load order is alphabetical, `FilterRegistry.find()`
+still literally returns the `cat` filter for a path like `cat.md` (`cat.toml` sorts before
+`markdown.toml`). This is inherent to reusing `match_command`/`FilterRegistry` rather than building
+a parallel routing system — narrow and unlikely in practice, and regression-tested
+(`TestKnownRoutingCollision` in `tests/unit/test_document_filters.py`) so it can't silently change
+without being noticed. **As of QB-007C, this no longer affects real Read calls:** the adapter-side
+allowlist above means only `markdown`/`document-text` are ever actually applied, so a Read for
+`cat.md` safely passes through unchanged rather than being run through `cat`'s stripping logic —
+regression-tested end to end in
+`tests/unit/test_read_hook_activation.py::TestRoutingPrecedenceRegressions`.
+
+| File path(s) matched | Filter (source file) | Optimizes | Does NOT optimize | Known limitations |
+|---|---|---|---|---|
+| `*.md`, `*.markdown` | `markdown` ([markdown.toml](../../quor/filters/builtin/markdown.toml)) | Nothing is stripped — `preserve_patterns` protects ATX headings (`#`–`######`), fenced code block *marker* lines, bullet/numbered lists, requirement/decision IDs, decision markers, TODO/FIXME/XXX, and NOTE/WARNING/CAUTION/IMPORTANT callouts; `deduplicate_consecutive` collapses repeated/blank-line runs; `max_tokens` (2000, `head`) is the only real compression, engaging only once a document exceeds budget | Setext-style headings (`Title\n=====`) are not detected — only ATX (`#`); a fenced code block's *interior* is not span-protected, only its marker lines individually | A large code block can be truncated through the middle by `max_tokens`, stranding one fence marker from its content (demonstrated in `TestMarkdownFencedCodeBlockLimitation`) — not a bug, a documented limit of per-line-only `preserve_patterns` |
+| `*.txt`, `*.rst` | `document-text` ([document-text.toml](../../quor/filters/builtin/document-text.toml)) | Same philosophy as `markdown` minus ATX/fence patterns, plus RST's single-line `.. code-block::` directive | RST's setext-style section headings (title + punctuation underline) are not detected at all — no markdown-equivalent heading pattern exists for `.txt`/generic `.rst` | Same fenced/directive-interior caveat as `markdown` for `.. code-block::` bodies; plain `.txt` has no structural markup at all beyond the shared list/ID/TODO/NOTE patterns |
+
+**Why no `strip` (COMPRESS) patterns exist in either filter:** unlike shell-command output, a
+hand-written document has no reliable "noise" pattern to remove without risking real content loss
+(PROJECT_BIBLE.md Core Principle #1: meaning preservation is non-negotiable). Both filters rely
+entirely on `preserve_patterns` (protect) plus `max_tokens` (best-effort budget cap) — there is
+nothing analogous to `pytest`'s `PASSED` lines or `npm`'s deprecation-warning spam in ordinary
+prose. This means a document under the 2000-token budget renders back byte-identical; real
+compression only appears on documents that exceed it. Measured on realistic samples in
+`tests/benchmarks/`: 29.5% on a ~3,700-token engineering design doc, 18.8% on a ~2,700-token
+plain-text notes doc, 0% on short samples (a README, an RST dev guide) — the last one is correct,
+not a regression.
+
+`group_repeated` was deliberately not used by either filter: collapsing repeated-shape lines is
+safe for diagnostic tool output (its original use case — see `mypy`'s row in §4) but unsafe for
+prose, where distinct TODOs or list items can share a superficial shape without being redundant.
 
 ---
 

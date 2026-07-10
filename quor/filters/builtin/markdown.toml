@@ -1,0 +1,104 @@
+# quor built-in filter: Markdown documents (QB-007B)
+#
+# Routes Read requests for Markdown files (.md / .markdown), not shell
+# commands — match_command is matched against the Read tool's file_path
+# (see quor/adapters/claude_read.py and the QB-007 design pass in
+# backlog.md's QB-007 entry), reusing FilterRegistry.find()/apply() exactly
+# as the Bash filters do. No new routing system, no new stage types.
+#
+# Anchoring: the pattern requires the ENTIRE routed string to be a single
+# whitespace-free token ending in the extension (`^\S+\....$`). This is
+# deliberate, not incidental — FilterRegistry is shared between Bash command
+# strings and Read file paths, and a rewritten Bash command string always
+# contains at least one space once it has arguments (e.g.
+# "pytest tests/notes.md"). Anchoring on "no internal whitespace" is what
+# stops this filter from ever accidentally intercepting a real shell
+# command that merely references a .md file as an argument. The accepted
+# trade-off: a file path containing a space (e.g. "My Documents\notes.md")
+# will not match and falls through to passthrough — safe (nothing is lost,
+# just not compressed), never a routing corruption.
+#
+# QB-007B ships the filter layer only. This filter is fully functional and
+# tested via FilterRegistry, but is NOT YET wired into the live
+# PostToolUse/Read hook (quor/adapters/claude_read.py still always omits
+# updatedToolOutput, per QB-007A's scope) — wiring compression into the live
+# hook is a later phase.
+#
+# Compression strategy: preserve_patterns only, no strip (COMPRESS) patterns.
+# Unlike shell-command output, a hand-written document has no reliable
+# "noise" pattern to strip without risking real content loss (PROJECT_BIBLE
+# Core Principle #1: meaning preservation is non-negotiable). Structure
+# survives via PROTECT; max_tokens is the only actual compression, and only
+# engages once a document exceeds the budget — a short document renders
+# back byte-identical.
+#
+# Known limitation — fenced code blocks: strip_lines/max_tokens's
+# preserve_patterns can only protect matching *lines*, not a span between
+# two markers (see quor/pipeline/stages/strip_lines.py — matching is strictly
+# per-line, no lookahead/lookbehind across lines). The ```` ``` ```` fence
+# marker lines are protected individually, but a code block's *interior*
+# lines are only protected if they happen to match a preserve_pattern in
+# their own right. This means max_tokens' best-effort budget (ADR-031) can
+# still truncate through the middle of a large code block, leaving one fence
+# marker without its partner. This is a genuine gap in what strip_lines can
+# express today, not a bug — inventing span-aware stage logic to fix it is
+# out of scope for QB-007B (see backlog.md's QB-007B entry for the full
+# discussion; flagged for QB-007C+ if it proves to matter in practice).
+schema_version = 1
+
+[[filter]]
+name = "markdown"
+match_command = '(?i)^\S+\.(md|markdown)$'
+on_empty = "(empty document)"
+
+  [[filter.stages]]
+  type = "strip_lines"
+  preserve_patterns = [
+      '^#{1,6}\s+\S',                              # ATX headings (# .. ######)
+      '^\s*```',                                    # fenced code block markers
+      '^\s*[-*+]\s+\S',                             # bullet list items
+      '^\s*\d+[.)]\s+\S',                           # numbered list items
+      '\b(REQ|ADR|QB|FR|NFR|TD|PA|IA)-?\d+\b',       # requirement/decision IDs
+      '(?i)^\s*\**\s*(decision|decided)\b',          # decision markers
+      '\b(TODO|FIXME|XXX)\b',                        # TODO-style markers
+      '(?i)^\s*\**\s*(note|warning|caution|important)\b',  # callout sections
+  ]
+
+  [[filter.stages]]
+  type = "deduplicate_consecutive"
+
+  [[filter.stages]]
+  type = "max_tokens"
+  limit = 2000
+  strategy = "head"
+
+[[filter.tests]]
+description = "Headings, bullet and numbered lists survive unmodified"
+input = "# Title\n\nSome intro prose.\n\n## Section\n\n- first item\n- second item\n\n1. step one\n2. step two"
+must_contain = ["# Title", "## Section", "- first item", "1. step one"]
+
+[[filter.tests]]
+description = "Fenced code block markers and content survive when well within budget"
+input = "Some text before.\n\n```python\ndef f():\n    return 1\n```\n\nSome text after."
+must_contain = ["```python", "def f():", "    return 1", "```"]
+
+[[filter.tests]]
+description = "Requirement IDs and decision markers survive"
+input = "See REQ-042 for the original ask.\n\n**Decision:** use approach B.\n\nADR-030 has the full rationale."
+must_contain = ["REQ-042", "**Decision:** use approach B", "ADR-030"]
+
+[[filter.tests]]
+description = "TODO and NOTE/WARNING callouts survive"
+input = "Regular paragraph.\n\nTODO: fill in the missing section.\n\n**NOTE:** this API is unstable."
+must_contain = ["TODO: fill in the missing section", "**NOTE:** this API is unstable"]
+
+[[filter.tests]]
+description = "Short document with no special markup passes through unchanged"
+input = "This is just a short paragraph of ordinary prose with nothing special in it."
+must_contain = ["This is just a short paragraph of ordinary prose with nothing special in it."]
+
+# max_tokens interaction on a document large enough to actually engage the
+# budget (a heading positioned after the head-strategy cutoff still surviving
+# via PROTECT, per ADR-031) is covered in tests/unit/test_document_filters.py
+# instead of here — TOML has no string-repetition syntax, so a realistically
+# large synthetic input is impractical to author as a literal inline test.

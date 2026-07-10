@@ -131,6 +131,64 @@ class TestMalformedHookJson:
         assert result == original
 
 
+class TestMalformedReadHookJson:
+    """QB-007A: the PostToolUse/Read adapter (claude_read.py) must fail open
+    exactly like the Bash adapter above — same __main__._run_hook guard,
+    different adapter name/payload shape."""
+
+    def _call_run_hook(self, stdin_bytes: bytes) -> bytes:
+        from quor.__main__ import _run_hook
+
+        fake_in = MagicMock()
+        fake_in.buffer = io.BytesIO(stdin_bytes)
+        out_buffer = io.BytesIO()
+        fake_out = MagicMock()
+        fake_out.buffer = out_buffer
+
+        with (
+            patch.object(sys, "argv", ["quor", "hook", "claude-read"]),
+            patch.object(sys, "stdin", fake_in),
+            patch.object(sys, "stdout", fake_out),
+        ):
+            _run_hook()
+
+        return out_buffer.getvalue()
+
+    def test_malformed_json_returns_original(self) -> None:
+        original = b'{"not": "valid json'
+        result = self._call_run_hook(original)
+        assert result == original
+
+    def test_empty_stdin_returns_original(self) -> None:
+        result = self._call_run_hook(b"")
+        assert result == b""
+
+    def test_missing_tool_input_field_returns_original(self) -> None:
+        original = orjson.dumps({"tool_name": "Read"})  # missing tool_input
+        result = self._call_run_hook(original)
+        assert result == original
+
+    def test_non_dict_json_returns_original(self) -> None:
+        original = b"[1, 2, 3]"
+        result = self._call_run_hook(original)
+        assert result == original
+
+    def test_valid_payload_never_sets_updated_tool_output(self) -> None:
+        """Not a failure case — included here to make the contrast explicit:
+        even on the success path, QB-007A's fail-open-adjacent guarantee is
+        that nothing is ever substituted for the original Read output."""
+        original = orjson.dumps(
+            {
+                "tool_name": "Read",
+                "tool_input": {"file_path": "a.md"},
+                "tool_response": "# Heading\n",
+            }
+        )
+        result = self._call_run_hook(original)
+        parsed = orjson.loads(result)
+        assert "updatedToolOutput" not in parsed["hookSpecificOutput"]
+
+
 # ---------------------------------------------------------------------------
 # 3. Missing file permissions on config / tracking dirs
 # ---------------------------------------------------------------------------

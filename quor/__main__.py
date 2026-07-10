@@ -37,19 +37,27 @@ def _check_python_version() -> None:
 _check_python_version()
 
 
+_HOOK_ADAPTERS: frozenset[str] = frozenset({"claude", "claude-read"})
+
+
 def _run_hook() -> None:
     # Read stdin immediately so it is available in the except branch.
     original_bytes = sys.stdin.buffer.read()
     try:
         adapter = sys.argv[2] if len(sys.argv) > 2 else ""
-        if adapter != "claude":
+        if adapter not in _HOOK_ADAPTERS:
             sys.stdout.buffer.write(original_bytes)
             print(f"[quor] Unknown hook adapter: {adapter!r}", file=sys.stderr)
             return
         import io
 
         sys.stdin = io.TextIOWrapper(io.BytesIO(original_bytes), encoding="utf-8")
-        from quor.adapters.claude import run_hook
+
+        if adapter == "claude":
+            from quor.adapters.claude import run_hook
+        else:
+            # "claude-read" — PostToolUse/Read (QB-007A)
+            from quor.adapters.claude_read import run_hook
 
         run_hook()
     except Exception as exc:  # noqa: BLE001 — hook must never raise
