@@ -42,8 +42,9 @@ Read hook — a supported document read by Claude is compressed for real, not ju
 layer — and, as of QB-007D, that savings shows up in `quor gain` alongside Bash savings. As of
 QB-007E1, the extension-routed preprocessing framework DOCX/PDF extraction will plug into also
 exists, and as of QB-007E2/E3, both `.docx` and `.pdf` are genuinely converted to Markdown-shaped
-text — though neither is wired into the live Read hook yet (that's QB-007E4, and a deliberate
-later decision either way). See "Sub-items" below for exactly what's done and what isn't.
+text. As of QB-007E4, both are wired into the live Read hook — a `.docx`/`.pdf` Read is now
+extracted and compressed for real, through the same `markdown` filter the `.md` path already uses.
+See "Sub-items" below for exactly what's done and what isn't.
 
 <details>
 <summary>Technical details</summary>
@@ -119,15 +120,18 @@ regression to one piece rather than one large "DOCX+PDF+deps" PR:
   does, so headings/paragraphs/lists are inferred purely from font-size and position heuristics,
   not an authored style. Still not wired into the live Read hook or `FilterRegistry`. See
   "QB-007E3 technical details" below.
-- **QB-007E4 — Benchmarking, tuning, and documentation.** Not started. Depends on QB-007E2/E3.
-  Benchmark manifest coverage (per CLAUDE.md's "Before Opening a PR" requirements — QB-007E2/E3
-  added representative `.docx`/`.pdf` sample fixtures under `tests/benchmarks/samples/{docx,pdf}/`
-  but deliberately did not wire them into `manifest.toml`/`baseline.json`, since there is no live
-  compression path to benchmark yet), compression tuning, and wiring `extract()` into the Read
-  hook.
+- **QB-007E4 — Wire extraction into the live Read hook + benchmark coverage.** Implemented
+  (2026-07-10). `quor/adapters/claude_read.py` now calls `extract()` for `.docx`/`.pdf` Reads and
+  routes the result through the existing `markdown` `FilterConfig` (looked up by name, no
+  `docx.toml`/`pdf.toml`) — a supported DOCX/PDF Read genuinely compresses via `updatedToolOutput`
+  now, not just at the extraction/filter layers in isolation. The QB-007E2/E3 benchmark fixtures
+  are wired into `manifest.toml`/`baseline.json` (4 new cases: `docx-design-doc-long` 16.0%,
+  `docx-readme-short` 0.0%, `pdf-design-doc-long` 43.2%, `pdf-notes-short` 0.0%). See "QB-007E4
+  technical details" below, including a genuine architectural finding surfaced (not silently
+  worked around) partway through: the benchmark harness itself needed a small extraction branch to
+  support binary sample files at all.
 
-**Status:** In progress — QB-007A/B/C/D/E1/E2/E3 implemented (none committed/merged to `main` yet);
-QB-007E4 not scheduled.
+**Status:** QB-007A through QB-007E4 implemented (none committed/merged to `main` yet).
 
 </details>
 
@@ -625,6 +629,110 @@ of whatever real extensions happen to be registered.
 - The undecodable-bullet-glyph limitation described above.
 - Not wired into the Read hook — same unconfirmed-Claude-Code-version and unmeasured-hook-timeout
   limitations already carried from QB-007A/B/C, now also unmeasured for a PDF-sized document.
+
+</details>
+
+<details>
+<summary>QB-007E4 technical details</summary>
+
+**What shipped:** `quor/adapters/claude_read.py::_compress_read_output()` gained one new branch,
+checked immediately after the existing `tool_response`-is-a-string check: if `Path(file_path).suffix`
+is `.docx`/`.pdf` (`_EXTRACTION_EXTENSIONS`, an adapter-local allowlist mirroring
+`_READ_SUPPORTED_FILTER_NAMES`'s own pattern), the call is diverted to a new function,
+`_compress_extracted_document()`, before falling through to the existing (unmodified)
+`.md`/`.txt`/`.rst` code path. That function: (1) calls `extract(Path(file_path))` — QB-007E1/E2/E3's
+existing, unmodified public API — (2) on `None`, tracks and returns exactly like "no filter
+matched"; (3) on success, looks up the existing `"markdown"` `FilterConfig`
+(`quor/filters/builtin/markdown.toml`) *by name* via a new local helper, `_find_filter_by_name()`,
+composed from `FilterRegistry.all_filters()` (a real .docx/.pdf command string would never match
+`markdown.toml`'s `^\S+\.(md|markdown)$` file-path pattern, so `FilterRegistry.find()` — the
+existing routing method — genuinely could not be reused here; by-name lookup is the smallest
+addition that still reuses `FilterRegistry.apply()` itself completely unchanged); (4) applies it,
+falling back to the unfiltered extracted text on any error, mirroring the non-extraction path's own
+`_apply_content_filter`-equivalent fail-open exactly. `FilterRegistry` itself was not modified —
+`_find_filter_by_name()` lives in `claude_read.py`, composed entirely from existing public methods.
+
+**original_tokens/final_tokens semantics (as specified):** `original` passed to `track_invocation()`
+is always the raw `tool_response` (the pre-extraction Read result) — not the extracted text — so
+`original_tokens` reflects what Claude would have received without Quor at all. `final` is whatever
+is actually returned as `updatedToolOutput` (the extracted-and-filtered text, or the
+extracted-but-unfiltered fallback on a filter error) — the same "track what was actually produced"
+principle already used everywhere else `track_invocation()` is called. No `InvocationRecord` field,
+schema, or `track_invocation()` call signature changed — QB-007D's tracking is reused byte-for-byte;
+these are new *call sites*, not new tracking logic. A practical consequence worth stating plainly:
+because extraction alone already transforms the raw `tool_response` into clean Markdown, a
+`.docx`/`.pdf` Read returns `updatedToolOutput` far more often than a `.md` Read does — even a short
+DOCX/PDF still returns the extracted text (proven by
+`TestDocxPdfExtraction::test_small_docx_still_returns_extracted_text`), whereas a short `.md` file
+correctly omits it (already unchanged content). The two paths are not symmetric, and are not meant
+to be — the "omit if unchanged" comparison is against the true final output either way; document
+extraction, by construction, essentially never coincides with the raw `tool_response` it replaces.
+
+**A genuine architectural finding, surfaced rather than silently resolved:** wiring the QB-007E2/E3
+benchmark fixtures into `manifest.toml` initially hit a real gap —
+`tests/benchmarks/benchmark_runner.py::run_case()` read every `sample_file` as plain UTF-8 text and
+had no extraction step anywhere in it, so a `.docx`/`.pdf` sample would either crash
+(`UnicodeDecodeError`) or need a pre-extracted `.md` stand-in that would never actually exercise
+`extract()`. This was raised to the user rather than resolved unilaterally (options: (a) add a
+minimal extraction branch to `run_case()`, (b) benchmark pre-extracted `.md` companions instead
+(never exercises `extract()`), (c) skip manifest wiring and document the gap) — (a) was chosen.
+`run_case()` now branches on `sample_path.suffix`: for `.docx`/`.pdf`, it calls `extract()` (not
+`read_text()`) and looks up the filter by `case.expected_filter` via a small `_find_filter_by_name()`
+duplicated in `benchmark_runner.py` itself (not imported from `claude_read.py`'s copy, which is
+module-private) — otherwise unchanged. This means `original_tokens` for these 4 benchmark cases is
+tokens in the *extracted* text, not a literal raw `tool_response` — what a real `tool_response`
+contains for a binary Read remains unconfirmed (an open item since QB-007A), so extracted-text
+tokens is the most honest figure available, not a stand-in for that unknown.
+
+**A second, smaller finding while building the benchmark fixtures:** the initial long DOCX/PDF
+fixtures (reused as-is from QB-007E2/E3) extracted to text that was already under, or only barely
+over, `markdown.toml`'s 2000-token budget — and even once total token count exceeded 2000,
+compression still didn't engage. Root cause: `max_tokens`' budget is only charged against
+non-PROTECT (KEEP) content — `preserve_patterns`-matched lines (headings, REQ IDs, lists, TODO/
+WARNING/NOTE callouts) are free regardless of count. Several padding paragraphs added for length
+also *referenced* REQ IDs inline ("...because REQ-101 requires...", mirroring realistic design-doc
+prose), which protected them too, leaving genuinely-compressible KEEP content under budget even
+though the *document* was well over it. Fixed by expanding both long fixtures with additional prose
+that intentionally avoids `preserve_patterns` trigger substrings, verified empirically (not
+guessed) against the real filter until genuine compression engaged: `docx-design-doc-long` 16.0%,
+`pdf-design-doc-long` 43.2%. The two short fixtures were left untouched in content (0.0% is the
+correct, expected result for an under-budget document, matching `markdown-readme-short`'s own
+precedent) — their binary bytes still show as changed in git purely from non-deterministic
+`docx`/`reportlab` save-time metadata (e.g. embedded timestamps), not content.
+
+**What was deliberately not touched:** `Pipeline`, `ContentMask`, `quor/pipeline/extract/docx.py`,
+`quor/pipeline/extract/pdf.py`, and `quor/pipeline/extract/registry.py` — all reused completely
+unchanged (confirmed via `git diff --stat`). `FilterRegistry` gained no new method; `dispatcher.py`
+was not touched at all. No `docx.toml`/`pdf.toml` was created. No `InvocationRecord`
+field/schema/migration changed.
+
+**Verification:** full `pytest tests/`, `quor verify`, `ruff check quor/ tests/`, `mypy quor/`, and
+`python -m tests.benchmarks.run_benchmarks` all green; `baseline.json` updated (purely additive —
+4 new entries, zero existing entries changed, confirmed via `git diff`). New coverage:
+`tests/unit/test_read_hook_activation.py::TestDocxPdfExtraction` (large DOCX/PDF extraction +
+compression, protected-structure survival, nonexistent/corrupt-file fail-open, extraction-exception
+fail-open, small-document still-returns-extracted-text, tool_response-already-matches omission,
+still-unsupported-extension passthrough) — and `TestUnsupportedTypesPassThrough`'s `.docx`/`.pdf`
+parametrize entries were removed (they were passing for an increasingly wrong reason once extraction
+existed — see that test's own updated docstring). `tests/unit/test_tracking.py::TestReadTracking`
+gained DOCX/PDF-specific cases (original_tokens from raw `tool_response`, final_tokens from the
+actual compressed output, extraction-failure-as-passthrough, aggregation alongside markdown rows).
+`tests/unit/test_cli.py::TestGain` gained a case proving a DOCX Read pools into the same `"markdown"`
+Top savings row a `.md` Read would, with no separate reporting category.
+
+**Limitations (carried forward, not resolved by this phase):**
+- Every limitation already documented under QB-007E1/E2/E3 (no nested lists, no bold/italic
+  emphasis, undecodable bullet glyphs, geometry-based PDF inference, unconfirmed minimum Claude
+  Code version, unmeasured Windows hook timeout budget) now applies to live production traffic,
+  not just isolated filter-layer testing — none of them were resolved by this phase, they're simply
+  now reachable from a real Read call.
+- What a real Claude Code `tool_response` contains for a genuine binary DOCX/PDF Read remains
+  unconfirmed — `original_tokens` for a real Read (and for the 4 new benchmark cases) is measured
+  against the best available proxy (a placeholder string in tests; extracted text in benchmarks),
+  not a verified true value.
+- The benchmark harness's new extraction branch is minimal and DOCX/PDF-specific
+  (`_EXTRACTION_EXTENSIONS`, duplicated from `claude_read.py`'s own constant rather than shared) —
+  a third extracted format would need the same small, manual addition in both places.
 
 </details>
 

@@ -4,11 +4,13 @@ Isolated from production code by construction: this module only ever
 *calls* Quor's existing, unmodified public surface —
 `quor.filters.registry.FilterRegistry` (the same lookup/apply path the real
 dispatcher uses), `quor.tracking.db.count_tokens` (the same token estimate
-`quor gain` uses), and `quor.pipeline.tee.content_hash` (a pure hash
-utility, used read-only to detect whether tee *would* fire — never calling
-`write_tee()`, so a benchmark run never touches the real tee cache). No
-compression algorithm, stage, or filter is modified, patched, or
-special-cased for benchmark purposes.
+`quor gain` uses), `quor.pipeline.tee.content_hash` (a pure hash utility,
+used read-only to detect whether tee *would* fire — never calling
+`write_tee()`, so a benchmark run never touches the real tee cache), and
+`quor.pipeline.extract.registry.extract` (QB-007E4, for `.docx`/`.pdf`
+cases only — see `run_case()`'s own comment). No compression algorithm,
+stage, or filter is modified, patched, or special-cased for benchmark
+purposes.
 
 Two independent signals, kept separate rather than blended into one score:
   - Correctness (expected_filter routing + must_contain survival) — a
@@ -40,6 +42,15 @@ from quor.tracking.db import count_tokens
 BENCHMARKS_DIR = Path(__file__).parent
 DEFAULT_MANIFEST = BENCHMARKS_DIR / "manifest.toml"
 DEFAULT_BASELINE = BENCHMARKS_DIR / "baseline.json"
+
+# Extensions routed through quor/pipeline/extract (QB-007E1/E2/E3) before
+# filtering, mirroring quor/adapters/claude_read.py's own
+# `_EXTRACTION_EXTENSIONS` constant — duplicated here rather than imported
+# for the identical reason that one is adapter-local rather than derived
+# from the extraction registry: this module decides what it will *attempt*
+# to route through extraction, independent of what the extraction registry
+# happens to support today.
+_EXTRACTION_EXTENSIONS = frozenset({".docx", ".pdf"})
 
 # Regression classification is based on compression_pct delta, in
 # percentage points, not on tokens_saved directly — this keeps the
@@ -169,13 +180,50 @@ def load_manifest(manifest_path: Path = DEFAULT_MANIFEST) -> list[BenchmarkCase]
 # ---------------------------------------------------------------------------
 
 
-def run_case(case: BenchmarkCase, benchmarks_dir: Path = BENCHMARKS_DIR) -> BenchmarkResult:
-    """Run one benchmark case through the real, unmodified FilterRegistry."""
-    sample_path = benchmarks_dir / case.sample_file
-    original = sample_path.read_text(encoding="utf-8")
+def _find_filter_by_name(registry: FilterRegistry, name: str) -> Any:
+    """Mirrors `quor/adapters/claude_read.py`'s own `_find_filter_by_name`
+    helper exactly (same composition from `FilterRegistry.all_filters()`,
+    same reasoning: `FilterRegistry` has no built-in "find by name" method,
+    so this composes it from the existing public API rather than adding
+    one). Duplicated, not imported, because `claude_read.py`'s copy is a
+    module-private adapter helper, not part of any shared/public surface —
+    importing a leading-underscore name across modules would be worse than
+    this tiny, obviously-in-sync duplication."""
+    for _tier, filter_config in registry.all_filters():
+        if filter_config.name == name:
+            return filter_config
+    return None
 
+
+def run_case(case: BenchmarkCase, benchmarks_dir: Path = BENCHMARKS_DIR) -> BenchmarkResult:
+    """Run one benchmark case through the real, unmodified FilterRegistry.
+
+    `.docx`/`.pdf` sample files (QB-007E4) take a second path, mirroring
+    `quor/adapters/claude_read.py`'s own DOCX/PDF branch: the binary file is
+    converted to text via `quor.pipeline.extract.registry.extract()` (the
+    same, unmodified extraction framework) instead of being read as raw
+    UTF-8 text, and the filter is looked up *by name*
+    (`case.expected_filter`) rather than matched against `case.command` —
+    a real `.docx`/`.pdf` command string would never match `markdown.toml`'s
+    file-path pattern, exactly as in production. `original_tokens` for
+    these cases is therefore tokens in the *extracted* Markdown text, not a
+    literal raw Read `tool_response` — what a real `tool_response` contains
+    for a binary file remains unconfirmed (see backlog.md's QB-007A/E1
+    "Limitations" entries), so this is the most honest figure available to
+    benchmark against, not a stand-in for that unknown "before" value.
+    """
+    sample_path = benchmarks_dir / case.sample_file
     registry = FilterRegistry(skip_user=True, skip_project=True)
-    filter_config = registry.find(case.command)
+
+    if sample_path.suffix.lower() in _EXTRACTION_EXTENSIONS:
+        from quor.pipeline.extract.registry import extract
+
+        original = extract(sample_path) or ""
+        filter_config = _find_filter_by_name(registry, case.expected_filter)
+    else:
+        original = sample_path.read_text(encoding="utf-8")
+        filter_config = registry.find(case.command)
+
     matched_filter = filter_config.name if filter_config else None
     filter_correct = matched_filter == case.expected_filter
 

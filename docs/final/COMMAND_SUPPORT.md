@@ -301,20 +301,35 @@ prose, where distinct TODOs or list items can share a superficial shape without 
 
 ---
 
-## 9. Document extraction — DOCX and PDF (QB-007E1/E2/E3)
+## 9. Document extraction — DOCX and PDF (QB-007E1–E4)
 
-Structurally different from everything in §1–§8: this is not a `FilterRegistry` entry and is not
-reachable from a real Read call today. `quor/pipeline/extract/` is a separate preprocessing layer
-— extension-routed, fail-open, and explicitly **not** a `StageHandler` — that will eventually sit
-*before* `FilterRegistry`/`Pipeline` for binary document types the Read hook can't compress
-directly (unlike `.md`/`.txt`/`.rst`, which are already plain text and need no extraction at all;
-see §8). As of QB-007E3, both `.docx` and `.pdf` have real handlers; wiring `extract()` into
-`quor/adapters/claude_read.py` remains out of scope (deferred to QB-007E4 — see `backlog.md`'s
-QB-007E2/E3 entries).
+Structurally different from §1–§8's `FilterRegistry` entries in one respect only: routing.
+`quor/pipeline/extract/` is a separate preprocessing layer — extension-routed, fail-open, and
+explicitly **not** a `StageHandler` — that sits *before* `FilterRegistry`/`Pipeline` for binary
+document types the Read hook can't compress directly (unlike `.md`/`.txt`/`.rst`, which are already
+plain text and need no extraction at all; see §8). As of QB-007E4, a supported `.docx`/`.pdf` Read
+is genuinely extracted and compressed end to end: `quor/adapters/claude_read.py` calls `extract()`
+for these two extensions, then routes the extracted Markdown-shaped text through the *existing*
+`markdown` `FilterConfig` (`quor/filters/builtin/markdown.toml`) — looked up **by name** via
+`FilterRegistry.all_filters()`, not matched against the file path the way `.md` is (a `.docx`/`.pdf`
+command string would never match `markdown.toml`'s `^\S+\.(md|markdown)$` pattern). No
+`docx.toml`/`pdf.toml` exists or is needed — there is still exactly one Markdown-compression filter
+in the entire system, for both authored and extracted Markdown.
 
 **Public API:** `quor.pipeline.extract.registry.extract(file_path: Path) -> str | None`. `None`
 always means "fail open, proceed as if this layer didn't exist" — an unregistered extension, a
-registered-but-unimplemented handler, or a handler that raised for any reason.
+registered-but-unimplemented handler, or a handler that raised for any reason. In the live Read
+hook, `extract()` returning `None` is treated exactly like "no filter matched" — `updatedToolOutput`
+is omitted, the original Read result reaches Claude unchanged.
+
+**Token accounting for the live path:** `original_tokens` (tracked via the same `track_invocation()`
+QB-007D already uses, unchanged) is the raw Read `tool_response` — what Claude would have received
+without Quor. `final_tokens` is whatever is actually returned as `updatedToolOutput` (the extracted
++ filtered text, or the extracted-but-unfiltered text on a filter-layer failure). Because extraction
+alone already transforms the content, a `.docx`/`.pdf` Read returns `updatedToolOutput` far more
+often than a `.md` Read does — even a short DOCX/PDF still returns the extracted text, unlike a
+short `.md` file (already Markdown, so an under-budget compression is a genuine no-op). The two
+paths are not symmetric by design; see `backlog.md`'s QB-007E4 entry for the full reasoning.
 
 | Extension | Handler | Converts to | Does NOT convert | Known limitations |
 |---|---|---|---|---|
@@ -327,12 +342,16 @@ truncated or nonexistent file, or any other unexpected parser exception all retu
 warning; both `extract_docx()` and `extract_pdf()` never raise, independent of whatever calls them
 (`registry.extract()` wraps every handler in the same guarantee too, defense-in-depth for both).
 
-**Benchmark fixtures, not yet wired in:** two representative samples exist for each format —
+**Benchmark coverage (QB-007E4):** two representative samples exist for each format —
 `tests/benchmarks/samples/docx/001_design_doc_ranking_cache.docx`/`002_short_client_readme.docx`
 and `tests/benchmarks/samples/pdf/001_design_doc_export_pipeline.pdf`/`002_short_client_notes.pdf`
-(mirroring §7's markdown long/short pair) — but neither pair is yet referenced from
-`manifest.toml`/`baseline.json`; there is no live compression path to benchmark until `extract()`
-is wired into the Read hook. Adding that manifest coverage is QB-007E4's job.
+(mirroring §7's markdown long/short pair) — wired into `manifest.toml`/`baseline.json` as
+`docx-design-doc-long` (16.0%), `docx-readme-short` (0.0%, correctly under budget),
+`pdf-design-doc-long` (43.2%), and `pdf-notes-short` (0.0%). Unlike every other manifest entry,
+`command` is not used for routing on these four — `tests/benchmarks/benchmark_runner.py::run_case()`
+reads the sample file via `extract()` (not `read_text()`) and looks up the filter by
+`expected_filter` name, mirroring `claude_read.py`'s own DOCX/PDF branch exactly, since a real
+`.docx`/`.pdf` command string could never match `markdown.toml`'s file-path pattern.
 
 ---
 

@@ -458,9 +458,10 @@ must_contain = ["Build succeeded in 2.4s", "Compiling module: payments"]
 # shell command — it is a bare file path string, matched by FilterRegistry
 # exactly as any other `command` value (see markdown.toml/document-text.toml
 # header comments and backlog.md's QB-007B entry for why file-path routing
-# reuses this same field). These filters are not yet wired into the live
-# PostToolUse/Read hook (QB-007A remains a no-op) — this benchmark coverage
-# validates the filter layer in isolation, ahead of that wiring.
+# reuses this same field). As of QB-007E4, these filters (and the DOCX/PDF
+# extraction cases below) are wired into the live PostToolUse/Read hook —
+# this benchmark coverage validates the same filter layer FilterRegistry.
+# apply() exercises in production, not an isolated approximation of it.
 # ---------------------------------------------------------------------------
 
 [[case]]
@@ -502,3 +503,58 @@ sample_file = "samples/document-text/002_short_rst_doc.rst"
 expected_filter = "document-text"
 min_reduction_pct = 0.0
 must_contain = [".. code-block:: bash", "REQ-1", "TODO: add a property-based test"]
+
+# ---------------------------------------------------------------------------
+# QB-007E4: DOCX/PDF, via extraction (quor/pipeline/extract) then the same
+# "markdown" filter the .md cases above use — no docx.toml/pdf.toml exists.
+# `command` is a representative file path for display purposes only; unlike
+# every case above, it is NOT used for routing here — benchmark_runner.py's
+# run_case() looks the filter up by name (expected_filter) for these two
+# extensions, mirroring quor/adapters/claude_read.py's own DOCX/PDF branch,
+# since a real .docx/.pdf command string would never match markdown.toml's
+# file-path pattern. original_tokens/compression_pct for these cases measure
+# extracted-text -> filtered-text, not raw Read tool_response -> filtered
+# text — what a real tool_response contains for a binary file remains
+# unconfirmed (see backlog.md's QB-007A/E1 "Limitations" entries), so this
+# is the most honest figure available to benchmark against.
+# ---------------------------------------------------------------------------
+
+[[case]]
+id = "docx-design-doc-long"
+category = "docx"
+ecosystem = "Documents"
+command = "docs/design-doc-ranking-cache.docx"
+sample_file = "samples/docx/001_design_doc_ranking_cache.docx"
+expected_filter = "markdown"
+min_reduction_pct = 10.0
+must_contain = ["# Design Doc: Search Result Ranking Cache", "REQ-101", "REQ-102", "REQ-103", "**Decision:**", "```", "TODO: determine", "WARNING:", "NOTE:"]
+
+[[case]]
+id = "docx-readme-short"
+category = "docx"
+ecosystem = "Documents"
+command = "notes/ranking-cache-client.docx"
+sample_file = "samples/docx/002_short_client_readme.docx"
+expected_filter = "markdown"
+min_reduction_pct = 0.0
+must_contain = ["# ranking-cache-client", "REQ-1", "REQ-2", "TODO: add a `bypass_cache` flag"]
+
+[[case]]
+id = "pdf-design-doc-long"
+category = "pdf"
+ecosystem = "Documents"
+command = "docs/design-doc-export-pipeline.pdf"
+sample_file = "samples/pdf/001_design_doc_export_pipeline.pdf"
+expected_filter = "markdown"
+min_reduction_pct = 30.0
+must_contain = ["# Design Doc: Async Export Pipeline", "REQ-101", "REQ-102", "REQ-103", "Decision:", "```", "TODO: determine", "WARNING:", "NOTE:"]
+
+[[case]]
+id = "pdf-notes-short"
+category = "pdf"
+ecosystem = "Documents"
+command = "notes/export-client.pdf"
+sample_file = "samples/pdf/002_short_client_notes.pdf"
+expected_filter = "markdown"
+min_reduction_pct = 0.0
+must_contain = ["# export-client", "REQ-1", "REQ-2", "TODO: add a `wait()` convenience helper"]
