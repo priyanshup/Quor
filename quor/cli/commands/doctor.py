@@ -11,6 +11,7 @@ from pathlib import Path
 import platformdirs
 import typer
 from rich.console import Console
+from rich.markup import escape
 
 from quor.adapters.hook_manifest import HOOK_SPECS, ClaudeHookSpec
 from quor.config.loader import load_user_config
@@ -95,13 +96,19 @@ def _run_doctor(*, settings_path: Path | None = None, reset_tee: bool = False) -
     all_ok = True
     for name, ok, detail in checks:
         symbol = "[green]✓[/green]" if ok else "[red]✗[/red]"
-        suffix = f" — {detail}" if detail else ""
+        # escape(): `name`/`detail` are dynamic text that can contain literal
+        # square brackets (a path segment, or "quor[javascript]" in an extras
+        # hint) — Rich's markup parser otherwise reads "[javascript]" as an
+        # (unrecognized, silently dropped) style tag, not literal text. Only
+        # `symbol`'s own hardcoded `[green]...[/green]` is meant to be parsed
+        # as markup here.
+        suffix = f" — {escape(detail)}" if detail else ""
         # soft_wrap: detail strings can embed long filesystem paths pushing
         # an actionable snippet like `quor init --claude` past the console
         # width — Rich's default word-wrap would otherwise split it mid-
         # phrase across two lines, which is both harder to read and breaks
         # a clean copy-paste of the suggested command.
-        console.print(f"{symbol} {name}{suffix}", soft_wrap=True)
+        console.print(f"{symbol} {escape(name)}{suffix}", soft_wrap=True)
         all_ok = all_ok and ok
 
     if not all_ok:
@@ -362,11 +369,20 @@ def _check_sqlite() -> tuple[str, bool, str]:
 def _check_filters() -> tuple[str, bool, str]:
     registry = FilterRegistry(project_root=Path.cwd())
     total_failures = 0
+    total_skipped = 0
     for _, filter_config in registry.all_filters():
-        total_failures += len(registry.run_tests(filter_config))
+        result = registry.run_tests(filter_config)
+        total_failures += len(result.failures)
+        total_skipped += len(result.skipped)
     if total_failures:
         return ("Built-in filter tests pass", False, f"{total_failures} inline test failure(s)")
-    return ("Built-in filter tests pass", True, "")
+    detail = (
+        f"{total_skipped} test(s) skipped — optional AST dependency not installed "
+        "(quor[javascript])"
+        if total_skipped
+        else ""
+    )
+    return ("Built-in filter tests pass", True, detail)
 
 
 def _check_mode() -> tuple[str, bool, str]:

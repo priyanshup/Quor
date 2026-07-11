@@ -451,8 +451,8 @@ class TestRunTests:
                 )
             ],
         )
-        failures = self.reg.run_tests(fc)
-        assert failures == []
+        result = self.reg.run_tests(fc)
+        assert result.failures == []
 
     def test_must_contain_failure(self) -> None:
         fc = FilterConfig(
@@ -467,7 +467,8 @@ class TestRunTests:
                 )
             ],
         )
-        failures = self.reg.run_tests(fc)
+        result = self.reg.run_tests(fc)
+        failures = result.failures
         assert len(failures) == 1
         assert "must_contain" in failures[0]
         assert "MISSING" in failures[0]
@@ -485,7 +486,8 @@ class TestRunTests:
                 )
             ],
         )
-        failures = self.reg.run_tests(fc)
+        result = self.reg.run_tests(fc)
+        failures = result.failures
         assert len(failures) == 1
         assert "must_not_contain" in failures[0]
 
@@ -502,12 +504,14 @@ class TestRunTests:
                 )
             ],
         )
-        failures = self.reg.run_tests(fc)
-        assert any("compression_target" in f for f in failures)
+        result = self.reg.run_tests(fc)
+        assert any("compression_target" in f for f in result.failures)
 
     def test_no_tests_returns_empty(self) -> None:
         fc = FilterConfig(name="demo", match_command=".*")
-        assert self.reg.run_tests(fc) == []
+        result = self.reg.run_tests(fc)
+        assert result.failures == []
+        assert result.skipped == []
 
     def test_warning_suppressed_when_test_passes(self) -> None:
         """Regression test: a passing inline test whose apply() call raises a
@@ -535,8 +539,8 @@ class TestRunTests:
         )
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
-            failures = self.reg.run_tests(fc)
-        assert failures == []
+            result = self.reg.run_tests(fc)
+        assert result.failures == []
         assert caught == [], f"expected no warnings to escape, got: {[str(w.message) for w in caught]}"
 
     def test_warning_surfaced_when_test_fails(self) -> None:
@@ -555,7 +559,8 @@ class TestRunTests:
                 )
             ],
         )
-        failures = self.reg.run_tests(fc)
+        result = self.reg.run_tests(fc)
+        failures = result.failures
         assert any("must_contain" in f for f in failures)
         assert any("warning during test" in f and "invalid syntax" in f for f in failures), (
             f"expected the captured warning in failure output, got: {failures}"
@@ -590,10 +595,83 @@ class TestRunTests:
             warnings.catch_warnings(record=True) as caught,
         ):
             warnings.simplefilter("always")
-            failures = self.reg.run_tests(fc)
+            result = self.reg.run_tests(fc)
 
-        assert failures == []
+        assert result.failures == []
         assert caught == [], "a passing test's warning must be suppressed regardless of source"
+
+    def test_requires_language_skipped_when_unavailable(self) -> None:
+        """Regression test (QB-038): a test whose `requires_language` names
+        an AST language that isn't actually available (optional dependency
+        missing) must be skipped, not run and not failed. Before this fix,
+        cat-javascript/cat-typescript/cat-tsx's inline tests asserted
+        AST-summarization behavior unconditionally, so a plain `pip install
+        quor` (no `quor[javascript]` extra) made `quor verify`/`quor doctor`
+        report failure for a fully correct, expected install state."""
+        fc = FilterConfig(
+            name="demo",
+            match_command=".*",
+            stages=[{"type": "code_ast_summarize", "language": "javascript"}],
+            tests=[
+                FilterTest(
+                    description="only valid when javascript AST parsing works",
+                    input="function f() {\n  doWork();\n}\n",
+                    must_not_contain=["doWork()"],
+                    requires_language="javascript",
+                )
+            ],
+        )
+        with patch("quor.filters.registry.is_language_available", return_value=False):
+            result = self.reg.run_tests(fc)
+
+        assert result.failures == []
+        assert len(result.skipped) == 1
+        assert "javascript" in result.skipped[0]
+        assert "not installed" in result.skipped[0]
+
+    def test_requires_language_runs_normally_when_available(self) -> None:
+        """The inverse: when the named language *is* available, a
+        `requires_language`-tagged test runs exactly as if the field weren't
+        set at all — this fix must not change behavior in the common case
+        (dev/CI environments with the optional extras installed)."""
+        fc = FilterConfig(
+            name="demo",
+            match_command=".*",
+            stages=[{"type": "strip_lines", "patterns": ["^DROP"]}],
+            tests=[
+                FilterTest(
+                    description="requires a language that's available",
+                    input="DROP me\nKEEP me",
+                    must_contain=["KEEP me"],
+                    must_not_contain=["DROP"],
+                    requires_language="python",  # stdlib ast, always available
+                )
+            ],
+        )
+        result = self.reg.run_tests(fc)
+        assert result.failures == []
+        assert result.skipped == []
+
+    def test_requires_language_unset_never_skips(self) -> None:
+        """A test with no `requires_language` (the default, and every
+        non-AST built-in filter's tests) must never be skipped, regardless
+        of what `is_language_available` would report for anything."""
+        fc = FilterConfig(
+            name="demo",
+            match_command=".*",
+            stages=[{"type": "strip_lines", "patterns": ["^DROP"]}],
+            tests=[
+                FilterTest(
+                    description="no requires_language set",
+                    input="DROP me\nKEEP me",
+                    must_contain=["KEEP me"],
+                )
+            ],
+        )
+        with patch("quor.filters.registry.is_language_available", return_value=False):
+            result = self.reg.run_tests(fc)
+        assert result.failures == []
+        assert result.skipped == []
 
 
 # ---------------------------------------------------------------------------
@@ -613,8 +691,8 @@ class TestBuiltinFilterTests:
         ids=lambda fc: fc.name,
     )
     def test_builtin_filter_inline_tests(self, filter_config: FilterConfig) -> None:
-        failures = self.registry.run_tests(filter_config)
-        assert failures == [], "\n".join(failures)
+        result = self.registry.run_tests(filter_config)
+        assert result.failures == [], "\n".join(result.failures)
 
 
 # ---------------------------------------------------------------------------

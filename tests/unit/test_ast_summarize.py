@@ -28,7 +28,12 @@ import pytest
 
 from quor.pipeline.ast_summarize.javascript import analyze_javascript
 from quor.pipeline.ast_summarize.python import analyze_python
-from quor.pipeline.ast_summarize.registry import _ANALYZERS, get_analyzer, registered_languages
+from quor.pipeline.ast_summarize.registry import (
+    _ANALYZERS,
+    get_analyzer,
+    is_language_available,
+    registered_languages,
+)
 from quor.pipeline.ast_summarize.typescript import analyze_tsx, analyze_typescript
 
 # ---------------------------------------------------------------------------
@@ -102,6 +107,74 @@ class TestRegistry:
         registered and renamed it; QB-005D now flips "typescript"/"tsx"
         too — each rename documents which phase changed the boundary.)"""
         assert _ANALYZERS.keys() == {"python", "javascript", "typescript", "tsx"}
+
+
+class TestIsLanguageAvailable:
+    """QB-038: `is_language_available()` distinguishes "no analyzer
+    registered for this language" from "registered, but its optional
+    dependency isn't installed" — the second case is what lets
+    `FilterRegistry.run_tests()` skip, rather than fail, an inline test that
+    can only pass when tree-sitter is actually present.
+
+    `sys.modules[name] = None` (not monkeypatching `builtins.__import__`,
+    which `importlib.import_module()` does not reliably respect) is the
+    standard, documented technique for forcing `ImportError` on a specific
+    module name regardless of whether it's actually installed.
+    """
+
+    def _block_import(self, *module_names: str) -> None:
+        import sys
+
+        for name in module_names:
+            for mod in list(sys.modules):
+                if mod == name or mod.startswith(f"{name}."):
+                    del sys.modules[mod]
+            sys.modules[name] = None  # type: ignore[assignment]
+
+    def _unblock_import(self, *module_names: str) -> None:
+        import sys
+
+        for name in module_names:
+            if sys.modules.get(name) is None:
+                del sys.modules[name]
+
+    def test_unregistered_language_is_unavailable(self) -> None:
+        assert is_language_available("cobol") is False
+
+    def test_python_always_available(self) -> None:
+        """stdlib `ast` — no optional dependency, no import-probe needed."""
+        assert is_language_available("python") is True
+
+    def test_javascript_unavailable_when_tree_sitter_missing(self) -> None:
+        self._block_import("tree_sitter", "tree_sitter_javascript")
+        try:
+            assert is_language_available("javascript") is False
+        finally:
+            self._unblock_import("tree_sitter", "tree_sitter_javascript")
+
+    def test_javascript_available_when_tree_sitter_present(self) -> None:
+        pytest.importorskip("tree_sitter")
+        pytest.importorskip("tree_sitter_javascript")
+        assert is_language_available("javascript") is True
+
+    def test_typescript_and_tsx_unavailable_when_tree_sitter_missing(self) -> None:
+        self._block_import("tree_sitter", "tree_sitter_typescript")
+        try:
+            assert is_language_available("typescript") is False
+            assert is_language_available("tsx") is False
+        finally:
+            self._unblock_import("tree_sitter", "tree_sitter_typescript")
+
+    def test_javascript_unavailable_when_only_core_tree_sitter_missing(self) -> None:
+        """Both the core `tree_sitter` package and the per-language grammar
+        package are required — missing either one must report unavailable,
+        not just a total absence of both."""
+        pytest.importorskip("tree_sitter_javascript")
+        self._block_import("tree_sitter")
+        try:
+            assert is_language_available("javascript") is False
+        finally:
+            self._unblock_import("tree_sitter")
 
 
 class TestRegistryFailOpenContract:

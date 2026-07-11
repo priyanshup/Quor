@@ -8,6 +8,7 @@ abort_unless / abort_if / on_empty short-circuits.
 from __future__ import annotations
 
 import warnings
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -19,6 +20,7 @@ from quor.config.model import FilterConfig
 from quor.errors import ConfigError
 from quor.filters.loader import load_filter_file
 from quor.filters.trust import is_git_tracked
+from quor.pipeline.ast_summarize.registry import is_language_available
 from quor.pipeline.content_type import detect
 from quor.pipeline.engine import Pipeline, PipelineResult, StageEntry
 from quor.pipeline.mask import ContentMask
@@ -114,6 +116,21 @@ def _build_stage_entry(stage_dict: dict[str, Any]) -> StageEntry:
     raise ConfigError(
         f"Unknown stage type: {stage_type!r}. Known: {all_known}"
     )
+
+
+@dataclass(frozen=True)
+class TestRunResult:
+    """Result of `FilterRegistry.run_tests()` for one filter's inline tests.
+
+    `skipped` (QB-038) is distinct from `failures`: a skipped test's
+    assertions were never evaluated at all because they can only hold when
+    an optional AST-summarization dependency (`FilterTest.requires_language`)
+    is installed — a plain `pip install quor` legitimately doesn't have it.
+    Callers (`quor verify`, `quor doctor`) must not count skips as failures.
+    """
+
+    failures: list[str]
+    skipped: list[str]
 
 
 class FilterRegistry:
@@ -276,8 +293,8 @@ class FilterRegistry:
     # Inline test runner
     # ------------------------------------------------------------------
 
-    def run_tests(self, filter_config: FilterConfig) -> list[str]:
-        """Run all inline FilterTest entries. Returns list of failure messages.
+    def run_tests(self, filter_config: FilterConfig) -> TestRunResult:
+        """Run all inline FilterTest entries. Returns failure and skip messages.
 
         Warnings raised while applying a test's input (e.g. a stage's own
         fail-open path firing on a deliberately-invalid fixture, like
@@ -293,10 +310,28 @@ class FilterRegistry:
         pipeline is handled identically. Real compression (`apply()` called
         directly by the dispatcher/Read hook, not through this method) is
         entirely unaffected — warnings there still print normally.
+
+        A test whose `requires_language` names an AST language that isn't
+        actually available (QB-038 — e.g. "javascript" without the optional
+        `quor[javascript]` extra installed) is skipped entirely, not run and
+        not counted as a failure: its assertions describe behavior that
+        provably cannot happen in this environment, so evaluating them would
+        only ever produce a false failure, not a meaningful signal.
         """
         failures: list[str] = []
+        skipped: list[str] = []
         for i, test in enumerate(filter_config.tests):
             label = f"[{filter_config.name}] test {i + 1}: {test.description!r}"
+
+            if test.requires_language is not None and not is_language_available(
+                test.requires_language
+            ):
+                skipped.append(
+                    f"{label} — skipped: {test.requires_language} AST parser not "
+                    "installed (optional quor[javascript] extra)"
+                )
+                continue
+
             test_failures: list[str] = []
 
             with warnings.catch_warnings(record=True) as caught:
@@ -334,4 +369,4 @@ class FilterRegistry:
                 )
                 failures.extend(test_failures)
 
-        return failures
+        return TestRunResult(failures=failures, skipped=skipped)

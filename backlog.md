@@ -931,9 +931,86 @@ a retention/adoption investment once there's an actual user base to retain.
 
 ## Completed Work
 
-*35 resolved items.*
+*36 resolved items.*
 
 ### High Priority
+
+#### QB-038 — `quor verify`/`quor doctor` falsely reported unhealthy on a plain `pip install quor`
+
+**Effort:** Small · **Value:** High · **Category:** Bugfix
+
+`quor verify` and `quor doctor` both reported 18 inline test failures on a completely normal,
+expected install — a plain `pip install quor` with no optional extras. Nothing was actually broken;
+the tests themselves were wrong.
+
+<details>
+<summary>Technical details</summary>
+
+**Problem:** Discovered during the v0.4.0 release's real-PyPI installation validation (fresh venv,
+`pip install quor`, no extras). `cat-javascript.toml`/`cat-typescript.toml`'s inline
+`[[filter.tests]]` assert AST-summarization behavior (e.g. `must_not_contain` a compressed function
+body) that only holds when the optional `quor[javascript]` extra (tree-sitter) is installed. Without
+it, `code_ast_summarize` correctly fails open — no compression, a clear warning — but the tests
+weren't written to account for that fallback, so they failed instead of passing-with-the-expected-
+fallback-behavior. Both `quor verify` and `quor doctor`'s own `_check_filters()` call
+`FilterRegistry.run_tests()`, so both reported failure/unhealthy — including automatically, right
+after `quor init --claude`'s own final step — for every user who installed quor the primary,
+documented way.
+
+**Fix:** Added `FilterTest.requires_language: str | None` (`quor/config/model.py`) — when set, the
+test only runs if that AST language is actually available. New
+`quor.pipeline.ast_summarize.registry.is_language_available(language)` does the availability check
+(stdlib `ast` for "python" is always available; "javascript"/"typescript"/"tsx" probe their
+tree-sitter imports without ever emitting the user-facing warning `analyze_*()` would). Tagged the
+8 affected tests across `cat-javascript.toml`/`cat-typescript.toml` (`cat-typescript`/`cat-tsx`
+blocks) — the "invalid syntax fails open" test in each filter was correctly left untagged, since
+that assertion holds regardless of whether tree-sitter is installed.
+
+`FilterRegistry.run_tests()` now returns a `TestRunResult(failures, skipped)` dataclass instead of a
+bare `list[str]` — a tagged test whose language isn't available is skipped (not run, not failed) and
+recorded with a clear reason. `quor verify`'s output and `quor doctor`'s "Built-in filter tests
+pass" detail both now surface skip counts distinctly from failures, so a user on a core-only install
+sees *why* those tests didn't run, not a false "unhealthy" verdict.
+
+**Verified:** simulated the missing-dependency case via `sys.modules[name] = None` (the reliable way
+to force `ImportError` on a specific module — monkeypatching `builtins.__import__` does not reliably
+intercept `importlib.import_module()`, confirmed the hard way during this investigation) — 0
+failures, 8 skips, exactly matching the 18 individual failure lines seen on the real PyPI install.
+Confirmed no regression when the extra *is* installed (this repo's own dev/CI environment): 88/88
+still pass, nothing skipped, byte-identical `quor verify`/benchmark output to before this fix.
+
+**Found during pre-commit review — a second, real bug (not introduced by this fix, but newly
+visible because of it):** the "install this extra" hint text — `(quor[javascript])` in doctor's
+detail and `pip install "quor[javascript]"` in verify's footer — silently lost its `[javascript]`
+portion. Root cause: Rich's `console.print()` parses `[...]` in any un-escaped string as a style
+tag; `"javascript"` isn't a recognized style, so Rich dropped it, along with the enclosing brackets
+(`(quor)` instead of `(quor[javascript])`). Confirmed this is a pre-existing class of bug, not new:
+`run_tests()`'s `[{filter_config.name}]` failure-label prefix has always been vulnerable to the same
+issue for *any* filter name — verified directly (`console.print("[cat-javascript] test 1: ...")`
+prints without the `[cat-javascript]` prefix at all). Fixed throughout: `doctor.py` now escapes
+`name`/`detail` via `rich.markup.escape()` before interpolating them next to real markup
+(`[green]✓[/green]`); `verify.py` escapes filter names/failure text the same way, and prints the
+`pip install "quor[...]"` hint with `markup=False` (no real styling needed there, so disabling
+markup parsing entirely is simpler and more robust than escaping). Two existing regression tests
+strengthened to assert the literal, un-mangled text appears — they would have caught this had they
+existed before.
+
+**Redesigned `quor verify`'s output** (requested during the same review) from a flat, unaligned
+per-filter list to a dot-leader-aligned dashboard: `✓ name ... x/y` for a fully-passing filter,
+`⊘ name ... skipped (optional dependency not installed)` for one with only-skips-no-failures (a
+distinct symbol from `✓`, not just shared-checkmark-plus-smaller-text, so a skimming reader can't
+mistake a skip for a pass), `✗ name` with the existing per-test failure detail below for a real
+failure. New footer, shown only when at least one test was skipped: "Install optional language
+support:" followed by one `pip install "quor[...]"` line per distinct extra actually needed —
+derived from which `requires_language` values were actually skipped
+(`ast_summarize/registry.py::extra_for_language()`), not hardcoded, so a future language sharing a
+different extra name would produce the correct hint automatically.
+
+**Status:** Fixed on branch `fix/qb-038-verify-optional-deps`.
+
+</details>
+
+---
 
 #### QB-006C — Rounding out Node.js/TypeScript toolchain coverage (tsc, jest, vitest, prettier, next, turbo)
 
