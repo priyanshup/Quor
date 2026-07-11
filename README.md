@@ -2,7 +2,7 @@
 
 > A rule-based command-output optimization and context-compression layer that reduces unnecessary LLM context while preserving important information.
 
-> **Status:** v0.4.0 is the latest version [available on PyPI](https://pypi.org/project/quor/) (see [CHANGELOG](https://github.com/priyanshup/Quor/blob/main/CHANGELOG.md)). All 10 implementation phases complete (1,410 tests passing, ruff + mypy clean, verified on Python 3.11 and 3.14 across multiple machines).
+> **Status:** v0.4.1 is the latest version [available on PyPI](https://pypi.org/project/quor/) (see [CHANGELOG](https://github.com/priyanshup/Quor/blob/main/CHANGELOG.md)). All 10 implementation phases complete (1,421 tests passing, ruff + mypy clean, verified on Python 3.11 and 3.14 across multiple machines).
 
 ---
 
@@ -317,9 +317,9 @@ version-by-version plan.
 | 7 | CLI commands | **Complete** |
 | 8 | Plugin infrastructure | **Complete** |
 | 9 | Plugin discovery & loading | **Complete** |
-| 10 | Packaging & release | **Complete** — [v0.4.0 on PyPI](https://pypi.org/project/quor/) (first released as v0.1.0) |
+| 10 | Packaging & release | **Complete** — [v0.4.1 on PyPI](https://pypi.org/project/quor/) (first released as v0.1.0) |
 
-1,410 tests passing, ruff + mypy clean on `quor/` and `tests/`, verified on Python 3.11, 3.13, and 3.14. See [docs/final/PROJECT_STATUS.md](https://github.com/priyanshup/Quor/blob/main/docs/final/PROJECT_STATUS.md) for the current snapshot, [docs/final/IMPLEMENTATION_PLAN.md](https://github.com/priyanshup/Quor/blob/main/docs/final/IMPLEMENTATION_PLAN.md) for the full roadmap, and [CHANGELOG.md](https://github.com/priyanshup/Quor/blob/main/CHANGELOG.md) for the full release notes.
+1,421 tests passing, ruff + mypy clean on `quor/` and `tests/`, verified on Python 3.11, 3.13, and 3.14. See [docs/final/PROJECT_STATUS.md](https://github.com/priyanshup/Quor/blob/main/docs/final/PROJECT_STATUS.md) for the current snapshot, [docs/final/IMPLEMENTATION_PLAN.md](https://github.com/priyanshup/Quor/blob/main/docs/final/IMPLEMENTATION_PLAN.md) for the full roadmap, and [CHANGELOG.md](https://github.com/priyanshup/Quor/blob/main/CHANGELOG.md) for the full release notes.
 
 The operating-mode system (AUDIT / OPTIMIZE / SIMULATE) is intentionally display-only in this release — `quor doctor` and `quor gain` show the configured mode, but the dispatcher doesn't yet branch on it. This is a scoped, documented roadmap item, not a bug; see `docs/final/PROJECT_STATUS.md` for details.
 

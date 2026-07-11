@@ -3,7 +3,7 @@
 All notable changes to Quor are documented here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [Unreleased]
+## [0.4.1] — 2026-07-11
 
 - **Fixed: `quor verify`/`quor doctor` falsely reported unhealthy on a plain
   `pip install quor` (QB-038).** `cat-javascript.toml`/`cat-typescript.toml`'s

@@ -9,4 +9,4 @@ except PackageNotFoundError:
     # Kept in sync with pyproject.toml's [project].version by
     # test_version_matches_pyproject (QB-020) the same way __version__ itself
     # used to be.
-    __version__ = "0.4.0"
+    __version__ = "0.4.1"
