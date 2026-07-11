@@ -3,7 +3,36 @@
 All notable changes to Quor are documented here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [0.4.0] — Unreleased
+## [Unreleased]
+
+- **Fixed: `quor verify`/`quor doctor` falsely reported unhealthy on a plain
+  `pip install quor` (QB-038).** `cat-javascript.toml`/`cat-typescript.toml`'s
+  inline tests asserted AST-summarization behavior that only holds when the
+  optional `quor[javascript]` extra (tree-sitter) is installed — without it,
+  the stage correctly fails open (no compression, a clear warning), but the
+  tests weren't written to expect that, so they failed instead. Added
+  `FilterTest.requires_language`: a tagged test is now skipped, not failed,
+  when its language's parser isn't available. `FilterRegistry.run_tests()`
+  returns a `TestRunResult(failures, skipped)` instead of a bare list;
+  `quor verify`/`quor doctor` both now show skip counts distinctly from
+  failures. No compression behavior changed — verified via the benchmark
+  suite (byte-identical results) and this repo's own dev/CI environment
+  (tree-sitter installed: 88/88 still pass, nothing skipped).
+  **Also fixed, found during pre-commit review:** the "install this extra"
+  hint text was silently losing its `[javascript]` portion — Rich parses
+  unescaped `[...]` in printed text as a style tag, and drops unrecognized
+  ones. Confirmed this was a pre-existing class of bug (the `[filter-name]`
+  failure-label prefix was equally vulnerable), fixed throughout via
+  `rich.markup.escape()` / `markup=False`, with regression tests asserting
+  the literal, un-mangled text.
+  **`quor verify`'s output redesigned** as a dot-leader-aligned dashboard:
+  `✓ name ... x/y` for a pass, a distinct `⊘ name ... skipped (optional
+  dependency not installed)` for skip-only (never conflated with a pass),
+  `✗ name` with failure detail below for a real failure — plus a footer
+  listing the exact `pip install "quor[...]"` command(s) needed, derived
+  from which languages were actually skipped.
+
+## [0.4.0] — 2026-07-11
 
 - **Designed: AST-aware code summarization architecture (QB-005A).** A design-only pass
   (`docs/design/QB-005A-ast-summarization-design.md`) for extending QB-005's Python-only AST

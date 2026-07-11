@@ -81,12 +81,14 @@ description = "Function body compressed; signature and JSDoc preserved"
 input = "/**\n * Add two numbers.\n */\nfunction add(x, y) {\n  const total = x + y;\n  return total;\n}\n"
 must_contain = ["function add(x, y) {", "Add two numbers."]
 must_not_contain = ["const total = x + y"]
+requires_language = "javascript"
 
 [[filter.tests]]
 description = "Imports, exports, and module-level constants are never touched"
 input = "import { foo } from \"bar\";\n\nconst DEFAULT_TIMEOUT = 30;\n\nfunction run() {\n  doWork();\n  return true;\n}\n"
 must_contain = ["import { foo } from \"bar\";", "const DEFAULT_TIMEOUT = 30;"]
 must_not_contain = ["doWork()"]
+requires_language = "javascript"
 
 [[filter.tests]]
 description = "Invalid JavaScript fails open — original content returned unchanged"
@@ -98,3 +100,4 @@ description = "Class method bodies compressed; class/method signatures and exten
 input = "export class Widget extends Base {\n  constructor(x) {\n    this.x = x;\n  }\n\n  render() {\n    return this.x;\n  }\n}\n"
 must_contain = ["export class Widget extends Base {", "constructor(x) {", "render() {"]
 must_not_contain = ["this.x = x;", "return this.x;"]
+requires_language = "javascript"

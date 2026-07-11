@@ -24,6 +24,15 @@ class FilterTest(BaseModel):
     must_contain: list[str] = Field(default_factory=list)
     must_not_contain: list[str] = Field(default_factory=list)
     compression_target: float | None = None
+    requires_language: str | None = None
+    """If set, this test only runs when the named AST-summarization language
+    (see `quor.pipeline.ast_summarize.registry.is_language_available`) is
+    actually available — e.g. "javascript" for a test whose assertions only
+    hold when the optional `quor[javascript]` extra (tree-sitter) is
+    installed. Otherwise it's skipped, not failed: `run_tests()` cannot
+    verify behavior that provably cannot happen in this environment, and
+    treating that as a hard failure would make `quor verify`/`quor doctor`
+    report every plain `pip install quor` as unhealthy (QB-038)."""
 
 
 class FilterConfig(BaseModel):

@@ -759,7 +759,28 @@ class TestVerify:
         assert "failure(s)" in result.output
         assert "0 failure" in result.output.replace("\n", " ")
 
+    def test_missing_ast_extra_skips_not_fails(self) -> None:
+        """Regression test (QB-038): with the optional quor[javascript]
+        extra simulated as absent, `quor verify` against the *real* builtin
+        filter set must still exit 0 — the cat-javascript/cat-typescript/
+        cat-tsx tests that need tree-sitter are skipped, not failed. This is
+        the exact scenario a plain `pip install quor` hits, exercised
+        end to end through the real CLI command and the real registry, not
+        a mock."""
+        with patch("quor.filters.registry.is_language_available", return_value=False):
+            result = runner.invoke(app, ["verify"])
+        assert result.exit_code == 0
+        assert "0 failure" in result.output.replace("\n", " ")
+        assert "skipped" in result.output
+        # Regression guard: Rich interprets "[...]" in an un-escaped string
+        # as a markup style tag and silently drops it — this line must show
+        # the real, literal, copy-pasteable command, not "quor" with the
+        # extras name eaten.
+        assert 'pip install "quor[javascript]"' in result.output.replace("\n", " ")
+
     def test_failure_exits_1(self) -> None:
+        from quor.filters.registry import TestRunResult
+
         with patch("quor.cli.commands.verify.FilterRegistry") as mock_reg:
             inst = MagicMock()
             mock_reg.return_value = inst
@@ -767,7 +788,10 @@ class TestVerify:
             fake_filter.name = "broken"
             fake_filter.tests = [MagicMock()]
             inst.all_filters.return_value = [("builtin", fake_filter)]
-            inst.run_tests.return_value = ["[broken] test 1: 'x' — must_contain 'y' not found"]
+            inst.run_tests.return_value = TestRunResult(
+                failures=["[broken] test 1: 'x' — must_contain 'y' not found"],
+                skipped=[],
+            )
             result = runner.invoke(app, ["verify"])
         assert result.exit_code == ExitCode.GENERAL_ERROR
 
@@ -809,6 +833,28 @@ class TestDoctor:
         assert "✓ Bash hook script installed" in result.output
         assert "✓ Bash hook registered in settings.json" in result.output
         assert "✓ Bash hook up to date" in result.output
+
+    def test_missing_ast_extra_reported_as_skip_not_failure(self, tmp_path: Path) -> None:
+        """Regression test (QB-038): quor doctor must report "Built-in
+        filter tests pass" as healthy (green) when the only reason any
+        inline tests didn't run is a missing *optional* AST dependency —
+        the pre-fix behavior treated this as 18 inline test failures and
+        marked doctor unhealthy for a completely normal, expected install
+        state (a plain `pip install quor`, no extras)."""
+        settings_path = tmp_path / "settings.json"
+        _install_real_hooks(tmp_path, settings_path)
+        with (
+            patch("platformdirs.user_data_dir", return_value=str(tmp_path)),
+            patch("quor.filters.registry.is_language_available", return_value=False),
+        ):
+            result = runner.invoke(app, ["doctor", "--settings-path", str(settings_path)])
+        assert result.exit_code == 0
+        assert "✓ Built-in filter tests pass" in result.output
+        assert "skipped" in result.output
+        # Regression guard: Rich interprets "[...]" in an un-escaped string
+        # as a markup style tag and silently drops it — this detail must
+        # show the real extras name, not "(quor)" with "[javascript]" eaten.
+        assert "(quor[javascript])" in result.output.replace("\n", " ")
 
     def test_tee_enabled_by_default(self, tmp_path: Path) -> None:
         settings_path = tmp_path / "settings.json"
