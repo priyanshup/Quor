@@ -44,7 +44,7 @@ def test_version_falls_back_when_package_not_found() -> None:
     with patch("importlib.metadata.version", side_effect=PackageNotFoundError):
         importlib.reload(quor)
         try:
-            assert quor.__version__ == "0.3.0"
+            assert quor.__version__ == "0.4.0"
         finally:
             importlib.reload(quor)  # restore real behavior for later tests
 

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "quor"
-version = "0.3.0"
+version = "0.4.0"
 description = "A rule-based command-output optimization and context-compression layer that reduces unnecessary LLM context while preserving important information."
 readme = "README.md"
 license = { text = "Apache-2.0" }
@@ -156,11 +156,29 @@ qr   = "quor.__main__:main"
 packages = ["quor"]
 
 [tool.hatch.build.targets.sdist]
-# scripts/ holds local-machine diagnostic utilities, never part of the
-# installable package — exclude from the sdist regardless of git-tracking
-# status (hatchling's default sdist otherwise includes anything not
-# gitignored, not just git-tracked files).
-exclude = ["/scripts"]
+# Excluded from the sdist regardless of git-tracking status (hatchling's
+# default sdist otherwise includes anything not gitignored, not just files
+# relevant to installing/running quor). None of this is needed to build,
+# install, or verify the package from source — it's internal development
+# material never meant for public distribution:
+#   /scripts           - local-machine diagnostic utilities
+#   /tech-debt         - internal pre-release audit notes
+#   /docs/archive      - archived research notes, superseded by docs/final
+#   /docs/design       - internal engineering design docs
+#   /.github           - CI workflow configuration, irrelevant outside this repo
+#   /backlog.md        - internal planning/prioritization document
+#   /tests/benchmarks  - compression-regression benchmark suite (CI-only
+#                        tooling; tests/unit and tests/integration, which
+#                        actually verify installed behavior, are kept)
+exclude = [
+    "/scripts",
+    "/tech-debt",
+    "/docs/archive",
+    "/docs/design",
+    "/.github",
+    "/backlog.md",
+    "/tests/benchmarks",
+]
 
 [tool.hatch.metadata]
 allow-direct-references = true

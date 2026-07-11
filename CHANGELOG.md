@@ -3,7 +3,7 @@
 All notable changes to Quor are documented here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [0.3.0] — Unreleased
+## [0.4.0] — Unreleased
 
 - **Designed: AST-aware code summarization architecture (QB-005A).** A design-only pass
   (`docs/design/QB-005A-ast-summarization-design.md`) for extending QB-005's Python-only AST
@@ -239,6 +239,9 @@ All notable changes to Quor are documented here. Format loosely follows
   plain-language explanation, but only when at least one invocation actually
   had a negative net — the common case is unchanged. See QB-017 in
   `backlog.md`.
+
+## [0.3.0] — 2026-07-05
+
 - **Fixed: `npm`/`npx`/`pnpm`/`yarn` never actually executed through the real
   dispatch path on Windows.** These tools ship as `.CMD` shell shims, not
   native `.exe` binaries; `subprocess.run()` without `shell=True` can't
