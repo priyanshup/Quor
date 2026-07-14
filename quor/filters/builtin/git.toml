@@ -156,6 +156,12 @@ must_not_contain = ["unchanged lines omitted"]
 
 [[filter.tests]]
 description = "Max in-hunk gap between two nearby edits collapsed (git -U3 merges hunks up to a 6-line gap)"
-input = "@@ -2,14 +2,14 @@\n 2\n 3\n 4\n-5\n+CHANGED5\n 6\n 7\n 8\n 9\n 10\n 11\n-12\n+CHANGED12\n 13\n 14\n 15"
-must_contain = ["-5", "+CHANGED5", "4 unchanged lines omitted", "-12", "+CHANGED12"]
-must_not_contain = [" 7\n", " 8\n", " 9\n", " 10\n"]
+input = "@@ -10,17 +10,17 @@ class OrderProcessor:\n     def process(self, order):\n         self._validate(order)\n         self._log_start(order)\n-        result = self._legacy_handler(order)\n+        result = self._new_handler(order, strict=True)\n         self._emit_metrics(result)\n         self._notify_downstream(result)\n         self._update_inventory(result)\n         self._record_audit_trail(order, result)\n         self._flush_pending_writes()\n         self._release_lock(order.lock_id)\n-        return result\n+        return result if result.ok else None\n     def _validate(self, order):\n         if not order.items:\n             raise ValueError(\"empty order\")"
+must_contain = [
+    "self._legacy_handler(order)",
+    "self._new_handler(order, strict=True)",
+    "4 unchanged lines omitted",
+    "self._release_lock(order.lock_id)",
+    "return result if result.ok else None",
+]
+must_not_contain = ["_notify_downstream", "_update_inventory", "_record_audit_trail"]
