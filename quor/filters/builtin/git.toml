@@ -107,6 +107,11 @@ preserve_patterns = [
 ]
 
 [[filter.stages]]
+type = "collapse_unchanged_context"
+context_lines = 1
+min_collapse = 3
+
+[[filter.stages]]
 type = "deduplicate_consecutive"
 
 [[filter.stages]]
@@ -129,3 +134,34 @@ must_contain = ["-old line", "+new line"]
 description = "Blank context lines stripped"
 input = "@@ -1,3 +1,3 @@\n context line\n \n+added line"
 must_contain = ["context line", "+added line"]
+
+[[filter.tests]]
+description = "Long unchanged context run collapsed, edits and window preserved"
+input = "@@ -1,20 +1,20 @@\n context line 1\n context line 2\n context line 3\n context line 4\n context line 5\n context line 6\n context line 7\n context line 8\n context line 9\n context line 10\n-old line\n+new line"
+must_contain = [
+    "@@ -1,20 +1,20 @@",
+    "context line 1",
+    "unchanged lines omitted",
+    "context line 10",
+    "-old line",
+    "+new line",
+]
+must_not_contain = ["context line 2", "context line 5", "context line 9"]
+
+[[filter.tests]]
+description = "Short unchanged context run below min_collapse left untouched"
+input = "@@ -1,5 +1,5 @@\n context line 1\n context line 2\n context line 3\n context line 4\n-old line\n+new line"
+must_contain = ["context line 1", "context line 2", "context line 3", "context line 4", "-old line", "+new line"]
+must_not_contain = ["unchanged lines omitted"]
+
+[[filter.tests]]
+description = "Max in-hunk gap between two nearby edits collapsed (git -U3 merges hunks up to a 6-line gap)"
+input = "@@ -10,17 +10,17 @@ class OrderProcessor:\n     def process(self, order):\n         self._validate(order)\n         self._log_start(order)\n-        result = self._legacy_handler(order)\n+        result = self._new_handler(order, strict=True)\n         self._emit_metrics(result)\n         self._notify_downstream(result)\n         self._update_inventory(result)\n         self._record_audit_trail(order, result)\n         self._flush_pending_writes()\n         self._release_lock(order.lock_id)\n-        return result\n+        return result if result.ok else None\n     def _validate(self, order):\n         if not order.items:\n             raise ValueError(\"empty order\")"
+must_contain = [
+    "self._legacy_handler(order)",
+    "self._new_handler(order, strict=True)",
+    "4 unchanged lines omitted",
+    "self._release_lock(order.lock_id)",
+    "return result if result.ok else None",
+]
+must_not_contain = ["_notify_downstream", "_update_inventory", "_record_audit_trail"]

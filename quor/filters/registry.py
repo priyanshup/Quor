@@ -29,6 +29,10 @@ from quor.pipeline.stages.code_ast_summarize import (
     CodeAstSummarizeConfig,
     CodeAstSummarizeStage,
 )
+from quor.pipeline.stages.collapse_unchanged_context import (
+    CollapseUnchangedContextConfig,
+    CollapseUnchangedContextStage,
+)
 from quor.pipeline.stages.deduplicate_consecutive import (
     DeduplicateConsecutiveConfig,
     DeduplicateConsecutiveStage,
@@ -49,6 +53,10 @@ from quor.pipeline.stages.truncate_lines import TruncateLinesConfig, TruncateLin
 _STAGE_HANDLERS: dict[str, tuple[type, type[StageConfig]]] = {
     "remove_ansi": (RemoveAnsiStage, RemoveAnsiConfig),
     "strip_lines": (StripLinesStage, StripLinesConfig),
+    "collapse_unchanged_context": (
+        CollapseUnchangedContextStage,
+        CollapseUnchangedContextConfig,
+    ),
     "deduplicate_consecutive": (DeduplicateConsecutiveStage, DeduplicateConsecutiveConfig),
     "group_repeated": (GroupRepeatedStage, GroupRepeatedConfig),
     "max_tokens": (MaxTokensStage, MaxTokensConfig),

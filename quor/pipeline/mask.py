@@ -6,8 +6,9 @@ Stages annotate lines via Decision; the final render step applies the mask.
 Invariants (enforced by Pipeline.execute, not by individual stages):
 - PROTECT decisions are absolute — no subsequent stage can downgrade them.
 - Line content is never modified by stages that set COMPRESS/KEEP decisions.
-  group_repeated is the sole exception: it may replace the first-occurrence
-  line with a summary string (e.g. "msg (xN)").
+  group_repeated and collapse_unchanged_context are the exceptions: each may
+  replace one line in a collapsed run with a summary/placeholder string
+  (e.g. "msg (xN)" or "... N unchanged lines omitted ...").
 """
 
 from __future__ import annotations
