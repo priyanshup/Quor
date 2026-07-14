@@ -31,11 +31,12 @@ from __future__ import annotations
 import statistics
 import time
 import tomllib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from quor.filters.registry import FilterRegistry
+from quor.pipeline.stages.base import StageResult
 from quor.pipeline.tee import content_hash
 from quor.tracking.db import count_tokens
 
@@ -98,6 +99,13 @@ class BenchmarkResult:
     tee_would_fire: bool
     missing_patterns: tuple[str, ...]
     min_reduction_met: bool
+    # QB-039 analytics: the full per-stage trace for this case (tokens
+    # tracked), captured by a second, read-only registry.trace() call in
+    # run_case() — never used to compute any of the fields above. Empty
+    # when no filter matched (nothing ran). Additive field: existing
+    # baseline.json entries (written before this field existed) simply
+    # don't have a "stages" key, and nothing reads one back out of them.
+    stage_results: tuple[StageResult, ...] = field(default_factory=tuple)
 
     @property
     def correctness_ok(self) -> bool:
@@ -121,6 +129,18 @@ class BenchmarkResult:
             "missing_patterns": list(self.missing_patterns),
             "min_reduction_met": self.min_reduction_met,
             "correctness_ok": self.correctness_ok,
+            "stages": [
+                {
+                    "stage_type": sr.stage_type,
+                    "was_skipped": sr.was_skipped,
+                    "skip_reason": sr.skip_reason,
+                    "error": sr.error,
+                    "tokens_before": sr.tokens_before,
+                    "tokens_after": sr.tokens_after,
+                    "tokens_saved": sr.tokens_saved,
+                }
+                for sr in self.stage_results
+            ],
         }
 
 
@@ -231,6 +251,15 @@ def run_case(case: BenchmarkCase, benchmarks_dir: Path = BENCHMARKS_DIR) -> Benc
     final = registry.apply(filter_config, original) if filter_config is not None else original
     execution_time_ms = (time.perf_counter() - t0) * 1000
 
+    # QB-039 analytics: a second, read-only trace() call (track_tokens=True)
+    # to capture the per-stage breakdown. Same filter_config/original as
+    # the apply() call above — this never influences `final`/`original_tokens`/
+    # `compression_pct`/`missing_patterns` etc., all still computed from
+    # `apply()`'s own output exactly as before this field was added.
+    stage_results: tuple[StageResult, ...] = ()
+    if filter_config is not None:
+        stage_results = registry.trace(filter_config, original, track_tokens=True).stage_results
+
     original_tokens = count_tokens(original)
     final_tokens = count_tokens(final)
     tokens_saved = original_tokens - final_tokens
@@ -259,6 +288,7 @@ def run_case(case: BenchmarkCase, benchmarks_dir: Path = BENCHMARKS_DIR) -> Benc
         tee_would_fire=tee_would_fire,
         missing_patterns=missing,
         min_reduction_met=min_reduction_met,
+        stage_results=stage_results,
     )
 
 

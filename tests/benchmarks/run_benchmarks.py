@@ -6,6 +6,8 @@ Usage (run from the repository root):
     python -m tests.benchmarks.run_benchmarks --update-baseline
     python -m tests.benchmarks.run_benchmarks --regression-threshold 5.0
     python -m tests.benchmarks.run_benchmarks --output-dir some/dir --format json
+    python -m tests.benchmarks.run_benchmarks --analytics
+    python -m tests.benchmarks.run_benchmarks --history
 
 See tests/benchmarks/README.md for the full guide (adding cases, updating
 the baseline, interpreting failures).
@@ -24,6 +26,9 @@ import argparse
 import sys
 from pathlib import Path
 
+from quor import __version__ as quor_version
+from quor.analytics.effectiveness import classify
+from tests.benchmarks.analytics_report import collect_stage_stats, render_analytics_report
 from tests.benchmarks.benchmark_runner import (
     BENCHMARKS_DIR,
     DEFAULT_BASELINE,
@@ -34,6 +39,13 @@ from tests.benchmarks.benchmark_runner import (
     load_baseline,
     run_all,
     save_baseline,
+)
+from tests.benchmarks.history import (
+    DEFAULT_HISTORY_PATH,
+    append_entry,
+    build_entry,
+    detect_regression,
+    render_history_table,
 )
 from tests.benchmarks.report import write_json_report, write_markdown_report
 
@@ -103,6 +115,43 @@ def main(argv: list[str] | None = None) -> int:
         write_markdown_report(results, summary, comparisons, md_path)
         print(f"Markdown report: {md_path}")
 
+    if args.analytics:
+        analytics_text = render_analytics_report(results, summary)
+        print()
+        print(analytics_text, end="")
+        analytics_path = args.output_dir / "analytics-report.txt"
+        analytics_path.write_text(analytics_text, encoding="utf-8")
+        print(f"Analytics report: {analytics_path}")
+
+    if args.history:
+        stage_stats = collect_stage_stats(results)
+        ratings = classify(stage_stats)
+        total_saved = sum(s.tokens_saved for s in stage_stats.values())
+        entry = build_entry(
+            version=quor_version,
+            total_cases=summary.total_cases,
+            overall_compression_pct=summary.overall_compression_pct,
+            total_tokens_saved=summary.total_tokens_saved,
+            per_stage_contribution_pct={
+                r.stage_type: (
+                    stage_stats[r.stage_type].tokens_saved / total_saved * 100
+                    if total_saved
+                    else 0.0
+                )
+                for r in ratings
+            },
+            per_ecosystem_compression_pct={
+                name: float(stats["compression_pct"]) for name, stats in summary.per_ecosystem.items()
+            },
+        )
+        entries = append_entry(entry, args.history_path)
+        print()
+        print(f"History updated: {args.history_path}")
+        print(render_history_table(entries), end="")
+        if len(entries) >= 2:
+            _, message = detect_regression(entries, threshold_pp=args.regression_threshold)
+            print(message)
+
     if correctness_failed or floor_failed or regression_failed:
         return 1
     return 0
@@ -144,6 +193,24 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         choices=("json", "markdown", "both"),
         default="both",
         help="Which report format(s) to write.",
+    )
+    parser.add_argument(
+        "--analytics",
+        action="store_true",
+        help="Also print/write the QB-039 analytics report (stage contribution, "
+        "language contribution, hardest files, effectiveness rating).",
+    )
+    parser.add_argument(
+        "--history",
+        action="store_true",
+        help="Also append this run to the benchmark history file (keyed by "
+        "quor.__version__) and print the version-over-version comparison table.",
+    )
+    parser.add_argument(
+        "--history-path",
+        type=Path,
+        default=DEFAULT_HISTORY_PATH,
+        help="Path to history.json (only used with --history).",
     )
     return parser.parse_args(argv)
 

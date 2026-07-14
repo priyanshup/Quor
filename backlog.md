@@ -187,6 +187,486 @@ exactly the kind of recklessness the vision explicitly rules out.
 
 *The highest-value open work — directly implements the vision shift, ready to scope today.*
 
+**Priority order updated 2026-07-15**, following a product-strategy review that added a second
+evidence source QB-051 didn't have at the time: real usage telemetry (`quor gain` plus a direct
+query against the live tracking DB), not just the 60-case benchmark corpus. The corpus and the real
+data agree on the single biggest lever (git-diff) and disagree sharply on several others (mypy,
+git-log, git-status, pytest all show large benchmark-vs-real divergence) — both findings changed
+what's ordered below. A follow-up product-owner review the same day made two further calls the data
+alone couldn't: QB-054 (telemetry-driven optimization) was moved ahead of QB-049/QB-039 as the more
+strategically important long-term direction, QB-046 (more AST languages) was moved to last in this
+section (still approved work, just no longer competing with items that have proven volume or
+measurement value behind them), and one new item, **QB-055** (the concrete diff-compression
+algorithm QB-041's own "Desired outcome" only sketched), was added directly alongside QB-041. Every
+entry touched by either round carries its own dated **Evidence update** or **Product decision**
+paragraph explaining exactly what changed and why; nothing was silently reordered. Final order:
+QB-041 → QB-055 → QB-052 → QB-047 → QB-054 → QB-049 → QB-039 → QB-053 → QB-046 (QB-051 itself is
+already shipped and sits first as the foundation the rest of this ordering rests on).
+
+---
+
+#### QB-051 — Compression Analytics & Benchmark Dashboard
+
+**Effort:** Medium · **Value:** High · **Risk:** Low · **Expected token impact:** None directly (a
+measurement layer) · **Category:** Engineering / Measurement
+
+**Status:** Implemented (2026-07-14). Pure measurement/visibility work — no filter, stage, AST
+summarizer, or benchmark corpus was changed; every existing benchmark case's `compression_pct` was
+verified byte-identical before and after (60/60 cases, 9602 tokens saved, 35.3% overall, both
+runs). Not committed — awaiting explicit commit instruction.
+
+<details>
+<summary>Technical details</summary>
+
+**What shipped:** `StageResult` (`quor/pipeline/stages/base.py`) gained optional
+`tokens_before`/`tokens_after` fields, populated only when `Pipeline.execute(track_tokens=True)`
+opts in (default `False` — zero cost on the real Bash/Read hook path). `quor/analytics/` is a new
+production package: `stage_stats.py` (executions/skipped/failed/tokens/avg-min-max % per
+`stage_type`, across many runs) and `effectiveness.py` (High/≥15% · Medium/≥5% · Low impact
+classification by measured share of total tokens saved). The benchmark suite
+(`tests/benchmarks/`) now captures a full per-stage token trace for every case
+(`benchmark_runner.py`), and `run_benchmarks.py --analytics` prints stage contribution, language
+(ecosystem) contribution, top-10-hardest-files, and the effectiveness table; `--history` appends
+to an append-only `tests/benchmarks/history.json` (format designed, comparison function
+`detect_regression()` provided) and prints a version-over-version table — deliberately **not**
+wired into `.github/workflows/*.yml` (no benchmark CI step exists today; wiring one is a separate
+decision, out of scope here per the task's own instruction to design the format rather than build
+CI when CI work would be "too large").
+
+**ID note:** the task that requested this used the ticket name "QB-039," but that ID was already
+in use in this document (see above, "Compression Modes: Safe/Balanced/Aggressive," proposed,
+unimplemented) — this entry uses the next free ID, QB-051, instead of colliding with it.
+
+**What the first real run found** (60-case corpus, `python -m tests.benchmarks.run_benchmarks
+--analytics`) — the evidence behind the ranking below:
+
+| Stage | Impact | Contribution | Activation | Avg saved/fire |
+|---|---|---|---|---|
+| `code_ast_summarize` | High | 44.1% | 100% | 43.1% |
+| `max_tokens` | High | 32.4% | 100% | 2.2% |
+| `strip_lines` | High | 18.4% | 100% | 17.9% |
+| `group_repeated` | Low | 2.7% | 100% | 14.1% |
+| `python_ast_summarize` | Low | 2.4% | 100% | 44.3% |
+| `deduplicate_consecutive` | Low | 0.1% | 100% | 0.3% |
+| `remove_ansi` | Low | 0.0% | 100% | 0.2% |
+
+Language/ecosystem contribution: JavaScript 52%, TypeScript 43%, Python 41%, Git 31%, Documents
+25%, Files 23%, Generic 5%. Top-of-the-hardest-files list is dominated by already-clean/passing
+test-runner output and short documents (0.0% — nothing left to cut) plus `git`/generic commands.
+
+**Read this data with its limits in view, not as a verdict:** 60 cases is a small, hand-curated
+corpus (see QB-047 below) and token counts are the existing ±20% char/4 estimate — this is
+directional evidence for re-prioritizing, not a precision instrument. Two specific readings that
+would be *wrong*: (1) "`max_tokens` is more valuable than `strip_lines`" — its 32.4% share comes
+from firing on nearly every case for a small trim each time (2.2% avg), not from doing
+sophisticated work, cheap-and-broad rather than deep; (2) "`python_ast_summarize` barely matters"
+— it has the *second-highest* average savings per fire (44.3%, almost identical to
+`code_ast_summarize`'s 43.1%) but a low total share only because this corpus has few Python cases
+relative to Git/generic ones — that's a corpus-composition artifact, not a quality signal.
+
+**Evidence-based re-ranking of existing backlog items** (Top 10, by measured-ROI signal — not new
+invented items; each still needs its own full scoping pass, this only reorders the *why now*):
+
+1. **QB-046 — AST-aware summarization for more languages (Go/Rust/Java/C#).** `code_ast_summarize`
+   is the single highest-contributing *and* highest-average-savings-per-fire stage measured
+   (44.1% share, 43.1% avg). This is the strongest direct evidence in the whole run: the mechanism
+   that already exists is Quor's best lever, and it's currently gated to three languages. Effort:
+   Medium (per language, existing tree-sitter pattern). Expected savings: High (mirrors the 43%
+   figure above, per newly-covered language). Risk: Low (additive, same fail-open contract).
+   Confidence: High.
+2. **QB-041 — Smarter diff & delta compression (git diff/show).** Git sits at 31% ecosystem
+   contribution — meaningfully behind JavaScript (52%)/TypeScript (43%)/Python (41%) despite git
+   commands being extremely common in a coding session. This is fresh, corpus-measured
+   confirmation of QB-041's own problem statement (`preserve_patterns` protects most diff content
+   by design). Effort: Medium. Expected savings: Medium–High (closing roughly half the gap to the
+   language ecosystems would be a large absolute number given git's invocation frequency). Risk:
+   Medium (already flagged in QB-041 itself). Confidence: Medium (extrapolating from 31% vs. ~45%
+   average, not a controlled comparison).
+3. **QB-047 — Real-world benchmark corpus & continuous tracking.** This task's own analytics
+   exposed the corpus's limits directly (60 hand-picked cases; several ecosystems have too few
+   cases for the per-ecosystem/per-stage numbers above to be more than directional; no config-file
+   category exists yet to evaluate QB-040 against real evidence at all). The analytics layer this
+   task built is only as good as the corpus feeding it — expanding the corpus is now the highest
+   leverage way to *sharpen every other measurement*, not just add one more feature. Effort:
+   Medium. Expected savings: None directly (measurement). Risk: Low. Confidence: High (the gap is
+   directly observed, not inferred).
+4. **QB-040 — Config & structured-data file compression (YAML/JSON/TOML/.env/.ini).** Cannot yet
+   be evaluated against real measured evidence — there is no benchmark category for it (see QB-047
+   above). The `Generic` ecosystem's low 5% contribution is *not* evidence for or against QB-040
+   specifically (it's dominated by already-terse commands like `ls -la`, not config files).
+   Recorded here as "worth measuring before investing further," not "the data says do this."
+   Effort: Medium. Expected savings: Unmeasured (previously estimated Medium). Risk: Low.
+   Confidence: Low (no direct evidence yet — this is the honest read, not a downgrade of the
+   original idea).
+5. **QB-049 — Explainability upgrades to `quor explain`.** This task's `track_tokens` plumbing
+   (`Pipeline.execute()`, `FilterRegistry.trace()`) already exists and is fully wired end to end
+   for the benchmark suite; `quor explain` choosing to opt in and add a "tokens before/after" per
+   stage-trace-row column (mirroring `analytics_report.py`'s effectiveness table) is now a small,
+   low-risk follow-on rather than new plumbing. Effort: Small (now that this task shipped).
+   Expected savings: None directly (developer tooling). Risk: Low. Confidence: High.
+6. **QB-044 — Deeper test-output compression (cross-run summarization).** `max_tokens`'s
+   dominant-but-shallow 32.4%/2.2%-per-fire profile above is a signal that several filters
+   (test-runner output among them) are relying on the generic budget clamp rather than
+   structure-aware summarization — consistent with QB-044's own premise. Effort: Medium. Expected
+   savings: Medium. Risk: Low. Confidence: Medium (inferred from the stage profile, not measured
+   directly against test-output cases specifically).
+7. **QB-045 — Broader build & CI log compression.** Same reasoning as #6, generalized past test
+   runners specifically — the `max_tokens` shallow-clamp pattern likely recurs anywhere Quor has a
+   budget stage but no structure-aware one yet. Effort: Medium. Expected savings: Medium. Risk:
+   Low. Confidence: Low (no dedicated CI-log cases in the current corpus — see QB-047).
+8. **QB-039 (existing entry above) — Compression Modes: Safe/Balanced/Aggressive.** The
+   `max_tokens` numbers above are exactly the "budget clamp doing shallow, broad work" case
+   Balanced/Aggressive mode is meant to push further into — this task's data makes that case
+   concrete rather than hypothetical, without changing QB-039's own open design questions. Effort/
+   Risk/Confidence: unchanged from its own entry.
+9. **QB-042 — Continuous competitive benchmarking (RTK, Headroom AI, ZAP).** Unaffected in
+   priority by this task's numbers directly, but the history format shipped here
+   (`tests/benchmarks/history.py`) is a reusable building block for tracking Quor's *own* trend
+   line the same way QB-042 wants to track competitors' — worth sequencing after QB-042's own
+   scoping, not before. Effort/Risk/Confidence: unchanged from its own entry.
+10. **QB-048 — Compression quality & AI task-success evaluation.** Not re-ranked by this task's
+    numbers (token-count savings and task-success are explicitly different axes — see QB-048's own
+    entry) — listed here only as a reminder that every "High impact" rating above is a *token*
+    rating, not a correctness/usefulness one, and QB-048 is what would eventually confirm or
+    challenge it.
+
+**Files changed:** `quor/pipeline/stages/base.py`, `quor/pipeline/engine.py`,
+`quor/filters/registry.py`, `quor/analytics/__init__.py`, `quor/analytics/stage_stats.py`,
+`quor/analytics/effectiveness.py`, `tests/benchmarks/benchmark_runner.py`,
+`tests/benchmarks/analytics_report.py` (new), `tests/benchmarks/history.py` (new),
+`tests/benchmarks/run_benchmarks.py`.
+
+**Validation:** `ruff check .` clean; `mypy quor/` clean (CI's own invocation); full `tests/unit`
+suite green; `tests/integration -m integration` (7/7) green; `tests/benchmarks/test_benchmarks.py`
+(185 tests) green; benchmark suite re-run before/after this change produced byte-identical
+per-case `compression_pct` for all 60 cases and an identical 35.3%/9602-token overall figure.
+
+**Update (2026-07-15) — product-strategy review revised the ranking above.** The 10-item ranking
+directly above was benchmark-corpus-only (this task never queried `quor gain` or the tracking DB
+directly). A follow-on product-strategy review added that second evidence source and found it
+changes the #1 priority: **QB-041 (git-diff) moves ahead of QB-046 (AST languages).** Real usage
+(`python -m quor gain --days 90`, this project) shows git-diff responsible for **45% of every
+token this tool has ever saved here**, at roughly half the compression ratio its own git siblings
+achieve — a finding no benchmark-only pass could show, since the corpus has only 2 git-diff samples
+and no volume/frequency signal at all. The review also found: a large, previously-invisible
+benchmark-vs-real divergence for several filters (mypy 46.1% benchmark vs **-41.2% real** — net
+*expansion*, not compression; git-log 40.8% benchmark vs 83.8% real; git-status 52.7% benchmark vs
+6.6% real; pytest 39.75% benchmark vs 12.9% real), which is now the direct evidence behind QB-047's
+promotion to Now and behind two brand-new items, QB-052 (the mypy/npm fix) and QB-054
+(telemetry-driven optimization, so this kind of gap is caught automatically instead of by a one-off
+manual SQL query). See each item's own **Evidence update (2026-07-15)** note below for specifics.
+QB-046, QB-047, and QB-049 have moved up from [Next](#next) into Now; QB-040 and QB-042 have moved
+down from Now into [Next](#next) — full reasoning is in each item's own entry, not repeated here.
+
+</details>
+
+---
+
+#### QB-041 — Smarter diff & delta compression (git diff/show, patches)
+
+**Effort:** Medium · **Value:** High · **Risk:** Medium · **Expected token impact:** High ·
+**Category:** Enhancement
+
+QB-004's investigation (see Completed, below) found that `git diff`/`git show` barely compress
+today — not because of a bug, but because the filter marks almost all diff content "always keep,"
+so a genuinely large diff can blow far past its configured token budget with nothing done about it.
+That was the right, conservative call under the old "safe, deterministic" direction. Under
+"maximum practical token reduction," a diff filter that routinely does ~0% on real, large diffs is
+now a gap worth closing, not a settled decision.
+
+**Evidence update (2026-07-15) — this is now Priority 1, promoted from #2:** real usage
+(`python -m quor gain --days 90`, this project) shows git-diff responsible for **45% of every
+token Quor has ever saved on this project** — 46.5k of 100.7k net tokens saved — at a ~26%
+average ratio, versus git-log's 40.8%/git-status's 52.7% *benchmark* ratios (real-world git-log and
+git-status swing even further in opposite directions from their benchmark numbers — see QB-047).
+Doing the arithmetic directly from the real numbers: moving git-diff's ratio from ~26% to ~40%
+(still short of its git siblings) would add roughly +25k tokens on this project's existing 90-day
+window alone — a projected **~14% increase in every token Quor has ever saved here**, from one
+filter. No other single item in this backlog has that much *already-flowing volume* behind it;
+QB-041 is now ranked ahead of QB-046 for exactly this reason (QB-046's per-fire quality is equally
+strong, but has zero measured real-world volume in this project — see QB-046's own evidence
+update).
+
+<details>
+<summary>Technical details</summary>
+
+**Problem:** `git-diff.toml`'s `preserve_patterns` protects the overwhelming majority of real diff
+content (QB-004 measured 298 of 515 lines / ~5,265 of ~5,806 tokens protected in its repro case) —
+`max_tokens`'s 600-token budget was already a no-op before it ever ran. ADR-031 (QB-012) formally
+decided this is correct *behavior* for the budget mechanism; it did not decide that a near-zero
+compression rate on large diffs is an acceptable *outcome* — that question was explicitly deferred,
+not answered, and is what this item picks up. Confirmed directly by reading the shipped filter
+(`quor/filters/builtin/git.toml`): `preserve_patterns = ['^\+', '^-', '^@@', 'conflict', 'Error']`
+— literally every added line, every removed line, and every hunk header is protected; only
+boilerplate headers (`index `, `diff --git `, `--- a/`, `+++ b/`, blank lines) are ever compressible
+today.
+
+**Desired outcome, ideas not yet evaluated against each other:**
+- Collapse unchanged context lines more aggressively (git already supports `-U0`/reduced context;
+  Quor could default to requesting less context from git itself rather than compressing after the
+  fact).
+- Summarize a diff's own repeated shape — e.g. "12 files changed, mostly whitespace/import-reorder"
+  — the same instinct behind `group_repeated`, applied to whole-hunk shapes instead of lines.
+  `match_output` (QB-010) is the closest existing primitive, but wasn't designed for this.
+  content — Balanced mode would let a diff-shape-summary genuinely replace hunk bodies instead of
+  only ever running when `preserve_patterns` didn't already claim them.
+- For a genuinely huge diff (a lockfile regenerated, a vendored dependency bump), recognize the
+  "this file's diff is 4,000 lines of generated noise" case and represent it as a one-line summary
+  plus the tee recovery link (QB-013) — the file changed, here's proof, here's how to see the rest.
+
+**Status:** Proposed. Not scoped or implemented. Depends conceptually on QB-039 (Balanced/Aggressive
+modes) for the second and third ideas above — the first idea (less context from git itself) doesn't,
+and could ship independently and sooner. A thin slice of QB-047 (more git-diff benchmark samples,
+today only 2) should land alongside this item so it has a real regression baseline before/after,
+not just this project's own `quor gain` numbers. **See QB-055, directly below, for the worked-out
+algorithm design covering the second and third ideas above** — added 2026-07-15 at product-owner
+request so "compress diffs more" has a concrete, safety-constrained mechanism instead of a sketch.
+
+</details>
+
+---
+
+#### QB-055 — Smarter diff semantics (context-aware hunk compression)
+
+**Effort:** Medium · **Value:** High · **Risk:** Medium · **Expected token impact:** High ·
+**Category:** Enhancement
+
+Added 2026-07-15 at product-owner request, as the concrete technical design for QB-041's goal —
+QB-041 establishes *why* git-diff needs to compress harder (the evidence) and lists candidate ideas
+at a sketch level; this item is the specific algorithm. Not just "compress diffs more" — change
+what a diff *shows*: identify genuinely unchanged context, collapse repetitive hunks, always
+preserve edited lines and their immediate surrounding context, and summarize large unchanged
+regions intelligently instead of either keeping them whole or stripping them blind. Likely the
+single biggest practical improvement available, since diffs dominate real coding sessions.
+
+<details>
+<summary>Technical details</summary>
+
+**Relationship to QB-041:** not a duplicate. QB-041 is the problem statement plus evidence (why
+git-diff underperforms, how much real volume is at stake — see its own "Evidence update") and lists
+three candidate approaches at a sketch level. This item is the one of those three ("summarize a
+diff's own repeated shape") worked out to an actual algorithm, with an explicit safety constraint
+the sketch didn't spell out: *edited lines and their nearby context are never candidates for
+summarization — only genuinely unchanged, repetitive, or generated-noise regions are.* Track QB-041
+and QB-055 as one initiative, kept as separate entries because evidence-gathering and algorithm
+design are different kinds of work with different review needs.
+
+**Desired outcome — the specific mechanism, not yet designed in code:**
+- **Identify unchanged context** — lines a diff already marks as context (no `+`/`-` prefix) are
+  candidates for compression; lines with a `+`/`-` prefix never are.
+- **Preserve edited lines** — every `+`/`-` line stays, unconditionally, exactly as
+  `preserve_patterns` already guarantees today (this item doesn't loosen that guarantee, it works
+  around it more precisely instead of only ever trimming boilerplate headers, which is all today's
+  `strip_lines` patterns touch).
+- **Preserve nearby context** — a fixed window of unchanged lines immediately adjacent to an edit
+  (both directions) stays too, so the AI still has enough surrounding code to understand the change
+  — the same instinct as `git diff -U<n>`, but decided by Quor after the fact rather than requiring
+  the user to have requested less context from git in the first place.
+- **Collapse repetitive hunks** — when the *same* unchanged-region shape repeats across multiple
+  hunks or files (e.g. a mechanical whitespace/import-reorder change touching 40 files identically),
+  represent it once with a count — the same instinct as `group_repeated` (existing stage) but
+  applied to whole-hunk shapes instead of adjacent lines; `match_output` (QB-010) is the closest
+  existing primitive, but wasn't designed for this granularity.
+- **Summarize huge unchanged regions** — a genuinely large, low-information unchanged span (a
+  regenerated lockfile, a vendored dependency bump) becomes a one-line summary plus the tee recovery
+  link (QB-013), never silently dropped.
+
+**Open design questions:**
+- Where does "collapse repetitive hunks" sit against ADR-031's `preserve_patterns` guarantee —
+  hunks being collapsed here are, by construction, unchanged-context lines, never `+`/`-` lines, so
+  this should not need Balanced/Aggressive mode (QB-039) to be safe. Worth confirming explicitly
+  during design rather than assuming it.
+- What "same shape" means for hunk-level grouping (line-count match? normalized-content match?)
+  needs the same deterministic, non-heuristic caution QB-036's design work already applied when it
+  rejected a naive "deduplicate visually similar lines" rule for diagnostics.
+- Needs its own benchmark cases before/after (ties directly to QB-047's git-diff corpus slice) so
+  "smarter" is measured, not assumed.
+
+**Status:** Proposed. Not scoped or implemented. Added 2026-07-15 at product-owner request during
+the QB-051 roadmap review, positioned immediately after QB-041 (same initiative) and explicitly
+ahead of QB-053 (adaptive compression) — this is concrete, scoped algorithm work, not the more
+architecturally speculative self-tuning QB-053 describes.
+
+</details>
+
+---
+
+#### QB-052 — Fix negative-compression regression in mypy/npm filters
+
+**Effort:** Small · **Value:** Medium · **Risk:** Low · **Expected token impact:** Low (small in
+absolute tokens, but corrects a trust-damaging defect) · **Category:** Bug fix
+
+Real usage data — not the benchmark corpus, which never surfaced this — shows two shipped filters
+making output *bigger*, not smaller, on average: `mypy` (-41.2% avg over 80 real invocations) and
+`npm` (-9.1% avg over 26 real invocations). A compression tool that expands output, even
+occasionally, undermines trust regardless of how small the absolute numbers are.
+
+<details>
+<summary>Technical details</summary>
+
+**Problem, read directly from `quor/filters/builtin/build.toml`:** the `mypy` filter's
+`group_repeated` stage requires 3 *identical* error shapes (`min_count = 3`) before it collapses
+anything, and `abort_unless = ["error", "Error", "warning", "Warning", "note"]` gates the whole
+pipeline. A typical real mypy run reports a handful of *distinct* errors, not 3+ identical ones —
+so `group_repeated` rarely fires, `strip_lines` only removes a few boilerplate lines
+("Success: no issues found", "Found N error", blank lines), and the tee recovery-footer's
+near-fixed overhead is added regardless — net-negative on already-small output. `npm`'s
+`group_repeated` (`min_count = 2`, `quor/filters/builtin/node.toml`) hits the same dynamic less
+severely, which is why its real average is only mildly negative rather than sharply so.
+
+**Desired outcome:** Either (a) lower `mypy`'s `group_repeated` threshold and broaden `strip_lines`
+so genuinely-small mypy runs have more to trim, or (b) suppress/shrink the tee recovery footer when
+a filter's own compression didn't save enough to offset it. Option (b) is the general fix — see
+QB-053/QB-054 below, which would let *any* filter self-correct this way, not just mypy/npm — and
+likely obsoletes needing a filter-specific fix, so it should be scoped first.
+
+**Status:** Proposed. Not scoped or implemented. Found during the 2026-07-15 product-strategy
+review via a direct SQLite query against the real tracking DB — invisible in the benchmark corpus,
+which has no case that exercises this pattern (mypy's 2 benchmark samples both compress fine).
+
+</details>
+
+---
+
+#### QB-047 — Real-world benchmark corpus & continuous tracking
+
+**Effort:** Medium · **Value:** High · **Risk:** Medium · **Expected token impact:** None
+directly · **Category:** Engineering / Measurement
+
+The existing benchmark suite (QB-011, expanded by QB-005E) is 60 realistic but hand-written sample
+commands, run on demand, compared against one committed baseline. This item extends it two ways:
+sampling real (anonymized, opt-in) commands from actual usage instead of only hand-authored fixtures,
+and tracking compression numbers as a trend across releases instead of a single point-in-time
+baseline diff.
+
+**Evidence update (2026-07-15) — promoted from [Next](#next), Value raised Medium → High:** the
+product-strategy review found large, previously-invisible gaps between the benchmark corpus and
+real usage — mypy (46.1% benchmark vs. **-41.2% real**), git-log (40.8% benchmark vs. **83.8%
+real**), git-status (52.7% benchmark vs. **6.6% real**), pytest (39.75% benchmark vs. **12.9%
+real**) — for four different filters, in both directions. A corpus with 2 samples per category
+cannot predict real behavior reliably for the highest-volume filters any more than the lowest. This
+is no longer a hypothesis; it's what closing the loop between QB-051's benchmark analytics and
+`quor gain`'s real telemetry actually showed. Recommend scoping a first *slice* (more git-diff,
+generic, and config-file samples specifically, tied to QB-041 and QB-040) rather than the full
+broad corpus rebuild in one pass.
+
+<details>
+<summary>Technical details</summary>
+
+**Problem:** Hand-written benchmark fixtures, however realistic, can't tell us whether real usage
+looks like the corpus — QB-034's own `discover`-command proposal exists specifically because this
+gap is felt keenly ("what would Quor have saved on commands it never saw"). Separately, the
+benchmark suite's regression check compares only against the immediately prior baseline — there's no
+view of whether compression rates are trending up or down release over release.
+
+**Desired outcome:** (1) An opt-in, privacy-conscious mechanism to contribute real command-output
+samples (redacted/anonymized) to the benchmark corpus over time — likely sharing infrastructure with
+QB-034's `discover` command, which already needs to read real session logs. (2) A trend view — even
+a simple committed CSV/JSON of "compression % per category per release" — so a regression that's
+individually below the 2.0pp threshold (QB-011's existing gate) but persistent across several
+releases becomes visible. QB-051 already shipped the data format for this (`tests/benchmarks/
+history.py`'s `history.json`) — this item is what would actually populate it release over release.
+
+**Open question:** privacy/consent model for (1) needs real product and legal thought before any
+implementation — this is explicitly not "just add telemetry."
+
+**Status:** Proposed. Not scoped or implemented.
+
+</details>
+
+---
+
+#### QB-054 — Telemetry-driven optimization (operationalize the tracking DB as continuous feedback)
+
+**Effort:** Medium · **Value:** High · **Risk:** Low · **Expected token impact:** None directly
+(measurement/infrastructure — enables QB-053) · **Category:** Engineering / Measurement
+
+QB-051 built the analytics *mechanism* (per-stage stats, effectiveness classification) but only
+ever runs it against the benchmark corpus. The 2026-07-15 product-strategy review found its most
+important evidence by hand — a one-off SQL query against the real tracking DB (`quor.db`) that
+surfaced the mypy/npm regression (QB-052) and the git-diff volume finding behind QB-041's
+re-ranking — numbers the benchmark corpus alone could never have shown. This item turns that
+one-off manual query into a standing capability.
+
+**Product decision (2026-07-15) — promoted ahead of QB-049 and QB-039, directly behind QB-047:**
+the product owner's own read of this review singled this out, alongside QB-053, as "probably the
+most important long-term addition" — the direction being: Quor should stop encoding hardcoded
+assumptions about what to compress and instead learn from real outcomes across many sessions (e.g.
+"this pattern never hurts task success and saves 18% tokens, across 50,000 sessions"). This item is
+the prerequisite infrastructure for that direction, so it's sequenced ahead of the smaller,
+independent wins (QB-049, QB-039) rather than after them.
+
+<details>
+<summary>Technical details</summary>
+
+**Problem:** `quor gain` (QB-017/QB-037) reports net savings and a top-5 filter list, but nothing
+flags a filter that's gone net-negative, nothing compares real-usage percentages against the
+benchmark corpus's expectations, and nothing runs on a recurring cadence — every insight in the
+2026-07-15 review required an ad hoc script against the SQLite DB.
+
+**Desired outcome:** Extend `quor doctor` (or a new `quor gain --analyze`-style view) to
+automatically flag: (1) any filter whose rolling real `compression_pct` is negative or near-zero
+(directly generalizes the QB-052 finding into an ongoing check, not a one-time fix); (2) any filter
+whose real-usage percentage diverges sharply from its benchmark-corpus percentage (generalizes this
+review's mypy/git-log/git-status/pytest divergence findings — see QB-047 — into a standing signal
+instead of something only found by manually comparing two reports side by side). Reuses QB-051's
+`history.json` design pattern (append-only, comparable over time) but sourced from the real
+tracking DB instead of the benchmark corpus.
+
+**Relationship to QB-047:** QB-047 improves the *benchmark corpus's* realism; this item improves
+visibility into *actual production* behavior. They're complementary, not overlapping — QB-047 makes
+the corpus a better proxy for reality, this item stops needing to guess whether the proxy is right
+at all.
+
+**Status:** Proposed. Not scoped or implemented. Natural prerequisite for QB-053 (adaptive
+compression needs a live signal to adapt from). Came directly out of the 2026-07-15 product-strategy
+review, not a prior request.
+
+</details>
+
+---
+
+#### QB-049 — Explainability upgrades to `quor explain`
+
+**Effort:** Medium · **Value:** Medium · **Risk:** Low · **Expected token impact:** None directly ·
+**Category:** Enhancement
+
+`quor explain` already shows a stage-by-stage trace of what a filter would do to a given command
+(and, per QB-036, deliberately opts out of the early-exit optimization so that trace stays complete).
+What it doesn't yet do: explain *why* in plain English ("this line matched the `preserve_patterns`
+rule for REQ IDs"), or project the token impact of a hypothetical mode change (QB-039) before a user
+turns it on. As compression gets more aggressive under the new vision, explaining it well matters
+more, not less — this is the trust half of "aggressive isn't reckless."
+
+**Evidence update (2026-07-15) — promoted from [Next](#next), Effort lowered Medium → Small for the
+token-column half:** QB-051 already built and wired the `track_tokens` plumbing
+(`Pipeline.execute()`, `FilterRegistry.trace()`) end to end for the benchmark suite. Adding a
+"tokens before/after" column to `quor explain`'s existing per-stage trace table is now a small,
+low-risk presentation change reusing that plumbing, not new engineering — and would have made this
+whole review's manual SQL-querying unnecessary for the per-stage (if not the real-usage) half of
+what it found.
+
+<details>
+<summary>Technical details</summary>
+
+**Problem:** `quor explain`'s existing per-stage trace shows *what* changed (`Decision` per line,
+per stage) but not *why* in language a non-engineer would follow, and has no forward-looking mode —
+it explains what already happened, not what a different setting would do.
+
+**Desired outcome:** Three additions, each independently shippable: (1) a "tokens before/after" per
+stage-trace-row column, reusing QB-051's existing `track_tokens` plumbing (Small effort, see above);
+(2) a plain-English reason string attached to each `Decision` (many stages already carry a `reason`
+internally per QB-005B's own fail-open-contract documentation — this may be substantially a
+presentation change, not new logic); (3) a `--mode` flag on `quor explain` letting a user preview
+what Balanced/Aggressive mode (QB-039) would do differently to the same input, before switching
+their default.
+
+**Status:** Proposed. Not scoped or implemented. Part (3) depends on QB-039 existing first; parts
+(1) and (2) do not and could ship independently and sooner — (1) especially, given it needs no new
+plumbing at all.
+
+</details>
+
 ---
 
 #### QB-039 — Compression Modes: Safe / Balanced / Aggressive
@@ -203,6 +683,16 @@ token count hard, accepts a real risk of losing detail a human would have wanted
 the AI can ask again if it needs something back). This is the single item that makes the new vision
 ("maximum practical token reduction") something a user actually experiences, not just a philosophy
 in this document.
+
+**Evidence update (2026-07-15) — sequencing confirmed, not re-ranked:** the product-strategy review
+found direct, code-level proof of exactly the mechanism this item targets (`git-diff.toml`'s
+`preserve_patterns` protects nearly 100% of diff bodies — see QB-041's own evidence update) and of
+`max_tokens`'s shallow-but-universal behavior (32.4% of all benchmark savings from a 2.2% average
+trim per fire). Both make this item's premise concrete rather than hypothetical. The review's
+recommendation stands as originally scoped: let QB-041 ship a narrow, well-understood version of
+"compress into currently-protected content" for one filter first, before generalizing to a
+project-wide mode switch — this item's own open design questions (below) are unaffected and still
+need their own design pass.
 
 <details>
 <summary>Technical details</summary>
@@ -244,124 +734,101 @@ to answer the open questions above.
 
 ---
 
-#### QB-040 — Config & structured-data file compression (YAML/JSON/TOML/.env/.ini)
+#### QB-053 — Adaptive compression (self-tuning aggressiveness per filter)
 
-**Effort:** Medium · **Value:** High · **Risk:** Low · **Expected token impact:** Medium ·
-**Category:** Feature
+**Effort:** Large · **Value:** High · **Risk:** Medium · **Expected token impact:** Medium-High ·
+**Category:** Feature / Architecture
 
-Quor already compresses documents (Markdown, DOCX, PDF — QB-007) and source code (Python/JS/TS —
-QB-005), but a `Read` or `cat` of a config file — `package.json`, a Kubernetes YAML manifest, a
-`.env` file, a large `pyproject.toml` — gets no treatment at all today. These files are extremely
-common in a real coding session and often large (lockfiles, generated configs), with a lot of
-low-value repeated structure (boilerplate keys, generated comments, long dependency lists) that a
-coding assistant rarely needs in full.
+Every filter's aggressiveness today is a fixed choice a human made once in a `.toml` file. This
+item asks whether Quor can *automatically* lean into filters with proven real headroom (git-diff,
+once QB-041 gives it room to work with) and automatically back off filters proven to be low- or
+negative-value (the mypy/npm finding in QB-052) — without a human hand-tuning each
+`preserve_patterns` list or manually flipping QB-039's mode dial. Distinct from QB-039: QB-039 is a
+user-selected, static dial; this is the system correcting itself using its own measured evidence.
 
 <details>
 <summary>Technical details</summary>
 
-**Problem:** No filter or extraction path exists for `.yaml`/`.yml`/`.json`/`.toml`/`.env`/`.ini`
-content, whether read via `cat` (Bash) or Claude Code's native `Read` tool. QB-007's document
-extraction and QB-005's AST summarization both deliberately scoped this out.
+**Problem:** Nothing in `quor/filters/registry.py`/`quor/pipeline/engine.py` today reads back its
+own historical performance (the tracking DB, `quor/tracking/db.py`) to change how a filter behaves
+on the next call. Every `.toml` config is static until a human edits it.
 
-**Desired outcome:** Structure-aware compression for the most common config formats — e.g. for a
-large JSON/YAML file, collapse long homogeneous arrays (a lockfile's hundreds of near-identical
-dependency entries) while preserving keys/schema shape and any genuinely distinct values; for
-`.env`, strip comments/blank lines but never touch a value (these are frequently secrets — this
-must compose correctly with QB-029's secret scanner, not fight it).
+**Desired outcome, not yet designed:** A feedback path from measured per-filter effectiveness
+(QB-054, above, would supply this) back into filter behavior — e.g., a filter whose real
+`compression_pct` is consistently near-zero or negative could automatically skip the tee recovery
+footer (directly fixing QB-052's finding generally, not per-filter); a filter with consistently high
+real volume and a known-conservative mechanism (git-diff, pre-QB-041) could be a candidate for
+gradually loosening `preserve_patterns` — this is effectively QB-039's "Balanced mode" logic,
+triggered by evidence instead of a user's manual switch.
 
-**Why this is a natural fit for the existing architecture:** `.toml` itself is already a first-class
-citizen of Quor's own filter-config format, and `regex_replace`/`strip_lines`/`max_tokens` (QB-008,
-QB-009, existing stages) already provide most of the primitives needed for the simpler formats
-(`.env`, `.ini`). JSON/YAML's nested-array-collapsing is the one genuinely new piece of logic,
-closer in spirit to QB-007's structure extraction than to a simple line filter.
+**Open design questions:**
+- Automatic behavior change is a correctness risk in a way a static config isn't — needs the same
+  "architecture-first" design pass QB-005A/QB-035A/QB-036 already established as this project's norm
+  before any code.
+- Depends on QB-054 existing first (an automatic system needs a live, trustworthy telemetry feed to
+  adapt from, not a one-off manual review like the one that found QB-052).
+- Overlaps conceptually with QB-039 (Balanced mode) — worth designing together rather than as two
+  competing mechanisms; QB-039 could be the manual override that always wins over this item's
+  automatic behavior.
 
-**Risk, stated plainly:** config files are exactly the place where "safe, deterministic" matters
-most — a wrong compression here can silently change what a generated config *means* to a build tool,
-not just what it looks like to a human. This item should ship Safe-mode-only initially (see QB-039)
-regardless of when Aggressive mode ships elsewhere.
-
-**Status:** Proposed. Not scoped or implemented.
+**Status:** Proposed. Not scoped or implemented. Sequenced after QB-054 and QB-039's own design pass
+— this is the most architecturally ambitious item added in the 2026-07-15 update, deliberately not
+started before its prerequisites exist.
 
 </details>
 
 ---
 
-#### QB-041 — Smarter diff & delta compression (git diff/show, patches)
+#### QB-046 — AST-aware summarization for more languages (Go, Rust, Java, C#)
 
-**Effort:** Medium · **Value:** High · **Risk:** Medium · **Expected token impact:** Medium ·
-**Category:** Enhancement
+**Effort:** Large (per language) · **Value:** Medium · **Risk:** Low · **Expected token impact:**
+Medium · **Category:** Feature
 
-QB-004's investigation (see Completed, below) found that `git diff`/`git show` barely compress
-today — not because of a bug, but because the filter marks almost all diff content "always keep,"
-so a genuinely large diff can blow far past its configured token budget with nothing done about it.
-That was the right, conservative call under the old "safe, deterministic" direction. Under
-"maximum practical token reduction," a diff filter that routinely does ~0% on real, large diffs is
-now a gap worth closing, not a settled decision.
+QB-005 shipped structure-aware, signature-preserved reading for Python, JavaScript, TypeScript, and
+TSX. This is the direct continuation for the other languages QB-035's original scope named (Go,
+Rust, Java) plus one it didn't (C#) — using the same `tree-sitter`-based framework QB-005B already
+built and proved reusable across three languages.
 
-<details>
-<summary>Technical details</summary>
-
-**Problem:** `git-diff.toml`'s `preserve_patterns` protects the overwhelming majority of real diff
-content (QB-004 measured 298 of 515 lines / ~5,265 of ~5,806 tokens protected in its repro case) —
-`max_tokens`'s 600-token budget was already a no-op before it ever ran. ADR-031 (QB-012) formally
-decided this is correct *behavior* for the budget mechanism; it did not decide that a near-zero
-compression rate on large diffs is an acceptable *outcome* — that question was explicitly deferred,
-not answered, and is what this item picks up.
-
-**Desired outcome, ideas not yet evaluated against each other:**
-- Collapse unchanged context lines more aggressively (git already supports `-U0`/reduced context;
-  Quor could default to requesting less context from git itself rather than compressing after the
-  fact).
-- Summarize a diff's own repeated shape — e.g. "12 files changed, mostly whitespace/import-reorder"
-  — the same instinct behind `group_repeated`, applied to whole-hunk shapes instead of lines.
-  `match_output` (QB-010) is the closest existing primitive, but wasn't designed for this.
-  content — Balanced mode would let a diff-shape-summary genuinely replace hunk bodies instead of
-  only ever running when `preserve_patterns` didn't already claim them.
-- For a genuinely huge diff (a lockfile regenerated, a vendored dependency bump), recognize the
-  "this file's diff is 4,000 lines of generated noise" case and represent it as a one-line summary
-  plus the tee recovery link (QB-013) — the file changed, here's proof, here's how to see the rest.
-
-**Status:** Proposed. Not scoped or implemented. Depends conceptually on QB-039 (Balanced/Aggressive
-modes) for the second and third ideas above — the first idea (less context from git itself) doesn't,
-and could ship independently and sooner.
-
-</details>
-
----
-
-#### QB-042 — Continuous competitive benchmarking (RTK, Headroom AI, ZAP)
-
-**Effort:** Medium · **Value:** Medium · **Risk:** Low · **Expected token impact:** None directly ·
-**Category:** Engineering / Measurement
-
-Quor's competitive positioning today comes from a one-time research document
-(`docs/archive/product-discovery/competitive-research.md`) that's already referenced repeatedly
-throughout this backlog (QB-032, QB-034, QB-035) but was written once and never re-run. Under the
-new vision — "maximum practical token reduction" — "practical" needs an external yardstick:
-proof Quor's real compression numbers hold up against the tools it's actually competing with, on an
-ongoing basis, not a one-time snapshot from whenever that research happened.
+**Evidence update (2026-07-15) — kept in [Now](#now) but moved to last, behind all
+telemetry-driven work (product decision, overriding this task's own initial ranking):**
+`code_ast_summarize` remains the single best-*performing* mechanism Quor has (44.1% of all
+benchmark savings, 43.1% avg per fire, consistent with `python_ast_summarize`'s 44.3% avg — same
+quality, different language) — the underlying case for this item is not weaker than it was. What
+changed is sequencing, not merit: real usage on this project shows **zero** invocations of
+`cat-javascript`/`cat-typescript` at all (this is a Python project), so there's no real-world volume
+evidence for a new language the way there is for QB-041/QB-055. The product owner's explicit call:
+the tree-sitter framework this item would use is already proven and not going anywhere — "there's
+no rush until users actually need them" — so this stays behind QB-041/QB-055 (proven volume),
+QB-052 (trust fix), QB-047 (fixes the measurement itself), QB-054 (learns what to prioritize from
+telemetry instead of guessing), QB-049 (cheap), QB-039, and QB-053 (the two items that would
+directly help decide *which* language to add first, using real evidence instead of a guess).
 
 <details>
 <summary>Technical details</summary>
 
-**Problem:** No automated way exists to compare Quor's benchmark suite results (QB-011, QB-005E)
-against a competitor's on the same corpus. The competitive research that already shaped several
-backlog decisions (QB-032's traceback compression, QB-034's `discover` command, QB-035's language/
-agent coverage) is a snapshot, not a live signal — it could already be stale in either direction (a
-competitor shipping something new, or Quor closing a gap the research flagged).
+**Problem:** `quor/pipeline/ast_summarize/registry.py` only has analyzers for `python`,
+`javascript`, `typescript`, and `tsx`. A `.go`/`.rs`/`.java`/`.cs` file read through Quor gets no
+structural compression today, falling through to plain `cat`/`Read` passthrough.
 
-**Desired outcome:** Extend the existing benchmark harness (`tests/benchmarks/`) to optionally run
-the same corpus (or a licensing-safe subset) through a competitor tool where one is installable
-(e.g. RTK, if it's a local CLI), and report both results side by side — not to fabricate numbers
-for tools that can't be run this way, but to make the comparison real and repeatable wherever it
-can be.
+**Desired outcome:** One new analyzer per language, each following QB-005B/C/D's now-proven shape:
+a `tree-sitter-<language>` grammar (each is its own new optional dependency, following the
+`quor[javascript]` extras precedent), a node-type mapping for that language's function/method/class
+constructs, and the same ERROR-node-overlap exclusion rule
+(`quor/pipeline/ast_summarize/_treesitter_utils.py`, already generalized by QB-005D specifically so
+a third language wouldn't have to reinvent it).
 
-**Open question:** several competitors may not be locally runnable (SaaS-only, closed source) — in
-that case this item's scope narrows to "keep the competitive research doc itself on a review
-cadence" rather than automated head-to-head numbers. Worth scoping which is realistic before
-committing effort here.
+**Why this supersedes half of QB-035's original scope:** QB-035's own history already tracked this
+exact language-expansion work under its own update notes and closed the JS/TS portion via QB-005.
+This item exists so the *remaining* language work (Go/Rust/Java, plus C#) has a home that isn't
+bundled with QB-035's now-unrelated multi-agent-support half — see QB-035 in
+[Later](#later) for that half.
 
-**Status:** Proposed. Not scoped or implemented.
+**Sequencing note:** each language is independently shippable (QB-005C/D's own precedent) — this
+doesn't need to be one large effort, and languages can be prioritized by real usage data once it
+exists (see QB-047, QB-054).
+
+**Status:** Proposed. Not scoped or implemented. No language chosen as "first" yet — worth deciding
+based on real user-base composition once there is one, rather than guessing.
 
 </details>
 
@@ -434,6 +901,15 @@ repeated failure pattern (the same assertion failing across 40 parametrized case
 that shape instead of showing each occurrence — the same instinct as `group_repeated`, but applied
 across a test run's structure rather than adjacent lines.
 
+**Evidence update (2026-07-15) — strengthened:** real usage shows pytest's average compression
+(12.9% over 262 real invocations) at roughly a third of its benchmark score (39.75%, 3 cases) — the
+largest benchmark-vs-real gap found for any filter with meaningful real volume besides mypy (see
+QB-052). This is consistent with, and now better evidenced than, this item's original premise:
+`group_repeated` only matches *adjacent* shapes, and real parametrized-test failures are rarely
+adjacent. Root cause not yet fully diagnosed (this review inferred it from the stage profile and
+the real/benchmark gap, it didn't instrument pytest output directly) — recommend scoping alongside
+QB-047's corpus work so the fix has a real regression baseline to check against.
+
 <details>
 <summary>Technical details</summary>
 
@@ -468,6 +944,13 @@ Docker build output, webpack/bundler output outside the Node filters already shi
 runner logs (GitHub Actions, etc.) when a user pastes or `cat`s one in for the assistant to
 diagnose.
 
+**Evidence update (2026-07-15) — no clear signal either way:** neither the benchmark corpus nor
+real usage has a dedicated CI-log/Docker-build category or filter to measure against — `ruff` (the
+closest real analog, build-tooling output) actually performs reasonably in real usage (23.2% avg
+over 94 invocations), giving no evidence this class of output is broken the way mypy/pytest are.
+Stays in Next, not promoted — recommend waiting for QB-047's corpus work before investing further,
+rather than building against zero evidence.
+
 <details>
 <summary>Technical details</summary>
 
@@ -489,76 +972,96 @@ well-tested.
 
 ---
 
-#### QB-046 — AST-aware summarization for more languages (Go, Rust, Java, C#)
+#### QB-040 — Config & structured-data file compression (YAML/JSON/TOML/.env/.ini)
 
-**Effort:** Large (per language) · **Value:** Medium · **Risk:** Low · **Expected token impact:**
-Medium · **Category:** Feature
+**Effort:** Medium · **Value:** High · **Risk:** Low · **Expected token impact:** Medium ·
+**Category:** Feature
 
-QB-005 shipped structure-aware, signature-preserved reading for Python, JavaScript, TypeScript, and
-TSX. This is the direct continuation for the other languages QB-035's original scope named (Go,
-Rust, Java) plus one it didn't (C#) — using the same `tree-sitter`-based framework QB-005B already
-built and proved reusable across three languages.
+Quor already compresses documents (Markdown, DOCX, PDF — QB-007) and source code (Python/JS/TS —
+QB-005), but a `Read` or `cat` of a config file — `package.json`, a Kubernetes YAML manifest, a
+`.env` file, a large `pyproject.toml` — gets no treatment at all today. These files are extremely
+common in a real coding session and often large (lockfiles, generated configs), with a lot of
+low-value repeated structure (boilerplate keys, generated comments, long dependency lists) that a
+coding assistant rarely needs in full.
+
+**Evidence update (2026-07-15) — demoted from [Now](#now):** this item still cannot be evaluated
+against real measured evidence — there is no benchmark category for it, and its filter name (it
+doesn't have one yet) obviously can't appear in real usage either. The `Generic` ecosystem's low 5%
+benchmark contribution is *not* evidence for or against it (that ecosystem is dominated by
+already-terse commands like `ls -la`, not config files), and config files never appear anywhere in
+90 days of real cross-project usage (checked directly against the tracking DB's top filters —
+absent entirely). Moved to Next, not dropped: the underlying idea is still sound, it's just
+unmeasured, and shouldn't compete for a release slot against items with direct evidence behind them
+(QB-041, QB-052) until QB-047 gives it a corpus to be measured against.
 
 <details>
 <summary>Technical details</summary>
 
-**Problem:** `quor/pipeline/ast_summarize/registry.py` only has analyzers for `python`,
-`javascript`, `typescript`, and `tsx`. A `.go`/`.rs`/`.java`/`.cs` file read through Quor gets no
-structural compression today, falling through to plain `cat`/`Read` passthrough.
+**Problem:** No filter or extraction path exists for `.yaml`/`.yml`/`.json`/`.toml`/`.env`/`.ini`
+content, whether read via `cat` (Bash) or Claude Code's native `Read` tool. QB-007's document
+extraction and QB-005's AST summarization both deliberately scoped this out.
 
-**Desired outcome:** One new analyzer per language, each following QB-005B/C/D's now-proven shape:
-a `tree-sitter-<language>` grammar (each is its own new optional dependency, following the
-`quor[javascript]` extras precedent), a node-type mapping for that language's function/method/class
-constructs, and the same ERROR-node-overlap exclusion rule
-(`quor/pipeline/ast_summarize/_treesitter_utils.py`, already generalized by QB-005D specifically so
-a third language wouldn't have to reinvent it).
+**Desired outcome:** Structure-aware compression for the most common config formats — e.g. for a
+large JSON/YAML file, collapse long homogeneous arrays (a lockfile's hundreds of near-identical
+dependency entries) while preserving keys/schema shape and any genuinely distinct values; for
+`.env`, strip comments/blank lines but never touch a value (these are frequently secrets — this
+must compose correctly with QB-029's secret scanner, not fight it).
 
-**Why this supersedes half of QB-035's original scope:** QB-035's own history already tracked this
-exact language-expansion work under its own update notes and closed the JS/TS portion via QB-005.
-This item exists so the *remaining* language work (Go/Rust/Java, plus C#) has a home that isn't
-bundled with QB-035's now-unrelated multi-agent-support half — see QB-035 in
-[Later](#later) for that half.
+**Why this is a natural fit for the existing architecture:** `.toml` itself is already a first-class
+citizen of Quor's own filter-config format, and `regex_replace`/`strip_lines`/`max_tokens` (QB-008,
+QB-009, existing stages) already provide most of the primitives needed for the simpler formats
+(`.env`, `.ini`). JSON/YAML's nested-array-collapsing is the one genuinely new piece of logic,
+closer in spirit to QB-007's structure extraction than to a simple line filter.
 
-**Sequencing note:** each language is independently shippable (QB-005C/D's own precedent) — this
-doesn't need to be one large effort, and languages can be prioritized by real usage data once it
-exists (see QB-047).
+**Risk, stated plainly:** config files are exactly the place where "safe, deterministic" matters
+most — a wrong compression here can silently change what a generated config *means* to a build tool,
+not just what it looks like to a human. This item should ship Safe-mode-only initially (see QB-039)
+regardless of when Aggressive mode ships elsewhere.
 
-**Status:** Proposed. Not scoped or implemented. No language chosen as "first" yet — worth deciding
-based on real user-base composition once there is one, rather than guessing.
+**Status:** Proposed. Not scoped or implemented.
 
 </details>
 
 ---
 
-#### QB-047 — Real-world benchmark corpus & continuous tracking
+#### QB-042 — Continuous competitive benchmarking (RTK, Headroom AI, ZAP)
 
-**Effort:** Medium · **Value:** Medium · **Risk:** Medium · **Expected token impact:** None
-directly · **Category:** Engineering / Measurement
+**Effort:** Medium · **Value:** Medium · **Risk:** Low · **Expected token impact:** None directly ·
+**Category:** Engineering / Measurement
 
-The existing benchmark suite (QB-011, expanded by QB-005E) is 60 realistic but hand-written sample
-commands, run on demand, compared against one committed baseline. This item extends it two ways:
-sampling real (anonymized, opt-in) commands from actual usage instead of only hand-authored fixtures,
-and tracking compression numbers as a trend across releases instead of a single point-in-time
-baseline diff.
+Quor's competitive positioning today comes from a one-time research document
+(`docs/archive/product-discovery/competitive-research.md`) that's already referenced repeatedly
+throughout this backlog (QB-032, QB-034, QB-035) but was written once and never re-run. Under the
+new vision — "maximum practical token reduction" — "practical" needs an external yardstick:
+proof Quor's real compression numbers hold up against the tools it's actually competing with, on an
+ongoing basis, not a one-time snapshot from whenever that research happened.
+
+**Evidence update (2026-07-15) — demoted from [Now](#now):** unaffected in substance by this
+review's numbers — it's a positioning/measurement item with no compression payoff of its own, and
+every item now ranked ahead of it in Now (QB-041, QB-052, QB-047, QB-046, QB-049, QB-039, QB-054,
+QB-053) closes an internal, evidenced gap. Closing what we already know is broken should come
+before building an external comparison. `tests/benchmarks/history.py` (QB-051) remains a reusable
+building block whenever this item is scoped.
 
 <details>
 <summary>Technical details</summary>
 
-**Problem:** Hand-written benchmark fixtures, however realistic, can't tell us whether real usage
-looks like the corpus — QB-034's own `discover`-command proposal exists specifically because this
-gap is felt keenly ("what would Quor have saved on commands it never saw"). Separately, the
-benchmark suite's regression check compares only against the immediately prior baseline — there's no
-view of whether compression rates are trending up or down release over release.
+**Problem:** No automated way exists to compare Quor's benchmark suite results (QB-011, QB-005E)
+against a competitor's on the same corpus. The competitive research that already shaped several
+backlog decisions (QB-032's traceback compression, QB-034's `discover` command, QB-035's language/
+agent coverage) is a snapshot, not a live signal — it could already be stale in either direction (a
+competitor shipping something new, or Quor closing a gap the research flagged).
 
-**Desired outcome:** (1) An opt-in, privacy-conscious mechanism to contribute real command-output
-samples (redacted/anonymized) to the benchmark corpus over time — likely sharing infrastructure with
-QB-034's `discover` command, which already needs to read real session logs. (2) A trend view — even
-a simple committed CSV/JSON of "compression % per category per release" — so a regression that's
-individually below the 2.0pp threshold (QB-011's existing gate) but persistent across several
-releases becomes visible.
+**Desired outcome:** Extend the existing benchmark harness (`tests/benchmarks/`) to optionally run
+the same corpus (or a licensing-safe subset) through a competitor tool where one is installable
+(e.g. RTK, if it's a local CLI), and report both results side by side — not to fabricate numbers
+for tools that can't be run this way, but to make the comparison real and repeatable wherever it
+can be.
 
-**Open question:** privacy/consent model for (1) needs real product and legal thought before any
-implementation — this is explicitly not "just add telemetry."
+**Open question:** several competitors may not be locally runnable (SaaS-only, closed source) — in
+that case this item's scope narrows to "keep the competitive research doc itself on a review
+cadence" rather than automated head-to-head numbers. Worth scoping which is realistic before
+committing effort here.
 
 **Status:** Proposed. Not scoped or implemented.
 
@@ -578,6 +1081,14 @@ deterministic compression," that gap was arguably acceptable — the whole desig
 especially once [Compression Modes](#qb-039--compression-modes-safe--balanced--aggressive) ships an Aggressive mode, this gap becomes the thing
 standing between "aggressive" and "reckless."
 
+**Evidence update (2026-07-15) — role clarified, not deprioritized:** this item isn't "postponed" in
+the sense the other demoted items are — nothing in this review measures task success, only token
+counts, so nothing here can confirm or challenge this item's own value. What the review *does* add:
+two new items depend on this one more directly than before. QB-053 (adaptive compression) and
+QB-039 (Aggressive mode) both trade some safety margin for more compression; this item is what would
+prove that trade isn't quietly hurting task success. Its sequencing (before any of those three reach
+default-on) is unchanged from its original entry.
+
 <details>
 <summary>Technical details</summary>
 
@@ -593,44 +1104,13 @@ output similarity. Starts small and specific rather than attempting a comprehens
 on the first pass.
 
 **Why this matters more than its own token-impact score suggests:** this is the prerequisite that
-makes QB-039 (Aggressive mode) and QB-043 (cross-call optimization) safe to ship rather than
-speculative — see [Product Metrics](#product-metrics)'s "AI task success rate" row, currently
-unmeasured, and [Strategic Roadmap](#strategic-roadmap) Phase 2/3 sequencing.
+makes QB-039 (Aggressive mode), QB-053 (adaptive compression), and QB-043 (cross-call optimization)
+safe to ship rather than speculative — see [Product Metrics](#product-metrics)'s "AI task success
+rate" row, currently unmeasured, and [Strategic Roadmap](#strategic-roadmap) Phase 2/3 sequencing.
 
 **Status:** Proposed. Not scoped or implemented. Recommend this lands before or alongside QB-039's
-Aggressive mode reaching any default-on state, not strictly before QB-039 is scoped/designed.
-
-</details>
-
----
-
-#### QB-049 — Explainability upgrades to `quor explain`
-
-**Effort:** Medium · **Value:** Medium · **Risk:** Low · **Expected token impact:** None directly ·
-**Category:** Enhancement
-
-`quor explain` already shows a stage-by-stage trace of what a filter would do to a given command
-(and, per QB-036, deliberately opts out of the early-exit optimization so that trace stays complete).
-What it doesn't yet do: explain *why* in plain English ("this line matched the `preserve_patterns`
-rule for REQ IDs"), or project the token impact of a hypothetical mode change (QB-039) before a user
-turns it on. As compression gets more aggressive under the new vision, explaining it well matters
-more, not less — this is the trust half of "aggressive isn't reckless."
-
-<details>
-<summary>Technical details</summary>
-
-**Problem:** `quor explain`'s existing per-stage trace shows *what* changed (`Decision` per line,
-per stage) but not *why* in language a non-engineer would follow, and has no forward-looking mode —
-it explains what already happened, not what a different setting would do.
-
-**Desired outcome:** Two additions, either independently shippable: (1) a plain-English reason
-string attached to each `Decision` (many stages already carry a `reason` internally per QB-005B's
-own fail-open-contract documentation — this may be substantially a presentation change, not new
-logic); (2) a `--mode` flag on `quor explain` letting a user preview what Balanced/Aggressive mode
-(QB-039) would do differently to the same input, before switching their default.
-
-**Status:** Proposed. Not scoped or implemented. Part (2) depends on QB-039 existing first; part
-(1) does not and could ship independently and sooner.
+Aggressive mode (or QB-053's automatic equivalent) reaching any default-on state, not strictly
+before either is scoped/designed.
 
 </details>
 

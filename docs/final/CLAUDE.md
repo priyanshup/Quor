@@ -434,6 +434,7 @@ Plugin failures (import error, validation error, runtime error) are logged as wa
 10. **Storing backslashes in SQLite paths.** Always `Path.as_posix()`.
 11. **Mutable defaults in Pydantic models.** Use `Field(default_factory=list)`.
 12. **Presenting token counts without ±20% label.** Always include the uncertainty.
+13. **Invoking `quor`/`qr` as a bare command when manually testing the CLI** (e.g. `quor explain "git status"`, `quor doctor`). On a locked-down corporate Windows machine, the pip-generated `quor.exe`/`qr.exe` launcher stubs get silently blocked by Defender/AppLocker application-control policy (see README.md's "corporate-launcher troubleshooting" section and ADR-029 in DECISIONS.md — this is the exact reason the PreToolUse rewrite path invokes `sys.executable -m quor`, never the bare launcher). Manual/dev-workflow invocation is **not** covered by that ADR, so always use `python -m quor ...` / `python -m qr ...` yourself too — never the bare `quor`/`qr` form — when testing from a shell during development.
 
 ---
 

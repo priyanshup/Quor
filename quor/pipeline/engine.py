@@ -19,6 +19,7 @@ from dataclasses import dataclass
 
 from quor.pipeline.mask import ContentMask, Decision, LineMask
 from quor.pipeline.stages.base import StageConfig, StageHandler, StageResult
+from quor.tracking.db import count_tokens
 
 # ---------------------------------------------------------------------------
 # Early exit (QB-036)
@@ -152,6 +153,7 @@ class Pipeline:
         content_type: str = "text",
         *,
         early_exit: bool = True,
+        track_tokens: bool = False,
     ) -> PipelineResult:
         """Run all stages in order and return the final mask with a trace.
 
@@ -175,6 +177,15 @@ class Pipeline:
                            `FilterRegistry.trace()` (`quor explain`) so its
                            stage-by-stage diagnostic view is completely
                            unaffected by this optimization.
+            track_tokens:  QB-039 analytics switch (default off). When True,
+                           each StageResult's tokens_before/tokens_after is
+                           populated by rendering the mask (mask.render() +
+                           count_tokens()) immediately before and after that
+                           stage runs. Default False means zero extra
+                           rendering/counting work and StageResult.
+                           tokens_before/tokens_after stay None — this is a
+                           purely opt-in measurement path, never used by the
+                           real Bash/Read hook dispatch or `apply()`.
         """
         results: list[StageResult] = []
         entries = self._entries
@@ -197,6 +208,10 @@ class Pipeline:
 
             if can_exit_early:
                 lines_before = len(mask.lines)
+                # The mask cannot change for any of these entries (that's the
+                # whole early-exit guarantee), so one render/count covers all
+                # of them instead of one per remaining stage.
+                unchanged_tokens = count_tokens(mask.render()) if track_tokens else None
                 for remaining in entries[i:]:
                     results.append(
                         StageResult(
@@ -205,6 +220,8 @@ class Pipeline:
                             lines_compressed=0,
                             was_skipped=True,
                             skip_reason=_EARLY_EXIT_SKIP_REASON,
+                            tokens_before=unchanged_tokens,
+                            tokens_after=unchanged_tokens,
                         )
                     )
                 break
@@ -214,6 +231,7 @@ class Pipeline:
             before_compressed = sum(
                 1 for lm in mask.lines if lm.decision is Decision.COMPRESS
             )
+            stage_tokens_before = count_tokens(mask.render()) if track_tokens else None
 
             try:
                 if not entry.handler.can_handle(raw_content, content_type):
@@ -224,6 +242,8 @@ class Pipeline:
                             lines_compressed=0,
                             was_skipped=True,
                             skip_reason="can_handle returned False",
+                            tokens_before=stage_tokens_before,
+                            tokens_after=stage_tokens_before,
                         )
                     )
                     continue
@@ -242,6 +262,8 @@ class Pipeline:
                         stage_type=entry.handler.stage_type,
                         lines_before=len(mask.lines),
                         lines_compressed=newly_compressed,
+                        tokens_before=stage_tokens_before,
+                        tokens_after=count_tokens(mask.render()) if track_tokens else None,
                     )
                 )
 
@@ -258,6 +280,8 @@ class Pipeline:
                         was_skipped=True,
                         skip_reason="stage raised an exception",
                         error=str(exc),
+                        tokens_before=stage_tokens_before,
+                        tokens_after=stage_tokens_before,
                     )
                 )
 

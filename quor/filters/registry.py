@@ -249,7 +249,12 @@ class FilterRegistry:
         return rendered
 
     def trace(
-        self, filter_config: FilterConfig, content: str, content_type: str = ""
+        self,
+        filter_config: FilterConfig,
+        content: str,
+        content_type: str = "",
+        *,
+        track_tokens: bool = False,
     ) -> PipelineResult:
         """Run the pipeline and return the full per-stage trace (for `quor explain`).
 
@@ -264,8 +269,15 @@ class FilterRegistry:
         diagnostic information this command exists to surface. `apply()`
         below (the real compression path — Bash/Read hooks, benchmarks,
         `quor verify`) keeps the optimization at its default (on).
+
+        `track_tokens` (QB-039 analytics, default off) is passed straight
+        through to `Pipeline.execute()` — see its docstring. `quor explain`
+        does not set this (keeps its existing line-count-only trace); the
+        benchmark suite's analytics pass does.
         """
-        return self._run_pipeline(filter_config, content, content_type, early_exit=False)
+        return self._run_pipeline(
+            filter_config, content, content_type, early_exit=False, track_tokens=track_tokens
+        )
 
     def _run_pipeline(
         self,
@@ -274,6 +286,7 @@ class FilterRegistry:
         content_type: str = "",
         *,
         early_exit: bool = True,
+        track_tokens: bool = False,
     ) -> PipelineResult:
         detected = content_type or detect(content).value
 
@@ -286,7 +299,11 @@ class FilterRegistry:
                 warnings.warn(f"[quor] Skipping invalid stage: {exc}", stacklevel=2)
 
         return Pipeline(entries).execute(
-            mask, raw_content=content, content_type=detected, early_exit=early_exit
+            mask,
+            raw_content=content,
+            content_type=detected,
+            early_exit=early_exit,
+            track_tokens=track_tokens,
         )
 
     # ------------------------------------------------------------------

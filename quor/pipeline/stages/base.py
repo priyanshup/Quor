@@ -38,7 +38,14 @@ class StageConfig(BaseModel):
 
 @dataclass(frozen=True)
 class StageResult:
-    """Summary of what one stage did during pipeline execution."""
+    """Summary of what one stage did during pipeline execution.
+
+    `tokens_before`/`tokens_after` (QB-039 analytics) are `None` unless the
+    pipeline ran with `track_tokens=True` (see `quor.pipeline.engine.
+    Pipeline.execute`) — the default, hot-path run (real Bash/Read hooks,
+    `apply()`) never sets them, so this is a purely additive, opt-in
+    measurement, not a change to what any stage computes.
+    """
 
     stage_type: str
     lines_before: int
@@ -46,10 +53,27 @@ class StageResult:
     was_skipped: bool = False
     skip_reason: str = ""
     error: str = ""
+    tokens_before: int | None = None
+    tokens_after: int | None = None
 
     @property
     def lines_after(self) -> int:
         return self.lines_before - self.lines_compressed
+
+    @property
+    def tokens_saved(self) -> int | None:
+        """`None` when tokens weren't tracked for this run (see class docstring)."""
+        if self.tokens_before is None or self.tokens_after is None:
+            return None
+        return self.tokens_before - self.tokens_after
+
+    @property
+    def compression_pct(self) -> float | None:
+        """`None` when tokens weren't tracked, or `tokens_before` was 0."""
+        saved = self.tokens_saved
+        if saved is None or not self.tokens_before:
+            return None
+        return saved / self.tokens_before * 100
 
 
 @runtime_checkable
