@@ -81,7 +81,7 @@ dev = [
     # it, mirroring DECISIONS.md's exact-pin rationale for ruff/mypy (a new
     # release silently breaking a dependency this load-bearing must be a
     # deliberate, visible bump, not a silent `pip install` side effect).
-    "tree-sitter>=0.23.0,<0.26.0",
+    "tree-sitter>=0.23.0,<0.27.0",
     "tree-sitter-javascript>=0.23.0,<1.0.0",
     # tree-sitter-typescript (QB-005D), same reasoning — real fixture
     # coverage (TestAnalyzeTypeScript in tests/unit/test_ast_summarize.py)
@@ -164,7 +164,7 @@ javascript = [
     # above for the verified memory-corruption bug this works around, and
     # the QB-005D entry there for why tree-sitter-typescript did not need
     # its own additional constraint.
-    "tree-sitter>=0.23.0,<0.26.0",
+    "tree-sitter>=0.23.0,<0.27.0",
     "tree-sitter-javascript>=0.23.0,<1.0.0",
     "tree-sitter-typescript>=0.23.0,<1.0.0",
 ]
@@ -178,7 +178,7 @@ go = [
     # open (returns an empty set, warns, never raises) if it's absent.
     # Same tree-sitter<0.26.0 ceiling as `javascript` above — that
     # constraint is on the core tree-sitter package, not any one grammar.
-    "tree-sitter>=0.23.0,<0.26.0",
+    "tree-sitter>=0.23.0,<0.27.0",
     "tree-sitter-go>=0.23.0,<1.0.0",
 ]
 java = [
@@ -187,7 +187,7 @@ java = [
     # quor/pipeline/ast_summarize/java.py's analyze_java() fails open
     # (returns an empty set, warns, never raises) if it's absent. Same
     # tree-sitter<0.26.0 ceiling as `javascript`/`go` above.
-    "tree-sitter>=0.23.0,<0.26.0",
+    "tree-sitter>=0.23.0,<0.27.0",
     "tree-sitter-java>=0.23.0,<1.0.0",
 ]
 rust = [
@@ -196,7 +196,7 @@ rust = [
     # quor/pipeline/ast_summarize/rust.py's analyze_rust() fails open
     # (returns an empty set, warns, never raises) if it's absent. Same
     # tree-sitter<0.26.0 ceiling as `javascript`/`go`/`java` above.
-    "tree-sitter>=0.23.0,<0.26.0",
+    "tree-sitter>=0.23.0,<0.27.0",
     "tree-sitter-rust>=0.23.0,<1.0.0",
 ]
 csharp = [
@@ -206,7 +206,7 @@ csharp = [
     # fails open (returns an empty set, warns, never raises) if it's
     # absent. Same tree-sitter<0.26.0 ceiling as `javascript`/`go`/`java`/
     # `rust` above.
-    "tree-sitter>=0.23.0,<0.26.0",
+    "tree-sitter>=0.23.0,<0.27.0",
     "tree-sitter-c-sharp>=0.23.0,<1.0.0",
 ]
 
