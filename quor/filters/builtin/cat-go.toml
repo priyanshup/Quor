@@ -1,0 +1,73 @@
+# quor built-in filter: cat (Go files) — QB-046 structural extraction
+#
+# Compresses function/method/func-literal bodies to their signature (+ doc
+# comment, when present), keeping imports, package clause, const/var/type
+# declarations, struct/interface bodies, and function/method signatures
+# untouched. Must be loaded before the generic `cat.toml` filter so `.go`
+# files match here first. Built-in filters load in sorted filename order
+# (quor/filters/registry.py::_load_builtin uses sorted(glob(...))), and
+# "cat-go.toml" sorts before "cat.toml" lexicographically ('-' is 0x2D, '.'
+# is 0x2E) — same convention cat-python.toml/cat-javascript.toml already
+# use. Relative order between cat-go.toml and the other cat-*.toml filters
+# does not matter: match_command patterns are mutually exclusive by file
+# extension.
+#
+# code_ast_summarize (language = "go") runs first — the generic,
+# multi-language stage introduced in QB-005B, dispatching to
+# quor/pipeline/ast_summarize/go.py via the shared registry.
+#
+# Deliberately does NOT reuse cat-javascript.toml's strip_lines comment
+# pattern (`'^\s*//\s'`): JS/TS have a *separate* doc-comment syntax
+# (`/** ... */`, untouched by that pattern by construction), so stripping
+# plain `//` lines only removes throwaway comments there. Go has exactly
+# one comment syntax (`//`) for both throwaway comments AND doc comments —
+# a `//` line directly above a declaration is that declaration's actual
+# documentation (what `go doc`/godoc surfaces), syntactically
+# indistinguishable from an ordinary inline comment. A blanket `//` strip
+# pattern would silently destroy real documentation, which conflicts with
+# this filter's own "preserve everything that describes a file's public
+# surface" goal — so this filter has no strip_lines stage at all, only
+# deduplicate_consecutive / max_tokens after code_ast_summarize.
+schema_version = 1
+
+[[filter]]
+name = "cat-go"
+match_command = '^cat\s+(-\S+\s+)*\S*\.go\b'
+
+[[filter.stages]]
+type = "code_ast_summarize"
+language = "go"
+
+[[filter.stages]]
+type = "deduplicate_consecutive"
+
+[[filter.stages]]
+type = "max_tokens"
+limit = 800
+strategy = "both"
+
+[[filter.tests]]
+description = "Function body compressed; signature and doc comment preserved"
+input = "// Add returns the sum of two numbers.\nfunc Add(x, y int) int {\n\ttotal := x + y\n\treturn total\n}\n"
+must_contain = ["func Add(x, y int) int {", "Add returns the sum"]
+must_not_contain = ["total := x + y"]
+requires_language = "go"
+
+[[filter.tests]]
+description = "Imports and package-level const/var declarations are never touched"
+input = "package main\n\nimport \"fmt\"\n\nconst DefaultTimeout = 30\n\nfunc Run() {\n\tfmt.Println(\"working\")\n}\n"
+must_contain = ["import \"fmt\"", "const DefaultTimeout = 30"]
+must_not_contain = ["fmt.Println(\"working\")"]
+requires_language = "go"
+
+[[filter.tests]]
+description = "Invalid Go fails open — original content returned unchanged"
+input = "func broken( {\n\treturn 1\n}\n"
+must_contain = ["func broken(", "return 1"]
+
+[[filter.tests]]
+description = "Method body compressed independently; receiver and struct definition preserved"
+input = "type Widget struct {\n\tX int\n}\n\nfunc (w *Widget) Render() string {\n\treturn \"widget\"\n}\n"
+must_contain = ["type Widget struct {", "func (w *Widget) Render() string {"]
+must_not_contain = ["return \"widget\""]
+requires_language = "go"

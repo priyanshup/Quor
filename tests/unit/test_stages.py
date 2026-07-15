@@ -1607,6 +1607,439 @@ class TestCodeAstSummarizeJavaScript:
                 assert lm.line == original_lines[idx], f"line {idx} was modified"
 
 
+class TestCodeAstSummarizeGo:
+    """code_ast_summarize(language="go") — QB-046, via the real
+    stage/ContentMask path rather than calling analyze_go() directly (see
+    tests/unit/test_ast_summarize.py::TestAnalyzeGo for the analyzer-level
+    battery). Not wired into any built-in filter's Python class the way
+    python_ast_summarize is — cat-go.toml (quor/filters/builtin/) is what
+    actually wires this stage up for real use; see its own inline
+    [[filter.tests]] for filter-level coverage."""
+
+    stage = CodeAstSummarizeStage()
+
+    def _config(self, preserve: list[str] | None = None) -> CodeAstSummarizeConfig:
+        return CodeAstSummarizeConfig(
+            type="code_ast_summarize",
+            language="go",
+            preserve_patterns=preserve or [],
+        )
+
+    def test_function_body_compressed_signature_preserved(self) -> None:
+        source = "func Add(x, y int) int {\n  return x + y\n}\n"
+        result = self.stage.apply(ContentMask.from_text(source), self._config())
+        assert result.lines[0].decision is Decision.KEEP  # func Add(x, y int) int {
+        assert result.lines[1].decision is Decision.COMPRESS  # return x + y
+        assert result.lines[2].decision is Decision.KEEP  # }
+
+    def test_method_receiver_and_struct_signatures_preserved(self) -> None:
+        source = (
+            "type Widget struct {\n"
+            "\tX int\n"
+            "}\n"
+            "\n"
+            "func (w *Widget) Render() string {\n"
+            '\treturn "hi"\n'
+            "}\n"
+        )
+        result = self.stage.apply(ContentMask.from_text(source), self._config())
+        assert result.lines[0].decision is Decision.KEEP  # type Widget struct {
+        assert result.lines[1].decision is Decision.KEEP  # X int
+        assert result.lines[4].decision is Decision.KEEP  # func (w *Widget) Render() string {
+        assert result.lines[5].decision is Decision.COMPRESS  # return "hi"
+        assert result.lines[6].decision is Decision.KEEP  # }
+
+    def test_syntax_error_propagates_for_engine_fail_open(self) -> None:
+        """Mirrors TestCodeAstSummarizeJavaScript's identical test — see
+        its own docstring for the full reasoning."""
+
+        def _raises(source: str) -> set[int]:
+            raise ValueError("simulated tree-sitter internal error")
+
+        with patch.dict(ast_registry._ANALYZERS, {"go": _raises}):
+            mask = ContentMask.from_text("func f() {\n  return 1\n}\n")
+            with pytest.raises(ValueError, match="simulated tree-sitter internal error"):
+                self.stage.apply(mask, self._config())
+
+    def test_error_node_overlap_excludes_only_the_broken_function(self) -> None:
+        source = (
+            "func good1(x int) int {\n"
+            "  return x + 1\n"
+            "}\n"
+            "\n"
+            "func alsoBroken(y int) int {\n"
+            "  return y +++ * \n"
+            "}\n"
+            "\n"
+            "func good2(z int) int {\n"
+            "  return z + 2\n"
+            "}\n"
+        )
+        result = self.stage.apply(ContentMask.from_text(source), self._config())
+        assert result.lines[1].decision is Decision.COMPRESS  # good1 body
+        assert result.lines[5].decision is Decision.KEEP  # alsoBroken body: untouched
+        assert result.lines[9].decision is Decision.COMPRESS  # good2 body
+
+    def test_preserve_pattern_protects_body_line(self) -> None:
+        source = "func foo() {\n  criticalMarker := true\n  return\n}\n"
+        mask = ContentMask.from_text(source)
+        config = self._config(preserve=["criticalMarker"])
+        result = self.stage.apply(mask, config)
+        assert result.lines[1].decision is Decision.PROTECT
+        assert result.lines[2].decision is Decision.COMPRESS
+
+    def test_kept_lines_are_byte_identical_to_source(self) -> None:
+        """No rewriting/reformatting ever happens — mirrors
+        TestCodeAstSummarizeJavaScript's identical test."""
+        source = (
+            "// Process transforms data.\n"
+            "func Process(data []string) []string {\n"
+            "\tresult := []string{}\n"
+            "\tfor _, item := range data {\n"
+            "\t\tresult = append(result, item)\n"
+            "\t}\n"
+            "\treturn result\n"
+            "}\n"
+        )
+        original_lines = source.split("\n")
+        result = self.stage.apply(ContentMask.from_text(source), self._config())
+        for idx, lm in enumerate(result.lines):
+            if lm.decision is not Decision.COMPRESS:
+                assert lm.line == original_lines[idx], f"line {idx} was modified"
+
+
+class TestCodeAstSummarizeJava:
+    """code_ast_summarize(language="java") — QB-046, via the real
+    stage/ContentMask path rather than calling analyze_java() directly (see
+    tests/unit/test_ast_summarize.py::TestAnalyzeJava for the
+    analyzer-level battery). Not wired into any built-in filter's Python
+    class the way python_ast_summarize is — cat-java.toml
+    (quor/filters/builtin/) is what actually wires this stage up for real
+    use; see its own inline [[filter.tests]] for filter-level coverage."""
+
+    stage = CodeAstSummarizeStage()
+
+    def _config(self, preserve: list[str] | None = None) -> CodeAstSummarizeConfig:
+        return CodeAstSummarizeConfig(
+            type="code_ast_summarize",
+            language="java",
+            preserve_patterns=preserve or [],
+        )
+
+    def test_method_body_compressed_signature_preserved(self) -> None:
+        source = "public class Foo {\n  public int add(int x, int y) {\n    return x + y;\n  }\n}\n"
+        result = self.stage.apply(ContentMask.from_text(source), self._config())
+        assert result.lines[0].decision is Decision.KEEP  # public class Foo {
+        assert result.lines[1].decision is Decision.KEEP  # public int add(int x, int y) {
+        assert result.lines[2].decision is Decision.COMPRESS  # return x + y;
+        assert result.lines[3].decision is Decision.KEEP  # }
+
+    def test_class_extends_implements_and_constructor_preserved(self) -> None:
+        source = (
+            "public class Widget extends Base implements Runnable {\n"
+            "  public Widget(int x) {\n"
+            "    this.x = x;\n"
+            "  }\n"
+            "}\n"
+        )
+        result = self.stage.apply(ContentMask.from_text(source), self._config())
+        assert result.lines[0].decision is Decision.KEEP  # public class Widget extends Base implements Runnable {
+        assert result.lines[1].decision is Decision.KEEP  # public Widget(int x) {
+        assert result.lines[2].decision is Decision.COMPRESS  # this.x = x;
+        assert result.lines[3].decision is Decision.KEEP  # }
+        assert result.lines[4].decision is Decision.KEEP  # }
+
+    def test_syntax_error_propagates_for_engine_fail_open(self) -> None:
+        """Mirrors TestCodeAstSummarizeGo's identical test — see its own
+        docstring for the full reasoning."""
+
+        def _raises(source: str) -> set[int]:
+            raise ValueError("simulated tree-sitter internal error")
+
+        with patch.dict(ast_registry._ANALYZERS, {"java": _raises}):
+            mask = ContentMask.from_text("public class Foo {\n  public void f() {\n    return;\n  }\n}\n")
+            with pytest.raises(ValueError, match="simulated tree-sitter internal error"):
+                self.stage.apply(mask, self._config())
+
+    def test_error_node_overlap_excludes_only_the_broken_method(self) -> None:
+        source = (
+            "public class Foo {\n"
+            "  public int good1(int x) {\n"
+            "    return x + 1;\n"
+            "  }\n"
+            "\n"
+            "  public int alsoBroken(int y) {\n"
+            "    return y +++ * ;\n"
+            "  }\n"
+            "\n"
+            "  public int good2(int z) {\n"
+            "    return z + 2;\n"
+            "  }\n"
+            "}\n"
+        )
+        result = self.stage.apply(ContentMask.from_text(source), self._config())
+        assert result.lines[2].decision is Decision.COMPRESS  # good1 body
+        assert result.lines[6].decision is Decision.KEEP  # alsoBroken body: untouched
+        assert result.lines[10].decision is Decision.COMPRESS  # good2 body
+
+    def test_preserve_pattern_protects_body_line(self) -> None:
+        source = "public class Foo {\n  public void foo() {\n    boolean criticalMarker = true;\n    return;\n  }\n}\n"
+        mask = ContentMask.from_text(source)
+        config = self._config(preserve=["criticalMarker"])
+        result = self.stage.apply(mask, config)
+        assert result.lines[2].decision is Decision.PROTECT
+        assert result.lines[3].decision is Decision.COMPRESS
+
+    def test_kept_lines_are_byte_identical_to_source(self) -> None:
+        """No rewriting/reformatting ever happens — mirrors
+        TestCodeAstSummarizeGo's identical test."""
+        source = (
+            "/**\n"
+            " * Process transforms data.\n"
+            " */\n"
+            "public class Processor {\n"
+            "  public List<String> process(List<String> data) {\n"
+            "    List<String> result = new ArrayList<>();\n"
+            "    for (String item : data) {\n"
+            "      result.add(item);\n"
+            "    }\n"
+            "    return result;\n"
+            "  }\n"
+            "}\n"
+        )
+        original_lines = source.split("\n")
+        result = self.stage.apply(ContentMask.from_text(source), self._config())
+        for idx, lm in enumerate(result.lines):
+            if lm.decision is not Decision.COMPRESS:
+                assert lm.line == original_lines[idx], f"line {idx} was modified"
+
+
+class TestCodeAstSummarizeRust:
+    """code_ast_summarize(language="rust") — QB-046, via the real
+    stage/ContentMask path rather than calling analyze_rust() directly (see
+    tests/unit/test_ast_summarize.py::TestAnalyzeRust for the
+    analyzer-level battery). Not wired into any built-in filter's Python
+    class the way python_ast_summarize is — cat-rust.toml
+    (quor/filters/builtin/) is what actually wires this stage up for real
+    use; see its own inline [[filter.tests]] for filter-level coverage."""
+
+    stage = CodeAstSummarizeStage()
+
+    def _config(self, preserve: list[str] | None = None) -> CodeAstSummarizeConfig:
+        return CodeAstSummarizeConfig(
+            type="code_ast_summarize",
+            language="rust",
+            preserve_patterns=preserve or [],
+        )
+
+    def test_function_body_compressed_signature_preserved(self) -> None:
+        source = "fn add(x: i32, y: i32) -> i32 {\n  return x + y;\n}\n"
+        result = self.stage.apply(ContentMask.from_text(source), self._config())
+        assert result.lines[0].decision is Decision.KEEP  # fn add(x: i32, y: i32) -> i32 {
+        assert result.lines[1].decision is Decision.COMPRESS  # return x + y;
+        assert result.lines[2].decision is Decision.KEEP  # }
+
+    def test_method_struct_and_impl_header_preserved(self) -> None:
+        source = (
+            "struct Widget {\n"
+            "    x: i32,\n"
+            "}\n"
+            "\n"
+            "impl Widget {\n"
+            "    fn render(&self) -> String {\n"
+            '        String::from("hi")\n'
+            "    }\n"
+            "}\n"
+        )
+        result = self.stage.apply(ContentMask.from_text(source), self._config())
+        assert result.lines[0].decision is Decision.KEEP  # struct Widget {
+        assert result.lines[1].decision is Decision.KEEP  # x: i32,
+        assert result.lines[4].decision is Decision.KEEP  # impl Widget {
+        assert result.lines[5].decision is Decision.KEEP  # fn render(&self) -> String {
+        assert result.lines[6].decision is Decision.COMPRESS  # String::from("hi")
+        assert result.lines[7].decision is Decision.KEEP  # }
+
+    def test_syntax_error_propagates_for_engine_fail_open(self) -> None:
+        """Mirrors TestCodeAstSummarizeGo's identical test — see its own
+        docstring for the full reasoning."""
+
+        def _raises(source: str) -> set[int]:
+            raise ValueError("simulated tree-sitter internal error")
+
+        with patch.dict(ast_registry._ANALYZERS, {"rust": _raises}):
+            mask = ContentMask.from_text("fn f() {\n  return 1;\n}\n")
+            with pytest.raises(ValueError, match="simulated tree-sitter internal error"):
+                self.stage.apply(mask, self._config())
+
+    def test_error_node_overlap_excludes_only_the_broken_function(self) -> None:
+        source = (
+            "fn good1(x: i32) -> i32 {\n"
+            "  return x + 1;\n"
+            "}\n"
+            "\n"
+            "fn also_broken(y: i32) -> i32 {\n"
+            "  return y +++ * ;\n"
+            "}\n"
+            "\n"
+            "fn good2(z: i32) -> i32 {\n"
+            "  return z + 2;\n"
+            "}\n"
+        )
+        result = self.stage.apply(ContentMask.from_text(source), self._config())
+        assert result.lines[1].decision is Decision.COMPRESS  # good1 body
+        assert result.lines[5].decision is Decision.KEEP  # also_broken body: untouched
+        assert result.lines[9].decision is Decision.COMPRESS  # good2 body
+
+    def test_preserve_pattern_protects_body_line(self) -> None:
+        source = "fn foo() {\n  let critical_marker = true;\n  return;\n}\n"
+        mask = ContentMask.from_text(source)
+        config = self._config(preserve=["critical_marker"])
+        result = self.stage.apply(mask, config)
+        assert result.lines[1].decision is Decision.PROTECT
+        assert result.lines[2].decision is Decision.COMPRESS
+
+    def test_kept_lines_are_byte_identical_to_source(self) -> None:
+        """No rewriting/reformatting ever happens — mirrors
+        TestCodeAstSummarizeGo's identical test."""
+        source = (
+            "/// Processes transforms data.\n"
+            "fn process(data: Vec<String>) -> Vec<String> {\n"
+            "    let mut result = Vec::new();\n"
+            "    for item in data {\n"
+            "        result.push(item);\n"
+            "    }\n"
+            "    result\n"
+            "}\n"
+        )
+        original_lines = source.split("\n")
+        result = self.stage.apply(ContentMask.from_text(source), self._config())
+        for idx, lm in enumerate(result.lines):
+            if lm.decision is not Decision.COMPRESS:
+                assert lm.line == original_lines[idx], f"line {idx} was modified"
+
+
+class TestCodeAstSummarizeCSharp:
+    """code_ast_summarize(language="csharp") — QB-046, via the real
+    stage/ContentMask path rather than calling analyze_csharp() directly
+    (see tests/unit/test_ast_summarize.py::TestAnalyzeCSharp for the
+    analyzer-level battery). Not wired into any built-in filter's Python
+    class the way python_ast_summarize is — cat-csharp.toml
+    (quor/filters/builtin/) is what actually wires this stage up for real
+    use; see its own inline [[filter.tests]] for filter-level coverage."""
+
+    stage = CodeAstSummarizeStage()
+
+    def _config(self, preserve: list[str] | None = None) -> CodeAstSummarizeConfig:
+        return CodeAstSummarizeConfig(
+            type="code_ast_summarize",
+            language="csharp",
+            preserve_patterns=preserve or [],
+        )
+
+    def test_method_body_compressed_signature_preserved(self) -> None:
+        source = "public class Foo\n{\n  public int Add(int x, int y)\n  {\n    return x + y;\n  }\n}\n"
+        result = self.stage.apply(ContentMask.from_text(source), self._config())
+        assert result.lines[0].decision is Decision.KEEP  # public class Foo
+        assert result.lines[2].decision is Decision.KEEP  # public int Add(int x, int y)
+        assert result.lines[4].decision is Decision.COMPRESS  # return x + y;
+        assert result.lines[5].decision is Decision.KEEP  # }
+
+    def test_class_base_list_and_constructor_preserved(self) -> None:
+        source = (
+            "public class Widget : Base, IRunnable\n"
+            "{\n"
+            "  public Widget(int x)\n"
+            "  {\n"
+            "    this.x = x;\n"
+            "  }\n"
+            "}\n"
+        )
+        result = self.stage.apply(ContentMask.from_text(source), self._config())
+        assert result.lines[0].decision is Decision.KEEP  # public class Widget : Base, IRunnable
+        assert result.lines[2].decision is Decision.KEEP  # public Widget(int x)
+        assert result.lines[4].decision is Decision.COMPRESS  # this.x = x;
+        assert result.lines[5].decision is Decision.KEEP  # }
+        assert result.lines[6].decision is Decision.KEEP  # }
+
+    def test_syntax_error_propagates_for_engine_fail_open(self) -> None:
+        """Mirrors TestCodeAstSummarizeGo's identical test — see its own
+        docstring for the full reasoning."""
+
+        def _raises(source: str) -> set[int]:
+            raise ValueError("simulated tree-sitter internal error")
+
+        with patch.dict(ast_registry._ANALYZERS, {"csharp": _raises}):
+            mask = ContentMask.from_text("public class Foo\n{\n  public void F()\n  {\n    return;\n  }\n}\n")
+            with pytest.raises(ValueError, match="simulated tree-sitter internal error"):
+                self.stage.apply(mask, self._config())
+
+    def test_error_node_overlap_excludes_only_the_broken_method(self) -> None:
+        """Uses a `$` token, not a malformed-but-legal-tokens expression —
+        see tests/unit/test_ast_summarize.py::TestAnalyzeCSharp's identical
+        test for why a `$` reliably produces a genuine `ERROR` node in this
+        grammar where some other malformed expressions do not."""
+        source = (
+            "public class Foo\n"
+            "{\n"
+            "  public int Good1(int x)\n"
+            "  {\n"
+            "    return x + 1;\n"
+            "  }\n"
+            "\n"
+            "  public int AlsoBroken(int y)\n"
+            "  {\n"
+            "    return y $ y;\n"
+            "  }\n"
+            "\n"
+            "  public int Good2(int z)\n"
+            "  {\n"
+            "    return z + 2;\n"
+            "  }\n"
+            "}\n"
+        )
+        result = self.stage.apply(ContentMask.from_text(source), self._config())
+        assert result.lines[4].decision is Decision.COMPRESS  # Good1 body
+        assert result.lines[9].decision is Decision.KEEP  # AlsoBroken body: untouched
+        assert result.lines[14].decision is Decision.COMPRESS  # Good2 body
+
+    def test_preserve_pattern_protects_body_line(self) -> None:
+        source = (
+            "public class Foo\n{\n  public void F()\n  {\n"
+            "    bool criticalMarker = true;\n    return;\n  }\n}\n"
+        )
+        mask = ContentMask.from_text(source)
+        config = self._config(preserve=["criticalMarker"])
+        result = self.stage.apply(mask, config)
+        assert result.lines[4].decision is Decision.PROTECT
+        assert result.lines[5].decision is Decision.COMPRESS
+
+    def test_kept_lines_are_byte_identical_to_source(self) -> None:
+        """No rewriting/reformatting ever happens — mirrors
+        TestCodeAstSummarizeGo's identical test."""
+        source = (
+            "/// <summary>\n"
+            "/// Processes transforms data.\n"
+            "/// </summary>\n"
+            "public class Processor\n"
+            "{\n"
+            "  public List<string> Process(List<string> data)\n"
+            "  {\n"
+            "    var result = new List<string>();\n"
+            "    foreach (var item in data)\n"
+            "    {\n"
+            "      result.Add(item);\n"
+            "    }\n"
+            "    return result;\n"
+            "  }\n"
+            "}\n"
+        )
+        original_lines = source.split("\n")
+        result = self.stage.apply(ContentMask.from_text(source), self._config())
+        for idx, lm in enumerate(result.lines):
+            if lm.decision is not Decision.COMPRESS:
+                assert lm.line == original_lines[idx], f"line {idx} was modified"
+
+
 class TestCodeAstSummarizeTypeScript:
     """code_ast_summarize(language="typescript") — QB-005D, via the real
     stage/ContentMask path (see

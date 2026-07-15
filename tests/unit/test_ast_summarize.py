@@ -1,22 +1,27 @@
-"""Unit tests for quor/pipeline/ast_summarize/ — QB-005B/QB-005C/QB-005D.
+"""Unit tests for quor/pipeline/ast_summarize/ — QB-005B/QB-005C/QB-005D/
+QB-046.
 
 Covers the AST summarization framework in isolation, independent of either
 stage that consumes it (python_ast_summarize.py, code_ast_summarize.py —
 see tests/unit/test_stages.py for those): the language -> analyzer routing
 table (registry.py) and the per-language analyzers (python.py,
-javascript.py, typescript.py). Mirrors tests/unit/test_extract.py's own
-separation of "framework tests, patching internals directly" from
-"stage/handler tests." Kept as one file covering every registered language
-(rather than QB-005A's original per-language-file suggestion) to match the
-precedent QB-005B actually established here, not the design doc's initial,
-pre-implementation guess.
+javascript.py, typescript.py, go.py, java.py, rust.py, csharp.py). Mirrors
+tests/unit/test_extract.py's own separation of "framework tests, patching
+internals directly" from "stage/handler tests." Kept as one file covering
+every registered language (rather than QB-005A's original per-language-file
+suggestion) to match the precedent QB-005B actually established here, not
+the design doc's initial, pre-implementation guess.
 
-`tree-sitter`/`tree-sitter-javascript`/`tree-sitter-typescript` (QB-005C/D,
-`quor[javascript]`) are listed in the `dev` extra (see pyproject.toml), so
-`TestAnalyzeJavaScript`/`TestAnalyzeTypeScript` below exercise the *real*
-parser, not a mock — the same "real fixture coverage" precedent
-`tests/unit/test_extract_docx.py`/`test_extract_pdf.py` already established
-for python-docx/pdfplumber.
+`tree-sitter`/`tree-sitter-javascript`/`tree-sitter-typescript`
+(QB-005C/D, `quor[javascript]`), `tree-sitter-go` (QB-046, `quor[go]`),
+`tree-sitter-java` (QB-046, `quor[java]`), `tree-sitter-rust` (QB-046,
+`quor[rust]`), and `tree-sitter-c-sharp` (QB-046, `quor[csharp]`) are
+listed in the `dev` extra (see pyproject.toml), so
+`TestAnalyzeJavaScript`/`TestAnalyzeTypeScript`/`TestAnalyzeGo`/
+`TestAnalyzeJava`/`TestAnalyzeRust`/`TestAnalyzeCSharp` below exercise the
+*real* parser, not a mock — the same "real fixture coverage" precedent
+`tests/unit/test_extract_docx.py`/`test_extract_pdf.py` already
+established for python-docx/pdfplumber.
 """
 
 from __future__ import annotations
@@ -26,6 +31,9 @@ from unittest.mock import patch
 
 import pytest
 
+from quor.pipeline.ast_summarize.csharp import analyze_csharp
+from quor.pipeline.ast_summarize.go import analyze_go
+from quor.pipeline.ast_summarize.java import analyze_java
 from quor.pipeline.ast_summarize.javascript import analyze_javascript
 from quor.pipeline.ast_summarize.python import analyze_python
 from quor.pipeline.ast_summarize.registry import (
@@ -34,6 +42,7 @@ from quor.pipeline.ast_summarize.registry import (
     is_language_available,
     registered_languages,
 )
+from quor.pipeline.ast_summarize.rust import analyze_rust
 from quor.pipeline.ast_summarize.typescript import analyze_tsx, analyze_typescript
 
 # ---------------------------------------------------------------------------
@@ -83,6 +92,42 @@ class TestRegistry:
         assert tsx_analyzer is analyze_tsx
         assert ts_analyzer is not tsx_analyzer
 
+    def test_go_is_registered(self) -> None:
+        """QB-046: "go" is registered unconditionally (no try/except at
+        import time), same reasoning as "javascript" above — dependency
+        availability is checked lazily, per-call, inside analyze_go()
+        itself (TestAnalyzeGo below)."""
+        analyzer = get_analyzer("go")
+        assert analyzer is not None
+        assert analyzer is analyze_go
+
+    def test_java_is_registered(self) -> None:
+        """QB-046: "java" is registered unconditionally (no try/except at
+        import time), same reasoning as "go" above — dependency
+        availability is checked lazily, per-call, inside analyze_java()
+        itself (TestAnalyzeJava below)."""
+        analyzer = get_analyzer("java")
+        assert analyzer is not None
+        assert analyzer is analyze_java
+
+    def test_rust_is_registered(self) -> None:
+        """QB-046: "rust" is registered unconditionally (no try/except at
+        import time), same reasoning as "go"/"java" above — dependency
+        availability is checked lazily, per-call, inside analyze_rust()
+        itself (TestAnalyzeRust below)."""
+        analyzer = get_analyzer("rust")
+        assert analyzer is not None
+        assert analyzer is analyze_rust
+
+    def test_csharp_is_registered(self) -> None:
+        """QB-046: "csharp" is registered unconditionally (no try/except at
+        import time), same reasoning as "go"/"java"/"rust" above —
+        dependency availability is checked lazily, per-call, inside
+        analyze_csharp() itself (TestAnalyzeCSharp below)."""
+        analyzer = get_analyzer("csharp")
+        assert analyzer is not None
+        assert analyzer is analyze_csharp
+
     def test_registered_languages_reflects_analyzers_table(self) -> None:
         assert registered_languages() == frozenset(_ANALYZERS)
         assert "python" in registered_languages()
@@ -98,15 +143,25 @@ class TestRegistry:
             assert "fake-future-language" in registered_languages()
 
     def test_no_further_languages_registered_yet(self) -> None:
-        """After QB-005D, python/javascript/typescript/tsx are registered
-        and nothing else — explicitly asserts the current scope boundary
-        (no Go/Rust/Java/etc.) so a future language addition is a visible,
+        """After QB-046, python/javascript/typescript/tsx/go/java/rust/
+        csharp are registered and nothing else — explicitly asserts the
+        current scope boundary so a future language addition is a visible,
         intentional test change here, not a silent expansion. (This test's
         own history: QB-005B's original test asserted "javascript" and
         "typescript" were both absent; QB-005C flipped "javascript" to
-        registered and renamed it; QB-005D now flips "typescript"/"tsx"
-        too — each rename documents which phase changed the boundary.)"""
-        assert _ANALYZERS.keys() == {"python", "javascript", "typescript", "tsx"}
+        registered and renamed it; QB-005D flipped "typescript"/"tsx" too;
+        QB-046 added "go", then "java", then "rust", then "csharp" — each
+        rename documents which phase changed the boundary.)"""
+        assert _ANALYZERS.keys() == {
+            "python",
+            "javascript",
+            "typescript",
+            "tsx",
+            "go",
+            "java",
+            "rust",
+            "csharp",
+        }
 
 
 class TestIsLanguageAvailable:
@@ -175,6 +230,54 @@ class TestIsLanguageAvailable:
             assert is_language_available("javascript") is False
         finally:
             self._unblock_import("tree_sitter")
+
+    def test_go_unavailable_when_tree_sitter_missing(self) -> None:
+        self._block_import("tree_sitter", "tree_sitter_go")
+        try:
+            assert is_language_available("go") is False
+        finally:
+            self._unblock_import("tree_sitter", "tree_sitter_go")
+
+    def test_go_available_when_tree_sitter_present(self) -> None:
+        pytest.importorskip("tree_sitter")
+        pytest.importorskip("tree_sitter_go")
+        assert is_language_available("go") is True
+
+    def test_java_unavailable_when_tree_sitter_missing(self) -> None:
+        self._block_import("tree_sitter", "tree_sitter_java")
+        try:
+            assert is_language_available("java") is False
+        finally:
+            self._unblock_import("tree_sitter", "tree_sitter_java")
+
+    def test_java_available_when_tree_sitter_present(self) -> None:
+        pytest.importorskip("tree_sitter")
+        pytest.importorskip("tree_sitter_java")
+        assert is_language_available("java") is True
+
+    def test_rust_unavailable_when_tree_sitter_missing(self) -> None:
+        self._block_import("tree_sitter", "tree_sitter_rust")
+        try:
+            assert is_language_available("rust") is False
+        finally:
+            self._unblock_import("tree_sitter", "tree_sitter_rust")
+
+    def test_rust_available_when_tree_sitter_present(self) -> None:
+        pytest.importorskip("tree_sitter")
+        pytest.importorskip("tree_sitter_rust")
+        assert is_language_available("rust") is True
+
+    def test_csharp_unavailable_when_tree_sitter_missing(self) -> None:
+        self._block_import("tree_sitter", "tree_sitter_c_sharp")
+        try:
+            assert is_language_available("csharp") is False
+        finally:
+            self._unblock_import("tree_sitter", "tree_sitter_c_sharp")
+
+    def test_csharp_available_when_tree_sitter_present(self) -> None:
+        pytest.importorskip("tree_sitter")
+        pytest.importorskip("tree_sitter_c_sharp")
+        assert is_language_available("csharp") is True
 
 
 class TestRegistryFailOpenContract:
@@ -662,3 +765,793 @@ class TestAnalyzeTsx:
 
         assert result == set()
         assert any("quor[javascript]" in str(w.message) for w in caught)
+
+
+# ---------------------------------------------------------------------------
+# analyze_go — QB-046, backed by tree-sitter/tree-sitter-go (real parser,
+# not a mock — see module docstring). Every line-number assertion below was
+# verified against the real, installed grammar's output during
+# implementation, not guessed.
+# ---------------------------------------------------------------------------
+
+
+class TestAnalyzeGo:
+    def test_empty_source_returns_empty_set(self) -> None:
+        assert analyze_go("") == set()
+
+    def test_whitespace_only_returns_empty_set(self) -> None:
+        assert analyze_go("   \n\n  ") == set()
+
+    def test_no_functions_returns_empty_set(self) -> None:
+        source = 'package main\n\nimport "fmt"\n\nconst Foo = 1\n\nvar _ = fmt.Sprintf\n'
+        assert analyze_go(source) == set()
+
+    def test_simple_function_body_line_numbers(self) -> None:
+        source = "func Add(x, y int) int {\n  return x + y\n}\n"
+        # Line 1: signature + opening brace, line 2: body, line 3: closing brace.
+        assert analyze_go(source) == {2}
+
+    def test_same_line_function_body_not_compressed(self) -> None:
+        """A `block` whose open/close braces are on the same physical
+        line — nothing meaningful to compress without touching the
+        signature itself, mirrors javascript.py's identical rule."""
+        assert analyze_go("func f() { return 1 }\n") == set()
+
+    def test_empty_body_not_compressed(self) -> None:
+        assert analyze_go("func f() {\n}\n") == set()
+
+    def test_var_func_literal_body_compressed(self) -> None:
+        source = "var handler = func(x int) int {\n  return x * 2\n}\n"
+        assert analyze_go(source) == {2}
+
+    def test_method_body_compressed_receiver_and_struct_preserved(self) -> None:
+        """A method's receiver clause makes `method_declaration` its own
+        top-level sibling node (Go has no classes) — see go.py's module
+        docstring. The struct type's own field lines are untouched:
+        `type_declaration` is never visited as a function-like candidate."""
+        source = (
+            "type Widget struct {\n"  # 1
+            "\tX int\n"  # 2
+            "}\n"  # 3
+            "\n"  # 4
+            "func (w *Widget) Render() string {\n"  # 5
+            '\treturn "hi"\n'  # 6
+            "}\n"  # 7
+        )
+        assert analyze_go(source) == {6}
+
+    def test_doc_comment_preceding_function_not_in_compress_set(self) -> None:
+        """A `//` doc comment is a sibling node entirely outside the
+        function's own span (unlike Python's docstring, which is the
+        function's own first body statement) — mirrors javascript.py's
+        identical JSDoc case."""
+        source = "// Add returns the sum.\nfunc Add(x, y int) int {\n  return x + y\n}\n"
+        assert analyze_go(source) == {3}
+
+    def test_grouped_var_block_func_literals_compressed_independently(self) -> None:
+        """A parenthesized `var (...)` block nests each `var_spec` one
+        level deeper (inside a `var_spec_list`) than a single `var f = ...`
+        statement does — go.py's `_visit_var_declaration()` handles both
+        shapes; this proves the grouped-block shape specifically."""
+        source = (
+            "var (\n"  # 1
+            "\ta = func() int {\n"  # 2
+            "\t\treturn 1\n"  # 3
+            "\t}\n"  # 4
+            "\tb = func() int {\n"  # 5
+            "\t\treturn 2\n"  # 6
+            "\t}\n"  # 7
+            ")\n"  # 8
+        )
+        assert analyze_go(source) == {3, 6}
+
+    def test_closure_inside_function_body_not_separately_recursed(self) -> None:
+        """A `go func() {...}()` closure nested inside a function's body is
+        implementation detail of the outer function — its lines are
+        covered by the outer function's own compress range, not visited or
+        excluded as a candidate of its own (mirrors python.py/
+        javascript.py's identical "no further recursion" rule)."""
+        source = (
+            "func Outer() {\n"  # 1
+            "\tgo func() {\n"  # 2
+            '\t\tfmt.Println("hi")\n'  # 3
+            "\t}()\n"  # 4
+            "}\n"  # 5
+        )
+        assert analyze_go(source) == {2, 3, 4}
+
+    def test_syntax_error_in_signature_excludes_swallowed_region(self) -> None:
+        """A malformed function *signature* can make tree-sitter's error
+        recovery swallow everything up to EOF into one ERROR node — the
+        function before the error still compresses; nothing inside the
+        swallowed region does, mirrors javascript.py's identical case."""
+        source = (
+            "func good1(x int) int {\n"  # 1-3
+            "  return x + 1\n"
+            "}\n"
+            "\n"  # 4
+            "func broken( {\n"  # 5
+            "  return 1\n"  # 6
+            "}\n"  # 7
+            "\n"  # 8
+            "func good2(y int) int {\n"  # 9
+            "  return y + 2\n"  # 10
+            "}\n"  # 11
+        )
+        assert analyze_go(source) == {2, 10}
+
+    def test_syntax_error_in_body_excludes_only_that_function(self) -> None:
+        source = (
+            "func good1(x int) int {\n"  # 1-3
+            "  return x + 1\n"
+            "}\n"
+            "\n"  # 4
+            "func alsoBroken(y int) int {\n"  # 5
+            "  return y +++ * \n"  # 6
+            "}\n"  # 7
+            "\n"  # 8
+            "func good2(z int) int {\n"  # 9
+            "  return z + 2\n"  # 10
+            "}\n"  # 11
+        )
+        assert analyze_go(source) == {2, 10}
+
+    def test_large_synthetic_file_compresses_every_function_body(self) -> None:
+        n = 100
+        chunks = [f"func func_{i}(x int) int {{\n  return x + {i}\n}}\n" for i in range(n)]
+        source = "".join(chunks)
+        result = analyze_go(source)
+        # Each 3-line chunk's body is its own middle line: 2, 5, 8, ...
+        assert result == {3 * i + 2 for i in range(n)}
+
+    def test_missing_dependency_fails_open_with_warning(self) -> None:
+        """Simulates quor[go] not being installed by blocking the two lazy
+        imports analyze_go() performs internally — mirrors
+        analyze_javascript()'s identical missing-dependency fail-open
+        test."""
+        import builtins
+
+        real_import = builtins.__import__
+
+        def _blocked(name: str, *args: object, **kwargs: object) -> object:
+            if name in ("tree_sitter", "tree_sitter_go"):
+                raise ImportError(f"simulated missing dependency: {name}")
+            return real_import(name, *args, **kwargs)  # type: ignore[arg-type]
+
+        with patch("builtins.__import__", side_effect=_blocked), warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            result = analyze_go("func f() {\n  return 1\n}\n")
+
+        assert result == set()
+        assert any("quor[go]" in str(w.message) for w in caught)
+
+
+# ---------------------------------------------------------------------------
+# analyze_java — QB-046, backed by tree-sitter/tree-sitter-java (real
+# parser, not a mock — see module docstring). Every line-number assertion
+# below was verified against the real, installed grammar's output during
+# implementation, not guessed.
+# ---------------------------------------------------------------------------
+
+
+class TestAnalyzeJava:
+    def test_empty_source_returns_empty_set(self) -> None:
+        assert analyze_java("") == set()
+
+    def test_whitespace_only_returns_empty_set(self) -> None:
+        assert analyze_java("   \n\n  ") == set()
+
+    def test_no_classes_returns_empty_set(self) -> None:
+        assert analyze_java("import java.util.List;\n\n// just imports\n") == set()
+
+    def test_simple_method_body_line_numbers(self) -> None:
+        source = "public class Foo {\n  public int add(int x, int y) {\n    return x + y;\n  }\n}\n"
+        # Line 1: class signature, line 2: method signature + opening brace,
+        # line 3: body, line 4: method closing brace, line 5: class closing brace.
+        assert analyze_java(source) == {3}
+
+    def test_same_line_method_body_not_compressed(self) -> None:
+        """A `block` whose open/close braces are on the same physical
+        line — nothing meaningful to compress without touching the
+        signature itself, mirrors go.py's identical rule."""
+        assert analyze_java("public class Foo {\n  public int f() { return 1; }\n}\n") == set()
+
+    def test_empty_body_not_compressed(self) -> None:
+        assert analyze_java("public class Foo {\n  public void f() {\n  }\n}\n") == set()
+
+    def test_constructor_body_compressed_field_declaration_preserved(self) -> None:
+        """A constructor's body node is `constructor_body`, not `block`
+        (empirically verified against the installed grammar) — this proves
+        `_METHOD_LIKE_BLOCK_TYPES`'s per-member `block_type` selection
+        actually matters, not just `method_declaration`'s."""
+        source = (
+            "public class Widget {\n"  # 1
+            "  private int x;\n"  # 2
+            "\n"  # 3
+            "  public Widget(int x) {\n"  # 4
+            "    this.x = x;\n"  # 5
+            "  }\n"  # 6
+            "}\n"  # 7
+        )
+        assert analyze_java(source) == {5}
+
+    def test_extends_implements_and_method_signature_preserved(self) -> None:
+        source = (
+            "public class Widget extends Base implements Runnable {\n"  # 1
+            "  public void run() {\n"  # 2
+            '    System.out.println("running");\n'  # 3
+            "  }\n"  # 4
+            "}\n"  # 5
+        )
+        assert analyze_java(source) == {3}
+
+    def test_javadoc_preceding_class_not_in_compress_set(self) -> None:
+        """A Javadoc block is a sibling node entirely outside the class's
+        own span — no Javadoc-specific logic is needed, mirrors
+        javascript.py's identical JSDoc case."""
+        source = (
+            "/**\n * Add.\n */\npublic class Foo {\n"
+            "  public int add(int x, int y) {\n    return x + y;\n  }\n}\n"
+        )
+        assert analyze_java(source) == {6}
+
+    def test_lambda_field_block_body_compressed(self) -> None:
+        source = (
+            "public class Foo {\n"  # 1
+            "  private Runnable handler = () -> {\n"  # 2
+            '    System.out.println("lambda");\n'  # 3
+            "  };\n"  # 4
+            "}\n"  # 5
+        )
+        assert analyze_java(source) == {3}
+
+    def test_expression_lambda_not_compressed(self) -> None:
+        """A single-expression lambda (`() -> expr`) has no `block` body at
+        all — mirrors JS's same-line arrow-function rule."""
+        source = 'public class Foo {\n  private Runnable oneLiner = () -> System.out.println("x");\n}\n'
+        assert analyze_java(source) == set()
+
+    def test_interface_default_method_compressed_abstract_method_untouched(self) -> None:
+        """An interface's abstract method (`greet(String name);`, no body
+        at all) has no `block` field to compress — only the `default`
+        method's real body is found."""
+        source = (
+            "interface Greeter {\n"  # 1
+            "  String greet(String name);\n"  # 2
+            "\n"  # 3
+            "  default String defaultGreet() {\n"  # 4
+            '    return "hi";\n'  # 5
+            "  }\n"  # 6
+            "}\n"  # 7
+        )
+        assert analyze_java(source) == {5}
+
+    def test_nested_class_not_recursed_into(self) -> None:
+        """A member class/interface nested inside another type's body is
+        not itself visited — documented, deliberate scope boundary (see
+        java.py's `_visit_type_body()` docstring)."""
+        source = (
+            "public class Outer {\n"
+            "  class Inner {\n"
+            "    void innerMethod() {\n"
+            '      System.out.println("inner");\n'
+            "    }\n"
+            "  }\n"
+            "}\n"
+        )
+        assert analyze_java(source) == set()
+
+    def test_syntax_error_in_signature_excludes_swallowed_region(self) -> None:
+        """A malformed method *signature* can make tree-sitter's error
+        recovery swallow everything up to EOF into one ERROR node — the
+        method before the error still compresses; nothing inside the
+        swallowed region does, mirrors go.py's identical case."""
+        source = (
+            "public class Foo {\n"
+            "  public int good1(int x) {\n"  # 2-4
+            "    return x + 1;\n"
+            "  }\n"
+            "\n"  # 5
+            "  public int broken( {\n"  # 6
+            "    return 1;\n"  # 7
+            "  }\n"  # 8
+            "\n"  # 9
+            "  public int good2(int y) {\n"  # 10
+            "    return y + 2;\n"  # 11
+            "  }\n"  # 12
+            "}\n"  # 13
+        )
+        assert analyze_java(source) == {3, 11}
+
+    def test_syntax_error_in_body_excludes_only_that_method(self) -> None:
+        source = (
+            "public class Foo {\n"
+            "  public int good1(int x) {\n"  # 2-4
+            "    return x + 1;\n"
+            "  }\n"
+            "\n"  # 5
+            "  public int alsoBroken(int y) {\n"  # 6
+            "    return y +++ * ;\n"  # 7
+            "  }\n"  # 8
+            "\n"  # 9
+            "  public int good2(int z) {\n"  # 10
+            "    return z + 2;\n"  # 11
+            "  }\n"  # 12
+            "}\n"  # 13
+        )
+        assert analyze_java(source) == {3, 11}
+
+    def test_large_synthetic_file_compresses_every_method_body(self) -> None:
+        n = 50
+        chunks = [f"  public int func_{i}(int x) {{\n    return x + {i};\n  }}\n" for i in range(n)]
+        source = "public class Foo {\n" + "".join(chunks) + "}\n"
+        result = analyze_java(source)
+        # Class signature is line 1; each 3-line chunk's body is its own
+        # middle line: 3, 6, 9, ...
+        assert result == {3 * i + 3 for i in range(n)}
+
+    def test_missing_dependency_fails_open_with_warning(self) -> None:
+        """Simulates quor[java] not being installed by blocking the two
+        lazy imports analyze_java() performs internally — mirrors
+        analyze_go()'s identical missing-dependency fail-open test."""
+        import builtins
+
+        real_import = builtins.__import__
+
+        def _blocked(name: str, *args: object, **kwargs: object) -> object:
+            if name in ("tree_sitter", "tree_sitter_java"):
+                raise ImportError(f"simulated missing dependency: {name}")
+            return real_import(name, *args, **kwargs)  # type: ignore[arg-type]
+
+        with patch("builtins.__import__", side_effect=_blocked), warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            result = analyze_java("public class Foo {\n  public void f() {\n    return;\n  }\n}\n")
+
+        assert result == set()
+        assert any("quor[java]" in str(w.message) for w in caught)
+
+
+# ---------------------------------------------------------------------------
+# analyze_rust — QB-046, backed by tree-sitter/tree-sitter-rust (real
+# parser, not a mock — see module docstring). Every line-number assertion
+# below was verified against the real, installed grammar's output during
+# implementation, not guessed.
+# ---------------------------------------------------------------------------
+
+
+class TestAnalyzeRust:
+    def test_empty_source_returns_empty_set(self) -> None:
+        assert analyze_rust("") == set()
+
+    def test_whitespace_only_returns_empty_set(self) -> None:
+        assert analyze_rust("   \n\n  ") == set()
+
+    def test_no_functions_returns_empty_set(self) -> None:
+        source = "use std::fmt;\n\nconst FOO: i32 = 1;\n"
+        assert analyze_rust(source) == set()
+
+    def test_simple_function_body_line_numbers(self) -> None:
+        source = "fn add(x: i32, y: i32) -> i32 {\n  return x + y;\n}\n"
+        # Line 1: signature + opening brace, line 2: body, line 3: closing brace.
+        assert analyze_rust(source) == {2}
+
+    def test_same_line_function_body_not_compressed(self) -> None:
+        """A `block` whose open/close braces are on the same physical
+        line — nothing meaningful to compress without touching the
+        signature itself, mirrors go.py's identical rule."""
+        assert analyze_rust("fn f() { return 1; }\n") == set()
+
+    def test_empty_body_not_compressed(self) -> None:
+        assert analyze_rust("fn f() {\n}\n") == set()
+
+    def test_method_body_compressed_struct_and_impl_header_preserved(self) -> None:
+        """A method lives inside an `impl` block's own `declaration_list`
+        body — one level deeper than a top-level `function_item` — see
+        rust.py's module docstring. The struct's own field lines are
+        untouched: `struct_item` is never visited as a function-like
+        candidate."""
+        source = (
+            "struct Widget {\n"  # 1
+            "    x: i32,\n"  # 2
+            "}\n"  # 3
+            "\n"  # 4
+            "impl Widget {\n"  # 5
+            "    fn render(&self) -> String {\n"  # 6
+            '        String::from("hi")\n'  # 7
+            "    }\n"  # 8
+            "}\n"  # 9
+        )
+        assert analyze_rust(source) == {7}
+
+    def test_doc_comment_preceding_function_not_in_compress_set(self) -> None:
+        """A `///` doc comment is a sibling node entirely outside the
+        function's own span — mirrors go.py/java.py's identical doc-comment
+        case."""
+        source = "/// Add returns the sum.\nfn add(x: i32, y: i32) -> i32 {\n  return x + y;\n}\n"
+        assert analyze_rust(source) == {3}
+
+    def test_trait_default_method_compressed_signature_only_untouched(self) -> None:
+        """A trait method with no default implementation
+        (`fn greet(&self) -> String;`) is its own distinct node type,
+        `function_signature_item` — not a `function_item` with an absent
+        body — so it has no `block` field to compress at all; only the
+        default method's real body is found. Mirrors java.py's interface
+        default-method case."""
+        source = (
+            "trait Greeter {\n"  # 1
+            "    fn greet(&self) -> String;\n"  # 2
+            "\n"  # 3
+            "    fn default_greet(&self) -> String {\n"  # 4
+            '        String::from("hi")\n'  # 5
+            "    }\n"  # 6
+            "}\n"  # 7
+        )
+        assert analyze_rust(source) == {5}
+
+    def test_trait_impl_header_preserved(self) -> None:
+        source = (
+            "impl Shape for Circle {\n"  # 1
+            "    fn area(&self) -> f64 {\n"  # 2
+            "        1.0\n"  # 3
+            "    }\n"  # 4
+            "}\n"  # 5
+        )
+        assert analyze_rust(source) == {3}
+
+    def test_closure_inside_function_body_not_separately_recursed(self) -> None:
+        """A closure nested inside a function's body is implementation
+        detail of the outer function — its lines are covered by the outer
+        function's own compress range, not visited or excluded as a
+        candidate of its own (mirrors python.py/javascript.py/go.py's
+        identical "no further recursion" rule)."""
+        source = (
+            "fn outer() {\n"  # 1
+            "    let f = || {\n"  # 2
+            '        println!("hi");\n'  # 3
+            "    };\n"  # 4
+            "}\n"  # 5
+        )
+        assert analyze_rust(source) == {2, 3, 4}
+
+    def test_module_not_recursed_into(self) -> None:
+        """A `mod` block nested inside a file is not itself visited —
+        documented, deliberate scope boundary (see rust.py's
+        `_visit_top_level()` docstring), mirroring java.py's identical
+        "member class/interface/enum nested inside this body" limitation."""
+        source = (
+            "mod inner {\n"
+            "    fn helper() {\n"
+            "        do_thing();\n"
+            "    }\n"
+            "}\n"
+        )
+        assert analyze_rust(source) == set()
+
+    def test_syntax_error_in_signature_excludes_swallowed_region(self) -> None:
+        """A malformed function *signature* can make tree-sitter's error
+        recovery swallow everything up to EOF into one ERROR node — the
+        function before the error still compresses; nothing inside the
+        swallowed region does, mirrors go.py's identical case."""
+        source = (
+            "fn good1(x: i32) -> i32 {\n"  # 1-3
+            "  return x + 1;\n"
+            "}\n"
+            "\n"  # 4
+            "fn broken( {\n"  # 5
+            "  return 1;\n"  # 6
+            "}\n"  # 7
+            "\n"  # 8
+            "fn good2(y: i32) -> i32 {\n"  # 9
+            "  return y + 2;\n"  # 10
+            "}\n"  # 11
+        )
+        assert analyze_rust(source) == {2, 10}
+
+    def test_syntax_error_in_body_excludes_only_that_function(self) -> None:
+        source = (
+            "fn good1(x: i32) -> i32 {\n"  # 1-3
+            "  return x + 1;\n"
+            "}\n"
+            "\n"  # 4
+            "fn also_broken(y: i32) -> i32 {\n"  # 5
+            "  return y +++ * ;\n"  # 6
+            "}\n"  # 7
+            "\n"  # 8
+            "fn good2(z: i32) -> i32 {\n"  # 9
+            "  return z + 2;\n"  # 10
+            "}\n"  # 11
+        )
+        assert analyze_rust(source) == {2, 10}
+
+    def test_large_synthetic_file_compresses_every_function_body(self) -> None:
+        n = 100
+        chunks = [f"fn func_{i}(x: i32) -> i32 {{\n  return x + {i};\n}}\n" for i in range(n)]
+        source = "".join(chunks)
+        result = analyze_rust(source)
+        # Each 3-line chunk's body is its own middle line: 2, 5, 8, ...
+        assert result == {3 * i + 2 for i in range(n)}
+
+    def test_missing_dependency_fails_open_with_warning(self) -> None:
+        """Simulates quor[rust] not being installed by blocking the two
+        lazy imports analyze_rust() performs internally — mirrors
+        analyze_go()'s identical missing-dependency fail-open test."""
+        import builtins
+
+        real_import = builtins.__import__
+
+        def _blocked(name: str, *args: object, **kwargs: object) -> object:
+            if name in ("tree_sitter", "tree_sitter_rust"):
+                raise ImportError(f"simulated missing dependency: {name}")
+            return real_import(name, *args, **kwargs)  # type: ignore[arg-type]
+
+        with patch("builtins.__import__", side_effect=_blocked), warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            result = analyze_rust("fn f() {\n  return 1;\n}\n")
+
+        assert result == set()
+        assert any("quor[rust]" in str(w.message) for w in caught)
+
+
+# ---------------------------------------------------------------------------
+# analyze_csharp — QB-046, backed by tree-sitter/tree-sitter-c-sharp (real
+# parser, not a mock — see module docstring). Every line-number assertion
+# below was verified against the real, installed grammar's output during
+# implementation, not guessed.
+# ---------------------------------------------------------------------------
+
+
+class TestAnalyzeCSharp:
+    def test_empty_source_returns_empty_set(self) -> None:
+        assert analyze_csharp("") == set()
+
+    def test_whitespace_only_returns_empty_set(self) -> None:
+        assert analyze_csharp("   \n\n  ") == set()
+
+    def test_no_classes_returns_empty_set(self) -> None:
+        assert analyze_csharp("using System;\n\n// just a using directive\n") == set()
+
+    def test_simple_method_body_line_numbers(self) -> None:
+        source = "public class Foo\n{\n  public int Add(int x, int y)\n  {\n    return x + y;\n  }\n}\n"
+        # Line 1: class signature, line 2: opening brace, line 3: method
+        # signature, line 4: method opening brace, line 5: body, line 6:
+        # method closing brace, line 7: class closing brace.
+        assert analyze_csharp(source) == {5}
+
+    def test_same_line_method_body_not_compressed(self) -> None:
+        """A `block` whose open/close braces are on the same physical
+        line — nothing meaningful to compress without touching the
+        signature itself, mirrors go.py's identical rule."""
+        assert analyze_csharp("public class Foo\n{\n  public int F() { return 1; }\n}\n") == set()
+
+    def test_empty_body_not_compressed(self) -> None:
+        assert analyze_csharp("public class Foo\n{\n  public void F()\n  {\n  }\n}\n") == set()
+
+    def test_constructor_body_compressed_field_declaration_preserved(self) -> None:
+        source = (
+            "public class Widget\n"  # 1
+            "{\n"  # 2
+            "  private int x;\n"  # 3
+            "\n"  # 4
+            "  public Widget(int x)\n"  # 5
+            "  {\n"  # 6
+            "    this.x = x;\n"  # 7
+            "  }\n"  # 8
+            "}\n"  # 9
+        )
+        assert analyze_csharp(source) == {7}
+
+    def test_base_list_and_method_signature_preserved(self) -> None:
+        source = (
+            "public class Widget : Base, IRunnable\n"  # 1
+            "{\n"  # 2
+            "  public void Run()\n"  # 3
+            "  {\n"  # 4
+            '    Console.WriteLine("running");\n'  # 5
+            "  }\n"  # 6
+            "}\n"  # 7
+        )
+        assert analyze_csharp(source) == {5}
+
+    def test_xml_doc_comment_preceding_class_not_in_compress_set(self) -> None:
+        """An XML doc comment (`///`) is a sibling `comment` node entirely
+        outside the class's own span — no doc-comment-specific logic is
+        needed, mirrors java.py's identical Javadoc case."""
+        source = (
+            "/// <summary>\n/// Add.\n/// </summary>\npublic class Foo\n{\n"
+            "  public int Add(int x, int y)\n  {\n    return x + y;\n  }\n}\n"
+        )
+        assert analyze_csharp(source) == {8}
+
+    def test_lambda_field_block_body_compressed(self) -> None:
+        source = (
+            "public class Foo\n"  # 1
+            "{\n"  # 2
+            "  private Action handler = () =>\n"  # 3
+            "  {\n"  # 4
+            '    Console.WriteLine("lambda");\n'  # 5
+            "  };\n"  # 6
+            "}\n"  # 7
+        )
+        assert analyze_csharp(source) == {5}
+
+    def test_expression_lambda_not_compressed(self) -> None:
+        """A single-expression lambda (`() => expr`) has no `block` body at
+        all — mirrors JS's same-line arrow-function rule."""
+        source = 'public class Foo\n{\n  private Action oneLiner = () => Console.WriteLine("x");\n}\n'
+        assert analyze_csharp(source) == set()
+
+    def test_interface_default_method_compressed_abstract_method_untouched(self) -> None:
+        """An interface's abstract method (`string Greet(string name);`, no
+        body at all) has no `block` field to compress — only the default
+        method's real body is found."""
+        source = (
+            "interface IGreeter\n"  # 1
+            "{\n"  # 2
+            "  string Greet(string name);\n"  # 3
+            "\n"  # 4
+            "  string DefaultGreet()\n"  # 5
+            "  {\n"  # 6
+            '    return "hi";\n'  # 7
+            "  }\n"  # 8
+            "}\n"  # 9
+        )
+        assert analyze_csharp(source) == {7}
+
+    def test_struct_method_body_compressed(self) -> None:
+        """`struct_declaration` shares `class_declaration`'s own body node
+        type in this grammar (see csharp.py's module docstring) — this
+        proves it is actually reached, not just class/interface."""
+        source = (
+            "public struct Point\n"  # 1
+            "{\n"  # 2
+            "  public int Add(int a, int b)\n"  # 3
+            "  {\n"  # 4
+            "    return a + b;\n"  # 5
+            "  }\n"  # 6
+            "}\n"  # 7
+        )
+        assert analyze_csharp(source) == {5}
+
+    def test_block_scoped_namespace_unwrapped(self) -> None:
+        """A block-scoped `namespace X { ... }` wraps its class in its own
+        `declaration_list` body — this proves `_visit_top_level()` actually
+        unwraps it, not just walks `compilation_unit`'s direct children
+        (see csharp.py's module docstring)."""
+        source = (
+            "namespace Widgets\n"  # 1
+            "{\n"  # 2
+            "  public class Foo\n"  # 3
+            "  {\n"  # 4
+            "    public int Add(int x, int y)\n"  # 5
+            "    {\n"  # 6
+            "      return x + y;\n"  # 7
+            "    }\n"  # 8
+            "  }\n"  # 9
+            "}\n"  # 10
+        )
+        assert analyze_csharp(source) == {7}
+
+    def test_file_scoped_namespace_needs_no_unwrapping(self) -> None:
+        """A file-scoped `namespace X;` (C# 10+) does not wrap anything —
+        the class stays a direct top-level sibling, reached without any
+        unwrapping at all (see csharp.py's module docstring)."""
+        source = (
+            "namespace Widgets;\n"  # 1
+            "\n"  # 2
+            "public class Foo\n"  # 3
+            "{\n"  # 4
+            "  public int Add(int x, int y)\n"  # 5
+            "  {\n"  # 6
+            "    return x + y;\n"  # 7
+            "  }\n"  # 8
+            "}\n"  # 9
+        )
+        assert analyze_csharp(source) == {7}
+
+    def test_nested_class_not_recursed_into(self) -> None:
+        """A member class nested inside another type's body is not itself
+        visited — documented, deliberate scope boundary (see csharp.py's
+        `_visit_type_body()` docstring)."""
+        source = (
+            "public class Outer\n"
+            "{\n"
+            "  class Inner\n"
+            "  {\n"
+            "    void InnerMethod()\n"
+            "    {\n"
+            '      Console.WriteLine("inner");\n'
+            "    }\n"
+            "  }\n"
+            "}\n"
+        )
+        assert analyze_csharp(source) == set()
+
+    def test_syntax_error_in_signature_excludes_swallowed_region(self) -> None:
+        """A malformed method *signature* (missing closing paren) makes
+        tree-sitter's error recovery swallow the broken method into one
+        ERROR node — the method before the error still compresses; nothing
+        inside the swallowed region does, mirrors go.py's identical case.
+        Line 3: `Good1` signature, line 5: its body (compressed), line 8:
+        `Broken`'s malformed signature (swallowed, excluded entirely), line
+        13: `Good2` signature, line 15: its body (compressed)."""
+        source = (
+            "public class Foo\n"  # 1
+            "{\n"  # 2
+            "  public int Good1(int x)\n"  # 3
+            "  {\n"  # 4
+            "    return x + 1;\n"  # 5
+            "  }\n"  # 6
+            "\n"  # 7
+            "  public int Broken(\n"  # 8
+            "  {\n"  # 9
+            "    return 1;\n"  # 10
+            "  }\n"  # 11
+            "\n"  # 12
+            "  public int Good2(int y)\n"  # 13
+            "  {\n"  # 14
+            "    return y + 2;\n"  # 15
+            "  }\n"  # 16
+            "}\n"  # 17
+        )
+        assert analyze_csharp(source) == {5, 15}
+
+    def test_syntax_error_in_body_excludes_only_that_method(self) -> None:
+        """A `$` token is not valid anywhere in this grammar, so — unlike a
+        malformed expression built entirely from otherwise-legal operators
+        (empirically found, while implementing this module, to sometimes
+        produce only a zero-width `has_error`-flagged leaf that neither
+        `collect_error_ranges()`'s `ERROR`-type nor `is_missing` check
+        catches) — it reliably produces a genuine `ERROR` node, exercising
+        the same overlap-exclusion mechanism go.py/java.py's identical
+        tests exercise."""
+        source = (
+            "public class Foo\n"  # 1
+            "{\n"  # 2
+            "  public int Good1(int x)\n"  # 3
+            "  {\n"  # 4
+            "    return x + 1;\n"  # 5
+            "  }\n"  # 6
+            "\n"  # 7
+            "  public int AlsoBroken(int y)\n"  # 8
+            "  {\n"  # 9
+            "    return y $ y;\n"  # 10
+            "  }\n"  # 11
+            "\n"  # 12
+            "  public int Good2(int z)\n"  # 13
+            "  {\n"  # 14
+            "    return z + 2;\n"  # 15
+            "  }\n"  # 16
+            "}\n"  # 17
+        )
+        assert analyze_csharp(source) == {5, 15}
+
+    def test_large_synthetic_file_compresses_every_method_body(self) -> None:
+        n = 50
+        chunks = [
+            f"  public int Func{i}(int x)\n  {{\n    return x + {i};\n  }}\n" for i in range(n)
+        ]
+        source = "public class Foo\n{\n" + "".join(chunks) + "}\n"
+        result = analyze_csharp(source)
+        # Class signature is line 1, opening brace line 2; each 4-line
+        # chunk's body is its own 3rd line: 5, 9, 13, ...
+        assert result == {4 * i + 5 for i in range(n)}
+
+    def test_missing_dependency_fails_open_with_warning(self) -> None:
+        """Simulates quor[csharp] not being installed by blocking the two
+        lazy imports analyze_csharp() performs internally — mirrors
+        analyze_go()'s identical missing-dependency fail-open test."""
+        import builtins
+
+        real_import = builtins.__import__
+
+        def _blocked(name: str, *args: object, **kwargs: object) -> object:
+            if name in ("tree_sitter", "tree_sitter_c_sharp"):
+                raise ImportError(f"simulated missing dependency: {name}")
+            return real_import(name, *args, **kwargs)  # type: ignore[arg-type]
+
+        with patch("builtins.__import__", side_effect=_blocked), warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            result = analyze_csharp("public class Foo\n{\n  public void F()\n  {\n    return;\n  }\n}\n")
+
+        assert result == set()
+        assert any("quor[csharp]" in str(w.message) for w in caught)

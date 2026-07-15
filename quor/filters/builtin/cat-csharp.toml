@@ -1,0 +1,88 @@
+# quor built-in filter: cat (C# files) — QB-046 structural extraction
+#
+# Compresses method/constructor/lambda bodies to their signature (+ XML doc
+# comment, when present), keeping using directives, namespace/class/
+# interface/struct signatures (including base/interface lists via `:`),
+# field declarations, and method/constructor signatures untouched. Must be
+# loaded before the generic `cat.toml` filter so `.cs` files match here
+# first. Built-in filters load in sorted filename order
+# (quor/filters/registry.py::_load_builtin uses sorted(glob(...))), and
+# "cat-csharp.toml" sorts before "cat.toml" lexicographically ('-' is
+# 0x2D, '.' is 0x2E) — same convention every other cat-*.toml filter
+# already uses. Relative order between cat-csharp.toml and the other
+# cat-*.toml filters does not matter: match_command patterns are mutually
+# exclusive by file extension.
+#
+# code_ast_summarize (language = "csharp") runs first — the generic,
+# multi-language stage introduced in QB-005B, dispatching to
+# quor/pipeline/ast_summarize/csharp.py via the shared registry. Then the
+# same strip_lines / deduplicate_consecutive / max_tokens stack
+# cat-java.toml uses, reused verbatim rather than cat-go.toml's
+# no-strip-lines approach: like Java (see cat-java.toml's own header
+# comment), C# has a two-syntax split — ordinary `//` comments plus a
+# separate XML doc-comment syntax (`///`) untouched by the `'^\s*//\s'`
+# strip pattern by construction (the pattern requires exactly one `/`
+# after the leading two, so it does not match a `///` line at all) — so
+# stripping plain `//` lines is safe here in exactly the way it is for
+# Java/JS/TS.
+schema_version = 1
+
+[[filter]]
+name = "cat-csharp"
+match_command = '^cat\s+(-\S+\s+)*\S*\.cs\b'
+
+[[filter.stages]]
+type = "code_ast_summarize"
+language = "csharp"
+
+[[filter.stages]]
+type = "strip_lines"
+patterns = [
+    '^\s*#[^!]',
+    '^\s*//\s',
+    '^\s*--\s',
+    '^\s*;\s',
+]
+preserve_patterns = [
+    '^#!/',
+    'TODO',
+    'FIXME',
+    'HACK',
+    'XXX',
+    'NOTE',
+    'WARN',
+]
+
+[[filter.stages]]
+type = "deduplicate_consecutive"
+
+[[filter.stages]]
+type = "max_tokens"
+limit = 800
+strategy = "both"
+
+[[filter.tests]]
+description = "Method body compressed; signature and XML doc comment preserved"
+input = "public class Calc\n{\n    /// <summary>\n    /// Adds two numbers.\n    /// </summary>\n    public int Add(int x, int y)\n    {\n        int total = x + y;\n        return total;\n    }\n}\n"
+must_contain = ["public int Add(int x, int y)", "Adds two numbers."]
+must_not_contain = ["int total = x + y"]
+requires_language = "csharp"
+
+[[filter.tests]]
+description = "Using directives and field declarations are never touched"
+input = "using System.Collections.Generic;\n\npublic class Config\n{\n    private const int DefaultTimeout = 30;\n\n    public void Run()\n    {\n        DoWork();\n    }\n}\n"
+must_contain = ["using System.Collections.Generic;", "private const int DefaultTimeout = 30;"]
+must_not_contain = ["DoWork()"]
+requires_language = "csharp"
+
+[[filter.tests]]
+description = "Invalid C# fails open — original content returned unchanged"
+input = "public int Broken( {\n    return 1;\n}\n"
+must_contain = ["public int Broken(", "return 1;"]
+
+[[filter.tests]]
+description = "Class method bodies compressed independently; class/method signatures and base/interface list preserved"
+input = "public class Widget : Base, IRunnable\n{\n    public Widget(int x)\n    {\n        this.x = x;\n    }\n\n    public void Run()\n    {\n        Console.WriteLine(\"running\");\n    }\n}\n"
+must_contain = ["public class Widget : Base, IRunnable", "public Widget(int x)", "public void Run()"]
+must_not_contain = ["this.x = x;", "Console.WriteLine(\"running\")"]
+requires_language = "csharp"

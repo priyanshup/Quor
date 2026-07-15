@@ -95,6 +95,27 @@ dev = [
     # existing ceiling remains sufficient with no dependency-version change
     # needed. See backlog.md's QB-005D entry for the full record.
     "tree-sitter-typescript>=0.23.0,<1.0.0",
+    # tree-sitter-go (QB-046), same reasoning — real fixture coverage
+    # (TestAnalyzeGo in tests/unit/test_ast_summarize.py) without a
+    # separate quor[go] install step. Same tree-sitter<0.26.0 ceiling
+    # above applies (that constraint is on the core tree-sitter package,
+    # not any one grammar).
+    "tree-sitter-go>=0.23.0,<1.0.0",
+    # tree-sitter-java (QB-046), same reasoning — real fixture coverage
+    # (TestAnalyzeJava in tests/unit/test_ast_summarize.py) without a
+    # separate quor[java] install step. Same tree-sitter<0.26.0 ceiling
+    # above applies.
+    "tree-sitter-java>=0.23.0,<1.0.0",
+    # tree-sitter-rust (QB-046), same reasoning — real fixture coverage
+    # (TestAnalyzeRust in tests/unit/test_ast_summarize.py) without a
+    # separate quor[rust] install step. Same tree-sitter<0.26.0 ceiling
+    # above applies.
+    "tree-sitter-rust>=0.23.0,<1.0.0",
+    # tree-sitter-c-sharp (QB-046), same reasoning — real fixture coverage
+    # (TestAnalyzeCSharp in tests/unit/test_ast_summarize.py) without a
+    # separate quor[csharp] install step. Same tree-sitter<0.26.0 ceiling
+    # above applies.
+    "tree-sitter-c-sharp>=0.23.0,<1.0.0",
     # reportlab is a *write*-only PDF library, never imported by quor itself
     # (pdfplumber, quor's read-only PDF dependency, cannot author PDFs) — it
     # exists solely so the test suite can generate real PDF fixtures with
@@ -146,6 +167,47 @@ javascript = [
     "tree-sitter>=0.23.0,<0.26.0",
     "tree-sitter-javascript>=0.23.0,<1.0.0",
     "tree-sitter-typescript>=0.23.0,<1.0.0",
+]
+go = [
+    # Go AST summarization (QB-046). A dedicated extra, not folded into
+    # `javascript` above — a Go-only user shouldn't pull in the JS/TS
+    # grammars they have no use for (see
+    # quor/pipeline/ast_summarize/registry.py's `_EXTRA_FOR_LANGUAGE`
+    # comment for the full reasoning). Core install keeps working without
+    # this extra — quor/pipeline/ast_summarize/go.py's analyze_go() fails
+    # open (returns an empty set, warns, never raises) if it's absent.
+    # Same tree-sitter<0.26.0 ceiling as `javascript` above — that
+    # constraint is on the core tree-sitter package, not any one grammar.
+    "tree-sitter>=0.23.0,<0.26.0",
+    "tree-sitter-go>=0.23.0,<1.0.0",
+]
+java = [
+    # Java AST summarization (QB-046). Same dedicated-extra reasoning as
+    # `go` above. Core install keeps working without this extra —
+    # quor/pipeline/ast_summarize/java.py's analyze_java() fails open
+    # (returns an empty set, warns, never raises) if it's absent. Same
+    # tree-sitter<0.26.0 ceiling as `javascript`/`go` above.
+    "tree-sitter>=0.23.0,<0.26.0",
+    "tree-sitter-java>=0.23.0,<1.0.0",
+]
+rust = [
+    # Rust AST summarization (QB-046). Same dedicated-extra reasoning as
+    # `go`/`java` above. Core install keeps working without this extra —
+    # quor/pipeline/ast_summarize/rust.py's analyze_rust() fails open
+    # (returns an empty set, warns, never raises) if it's absent. Same
+    # tree-sitter<0.26.0 ceiling as `javascript`/`go`/`java` above.
+    "tree-sitter>=0.23.0,<0.26.0",
+    "tree-sitter-rust>=0.23.0,<1.0.0",
+]
+csharp = [
+    # C# AST summarization (QB-046). Same dedicated-extra reasoning as
+    # `go`/`java`/`rust` above. Core install keeps working without this
+    # extra — quor/pipeline/ast_summarize/csharp.py's analyze_csharp()
+    # fails open (returns an empty set, warns, never raises) if it's
+    # absent. Same tree-sitter<0.26.0 ceiling as `javascript`/`go`/`java`/
+    # `rust` above.
+    "tree-sitter>=0.23.0,<0.26.0",
+    "tree-sitter-c-sharp>=0.23.0,<1.0.0",
 ]
 
 [project.scripts]
@@ -234,12 +296,16 @@ module = ["pdfplumber", "pdfplumber.*"]
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
-# tree-sitter / tree-sitter-javascript / tree-sitter-typescript (QB-005C/D,
-# quor[javascript]) are optional at runtime — same reasoning as the
-# docx/pdfplumber overrides above. All are imported lazily inside
-# analyze_javascript()/analyze_typescript()/analyze_tsx(), never at module
-# top level, but mypy still needs this so `mypy quor/` succeeds whether or
-# not the extra is installed in a given environment.
+# tree-sitter / tree-sitter-javascript / tree-sitter-typescript
+# (QB-005C/D, quor[javascript]) / tree-sitter-go (QB-046, quor[go]) /
+# tree-sitter-java (QB-046, quor[java]) / tree-sitter-rust (QB-046,
+# quor[rust]) / tree-sitter-c-sharp (QB-046, quor[csharp]) are optional at
+# runtime — same reasoning as the docx/pdfplumber overrides above. All are
+# imported lazily inside analyze_javascript()/analyze_typescript()/
+# analyze_tsx()/analyze_go()/analyze_java()/analyze_rust()/analyze_csharp(),
+# never at module top level, but mypy still needs this so `mypy quor/`
+# succeeds whether or not the relevant extra is installed in a given
+# environment.
 module = [
     "tree_sitter",
     "tree_sitter.*",
@@ -247,6 +313,14 @@ module = [
     "tree_sitter_javascript.*",
     "tree_sitter_typescript",
     "tree_sitter_typescript.*",
+    "tree_sitter_go",
+    "tree_sitter_go.*",
+    "tree_sitter_java",
+    "tree_sitter_java.*",
+    "tree_sitter_rust",
+    "tree_sitter_rust.*",
+    "tree_sitter_c_sharp",
+    "tree_sitter_c_sharp.*",
 ]
 ignore_missing_imports = true
 

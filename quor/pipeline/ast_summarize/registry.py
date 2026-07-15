@@ -1,4 +1,5 @@
-"""AST summarization — language-routed analyzer registry (QB-005B/C/D).
+"""AST summarization — language-routed analyzer registry (QB-005B/C/D,
+QB-046).
 
 A preprocessing helper for AST-aware compression stages
 (`quor/pipeline/stages/python_ast_summarize.py`,
@@ -6,20 +7,22 @@ A preprocessing helper for AST-aware compression stages
 language name, returns the set of 1-indexed line numbers eligible for
 compression (function/method body lines). This module owns *routing*
 only — the actual per-language parsing logic lives in a sibling module per
-language (`python.py`, `javascript.py`, `typescript.py` today).
+language (`python.py`, `javascript.py`, `typescript.py`, `go.py`,
+`java.py`, `rust.py`, `csharp.py` today).
 
-`"javascript"` (QB-005C) and `"typescript"`/`"tsx"` (QB-005D) are
-registered **unconditionally** here, exactly like `"python"` — importing
-`quor.pipeline.ast_summarize.javascript`/`typescript` never fails or warns
-even when the optional `tree-sitter`/`tree-sitter-javascript`/
-`tree-sitter-typescript` dependency (`quor[javascript]`) is absent, because
-those modules import tree-sitter lazily, inside their own `analyze_*()`
-functions, not at module top level (mirrors
-`quor/pipeline/extract/docx.py`'s identical lazy-import discipline for
-`python-docx`). This keeps this router a plain, uniform dict with no
-per-language try/except or availability special-casing — see
-`javascript.py`/`typescript.py`'s own module docstrings for the full
-missing-dependency fail-open contract.
+`"javascript"` (QB-005C), `"typescript"`/`"tsx"` (QB-005D), and `"go"`/
+`"java"`/`"rust"`/`"csharp"` (QB-046) are registered **unconditionally**
+here, exactly like `"python"` — importing
+`quor.pipeline.ast_summarize.javascript`/`typescript`/`go`/`java`/`rust`/
+`csharp` never fails or warns even when the relevant optional
+`tree-sitter` grammar package (`quor[javascript]`/`quor[go]`/`quor[java]`/
+`quor[rust]`/`quor[csharp]`) is absent, because those modules import
+tree-sitter lazily, inside their own `analyze_*()` functions, not at module
+top level (mirrors `quor/pipeline/extract/docx.py`'s identical lazy-import
+discipline for `python-docx`). This keeps this router a plain, uniform
+dict with no per-language try/except or availability special-casing — see
+`javascript.py`/`typescript.py`/`go.py`/`java.py`/`rust.py`/`csharp.py`'s
+own module docstrings for the full missing-dependency fail-open contract.
 
 `"typescript"` and `"tsx"` are two separate registry entries, not one —
 `tree-sitter-typescript` exposes two distinct grammars
@@ -66,28 +69,41 @@ from __future__ import annotations
 from collections.abc import Callable
 from importlib import import_module
 
+from quor.pipeline.ast_summarize.csharp import analyze_csharp
+from quor.pipeline.ast_summarize.go import analyze_go
+from quor.pipeline.ast_summarize.java import analyze_java
 from quor.pipeline.ast_summarize.javascript import analyze_javascript
 from quor.pipeline.ast_summarize.python import analyze_python
+from quor.pipeline.ast_summarize.rust import analyze_rust
 from quor.pipeline.ast_summarize.typescript import analyze_tsx, analyze_typescript
 
 # Language name -> analyzer callable. "python" (QB-005B), "javascript"
-# (QB-005C), and "typescript"/"tsx" (QB-005D) are registered. See
-# backlog.md for the full rollout history.
+# (QB-005C), "typescript"/"tsx" (QB-005D), and "go"/"java"/"rust"/"csharp"
+# (QB-046) are registered. See backlog.md for the full rollout history.
 _ANALYZERS: dict[str, Callable[[str], set[int]]] = {
     "python": analyze_python,
     "javascript": analyze_javascript,
     "typescript": analyze_typescript,
     "tsx": analyze_tsx,
+    "go": analyze_go,
+    "java": analyze_java,
+    "rust": analyze_rust,
+    "csharp": analyze_csharp,
 }
 
 # Optional packages each non-Python language's analyzer needs at call time
-# (imported lazily inside javascript.py/typescript.py, never at module top
-# level — see this module's own docstring). "python" has no entry: stdlib
-# `ast` is always available once Python itself meets the >=3.11 floor.
+# (imported lazily inside javascript.py/typescript.py/go.py/java.py/rust.py,
+# never at module top level — see this module's own docstring). "python"
+# has no entry: stdlib `ast` is always available once Python itself meets
+# the >=3.11 floor.
 _REQUIRED_PACKAGES: dict[str, tuple[str, ...]] = {
     "javascript": ("tree_sitter", "tree_sitter_javascript"),
     "typescript": ("tree_sitter", "tree_sitter_typescript"),
     "tsx": ("tree_sitter", "tree_sitter_typescript"),
+    "go": ("tree_sitter", "tree_sitter_go"),
+    "java": ("tree_sitter", "tree_sitter_java"),
+    "rust": ("tree_sitter", "tree_sitter_rust"),
+    "csharp": ("tree_sitter", "tree_sitter_c_sharp"),
 }
 
 
@@ -147,15 +163,25 @@ def is_language_available(language: str) -> bool:
 
 
 # Maps each language that needs an optional dependency to the pip extra that
-# installs it. Every non-Python language maps to "javascript" today — one
-# extra covers all three tree-sitter grammars (see pyproject.toml's own
+# installs it. "javascript"/"typescript"/"tsx" share one extra — one extra
+# covers all three tree-sitter grammars (see pyproject.toml's own
 # [project.optional-dependencies].javascript comment for why a second,
-# per-language extra isn't worth the install-matrix cost). "python" has no
+# per-language extra isn't worth the install-matrix cost for that trio).
+# "go"/"java"/"rust"/"csharp" (QB-046) each get their own dedicated extra
+# instead of folding into `javascript` — per QB-046's own backlog wording,
+# each new language is "its own new optional dependency, following the
+# `quor[javascript]` extras precedent" (i.e. the *pattern* of an extras
+# group, not literally the same group): a Go/Java/Rust/C#-only user
+# shouldn't pull in a JS/TS grammar they have no use for. "python" has no
 # entry: it needs no extra at all.
 _EXTRA_FOR_LANGUAGE: dict[str, str] = {
     "javascript": "javascript",
     "typescript": "javascript",
     "tsx": "javascript",
+    "go": "go",
+    "java": "java",
+    "rust": "rust",
+    "csharp": "csharp",
 }
 
 

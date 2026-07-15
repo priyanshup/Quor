@@ -1,0 +1,87 @@
+# quor built-in filter: cat (Java files) — QB-046 structural extraction
+#
+# Compresses method/constructor/lambda bodies to their signature (+ Javadoc,
+# when present), keeping imports, package declaration, class/interface
+# signatures (including extends/implements), field declarations, and
+# method/constructor signatures untouched. Must be loaded before the
+# generic `cat.toml` filter so `.java` files match here first. Built-in
+# filters load in sorted filename order
+# (quor/filters/registry.py::_load_builtin uses sorted(glob(...))), and
+# "cat-java.toml" sorts before "cat.toml" lexicographically ('-' is 0x2D,
+# '.' is 0x2E) — same convention every other cat-*.toml filter already
+# uses. Relative order between cat-java.toml and the other cat-*.toml
+# filters does not matter: match_command patterns are mutually exclusive by
+# file extension.
+#
+# code_ast_summarize (language = "java") runs first — the generic,
+# multi-language stage introduced in QB-005B, dispatching to
+# quor/pipeline/ast_summarize/java.py via the shared registry. Then the
+# same strip_lines / deduplicate_consecutive / max_tokens stack
+# cat-javascript.toml uses, reused verbatim rather than cat-go.toml's
+# no-strip-lines approach: unlike Go (a single `//` syntax for both
+# throwaway and doc comments — see cat-go.toml's own header comment), Java
+# has the same two-syntax split as JS — ordinary `//` comments plus a
+# separate Javadoc block-comment syntax (`/** ... */`) untouched by the
+# `'^\s*//\s'` strip pattern by construction — so stripping plain `//`
+# lines is safe here in exactly the way it is for JS/TS.
+schema_version = 1
+
+[[filter]]
+name = "cat-java"
+match_command = '^cat\s+(-\S+\s+)*\S*\.java\b'
+
+[[filter.stages]]
+type = "code_ast_summarize"
+language = "java"
+
+[[filter.stages]]
+type = "strip_lines"
+patterns = [
+    '^\s*#[^!]',
+    '^\s*//\s',
+    '^\s*--\s',
+    '^\s*;\s',
+]
+preserve_patterns = [
+    '^#!/',
+    'TODO',
+    'FIXME',
+    'HACK',
+    'XXX',
+    'NOTE',
+    'WARN',
+]
+
+[[filter.stages]]
+type = "deduplicate_consecutive"
+
+[[filter.stages]]
+type = "max_tokens"
+limit = 800
+strategy = "both"
+
+[[filter.tests]]
+description = "Method body compressed; signature and Javadoc preserved"
+input = "public class Calc {\n    /**\n     * Adds two numbers.\n     */\n    public int add(int x, int y) {\n        int total = x + y;\n        return total;\n    }\n}\n"
+must_contain = ["public int add(int x, int y) {", "Adds two numbers."]
+must_not_contain = ["int total = x + y"]
+requires_language = "java"
+
+[[filter.tests]]
+description = "Imports and field declarations are never touched"
+input = "import java.util.List;\n\npublic class Config {\n    private static final int DEFAULT_TIMEOUT = 30;\n\n    public void run() {\n        doWork();\n    }\n}\n"
+must_contain = ["import java.util.List;", "private static final int DEFAULT_TIMEOUT = 30;"]
+must_not_contain = ["doWork()"]
+requires_language = "java"
+
+[[filter.tests]]
+description = "Invalid Java fails open — original content returned unchanged"
+input = "public int broken( {\n    return 1;\n}\n"
+must_contain = ["public int broken(", "return 1;"]
+
+[[filter.tests]]
+description = "Class method bodies compressed independently; class/method signatures and extends/implements clause preserved"
+input = "public class Widget extends Base implements Runnable {\n    public Widget(int x) {\n        this.x = x;\n    }\n\n    public void run() {\n        System.out.println(\"running\");\n    }\n}\n"
+must_contain = ["public class Widget extends Base implements Runnable {", "public Widget(int x) {", "public void run() {"]
+must_not_contain = ["this.x = x;", "System.out.println(\"running\")"]
+requires_language = "java"

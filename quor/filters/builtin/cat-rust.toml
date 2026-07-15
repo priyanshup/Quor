@@ -1,0 +1,89 @@
+# quor built-in filter: cat (Rust files) — QB-046 structural extraction
+#
+# Compresses function/method bodies to their signature (+ doc comment, when
+# present), keeping `use` declarations, `const`/`static` items, struct/enum/
+# trait signatures, `impl`/`trait` headers, and function/method signatures
+# untouched. Must be loaded before the generic `cat.toml` filter so `.rs`
+# files match here first. Built-in filters load in sorted filename order
+# (quor/filters/registry.py::_load_builtin uses sorted(glob(...))), and
+# "cat-rust.toml" sorts before "cat.toml" lexicographically ('-' is 0x2D,
+# '.' is 0x2E) — same convention every other cat-*.toml filter already
+# uses. Relative order between cat-rust.toml and the other cat-*.toml
+# filters does not matter: match_command patterns are mutually exclusive by
+# file extension.
+#
+# code_ast_summarize (language = "rust") runs first — the generic,
+# multi-language stage introduced in QB-005B, dispatching to
+# quor/pipeline/ast_summarize/rust.py via the shared registry. Then the
+# same strip_lines / deduplicate_consecutive / max_tokens stack
+# cat-javascript.toml/cat-java.toml use, reused verbatim rather than
+# cat-go.toml's no-strip-lines approach: unlike Go (a single `//` syntax
+# for both throwaway and doc comments — see cat-go.toml's own header
+# comment), Rust's doc comments (`///` outer, `//!` inner) are
+# syntactically distinguishable from an ordinary `//` comment by the
+# character immediately following the two slashes (`/` or `!`, never
+# whitespace) — the `'^\s*//\s'` strip pattern requires a whitespace
+# character right after `//`, so it matches only plain `// comment` lines
+# and never a `///`/`//!` doc-comment line, the same safe split
+# cat-java.toml already relies on for Javadoc.
+schema_version = 1
+
+[[filter]]
+name = "cat-rust"
+match_command = '^cat\s+(-\S+\s+)*\S*\.rs\b'
+
+[[filter.stages]]
+type = "code_ast_summarize"
+language = "rust"
+
+[[filter.stages]]
+type = "strip_lines"
+patterns = [
+    '^\s*#[^!]',
+    '^\s*//\s',
+    '^\s*--\s',
+    '^\s*;\s',
+]
+preserve_patterns = [
+    '^#!/',
+    'TODO',
+    'FIXME',
+    'HACK',
+    'XXX',
+    'NOTE',
+    'WARN',
+]
+
+[[filter.stages]]
+type = "deduplicate_consecutive"
+
+[[filter.stages]]
+type = "max_tokens"
+limit = 800
+strategy = "both"
+
+[[filter.tests]]
+description = "Function body compressed; signature and doc comment preserved"
+input = "/// Adds two numbers.\nfn add(x: i32, y: i32) -> i32 {\n    let total = x + y;\n    total\n}\n"
+must_contain = ["fn add(x: i32, y: i32) -> i32 {", "Adds two numbers."]
+must_not_contain = ["let total = x + y"]
+requires_language = "rust"
+
+[[filter.tests]]
+description = "Use declarations and const items are never touched"
+input = "use std::fmt;\n\nconst DEFAULT_TIMEOUT: i32 = 30;\n\nfn run() {\n    println!(\"working\");\n}\n"
+must_contain = ["use std::fmt;", "const DEFAULT_TIMEOUT: i32 = 30;"]
+must_not_contain = ["println!(\"working\")"]
+requires_language = "rust"
+
+[[filter.tests]]
+description = "Invalid Rust fails open — original content returned unchanged"
+input = "fn broken( {\n    return 1;\n}\n"
+must_contain = ["fn broken(", "return 1;"]
+
+[[filter.tests]]
+description = "Method body compressed independently; struct definition and impl header preserved"
+input = "struct Widget {\n    x: i32,\n}\n\nimpl Widget {\n    fn render(&self) -> String {\n        String::from(\"widget\")\n    }\n}\n"
+must_contain = ["struct Widget {", "impl Widget {", "fn render(&self) -> String {"]
+must_not_contain = ["String::from(\"widget\")"]
+requires_language = "rust"
