@@ -493,11 +493,10 @@ class TestGroupRepeated:
 class TestCollapseUnchangedContext:
     stage = CollapseUnchangedContextStage()
 
-    def _config(self, context_lines: int = 3, min_collapse: int = 2) -> CollapseUnchangedContextConfig:
+    def _config(self, context_lines: int = 3) -> CollapseUnchangedContextConfig:
         return CollapseUnchangedContextConfig(
             type="collapse_unchanged_context",
             context_lines=context_lines,
-            min_collapse=min_collapse,
         )
 
     def test_empty_input(self) -> None:
@@ -507,35 +506,36 @@ class TestCollapseUnchangedContext:
     def test_short_run_left_untouched(self) -> None:
         text = "\n".join(f"ctx {i}" for i in range(5))
         mask = ContentMask.from_text(text)
-        result = self.stage.apply(mask, self._config(context_lines=3, min_collapse=2))
+        result = self.stage.apply(mask, self._config(context_lines=3))
         assert all(lm.decision is Decision.KEEP for lm in result.lines)
         assert "omitted" not in result.render()
 
     def test_long_run_collapsed_with_window_preserved(self) -> None:
         lines = (
-            *(LineMask(line=f"ctx {i}") for i in range(10)),
+            *(LineMask(line=f"a fairly long unchanged context line number {i}") for i in range(10)),
             _protect("+edit"),
         )
         mask = ContentMask(lines=lines)
-        result = self.stage.apply(mask, self._config(context_lines=3, min_collapse=2))
+        result = self.stage.apply(mask, self._config(context_lines=3))
         rendered = result.render()
-        assert "ctx 0" in rendered
-        assert "ctx 1" in rendered
-        assert "ctx 2" in rendered
-        assert "ctx 7" in rendered
-        assert "ctx 8" in rendered
-        assert "ctx 9" in rendered
+        assert "context line number 0" in rendered
+        assert "context line number 1" in rendered
+        assert "context line number 2" in rendered
+        assert "context line number 7" in rendered
+        assert "context line number 8" in rendered
+        assert "context line number 9" in rendered
         assert "unchanged lines omitted" in rendered
-        assert "ctx 4" not in rendered
+        assert "context line number 4" not in rendered
         assert "+edit" in rendered
 
     def test_line_count_unchanged_after_collapse(self) -> None:
         """Base-class invariant: total LineMask entries stay the same size
         (collapse_unchanged_context reuses one line as the placeholder,
         like group_repeated does, rather than inserting a new one)."""
-        text = "\n".join(f"ctx {i}" for i in range(10))
+        text = "\n".join(f"a fairly long unchanged context line number {i}" for i in range(10))
         mask = ContentMask.from_text(text)
-        result = self.stage.apply(mask, self._config(context_lines=3, min_collapse=2))
+        result = self.stage.apply(mask, self._config(context_lines=3))
+        assert "unchanged lines omitted" in result.render()
         assert len(result.lines) == len(mask.lines)
 
     def test_protect_lines_bound_run_and_are_never_modified(self) -> None:
@@ -546,7 +546,7 @@ class TestCollapseUnchangedContext:
             _protect("+new"),
         )
         mask = ContentMask(lines=lines)
-        result = self.stage.apply(mask, self._config(context_lines=3, min_collapse=2))
+        result = self.stage.apply(mask, self._config(context_lines=3))
         assert result.lines[0].decision is Decision.PROTECT
         assert result.lines[0].line == "@@ -1,12 +1,12 @@"
         assert result.lines[-2].line == "-old"
@@ -554,39 +554,45 @@ class TestCollapseUnchangedContext:
         assert result.lines[-2].decision is Decision.PROTECT
         assert result.lines[-1].decision is Decision.PROTECT
 
-    def test_min_collapse_boundary_not_met(self) -> None:
-        """context_lines=3 leaves a middle of exactly 1 line; min_collapse=2
-        must NOT collapse (middle_len < min_collapse)."""
-        text = "\n".join(f"ctx {i}" for i in range(7))
-        mask = ContentMask.from_text(text)
-        result = self.stage.apply(mask, self._config(context_lines=3, min_collapse=2))
-        assert all(lm.decision is Decision.KEEP for lm in result.lines)
+    def test_placeholder_not_smaller_not_collapsed(self) -> None:
+        """Middle made of very short lines: placeholder cost (estimated
+        tokens for "... N unchanged lines omitted ...") is >= the middle's
+        own token cost, so the run must be left uncollapsed."""
+        lines = (
+            _protect("-old"),
+            LineMask(line="a"),
+            LineMask(line="b"),
+            _protect("+new"),
+        )
+        mask = ContentMask(lines=lines)
+        result = self.stage.apply(mask, self._config(context_lines=0))
+        assert all(lm.decision is Decision.KEEP for lm in result.lines if lm.line in ("a", "b"))
         assert "omitted" not in result.render()
 
-    def test_min_collapse_boundary_met(self) -> None:
-        """One more line than the test above tips the middle to exactly
-        min_collapse=2, which must collapse."""
-        text = "\n".join(f"ctx {i}" for i in range(8))
+    def test_placeholder_strictly_smaller_collapses(self) -> None:
+        """Middle made of token-dense lines whose combined cost strictly
+        exceeds the placeholder's cost must collapse."""
+        text = "\n".join(f"a fairly long unchanged context line number {i}" for i in range(6))
         mask = ContentMask.from_text(text)
-        result = self.stage.apply(mask, self._config(context_lines=3, min_collapse=2))
+        result = self.stage.apply(mask, self._config(context_lines=1))
         assert "unchanged lines omitted" in result.render()
 
     def test_context_lines_zero_collapses_whole_run(self) -> None:
-        text = "\n".join(f"ctx {i}" for i in range(5))
+        text = "\n".join(f"a fairly long unchanged context line number {i}" for i in range(5))
         mask = ContentMask.from_text(text)
-        result = self.stage.apply(mask, self._config(context_lines=0, min_collapse=2))
+        result = self.stage.apply(mask, self._config(context_lines=0))
         rendered = result.render()
         assert "5 unchanged lines omitted" in rendered
-        assert "ctx 0" not in rendered
+        assert "context line number 0" not in rendered
 
     def test_compress_lines_are_run_boundaries(self) -> None:
         lines = (
-            *(LineMask(line=f"ctx {i}") for i in range(10)),
+            *(LineMask(line=f"a fairly long unchanged context line number {i}") for i in range(10)),
             _compress("index abc..def"),
-            *(LineMask(line=f"ctx {i}") for i in range(10, 20)),
+            *(LineMask(line=f"a fairly long unchanged context line number {i}") for i in range(10, 20)),
         )
         mask = ContentMask(lines=lines)
-        result = self.stage.apply(mask, self._config(context_lines=3, min_collapse=2))
+        result = self.stage.apply(mask, self._config(context_lines=3))
         rendered = result.render()
         # Two separate runs, each collapsed independently
         assert rendered.count("unchanged lines omitted") == 2

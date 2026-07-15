@@ -5,13 +5,22 @@ db.py). This module never computes a metric — it only formats and lays out
 ones that already exist. See quor/cli/format_utils.py for the (also
 presentation-only) number/percentage formatting helpers.
 
-Layout (QB-037 dashboard redesign): notices (Read-hook coverage gaps,
-recovery-footer overhead) print in a dedicated NOTICE block before any
-statistics, never interleaved with them — the headline savings number leads
-the statistics themselves, followed by one compact stat table (instead of
-three stacked ones) and Top savings. Long explanatory paragraphs from the
-previous layout are now one-line notes. No calculation changed; this only
-changes how existing GainReport fields are arranged and worded.
+Layout (scannability pass): the headline (net tokens saved) leads, backed
+by one compact stat table and Top savings — compression is the whole
+point of the tool and gets top billing. Two kinds of caveat are handled
+differently on purpose:
+  - Read-hook coverage gap affects how *every* number above should be
+    read (an entire class of filters had no chance to run), so it prints
+    once, up front, before any statistic.
+  - Recovery-footer overhead is a narrow footnote about a subset of rows,
+    not a qualifier on the headline — it prints after the stats, dimmed,
+    same tier as the token-estimation note.
+`console.highlight` is off: Rich's automatic number highlighter matches
+digits with a `\\b` word boundary, which does not exist between a digit
+and a following letter — so "81.1k" highlights as "81." colored + "1k"
+uncolored, a visibly broken split. Every number below is colored, if at
+all, by an explicit markup span we control, wrapping the whole formatted
+string in one style, never by that highlighter.
 """
 
 from __future__ import annotations
@@ -27,7 +36,7 @@ from quor.cli.format_utils import format_count, format_percentage
 from quor.config.loader import load_user_config
 from quor.tracking.db import GainReport, query_gain
 
-console = Console()
+console = Console(highlight=False)
 
 
 def gain(
@@ -90,41 +99,23 @@ def _stat_table() -> Table:
 def _print_report(report: GainReport) -> None:
     console.print()
     console.rule(style="dim")
+    console.print()
 
-    _print_notices(report)
+    if report.read_hook_invocations == 0:
+        console.print(_read_hook_notice_text(), soft_wrap=True)
+        console.print()
+
     _print_headline(report)
     _print_stats(report)
     _print_top_savings(report)
 
+    if report.negative_row_count > 0:
+        console.print(_negative_row_notice_text(report), soft_wrap=True)
+        console.print()
+
     console.rule(style="dim")
     console.print()
     _print_notes()
-
-
-def _print_notices(report: GainReport) -> None:
-    """Every informational notice, together, before any statistic —
-    deliberately separate from the stats below so a reader never has to
-    guess whether a caveat qualifies the number sitting next to it (QB-037).
-    Prints nothing at all when there's nothing to say.
-    """
-    notices: list[str] = []
-
-    if report.read_hook_invocations == 0:
-        notices.append(_read_hook_notice_text())
-    if report.negative_row_count > 0:
-        notices.append(_negative_row_notice_text(report))
-
-    if not notices:
-        return
-
-    console.print()
-    console.print("[bold yellow]NOTICE[/bold yellow]")
-    for i, text in enumerate(notices):
-        console.print(text, soft_wrap=True)
-        if i < len(notices) - 1:
-            console.print()
-    console.print()
-    console.rule(style="dim")
 
 
 def _read_hook_notice_text() -> str:
@@ -135,44 +126,37 @@ def _read_hook_notice_text() -> str:
     of filters (Markdown/plain-text compression, DOCX/PDF extraction, and
     AST summarization for files opened via Read rather than `cat`) simply
     never had a chance to contribute — silence here would look identical to
-    "these features don't help much," which is not what a `0` means.
+    "these features don't help much," which is not what a `0` means. One
+    line, not a paragraph: this is a scope caveat, not an essay.
     """
     return (
-        "No Read-hook activity has been recorded in this window.\n"
+        "[yellow]No Read-hook activity has been recorded in this window — "
         "Markdown/plain-text compression, DOCX/PDF extraction, and AST "
-        "summarization only run through Claude Code's Read hook and aren't "
-        "represented above.\n"
-        "Run `quor init --claude` to enable Read tracking."
+        "summarization aren't represented above. Run `quor init --claude` "
+        "to enable.[/yellow]"
     )
 
 
 def _negative_row_notice_text(report: GainReport) -> str:
-    """Plain-language answer to "why did some rows get bigger, and should I
-    care?" — only ever shown when report.negative_row_count > 0. Always
-    names the mechanism (recovery footer, not a compression failure); the
-    closing clause offers a concrete lever (`tee = false`) only when the
-    net for this window is actually negative, otherwise reassures that the
-    overall total is still positive (QB-017).
-    """
+    """A compact, dimmed footnote — not an explainer paragraph — for rows
+    where the recovery footer pushed output above its original size.
+    Always names the actual lever: reassurance when the window's overall
+    net is still positive, the real per-filter opt-out (`tee = false`)
+    when it isn't (QB-017)."""
     row_fraction = (
         report.negative_row_count / report.total_invocations
         if report.total_invocations
         else 0.0
     )
-    # Plural agrees with total_invocations (the noun "command(s)" is
-    # counting), not negative_row_count — "1 of 2 commands", not
-    # "1 of 2 command".
-    plural = "s" if report.total_invocations != 1 else ""
+    plural = "s" if report.negative_row_count != 1 else ""
     lever = (
-        "it doesn't affect the other commands."
+        "doesn't affect the other commands."
         if report.tokens_saved >= 0
         else "turn it off per-filter with `tee = false` if it matters."
     )
     return (
-        f"{format_count(report.negative_row_count)} of {format_count(report.total_invocations)} "
-        f"command{plural} ({format_percentage(row_fraction)}) had output grow instead of shrink "
-        f"— the recovery footer, not a compression failure. This does not mean compression "
-        f"failed; {lever}"
+        f"[dim]Recovery footer   {format_count(report.negative_row_count)} "
+        f"command{plural} ({format_percentage(row_fraction)}) · {lever}[/dim]"
     )
 
 
@@ -185,8 +169,13 @@ def _print_headline(report: GainReport) -> None:
     """
     if report.negative_row_count > 0:
         breakdown = _stat_table()
-        breakdown.add_row("Compression achieved", f"~{format_count(report.gross_savings)} tokens")
-        breakdown.add_row("Recovery-footer overhead", f"~{format_count(report.gross_overhead)} tokens")
+        breakdown.add_row(
+            "Compression achieved", f"[cyan]~{format_count(report.gross_savings)} tokens[/cyan]"
+        )
+        breakdown.add_row(
+            "Recovery-footer overhead",
+            f"[dim]~{format_count(report.gross_overhead)} tokens[/dim]",
+        )
         console.print(breakdown)
         console.print()
 
@@ -194,31 +183,31 @@ def _print_headline(report: GainReport) -> None:
         report.tokens_saved / report.tokens_before if report.tokens_before else 0.0
     )
     if report.tokens_saved < 0:
-        # Bold green "YOU SAVED -12 tokens" would read as a bug even though
-        # it isn't one — styled and worded as a net figure instead of a win.
-        console.print("[bold]NET TOKENS[/bold]")
+        # Bold "YOU SAVED -12 tokens" would read as a bug even though it
+        # isn't one — styled and worded as a net figure instead of a win.
         console.print(
-            f"[bold yellow]~{format_count(report.tokens_saved)} tokens "
-            f"({format_percentage(saved_fraction)})[/bold yellow]"
+            f"[bold]NET TOKENS[/bold]   [bold yellow]~{format_count(report.tokens_saved)} "
+            f"tokens ({format_percentage(saved_fraction)})[/bold yellow]"
         )
     else:
-        console.print("[bold]YOU SAVED[/bold]")
         console.print(
-            f"[bold green]~{format_count(report.tokens_saved)} tokens "
-            f"({format_percentage(saved_fraction)})[/bold green]"
+            f"[bold]YOU SAVED[/bold]   [bold green]~{format_count(report.tokens_saved)} "
+            f"tokens ({format_percentage(saved_fraction)})[/bold green]"
         )
     console.print()
 
 
 def _print_stats(report: GainReport) -> None:
     """Every secondary number in one compact table instead of three stacked
-    ones — faster to scan, same figures."""
+    ones — faster to scan, same figures. Values share one consistent
+    style (bold cyan) so the eye reads "this column is numbers" at a
+    glance; only the headline above earns the celebratory green/yellow."""
     stats = _stat_table()
-    stats.add_row("Commands processed", format_count(report.total_invocations))
-    stats.add_row("Filter hit rate", format_percentage(report.filter_hit_rate))
-    stats.add_row("Passthrough", format_count(report.passthrough_count))
-    stats.add_row("Tokens before", f"~{format_count(report.tokens_before)}")
-    stats.add_row("Tokens after", f"~{format_count(report.tokens_after)}")
+    stats.add_row("Commands processed", f"[cyan]{format_count(report.total_invocations)}[/cyan]")
+    stats.add_row("Filter hit rate", f"[cyan]{format_percentage(report.filter_hit_rate)}[/cyan]")
+    stats.add_row("Passthrough", f"[cyan]{format_count(report.passthrough_count)}[/cyan]")
+    stats.add_row("Tokens before", f"[cyan]~{format_count(report.tokens_before)}[/cyan]")
+    stats.add_row("Tokens after", f"[cyan]~{format_count(report.tokens_after)}[/cyan]")
     console.print(stats)
     console.print()
 
@@ -238,7 +227,11 @@ def _print_top_savings(report: GainReport) -> None:
     denominator = report.gross_savings or report.tokens_saved
     for name, saved in visible_filters:
         filter_fraction = saved / denominator if denominator else 0.0
-        filters_table.add_row(name, format_count(saved), f"({format_percentage(filter_fraction)})")
+        filters_table.add_row(
+            name,
+            f"[cyan]{format_count(saved)}[/cyan]",
+            f"[dim]({format_percentage(filter_fraction)})[/dim]",
+        )
     console.print(filters_table)
     console.print()
 

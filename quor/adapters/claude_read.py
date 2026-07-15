@@ -72,6 +72,7 @@ from typing import Any
 import orjson
 
 from quor.adapters.base import PostToolUseHookInput
+from quor.adapters.dispatcher import CONCISE_INSTRUCTION
 from quor.config.model import FilterConfig
 from quor.filters.registry import FilterRegistry
 from quor.pipeline.extract.registry import extract
@@ -166,6 +167,14 @@ def run_hook(*, tracking: TrackingDB | None = None) -> None:
     that don't care about tracking — direct unit tests, in particular — are
     unaffected; `__main__._run_hook()` passes a real `TrackingDB` in
     production, exactly as `_run_dispatch()` already does for Bash.
+
+    When `_compress_read_output` returns non-`None` — i.e. Quor is genuinely
+    handing back compressed content via `updatedToolOutput` — the same
+    `CONCISE_INSTRUCTION` the Bash dispatcher prepends
+    (`quor/adapters/dispatcher.py`) is prepended here too, so the assistant
+    gets a consistent nudge regardless of which path produced the compressed
+    text. `None` (passthrough/fail-open — original Read result kept) is left
+    untouched, exactly as before.
     """
     raw = sys.stdin.read()
 
@@ -182,6 +191,8 @@ def run_hook(*, tracking: TrackingDB | None = None) -> None:
 
     compressed = _compress_read_output(hook_input, tracking)
     if compressed is not None:
+        if not compressed.startswith(CONCISE_INSTRUCTION):
+            compressed = CONCISE_INSTRUCTION + compressed
         hook_specific["updatedToolOutput"] = compressed
 
     sys.stdout.buffer.write(orjson.dumps({"hookSpecificOutput": hook_specific}))

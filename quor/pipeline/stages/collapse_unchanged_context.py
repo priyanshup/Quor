@@ -13,6 +13,13 @@ Only ever touches lines already decided KEEP by earlier stages. PROTECT lines
 run boundaries, never modified — the same "never downgrade PROTECT" guarantee
 every other stage honors.
 
+QB-055: the decision to collapse a run's middle is a token-cost comparison
+(estimated middle tokens vs. estimated placeholder tokens), not a line-count
+threshold — a fixed count either fires too rarely on short, token-dense lines
+or fires needlessly on long runs of trivially short lines. Token estimation
+uses the same char/4 approximation as `max_tokens` (see that stage's own
+docstring).
+
 Like `group_repeated`, this stage rewrites the content of one line per
 collapsed run (the placeholder) rather than only toggling decisions — the
 `mask.py` "sole exception" note covers both stages.
@@ -20,6 +27,7 @@ collapsed run (the placeholder) rather than only toggling decisions — the
 
 from __future__ import annotations
 
+import math
 from typing import ClassVar
 
 from pydantic import ConfigDict, Field
@@ -33,16 +41,16 @@ class CollapseUnchangedContextConfig(StageConfig):
     context_lines — how many unchanged lines to keep immediately before and
     after each protected/edited region, on each side of a collapsed run.
 
-    min_collapse — minimum number of *middle* lines (beyond context_lines on
-    both sides) required before a run is collapsed at all. Guards against
-    replacing e.g. a single leftover context line with a placeholder that is
-    longer than the line it replaces.
+    Whether the middle of a run is collapsed at all is decided by estimated
+    token cost, not a line count: the middle is only collapsed when its
+    estimated token cost is strictly greater than the placeholder's estimated
+    token cost. Ties (equal cost) are left uncollapsed — conservative by
+    design, never make output larger or equal in estimated size.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     context_lines: int = Field(default=3, ge=0)
-    min_collapse: int = Field(default=2, ge=1)
 
 
 class CollapseUnchangedContextStage:
@@ -78,31 +86,38 @@ class CollapseUnchangedContextStage:
                 j += 1
 
             result.extend(
-                _collapse_run(
-                    lines[i:j], config.context_lines, config.min_collapse, self.stage_type
-                )
+                _collapse_run(lines[i:j], config.context_lines, self.stage_type)
             )
             i = j
 
         return ContentMask(tuple(result))
 
 
-def _collapse_run(
-    run: list[LineMask], window: int, min_collapse: int, stage_type: str
-) -> list[LineMask]:
-    """Collapse the middle of one run of consecutive KEEP lines, if long enough."""
-    middle_len = len(run) - 2 * window
-    if middle_len < min_collapse:
-        return run
+def _line_tokens(line: str) -> int:
+    """Estimate a line's token cost: ceil(len(line) / 4), same as `max_tokens`."""
+    return max(1, math.ceil(len(line) / 4))
 
+
+def _collapse_run(run: list[LineMask], window: int, stage_type: str) -> list[LineMask]:
+    """Collapse the middle of one run of consecutive KEEP lines, if doing so
+    is estimated to cost strictly fewer tokens than leaving it as-is."""
     head = run[:window]
     tail = run[len(run) - window :] if window else []
     middle = run[window : len(run) - window]
 
+    if not middle:
+        return run
+
+    placeholder_text = f"... {len(middle)} unchanged lines omitted ..."
+    middle_cost = sum(_line_tokens(m.line) for m in middle)
+    placeholder_cost = _line_tokens(placeholder_text)
+    if placeholder_cost >= middle_cost:
+        return run
+
     # Reuse the middle's first line as the placeholder (like group_repeated
     # reuses its run's first line) so total LineMask count is unchanged.
     placeholder = LineMask(
-        line=f"... {len(middle)} unchanged lines omitted ...",
+        line=placeholder_text,
         decision=Decision.KEEP,
         reason=f"collapsed {len(middle)} unchanged context lines",
         stage=stage_type,

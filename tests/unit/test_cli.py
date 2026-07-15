@@ -341,7 +341,8 @@ class TestGain:
         assert result.exit_code == 0
         assert "NET TOKENS" in result.output
         assert "YOU SAVED" not in result.output
-        assert "does not mean compression failed" in result.output
+        assert "Recovery footer" in result.output
+        assert "tee = false" in result.output
 
     def test_all_positive_hides_compression_breakdown(self, tmp_path: Path) -> None:
         """QB-017 gain hardening: when nothing grew, the breakdown section
@@ -417,7 +418,8 @@ class TestGain:
         assert "Recovery-footer overhead" in result.output
         assert "~22 tokens" in result.output    # gross_overhead
         assert "YOU SAVED" in result.output     # net (800 - 22 = 778) is still positive
-        assert "1 of 2 commands (50%) had output grow instead of shrink" in result.output
+        assert "Recovery footer" in result.output
+        assert "1 command (50%)" in result.output
         # Overall net is still positive -> reassurance, not the tee=false lever.
         assert "doesn't affect the other commands" in result.output
         assert "tee = false" not in result.output
@@ -683,11 +685,14 @@ class TestGain:
         assert result.exit_code == 0
         assert result.output.index("YOU SAVED") < result.output.index("Commands processed")
 
-    def test_notices_grouped_under_one_notice_header_before_stats(self, tmp_path: Path) -> None:
+    def test_notices_separated_by_relevance_not_grouped(self, tmp_path: Path) -> None:
         """When both notice conditions apply (no Read-hook activity, and a
-        negative-net window), they must appear together under one NOTICE
-        block, and that block must appear before the headline — notices are
-        never interleaved with statistics (QB-037)."""
+        negative-net window), they are NOT lumped into one banner: the
+        Read-hook gap qualifies every number above, so it leads, before the
+        headline; the recovery-footer note is a narrow footnote about a
+        subset of rows, so it's demoted to after the stats, same tier as
+        the token-estimation note — never a bold "NOTICE" banner competing
+        with the headline for attention."""
         from quor.tracking.db import InvocationRecord, TrackingDB
 
         db_path = tmp_path / "data" / "quor.db"
@@ -711,12 +716,12 @@ class TestGain:
 
         assert result.exit_code == 0
         output = result.output
-        assert output.count("NOTICE") == 1
         assert "No Read-hook activity has been recorded in this window" in output
-        assert "had output grow instead of shrink" in output
-        notice_pos = output.index("NOTICE")
+        assert "Recovery footer" in output
+        read_hook_pos = output.index("No Read-hook activity")
         headline_pos = output.index("NET TOKENS")
-        assert notice_pos < headline_pos
+        recovery_pos = output.index("Recovery footer")
+        assert read_hook_pos < headline_pos < recovery_pos
 
     def test_no_notice_header_when_nothing_to_report(self, tmp_path: Path) -> None:
         """A window with Read-hook activity and no negative rows has nothing
