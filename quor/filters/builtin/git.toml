@@ -102,8 +102,6 @@ preserve_patterns = [
     '^\+',
     '^-',
     '^@@',
-    'conflict',
-    'Error',
     '^rename from ',
     '^rename to ',
     '^similarity index ',
@@ -167,6 +165,18 @@ must_contain = [
     "return result if result.ok else None",
 ]
 must_not_contain = ["_notify_downstream", "_update_inventory", "_record_audit_trail"]
+
+[[filter.tests]]
+description = "QB-041 evidence fix: unchanged context line merely mentioning \"Error\" (e.g. an exception class name) is not force-protected and still collapses as part of a long unchanged run"
+input = "@@ -1,15 +1,16 @@\n-        old_value = compute(order)\n+        old_value = compute(order, strict=True)\n         if amount <= 0:\n             raise ValueError(\"negative amounts not allowed\")\n         context line 2\n         context line 3\n         context line 4\n         context line 5\n         context line 6\n         context line 7\n         context line 8\n-        return old_value\n+        return old_value if old_value.ok else None"
+must_contain = [
+    "old_value = compute(order)",
+    "old_value = compute(order, strict=True)",
+    "unchanged lines omitted",
+    "context line 8",
+    "return old_value if old_value.ok else None",
+]
+must_not_contain = ["raise ValueError", "context line 2", "context line 5"]
 
 [[filter.tests]]
 description = "QB-055 regression: rename metadata never collapsed by the token-cost gate"

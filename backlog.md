@@ -422,6 +422,30 @@ not just this project's own `quor gain` numbers. **See QB-055, directly below, f
 algorithm design covering the second and third ideas above** — added 2026-07-15 at product-owner
 request so "compress diffs more" has a concrete, safety-constrained mechanism instead of a sketch.
 
+**Fix update (2026-07-15) — over-broad `preserve_patterns` bug found via the 12-case corpus (QB-047
+slice already landed):** with QB-055's `collapse_unchanged_context` in place, per-line token tracing
+across all 12 git-diff benchmark cases showed the largest *remaining* safe lever wasn't a new stage —
+it was a bug in the existing `strip_lines` config. `preserve_patterns` included bare, unanchored
+`'conflict'` and `'Error'` substring matches (quoted above). Neither adds real protection: genuine
+conflict markers and tool-emitted error/fatal lines in a diff are always `+`/`-`-prefixed and already
+covered by `^\+`/`^-`; `'conflict'` never matched anywhere in the corpus, and `'Error'` (capital-E)
+doesn't match git's own lowercase `error:`/`fatal:` messages either. What it *did* match: ordinary
+unchanged context lines that merely mention an Error-suffixed identifier (`ValueError`,
+`DuplicateChargeError`, `NoEligibleWarehouseError`, etc. — 8 lines across 4 of the 12 cases) — forcing
+them to `PROTECT`, which permanently excluded them from `collapse_unchanged_context` and fragmented
+otherwise-collapsible runs into smaller pieces on both sides of the falsely-protected line. Removed
+both patterns from git-diff's `preserve_patterns` (`quor/filters/builtin/git.toml`); `^\+`/`^-`/`^@@`
+and the rename-metadata patterns are unchanged and still absolute. Measured corpus impact: git-diff
+category 1203→1300 tokens saved (17.1%→18.5%, +97 tokens/+1.4pp), 4 of 12 cases improved, 0
+regressions, 0 correctness/floor failures. Added a regression test (`quor/filters/builtin/git.toml`)
+pinning that an unchanged context line mentioning an Error-named identifier still collapses. Smaller
+than QB-055's own remaining ideas in ceiling, but implementable today with zero risk, since the
+corpus shows real diffs are edit-dense enough (most tokens are legitimately-`PROTECT`ed `+`/`-`
+content) that a new hunk-shape-collapsing stage would have a much smaller *safe* surface than QB-055's
+sketch assumed — see QB-055's own entry for why repetitive-hunk collapsing specifically cannot be done
+under this task's "never modify existing PROTECT lines" constraint (collapsing a repeated hunk removes
+`+`/`-` lines, which is exactly the mutation ADR-031 forbids).
+
 </details>
 
 ---
