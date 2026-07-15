@@ -1,0 +1,38 @@
+Processing payment for order 4471...
+Exception in thread "main" com.example.payments.PaymentProcessingException: Payment failed for order 4471
+	at com.example.payments.PaymentService.process(PaymentService.java:51)
+	at com.example.payments.PaymentController.charge(PaymentController.java:28)
+	at com.example.payments.PaymentBatchJob.run(PaymentBatchJob.java:15)
+Caused by: org.springframework.web.client.HttpServerErrorException$InternalServerError: 500 Internal Server Error: "Gateway timeout"
+	at org.springframework.web.client.HttpServerErrorException.create(HttpServerErrorException.java:100)
+	at org.springframework.web.client.DefaultResponseErrorHandler.handleError(DefaultResponseErrorHandler.java:184)
+	at org.springframework.web.client.DefaultResponseErrorHandler.handleError(DefaultResponseErrorHandler.java:138)
+	at org.springframework.web.client.ResponseErrorHandler.handleError(ResponseErrorHandler.java:63)
+	at org.springframework.web.client.RestTemplate.handleResponse(RestTemplate.java:850)
+	at org.springframework.web.client.RestTemplate.doExecute(RestTemplate.java:791)
+	at org.springframework.web.client.RestTemplate.execute(RestTemplate.java:730)
+	at org.springframework.web.client.RestTemplate.postForObject(RestTemplate.java:407)
+	at com.example.payments.gateway.GatewayClient.charge(GatewayClient.java:33)
+	... 4 more
+Caused by: java.net.SocketTimeoutException: Read timed out
+	at java.base/java.net.SocketInputStream.socketRead0(Native Method)
+	at java.base/java.net.SocketInputStream.socketRead(SocketInputStream.java:115)
+	at java.base/java.net.SocketInputStream.read(SocketInputStream.java:168)
+	at java.base/java.net.SocketInputStream.read(SocketInputStream.java:140)
+	at java.base/java.io.BufferedInputStream.fill(BufferedInputStream.java:252)
+	at java.base/java.io.BufferedInputStream.read1(BufferedInputStream.java:292)
+	at java.base/java.io.BufferedInputStream.read(BufferedInputStream.java:351)
+	at java.base/sun.net.www.http.HttpClient.parseHTTPHeader(HttpClient.java:836)
+	at java.base/sun.net.www.http.HttpClient.parseHTTP(HttpClient.java:701)
+	... 9 more
+Caused by: java.io.IOException: Connection reset by peer
+	at java.base/sun.nio.ch.FileDispatcherImpl.read0(Native Method)
+	at java.base/sun.nio.ch.SocketDispatcher.read(SocketDispatcher.java:47)
+	at java.base/sun.nio.ch.IOUtil.readIntoNativeBuffer(IOUtil.java:327)
+	at java.base/sun.nio.ch.IOUtil.read(IOUtil.java:283)
+	at java.base/sun.nio.ch.NioSocketImpl.tryRead(NioSocketImpl.java:257)
+	at java.base/sun.nio.ch.NioSocketImpl.implRead(NioSocketImpl.java:328)
+	at java.base/sun.nio.ch.NioSocketImpl.read(NioSocketImpl.java:355)
+	... 12 more
+
+Payment batch job failed for order 4471

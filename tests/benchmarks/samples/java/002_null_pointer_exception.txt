@@ -1,0 +1,9 @@
+Loading catalog from /opt/app/data/catalog.json
+Catalog loaded: 482 products
+Processing order batch #77...
+Exception in thread "main" java.lang.NullPointerException: Cannot invoke "com.example.catalog.Product.getPrice()" because the return value of "com.example.catalog.CatalogService.lookup(String)" is null
+	at com.example.orders.PricingEngine.priceLine(PricingEngine.java:41)
+	at com.example.orders.PricingEngine.priceOrder(PricingEngine.java:23)
+	at com.example.orders.OrderBatchProcessor.processOne(OrderBatchProcessor.java:58)
+	at com.example.orders.OrderBatchProcessor.processBatch(OrderBatchProcessor.java:34)
+	at com.example.orders.BatchRunner.main(BatchRunner.java:17)

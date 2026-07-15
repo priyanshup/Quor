@@ -787,3 +787,169 @@ sample_file = "samples/pdf/002_short_client_notes.pdf"
 expected_filter = "markdown"
 min_reduction_pct = 0.0
 must_contain = ["# export-client", "REQ-1", "REQ-2", "TODO: add a `wait()` convenience helper"]
+
+# ---------------------------------------------------------------------------
+# QB-045 (first slice): CI & native-build tooling that previously had no
+# dedicated filter (docker build, gradle, maven, gh run view/watch).
+# ---------------------------------------------------------------------------
+
+[[case]]
+id = "docker-build-success"
+category = "docker"
+ecosystem = "CI/Build"
+command = "docker build -t myapp ."
+sample_file = "samples/docker/001_build_success.txt"
+expected_filter = "docker-build"
+min_reduction_pct = 25.0
+must_contain = ["#4 [1/5] FROM docker.io/library/node:18-slim", "#7 [4/5] RUN npm ci --omit=dev", "Successfully built", "Successfully tagged myapp:latest"]
+
+[[case]]
+id = "docker-build-failure"
+category = "docker"
+ecosystem = "CI/Build"
+command = "docker buildx build -t myapp ."
+sample_file = "samples/docker/002_build_failure.txt"
+expected_filter = "docker-build"
+min_reduction_pct = 0.0
+must_contain = ["error TS2345", "ERROR: process", "Dockerfile:8", ">>> RUN npm run build", "failed to solve"]
+
+[[case]]
+id = "gradle-build-success"
+category = "gradle"
+ecosystem = "CI/Build"
+command = "./gradlew build"
+sample_file = "samples/gradle/001_build_success.txt"
+expected_filter = "gradle"
+min_reduction_pct = 20.0
+must_contain = ["> Task :app:compileJava", "> Task :app:test", "BUILD SUCCESSFUL in 12s", "7 actionable tasks: 7 executed"]
+
+[[case]]
+id = "gradle-build-failure"
+category = "gradle"
+ecosystem = "CI/Build"
+command = "./gradlew test"
+sample_file = "samples/gradle/002_build_failure.txt"
+expected_filter = "gradle"
+min_reduction_pct = 0.0
+must_contain = ["additionTest FAILED", "AssertionError: expected: <5> but was: <4>", "FAILURE: Build failed with an exception", "BUILD FAILED in 4s"]
+
+[[case]]
+id = "maven-build-success"
+category = "maven"
+ecosystem = "CI/Build"
+command = "mvn test"
+sample_file = "samples/maven/001_build_success.txt"
+expected_filter = "maven"
+min_reduction_pct = 15.0
+must_contain = ["Building myapp 1.0.0", "maven-surefire-plugin:3.1.2:test", "Tests run: 12, Failures: 0, Errors: 0, Skipped: 0", "BUILD SUCCESS", "Total time:  4.213 s"]
+
+[[case]]
+id = "maven-build-failure"
+category = "maven"
+ecosystem = "CI/Build"
+command = "mvn compile"
+sample_file = "samples/maven/002_build_failure.txt"
+expected_filter = "maven"
+min_reduction_pct = 0.0
+must_contain = ["COMPILATION ERROR", "cannot find symbol", "BUILD FAILURE", "Failed to execute goal"]
+
+[[case]]
+id = "github-actions-run-success"
+category = "github-actions"
+ecosystem = "CI/Build"
+command = "gh run view 12345 --log"
+sample_file = "samples/github-actions/001_run_success.txt"
+expected_filter = "github-actions"
+min_reduction_pct = 10.0
+must_contain = ["Run actions/checkout@v4", "added 512 packages, and audited 513 packages in 7s", "Tests:       48 passed, 48 total", "(×2)"]
+
+[[case]]
+id = "github-actions-run-failure"
+category = "github-actions"
+ecosystem = "CI/Build"
+command = "gh run view 12346 --log-failed"
+sample_file = "samples/github-actions/002_run_failure.txt"
+expected_filter = "github-actions"
+min_reduction_pct = 0.0
+must_contain = ["FAIL  src/math.test.js", "Expected: 5", "Received: 4", "Tests:       1 failed, 47 passed, 48 total", "##[error]Process completed with exit code 1."]
+
+# ---------------------------------------------------------------------------
+# QB-056: Java stack-trace compression (bare `java` invocation)
+# ---------------------------------------------------------------------------
+
+[[case]]
+id = "java-spring-boot-startup-failure"
+category = "java"
+ecosystem = "Java"
+command = "java -jar demo.jar"
+sample_file = "samples/java/001_spring_boot_startup_failure.txt"
+expected_filter = "java"
+min_reduction_pct = 40.0
+must_contain = [
+    "Exception in thread \"main\" org.springframework.context.ApplicationContextException: Unable to start web server",
+    "com.example.demo.DemoApplication.main(DemoApplication.java:10)",
+    "Caused by: org.springframework.boot.web.server.WebServerException: Unable to start embedded Tomcat",
+    "... 12 more",
+    "Caused by: java.net.BindException: Address already in use",
+    "... 15 more",
+]
+
+[[case]]
+id = "java-null-pointer-exception"
+category = "java"
+ecosystem = "Java"
+command = "java -cp target/classes com.example.orders.BatchRunner"
+sample_file = "samples/java/002_null_pointer_exception.txt"
+expected_filter = "java"
+min_reduction_pct = 0.0
+must_contain = [
+    "java.lang.NullPointerException: Cannot invoke \"com.example.catalog.Product.getPrice()\"",
+    "at com.example.orders.PricingEngine.priceLine(PricingEngine.java:41)",
+    "at com.example.orders.BatchRunner.main(BatchRunner.java:17)",
+]
+
+[[case]]
+id = "java-illegal-state-exception"
+category = "java"
+ecosystem = "Java"
+command = "java -jar orders-service.jar"
+sample_file = "samples/java/003_illegal_state_exception.txt"
+expected_filter = "java"
+min_reduction_pct = 55.0
+must_contain = [
+    "java.lang.IllegalStateException: Order 4471 has already shipped and cannot be modified",
+    "at com.example.orders.OrderService.ship(OrderService.java:44)",
+    "at com.example.orders.OrderController.shipOrder(OrderController.java:30)",
+]
+
+[[case]]
+id = "java-deep-nested-exception"
+category = "java"
+ecosystem = "Java"
+command = "java -cp target/classes com.example.calc.CalculatorTest"
+sample_file = "samples/java/004_deep_nested_exception.txt"
+expected_filter = "java"
+min_reduction_pct = 70.0
+must_contain = [
+    "java.lang.ArithmeticException: / by zero",
+    "at com.example.calc.Calculator.divide(Calculator.java:12)",
+    "at com.example.calc.CalculatorTest.testDivideByZero(CalculatorTest.java:19)",
+]
+
+[[case]]
+id = "java-multi-level-caused-by-chain"
+category = "java"
+ecosystem = "Java"
+command = "java -jar payment-batch.jar"
+sample_file = "samples/java/005_multi_level_caused_by_chain.txt"
+expected_filter = "java"
+min_reduction_pct = 45.0
+must_contain = [
+    "com.example.payments.PaymentProcessingException: Payment failed for order 4471",
+    "Caused by: org.springframework.web.client.HttpServerErrorException$InternalServerError: 500 Internal Server Error: \"Gateway timeout\"",
+    "... 4 more",
+    "Caused by: java.net.SocketTimeoutException: Read timed out",
+    "... 9 more",
+    "Caused by: java.io.IOException: Connection reset by peer",
+    "... 12 more",
+]

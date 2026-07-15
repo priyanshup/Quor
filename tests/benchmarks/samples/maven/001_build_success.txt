@@ -1,0 +1,20 @@
+[INFO] Scanning for projects...
+[INFO] ------------------------------------------------------------------------
+[INFO] Building myapp 1.0.0
+[INFO] ------------------------------------------------------------------------
+[INFO] Downloading from central: https://repo.maven.apache.org/maven2/org/junit/junit-bom/5.10.0/junit-bom-5.10.0.pom
+[INFO] Downloaded from central: https://repo.maven.apache.org/maven2/org/junit/junit-bom/5.10.0/junit-bom-5.10.0.pom (12 kB at 145 kB/s)
+[INFO] Downloading from central: https://repo.maven.apache.org/maven2/org/junit/junit-jupiter/5.10.0/junit-jupiter-5.10.0.pom
+[INFO] Downloaded from central: https://repo.maven.apache.org/maven2/org/junit/junit-jupiter/5.10.0/junit-jupiter-5.10.0.pom (8 kB at 210 kB/s)
+[INFO]
+[INFO] --- maven-compiler-plugin:3.11.0:compile (default-compile) @ myapp ---
+[INFO] Compiling 8 source files to /project/target/classes
+[INFO]
+[INFO] --- maven-surefire-plugin:3.1.2:test (default-test) @ myapp ---
+[INFO] Tests run: 12, Failures: 0, Errors: 0, Skipped: 0
+[INFO] ------------------------------------------------------------------------
+[INFO] BUILD SUCCESS
+[INFO] ------------------------------------------------------------------------
+[INFO] Total time:  4.213 s
+[INFO] Finished at: 2026-07-15T10:23:45+00:00
+[INFO] ------------------------------------------------------------------------

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import importlib
 import io
 import re
@@ -47,12 +48,22 @@ def doctor(
         "--reset-tee",
         help="Clear tee's adaptive-disable state and re-enable it after fixing a filesystem issue.",
     ),
+    fix: bool = typer.Option(
+        False,
+        "--fix",
+        help=(
+            "Automatically repair deterministic, safe issues (missing/stale hook "
+            "scripts, their settings.json registration) before re-checking."
+        ),
+    ),
 ) -> None:
     """Run health checks and print a summary with colored status indicators."""
-    _run_doctor(settings_path=settings_path, reset_tee=reset_tee)
+    _run_doctor(settings_path=settings_path, reset_tee=reset_tee, fix=fix)
 
 
-def _run_doctor(*, settings_path: Path | None = None, reset_tee: bool = False) -> None:
+def _run_doctor(
+    *, settings_path: Path | None = None, reset_tee: bool = False, fix: bool = False
+) -> None:
     """The actual health-check logic, callable as plain Python.
 
     Separated from the Typer-decorated `doctor()` above so callers that need
@@ -75,6 +86,16 @@ def _run_doctor(*, settings_path: Path | None = None, reset_tee: bool = False) -
         except Exception as exc:  # noqa: BLE001
             console.print(f"[red]Could not reset tee state: {exc}[/red]")
 
+    if fix:
+        console.print("[bold]Checking Quor...[/bold]\n")
+        fix_results = _repair_hooks(settings_path)
+        if fix_results:
+            for name, ok, detail in fix_results:
+                _print_check_line(name, ok, detail)
+        else:
+            console.print("[green]✓ Hooks already current[/green]")
+        console.print("\n[bold]Re-running checks...[/bold]\n")
+
     checks: list[tuple[str, bool, str]] = []
 
     checks.append(_check_python_version())
@@ -95,24 +116,36 @@ def _run_doctor(*, settings_path: Path | None = None, reset_tee: bool = False) -
 
     all_ok = True
     for name, ok, detail in checks:
-        symbol = "[green]✓[/green]" if ok else "[red]✗[/red]"
-        # escape(): `name`/`detail` are dynamic text that can contain literal
-        # square brackets (a path segment, or "quor[javascript]" in an extras
-        # hint) — Rich's markup parser otherwise reads "[javascript]" as an
-        # (unrecognized, silently dropped) style tag, not literal text. Only
-        # `symbol`'s own hardcoded `[green]...[/green]` is meant to be parsed
-        # as markup here.
-        suffix = f" — {escape(detail)}" if detail else ""
-        # soft_wrap: detail strings can embed long filesystem paths pushing
-        # an actionable snippet like `quor init --claude` past the console
-        # width — Rich's default word-wrap would otherwise split it mid-
-        # phrase across two lines, which is both harder to read and breaks
-        # a clean copy-paste of the suggested command.
-        console.print(f"{symbol} {escape(name)}{suffix}", soft_wrap=True)
+        _print_check_line(name, ok, detail)
         all_ok = all_ok and ok
+
+    if fix:
+        if all_ok:
+            console.print("\n[green]✓ All checks passed[/green]")
+        else:
+            remaining = sum(1 for _, ok, _ in checks if not ok)
+            noun = "action" if remaining == 1 else "actions"
+            console.print(f"\nDoctor completed with {remaining} manual {noun} remaining.")
 
     if not all_ok:
         raise typer.Exit(code=ExitCode.GENERAL_ERROR)
+
+
+def _print_check_line(name: str, ok: bool, detail: str) -> None:
+    symbol = "[green]✓[/green]" if ok else "[red]✗[/red]"
+    # escape(): `name`/`detail` are dynamic text that can contain literal
+    # square brackets (a path segment, or "quor[javascript]" in an extras
+    # hint) — Rich's markup parser otherwise reads "[javascript]" as an
+    # (unrecognized, silently dropped) style tag, not literal text. Only
+    # `symbol`'s own hardcoded `[green]...[/green]` is meant to be parsed
+    # as markup here.
+    suffix = f" — {escape(detail)}" if detail else ""
+    # soft_wrap: detail strings can embed long filesystem paths pushing
+    # an actionable snippet like `quor init --claude` past the console
+    # width — Rich's default word-wrap would otherwise split it mid-
+    # phrase across two lines, which is both harder to read and breaks
+    # a clean copy-paste of the suggested command.
+    console.print(f"{symbol} {escape(name)}{suffix}", soft_wrap=True)
 
 
 def _check_python_version() -> tuple[str, bool, str]:
@@ -209,6 +242,157 @@ def _check_hook_up_to_date(spec: ClaudeHookSpec) -> tuple[str, bool, str]:
         f"installed hook schema is {from_schema}, current schema is {current_schema} — "
         "run `quor init --claude` to refresh",
     )
+
+
+def _repair_hooks(settings_path: Path | None) -> list[tuple[str, bool, str]]:
+    """`quor doctor --fix`'s repair step: deterministically fix any hook in
+    HOOK_SPECS that's missing its script, missing its settings.json
+    registration, or stale — reusing exactly the same write primitives
+    `quor init --claude` uses (`render_hook_script`, `_write_text_atomic`,
+    `_install_hook_entry`, `_write_json_atomic`). Not a second implementation
+    of that install logic — just invoked directly, without init's
+    interactive dry-run/confirmation/conflict-warning wrapper, since a
+    repair on an install that already exists needs none of that.
+
+    Deliberately does NOT perform a hook's *first-ever* install: if a hook
+    has neither a script nor a settings.json entry, it was simply never set
+    up (`quor init --claude` hasn't been run for it yet), which is a
+    first-time opt-in decision, not something a repair tool should do on the
+    user's behalf — `--fix` repairs an existing install, it does not perform
+    one (see module/task framing: "this is NOT an installer"). That case is
+    left for the normal check list below to report, with its existing
+    "run `quor init --claude`" detail text.
+
+    Returns one result per hook actually repaired, plus one more if
+    settings.json was written — empty if every hook is either already
+    current or never installed (so `--fix` performs zero writes on an
+    already-healthy, or never-initialized, install). Each hook's repair is
+    independent and fail-open: one hook's write failing (e.g. a permissions
+    error) is reported and does not prevent repairing another hook or
+    writing settings.json for the hooks that did succeed.
+    """
+    from quor.adapters.hook_manifest import render_hook_script
+    from quor.cli.commands.init import (
+        _install_hook_entry,
+        _read_settings,
+        _write_json_atomic,
+        _write_text_atomic,
+    )
+
+    settings_file = settings_path or (Path.home() / ".claude" / "settings.json")
+    results: list[tuple[str, bool, str]] = []
+
+    try:
+        settings = _read_settings(settings_file)
+    except Exception as exc:  # noqa: BLE001 — unreadable settings.json: nothing safe to repair
+        return [("Claude settings repaired", False, f"could not read {settings_file}: {exc}")]
+
+    settings_dirty = False
+    for spec in HOOK_SPECS:
+        script_ok = _check_hook_script(spec)[1]
+        registered_ok = _check_hook_registered(spec, settings_path)[1]
+        up_to_date_ok = _check_hook_up_to_date(spec)[1]
+
+        if script_ok and registered_ok and up_to_date_ok:
+            continue  # already current — no write for this hook
+
+        if not script_ok and not registered_ok:
+            continue  # never installed — a repair tool doesn't opt users in
+
+        try:
+            script_path = _hook_script_path(spec)
+            _write_text_atomic(script_path, render_hook_script(spec, python=sys.executable))
+            settings = _install_hook_entry(settings, spec, script_path)
+            settings_dirty = True
+            results.append((f"{spec.label} hook script regenerated", True, str(script_path)))
+        except Exception as exc:  # noqa: BLE001 — one hook's failure must not stop the rest
+            results.append((f"{spec.label} hook script regenerated", False, str(exc)))
+
+    if settings_dirty:
+        try:
+            _write_json_atomic(settings_file, settings)
+            results.append(("Claude settings repaired", True, str(settings_file)))
+        except Exception as exc:  # noqa: BLE001
+            results.append(("Claude settings repaired", False, str(exc)))
+
+    return results
+
+
+def has_stale_hooks() -> bool:
+    """Cheap, read-only check reused by `cli/main.py`'s root callback to nudge
+    users toward `quor doctor`/`quor init --claude` after a `pip install
+    --upgrade quor` — pip never touches the hook scripts `quor init --claude`
+    writes (they live under `platformdirs.user_data_dir`, outside the
+    installed package), so a `schema_version` bump in a new release leaves an
+    old install silently stale until the user re-runs init.
+
+    Delegates entirely to `_check_hook_up_to_date`, so this can never
+    disagree with what `quor doctor` reports for the same files: `ok` there
+    is True both when a hook is current *and* when nothing is installed yet
+    (`hook_path.exists()` is False), so "not ok" here means specifically
+    "installed but outdated" — never "not installed at all".
+    """
+    return any(not _check_hook_up_to_date(spec)[1] for spec in HOOK_SPECS)
+
+
+_STALE_WARN_STATE_FILENAME = "stale_hook_warning_state.json"
+
+
+def _stale_warn_state_path() -> Path:
+    return Path(platformdirs.user_data_dir("quor")) / _STALE_WARN_STATE_FILENAME
+
+
+def _current_schema_signature() -> dict[str, int]:
+    """{hook_id: schema_version} for every hook in HOOK_SPECS — the "schema
+    world" a stale-hook warning was last shown for. Comparing this (not a
+    timestamp) against what's on disk is what makes `should_warn_stale_hooks`
+    warn again only when a future release actually bumps a schema_version,
+    never on a timer."""
+    return {spec.hook_id: spec.schema_version for spec in HOOK_SPECS}
+
+
+def should_warn_stale_hooks() -> bool:
+    """Warn-once-per-schema decision behind `cli/main.py`'s post-upgrade
+    nudge (see `has_stale_hooks` docstring for why the nudge exists at all).
+
+    Persists the schema signature (`_current_schema_signature`) last warned
+    about to a tiny JSON file under `platformdirs.user_data_dir("quor")`, so
+    a stale install that hasn't changed doesn't re-nag on every CLI
+    invocation. Purely schema-keyed — no timestamp, no "once per day" — so
+    the only things that change the outcome are `quor init --claude` (clears
+    the state, since hooks are current again) or a future release bumping a
+    `schema_version` (the signature differs from what's stored, so it warns
+    again exactly once).
+
+    Fail-open: any error reading or writing the state file is swallowed and
+    treated as "no prior warning recorded" — worst case the warning fires
+    again next time, which is safe. This must never raise, since it runs
+    ahead of every CLI command.
+    """
+    from quor.cli.commands.init import _read_settings, _write_json_atomic
+
+    state_path = _stale_warn_state_path()
+
+    if not has_stale_hooks():
+        # Healthy again (typically right after `quor init --claude`) —
+        # leftover state would otherwise cause a *future* real staleness to
+        # be silently skipped if it happened to match an old signature.
+        with contextlib.suppress(OSError):
+            state_path.unlink(missing_ok=True)
+        return False
+
+    current = _current_schema_signature()
+    try:
+        stored = _read_settings(state_path)
+    except Exception:  # noqa: BLE001 — corrupt/unreadable state must not block
+        stored = {}
+
+    if stored == current:
+        return False
+
+    with contextlib.suppress(Exception):  # best-effort persistence only
+        _write_json_atomic(state_path, current)
+    return True
 
 
 def _check_hook_collision(settings_path: Path | None = None) -> tuple[str, bool, str]:

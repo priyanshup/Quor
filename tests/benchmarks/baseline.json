@@ -11,11 +11,31 @@
       "final_tokens": 73,
       "tokens_saved": 104,
       "compression_pct": 58.76,
-      "execution_time_ms": 1.367,
+      "execution_time_ms": 1.271,
       "tee_would_fire": true,
       "missing_patterns": [],
       "min_reduction_met": true,
-      "correctness_ok": true
+      "correctness_ok": true,
+      "stages": [
+        {
+          "stage_type": "strip_lines",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 177,
+          "tokens_after": 73,
+          "tokens_saved": 104
+        },
+        {
+          "stage_type": "deduplicate_consecutive",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 73,
+          "tokens_after": 73,
+          "tokens_saved": 0
+        }
+      ]
     },
     {
       "id": "git-status-conflict-merge",
@@ -28,11 +48,31 @@
       "final_tokens": 77,
       "tokens_saved": 63,
       "compression_pct": 45.0,
-      "execution_time_ms": 0.259,
+      "execution_time_ms": 0.327,
       "tee_would_fire": true,
       "missing_patterns": [],
       "min_reduction_met": true,
-      "correctness_ok": true
+      "correctness_ok": true,
+      "stages": [
+        {
+          "stage_type": "strip_lines",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 140,
+          "tokens_after": 78,
+          "tokens_saved": 62
+        },
+        {
+          "stage_type": "deduplicate_consecutive",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 78,
+          "tokens_after": 77,
+          "tokens_saved": 1
+        }
+      ]
     },
     {
       "id": "git-log-recent-history",
@@ -45,11 +85,31 @@
       "final_tokens": 157,
       "tokens_saved": 103,
       "compression_pct": 39.62,
-      "execution_time_ms": 0.746,
+      "execution_time_ms": 0.657,
       "tee_would_fire": true,
       "missing_patterns": [],
       "min_reduction_met": true,
-      "correctness_ok": true
+      "correctness_ok": true,
+      "stages": [
+        {
+          "stage_type": "strip_lines",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 260,
+          "tokens_after": 157,
+          "tokens_saved": 103
+        },
+        {
+          "stage_type": "max_tokens",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 157,
+          "tokens_after": 157,
+          "tokens_saved": 0
+        }
+      ]
     },
     {
       "id": "git-log-hotfix-branch",
@@ -62,11 +122,31 @@
       "final_tokens": 78,
       "tokens_saved": 59,
       "compression_pct": 43.07,
-      "execution_time_ms": 0.333,
+      "execution_time_ms": 0.255,
       "tee_would_fire": true,
       "missing_patterns": [],
       "min_reduction_met": true,
-      "correctness_ok": true
+      "correctness_ok": true,
+      "stages": [
+        {
+          "stage_type": "strip_lines",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 137,
+          "tokens_after": 78,
+          "tokens_saved": 59
+        },
+        {
+          "stage_type": "max_tokens",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 78,
+          "tokens_after": 78,
+          "tokens_saved": 0
+        }
+      ]
     },
     {
       "id": "git-diff-single-file-bugfix",
@@ -76,14 +156,52 @@
       "matched_filter": "git-diff",
       "filter_correct": true,
       "original_tokens": 394,
-      "final_tokens": 347,
-      "tokens_saved": 47,
-      "compression_pct": 11.93,
-      "execution_time_ms": 0.963,
+      "final_tokens": 328,
+      "tokens_saved": 66,
+      "compression_pct": 16.75,
+      "execution_time_ms": 1.055,
       "tee_would_fire": true,
       "missing_patterns": [],
       "min_reduction_met": true,
-      "correctness_ok": true
+      "correctness_ok": true,
+      "stages": [
+        {
+          "stage_type": "strip_lines",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 394,
+          "tokens_after": 347,
+          "tokens_saved": 47
+        },
+        {
+          "stage_type": "collapse_unchanged_context",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 347,
+          "tokens_after": 328,
+          "tokens_saved": 19
+        },
+        {
+          "stage_type": "deduplicate_consecutive",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 328,
+          "tokens_after": 328,
+          "tokens_saved": 0
+        },
+        {
+          "stage_type": "max_tokens",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 328,
+          "tokens_after": 328,
+          "tokens_saved": 0
+        }
+      ]
     },
     {
       "id": "git-diff-multi-file-refactor",
@@ -93,14 +211,602 @@
       "matched_filter": "git-diff",
       "filter_correct": true,
       "original_tokens": 307,
-      "final_tokens": 241,
-      "tokens_saved": 66,
-      "compression_pct": 21.5,
-      "execution_time_ms": 0.468,
+      "final_tokens": 233,
+      "tokens_saved": 74,
+      "compression_pct": 24.1,
+      "execution_time_ms": 0.45,
       "tee_would_fire": true,
       "missing_patterns": [],
       "min_reduction_met": true,
-      "correctness_ok": true
+      "correctness_ok": true,
+      "stages": [
+        {
+          "stage_type": "strip_lines",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 307,
+          "tokens_after": 241,
+          "tokens_saved": 66
+        },
+        {
+          "stage_type": "collapse_unchanged_context",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 241,
+          "tokens_after": 233,
+          "tokens_saved": 8
+        },
+        {
+          "stage_type": "deduplicate_consecutive",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 233,
+          "tokens_after": 233,
+          "tokens_saved": 0
+        },
+        {
+          "stage_type": "max_tokens",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 233,
+          "tokens_after": 233,
+          "tokens_saved": 0
+        }
+      ]
+    },
+    {
+      "id": "git-diff-multi-hunk-bugfix",
+      "category": "git-diff",
+      "ecosystem": "Git",
+      "command": "git diff",
+      "matched_filter": "git-diff",
+      "filter_correct": true,
+      "original_tokens": 698,
+      "final_tokens": 562,
+      "tokens_saved": 136,
+      "compression_pct": 19.48,
+      "execution_time_ms": 0.632,
+      "tee_would_fire": true,
+      "missing_patterns": [],
+      "min_reduction_met": true,
+      "correctness_ok": true,
+      "stages": [
+        {
+          "stage_type": "strip_lines",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 698,
+          "tokens_after": 673,
+          "tokens_saved": 25
+        },
+        {
+          "stage_type": "collapse_unchanged_context",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 673,
+          "tokens_after": 562,
+          "tokens_saved": 111
+        },
+        {
+          "stage_type": "deduplicate_consecutive",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 562,
+          "tokens_after": 562,
+          "tokens_saved": 0
+        },
+        {
+          "stage_type": "max_tokens",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 562,
+          "tokens_after": 562,
+          "tokens_saved": 0
+        }
+      ]
+    },
+    {
+      "id": "git-diff-large-refactor-many-files",
+      "category": "git-diff",
+      "ecosystem": "Git",
+      "command": "git diff",
+      "matched_filter": "git-diff",
+      "filter_correct": true,
+      "original_tokens": 1177,
+      "final_tokens": 960,
+      "tokens_saved": 217,
+      "compression_pct": 18.44,
+      "execution_time_ms": 0.856,
+      "tee_would_fire": true,
+      "missing_patterns": [],
+      "min_reduction_met": true,
+      "correctness_ok": true,
+      "stages": [
+        {
+          "stage_type": "strip_lines",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 1177,
+          "tokens_after": 1010,
+          "tokens_saved": 167
+        },
+        {
+          "stage_type": "collapse_unchanged_context",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 1010,
+          "tokens_after": 961,
+          "tokens_saved": 49
+        },
+        {
+          "stage_type": "deduplicate_consecutive",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 961,
+          "tokens_after": 960,
+          "tokens_saved": 1
+        },
+        {
+          "stage_type": "max_tokens",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 960,
+          "tokens_after": 960,
+          "tokens_saved": 0
+        }
+      ]
+    },
+    {
+      "id": "git-diff-file-rename-with-edits",
+      "category": "git-diff",
+      "ecosystem": "Git",
+      "command": "git diff",
+      "matched_filter": "git-diff",
+      "filter_correct": true,
+      "original_tokens": 320,
+      "final_tokens": 239,
+      "tokens_saved": 81,
+      "compression_pct": 25.31,
+      "execution_time_ms": 0.351,
+      "tee_would_fire": true,
+      "missing_patterns": [],
+      "min_reduction_met": true,
+      "correctness_ok": true,
+      "stages": [
+        {
+          "stage_type": "strip_lines",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 320,
+          "tokens_after": 275,
+          "tokens_saved": 45
+        },
+        {
+          "stage_type": "collapse_unchanged_context",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 275,
+          "tokens_after": 239,
+          "tokens_saved": 36
+        },
+        {
+          "stage_type": "deduplicate_consecutive",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 239,
+          "tokens_after": 239,
+          "tokens_saved": 0
+        },
+        {
+          "stage_type": "max_tokens",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 239,
+          "tokens_after": 239,
+          "tokens_saved": 0
+        }
+      ]
+    },
+    {
+      "id": "git-diff-generated-code-update",
+      "category": "git-diff",
+      "ecosystem": "Git",
+      "command": "git diff",
+      "matched_filter": "git-diff",
+      "filter_correct": true,
+      "original_tokens": 631,
+      "final_tokens": 562,
+      "tokens_saved": 69,
+      "compression_pct": 10.94,
+      "execution_time_ms": 0.665,
+      "tee_would_fire": true,
+      "missing_patterns": [],
+      "min_reduction_met": true,
+      "correctness_ok": true,
+      "stages": [
+        {
+          "stage_type": "strip_lines",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 631,
+          "tokens_after": 576,
+          "tokens_saved": 55
+        },
+        {
+          "stage_type": "collapse_unchanged_context",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 576,
+          "tokens_after": 562,
+          "tokens_saved": 14
+        },
+        {
+          "stage_type": "deduplicate_consecutive",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 562,
+          "tokens_after": 562,
+          "tokens_saved": 0
+        },
+        {
+          "stage_type": "max_tokens",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 562,
+          "tokens_after": 562,
+          "tokens_saved": 0
+        }
+      ]
+    },
+    {
+      "id": "git-diff-lockfile-change",
+      "category": "git-diff",
+      "ecosystem": "Git",
+      "command": "git diff",
+      "matched_filter": "git-diff",
+      "filter_correct": true,
+      "original_tokens": 845,
+      "final_tokens": 746,
+      "tokens_saved": 99,
+      "compression_pct": 11.72,
+      "execution_time_ms": 0.893,
+      "tee_would_fire": true,
+      "missing_patterns": [],
+      "min_reduction_met": true,
+      "correctness_ok": true,
+      "stages": [
+        {
+          "stage_type": "strip_lines",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 845,
+          "tokens_after": 807,
+          "tokens_saved": 38
+        },
+        {
+          "stage_type": "collapse_unchanged_context",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 807,
+          "tokens_after": 746,
+          "tokens_saved": 61
+        },
+        {
+          "stage_type": "deduplicate_consecutive",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 746,
+          "tokens_after": 746,
+          "tokens_saved": 0
+        },
+        {
+          "stage_type": "max_tokens",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 746,
+          "tokens_after": 746,
+          "tokens_saved": 0
+        }
+      ]
+    },
+    {
+      "id": "git-diff-merge-conflict-resolution",
+      "category": "git-diff",
+      "ecosystem": "Git",
+      "command": "git diff",
+      "matched_filter": "git-diff",
+      "filter_correct": true,
+      "original_tokens": 488,
+      "final_tokens": 438,
+      "tokens_saved": 50,
+      "compression_pct": 10.25,
+      "execution_time_ms": 0.457,
+      "tee_would_fire": true,
+      "missing_patterns": [],
+      "min_reduction_met": true,
+      "correctness_ok": true,
+      "stages": [
+        {
+          "stage_type": "strip_lines",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 488,
+          "tokens_after": 438,
+          "tokens_saved": 50
+        },
+        {
+          "stage_type": "collapse_unchanged_context",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 438,
+          "tokens_after": 438,
+          "tokens_saved": 0
+        },
+        {
+          "stage_type": "deduplicate_consecutive",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 438,
+          "tokens_after": 438,
+          "tokens_saved": 0
+        },
+        {
+          "stage_type": "max_tokens",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 438,
+          "tokens_after": 438,
+          "tokens_saved": 0
+        }
+      ]
+    },
+    {
+      "id": "git-diff-formatting-only-change",
+      "category": "git-diff",
+      "ecosystem": "Git",
+      "command": "git diff",
+      "matched_filter": "git-diff",
+      "filter_correct": true,
+      "original_tokens": 343,
+      "final_tokens": 320,
+      "tokens_saved": 23,
+      "compression_pct": 6.71,
+      "execution_time_ms": 0.457,
+      "tee_would_fire": true,
+      "missing_patterns": [],
+      "min_reduction_met": true,
+      "correctness_ok": true,
+      "stages": [
+        {
+          "stage_type": "strip_lines",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 343,
+          "tokens_after": 320,
+          "tokens_saved": 23
+        },
+        {
+          "stage_type": "collapse_unchanged_context",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 320,
+          "tokens_after": 320,
+          "tokens_saved": 0
+        },
+        {
+          "stage_type": "deduplicate_consecutive",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 320,
+          "tokens_after": 320,
+          "tokens_saved": 0
+        },
+        {
+          "stage_type": "max_tokens",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 320,
+          "tokens_after": 320,
+          "tokens_saved": 0
+        }
+      ]
+    },
+    {
+      "id": "git-diff-documentation-heavy",
+      "category": "git-diff",
+      "ecosystem": "Git",
+      "command": "git diff",
+      "matched_filter": "git-diff",
+      "filter_correct": true,
+      "original_tokens": 780,
+      "final_tokens": 692,
+      "tokens_saved": 88,
+      "compression_pct": 11.28,
+      "execution_time_ms": 0.873,
+      "tee_would_fire": true,
+      "missing_patterns": [],
+      "min_reduction_met": true,
+      "correctness_ok": true,
+      "stages": [
+        {
+          "stage_type": "strip_lines",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 780,
+          "tokens_after": 750,
+          "tokens_saved": 30
+        },
+        {
+          "stage_type": "collapse_unchanged_context",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 750,
+          "tokens_after": 692,
+          "tokens_saved": 58
+        },
+        {
+          "stage_type": "deduplicate_consecutive",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 692,
+          "tokens_after": 692,
+          "tokens_saved": 0
+        },
+        {
+          "stage_type": "max_tokens",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 692,
+          "tokens_after": 692,
+          "tokens_saved": 0
+        }
+      ]
+    },
+    {
+      "id": "git-diff-large-context-diff",
+      "category": "git-diff",
+      "ecosystem": "Git",
+      "command": "git diff",
+      "matched_filter": "git-diff",
+      "filter_correct": true,
+      "original_tokens": 500,
+      "final_tokens": 201,
+      "tokens_saved": 299,
+      "compression_pct": 59.8,
+      "execution_time_ms": 0.465,
+      "tee_would_fire": true,
+      "missing_patterns": [],
+      "min_reduction_met": true,
+      "correctness_ok": true,
+      "stages": [
+        {
+          "stage_type": "strip_lines",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 500,
+          "tokens_after": 471,
+          "tokens_saved": 29
+        },
+        {
+          "stage_type": "collapse_unchanged_context",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 471,
+          "tokens_after": 201,
+          "tokens_saved": 270
+        },
+        {
+          "stage_type": "deduplicate_consecutive",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 201,
+          "tokens_after": 201,
+          "tokens_saved": 0
+        },
+        {
+          "stage_type": "max_tokens",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 201,
+          "tokens_after": 201,
+          "tokens_saved": 0
+        }
+      ]
+    },
+    {
+      "id": "git-diff-mixed-code-config",
+      "category": "git-diff",
+      "ecosystem": "Git",
+      "command": "git diff",
+      "matched_filter": "git-diff",
+      "filter_correct": true,
+      "original_tokens": 540,
+      "final_tokens": 442,
+      "tokens_saved": 98,
+      "compression_pct": 18.15,
+      "execution_time_ms": 0.457,
+      "tee_would_fire": true,
+      "missing_patterns": [],
+      "min_reduction_met": true,
+      "correctness_ok": true,
+      "stages": [
+        {
+          "stage_type": "strip_lines",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 540,
+          "tokens_after": 465,
+          "tokens_saved": 75
+        },
+        {
+          "stage_type": "collapse_unchanged_context",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 465,
+          "tokens_after": 442,
+          "tokens_saved": 23
+        },
+        {
+          "stage_type": "deduplicate_consecutive",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 442,
+          "tokens_after": 442,
+          "tokens_saved": 0
+        },
+        {
+          "stage_type": "max_tokens",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 442,
+          "tokens_after": 442,
+          "tokens_saved": 0
+        }
+      ]
     },
     {
       "id": "pytest-two-failures",
@@ -113,11 +819,49 @@
       "final_tokens": 319,
       "tokens_saved": 83,
       "compression_pct": 20.65,
-      "execution_time_ms": 2.377,
+      "execution_time_ms": 2.093,
       "tee_would_fire": true,
       "missing_patterns": [],
       "min_reduction_met": true,
-      "correctness_ok": true
+      "correctness_ok": true,
+      "stages": [
+        {
+          "stage_type": "group_repeated",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 402,
+          "tokens_after": 402,
+          "tokens_saved": 0
+        },
+        {
+          "stage_type": "strip_lines",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 402,
+          "tokens_after": 319,
+          "tokens_saved": 83
+        },
+        {
+          "stage_type": "deduplicate_consecutive",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 319,
+          "tokens_after": 319,
+          "tokens_saved": 0
+        },
+        {
+          "stage_type": "max_tokens",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 319,
+          "tokens_after": 319,
+          "tokens_saved": 0
+        }
+      ]
     },
     {
       "id": "pytest-large-suite-single-failure",
@@ -130,11 +874,49 @@
       "final_tokens": 188,
       "tokens_saved": 243,
       "compression_pct": 56.38,
-      "execution_time_ms": 1.509,
+      "execution_time_ms": 0.697,
       "tee_would_fire": true,
       "missing_patterns": [],
       "min_reduction_met": true,
-      "correctness_ok": true
+      "correctness_ok": true,
+      "stages": [
+        {
+          "stage_type": "group_repeated",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 431,
+          "tokens_after": 431,
+          "tokens_saved": 0
+        },
+        {
+          "stage_type": "strip_lines",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 431,
+          "tokens_after": 188,
+          "tokens_saved": 243
+        },
+        {
+          "stage_type": "deduplicate_consecutive",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 188,
+          "tokens_after": 188,
+          "tokens_saved": 0
+        },
+        {
+          "stage_type": "max_tokens",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 188,
+          "tokens_after": 188,
+          "tokens_saved": 0
+        }
+      ]
     },
     {
       "id": "pytest-framework-traceback-frames",
@@ -147,11 +929,49 @@
       "final_tokens": 263,
       "tokens_saved": 182,
       "compression_pct": 40.9,
-      "execution_time_ms": 0.821,
+      "execution_time_ms": 0.626,
       "tee_would_fire": true,
       "missing_patterns": [],
       "min_reduction_met": true,
-      "correctness_ok": true
+      "correctness_ok": true,
+      "stages": [
+        {
+          "stage_type": "group_repeated",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 445,
+          "tokens_after": 445,
+          "tokens_saved": 0
+        },
+        {
+          "stage_type": "strip_lines",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 445,
+          "tokens_after": 263,
+          "tokens_saved": 182
+        },
+        {
+          "stage_type": "deduplicate_consecutive",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 263,
+          "tokens_after": 263,
+          "tokens_saved": 0
+        },
+        {
+          "stage_type": "max_tokens",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 263,
+          "tokens_after": 263,
+          "tokens_saved": 0
+        }
+      ]
     },
     {
       "id": "mypy-repeated-type-error",
@@ -161,14 +981,43 @@
       "matched_filter": "mypy",
       "filter_correct": true,
       "original_tokens": 191,
-      "final_tokens": 92,
-      "tokens_saved": 99,
-      "compression_pct": 51.83,
-      "execution_time_ms": 1.133,
+      "final_tokens": 122,
+      "tokens_saved": 69,
+      "compression_pct": 36.13,
+      "execution_time_ms": 1.513,
       "tee_would_fire": true,
       "missing_patterns": [],
       "min_reduction_met": true,
-      "correctness_ok": true
+      "correctness_ok": true,
+      "stages": [
+        {
+          "stage_type": "group_repeated",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 191,
+          "tokens_after": 135,
+          "tokens_saved": 56
+        },
+        {
+          "stage_type": "strip_lines",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 135,
+          "tokens_after": 122,
+          "tokens_saved": 13
+        },
+        {
+          "stage_type": "max_tokens",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 122,
+          "tokens_after": 122,
+          "tokens_saved": 0
+        }
+      ]
     },
     {
       "id": "mypy-distinct-errors",
@@ -181,11 +1030,40 @@
       "final_tokens": 39,
       "tokens_saved": 13,
       "compression_pct": 25.0,
-      "execution_time_ms": 0.193,
+      "execution_time_ms": 0.231,
       "tee_would_fire": true,
       "missing_patterns": [],
       "min_reduction_met": true,
-      "correctness_ok": true
+      "correctness_ok": true,
+      "stages": [
+        {
+          "stage_type": "group_repeated",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 52,
+          "tokens_after": 52,
+          "tokens_saved": 0
+        },
+        {
+          "stage_type": "strip_lines",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 52,
+          "tokens_after": 39,
+          "tokens_saved": 13
+        },
+        {
+          "stage_type": "max_tokens",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 39,
+          "tokens_after": 39,
+          "tokens_saved": 0
+        }
+      ]
     },
     {
       "id": "ruff-multi-file-violations",
@@ -198,11 +1076,31 @@
       "final_tokens": 48,
       "tokens_saved": 14,
       "compression_pct": 22.58,
-      "execution_time_ms": 0.963,
+      "execution_time_ms": 0.387,
       "tee_would_fire": true,
       "missing_patterns": [],
       "min_reduction_met": true,
-      "correctness_ok": true
+      "correctness_ok": true,
+      "stages": [
+        {
+          "stage_type": "strip_lines",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 62,
+          "tokens_after": 48,
+          "tokens_saved": 14
+        },
+        {
+          "stage_type": "max_tokens",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 48,
+          "tokens_after": 48,
+          "tokens_saved": 0
+        }
+      ]
     },
     {
       "id": "ruff-single-file-distinct-violations",
@@ -215,11 +1113,31 @@
       "final_tokens": 34,
       "tokens_saved": 4,
       "compression_pct": 10.53,
-      "execution_time_ms": 0.187,
+      "execution_time_ms": 0.132,
       "tee_would_fire": true,
       "missing_patterns": [],
       "min_reduction_met": true,
-      "correctness_ok": true
+      "correctness_ok": true,
+      "stages": [
+        {
+          "stage_type": "strip_lines",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 38,
+          "tokens_after": 34,
+          "tokens_saved": 4
+        },
+        {
+          "stage_type": "max_tokens",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 34,
+          "tokens_after": 34,
+          "tokens_saved": 0
+        }
+      ]
     },
     {
       "id": "eslint-multi-file-mixed-severity",
@@ -232,11 +1150,49 @@
       "final_tokens": 148,
       "tokens_saved": 16,
       "compression_pct": 9.76,
-      "execution_time_ms": 1.205,
+      "execution_time_ms": 0.811,
       "tee_would_fire": true,
       "missing_patterns": [],
       "min_reduction_met": true,
-      "correctness_ok": true
+      "correctness_ok": true,
+      "stages": [
+        {
+          "stage_type": "remove_ansi",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 164,
+          "tokens_after": 164,
+          "tokens_saved": 0
+        },
+        {
+          "stage_type": "group_repeated",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 164,
+          "tokens_after": 149,
+          "tokens_saved": 15
+        },
+        {
+          "stage_type": "strip_lines",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 149,
+          "tokens_after": 148,
+          "tokens_saved": 1
+        },
+        {
+          "stage_type": "max_tokens",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 148,
+          "tokens_after": 148,
+          "tokens_saved": 0
+        }
+      ]
     },
     {
       "id": "eslint-react-lint-errors",
@@ -249,11 +1205,49 @@
       "final_tokens": 91,
       "tokens_saved": 1,
       "compression_pct": 1.09,
-      "execution_time_ms": 0.336,
+      "execution_time_ms": 0.303,
       "tee_would_fire": true,
       "missing_patterns": [],
       "min_reduction_met": true,
-      "correctness_ok": true
+      "correctness_ok": true,
+      "stages": [
+        {
+          "stage_type": "remove_ansi",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 92,
+          "tokens_after": 92,
+          "tokens_saved": 0
+        },
+        {
+          "stage_type": "group_repeated",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 92,
+          "tokens_after": 92,
+          "tokens_saved": 0
+        },
+        {
+          "stage_type": "strip_lines",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 92,
+          "tokens_after": 91,
+          "tokens_saved": 1
+        },
+        {
+          "stage_type": "max_tokens",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 91,
+          "tokens_after": 91,
+          "tokens_saved": 0
+        }
+      ]
     },
     {
       "id": "npm-install-with-deprecations",
@@ -266,11 +1260,49 @@
       "final_tokens": 82,
       "tokens_saved": 102,
       "compression_pct": 55.43,
-      "execution_time_ms": 3.045,
+      "execution_time_ms": 2.845,
       "tee_would_fire": true,
       "missing_patterns": [],
       "min_reduction_met": true,
-      "correctness_ok": true
+      "correctness_ok": true,
+      "stages": [
+        {
+          "stage_type": "remove_ansi",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 184,
+          "tokens_after": 184,
+          "tokens_saved": 0
+        },
+        {
+          "stage_type": "group_repeated",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 184,
+          "tokens_after": 99,
+          "tokens_saved": 85
+        },
+        {
+          "stage_type": "strip_lines",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 99,
+          "tokens_after": 82,
+          "tokens_saved": 17
+        },
+        {
+          "stage_type": "deduplicate_consecutive",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 82,
+          "tokens_after": 82,
+          "tokens_saved": 0
+        }
+      ]
     },
     {
       "id": "npm-ci-lockfile-error",
@@ -283,11 +1315,49 @@
       "final_tokens": 115,
       "tokens_saved": 48,
       "compression_pct": 29.45,
-      "execution_time_ms": 0.238,
+      "execution_time_ms": 0.231,
       "tee_would_fire": true,
       "missing_patterns": [],
       "min_reduction_met": true,
-      "correctness_ok": true
+      "correctness_ok": true,
+      "stages": [
+        {
+          "stage_type": "remove_ansi",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 163,
+          "tokens_after": 163,
+          "tokens_saved": 0
+        },
+        {
+          "stage_type": "group_repeated",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 163,
+          "tokens_after": 115,
+          "tokens_saved": 48
+        },
+        {
+          "stage_type": "strip_lines",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 115,
+          "tokens_after": 115,
+          "tokens_saved": 0
+        },
+        {
+          "stage_type": "deduplicate_consecutive",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 115,
+          "tokens_after": 115,
+          "tokens_saved": 0
+        }
+      ]
     },
     {
       "id": "npx-auto-install-wrapped-output",
@@ -300,11 +1370,49 @@
       "final_tokens": 44,
       "tokens_saved": 22,
       "compression_pct": 33.33,
-      "execution_time_ms": 1.092,
+      "execution_time_ms": 0.752,
       "tee_would_fire": true,
       "missing_patterns": [],
       "min_reduction_met": true,
-      "correctness_ok": true
+      "correctness_ok": true,
+      "stages": [
+        {
+          "stage_type": "remove_ansi",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 66,
+          "tokens_after": 66,
+          "tokens_saved": 0
+        },
+        {
+          "stage_type": "group_repeated",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 66,
+          "tokens_after": 66,
+          "tokens_saved": 0
+        },
+        {
+          "stage_type": "strip_lines",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 66,
+          "tokens_after": 44,
+          "tokens_saved": 22
+        },
+        {
+          "stage_type": "deduplicate_consecutive",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 44,
+          "tokens_after": 44,
+          "tokens_saved": 0
+        }
+      ]
     },
     {
       "id": "npx-prettier-check-failure",
@@ -317,11 +1425,49 @@
       "final_tokens": 56,
       "tokens_saved": 6,
       "compression_pct": 9.68,
-      "execution_time_ms": 0.703,
+      "execution_time_ms": 0.449,
       "tee_would_fire": true,
       "missing_patterns": [],
       "min_reduction_met": true,
-      "correctness_ok": true
+      "correctness_ok": true,
+      "stages": [
+        {
+          "stage_type": "remove_ansi",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 62,
+          "tokens_after": 62,
+          "tokens_saved": 0
+        },
+        {
+          "stage_type": "strip_lines",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 62,
+          "tokens_after": 56,
+          "tokens_saved": 6
+        },
+        {
+          "stage_type": "deduplicate_consecutive",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 56,
+          "tokens_after": 56,
+          "tokens_saved": 0
+        },
+        {
+          "stage_type": "max_tokens",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 56,
+          "tokens_after": 56,
+          "tokens_saved": 0
+        }
+      ]
     },
     {
       "id": "pnpm-install-progress-noise",
@@ -334,11 +1480,49 @@
       "final_tokens": 24,
       "tokens_saved": 81,
       "compression_pct": 77.14,
-      "execution_time_ms": 1.375,
+      "execution_time_ms": 1.408,
       "tee_would_fire": true,
       "missing_patterns": [],
       "min_reduction_met": true,
-      "correctness_ok": true
+      "correctness_ok": true,
+      "stages": [
+        {
+          "stage_type": "remove_ansi",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 105,
+          "tokens_after": 105,
+          "tokens_saved": 0
+        },
+        {
+          "stage_type": "group_repeated",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 105,
+          "tokens_after": 105,
+          "tokens_saved": 0
+        },
+        {
+          "stage_type": "strip_lines",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 105,
+          "tokens_after": 24,
+          "tokens_saved": 81
+        },
+        {
+          "stage_type": "deduplicate_consecutive",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 24,
+          "tokens_after": 24,
+          "tokens_saved": 0
+        }
+      ]
     },
     {
       "id": "pnpm-fetch-404-error",
@@ -351,11 +1535,49 @@
       "final_tokens": 45,
       "tokens_saved": 25,
       "compression_pct": 35.71,
-      "execution_time_ms": 0.289,
+      "execution_time_ms": 0.23,
       "tee_would_fire": true,
       "missing_patterns": [],
       "min_reduction_met": true,
-      "correctness_ok": true
+      "correctness_ok": true,
+      "stages": [
+        {
+          "stage_type": "remove_ansi",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 70,
+          "tokens_after": 70,
+          "tokens_saved": 0
+        },
+        {
+          "stage_type": "group_repeated",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 70,
+          "tokens_after": 70,
+          "tokens_saved": 0
+        },
+        {
+          "stage_type": "strip_lines",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 70,
+          "tokens_after": 45,
+          "tokens_saved": 25
+        },
+        {
+          "stage_type": "deduplicate_consecutive",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 45,
+          "tokens_after": 45,
+          "tokens_saved": 0
+        }
+      ]
     },
     {
       "id": "yarn-classic-install-peer-warnings",
@@ -368,11 +1590,49 @@
       "final_tokens": 41,
       "tokens_saved": 54,
       "compression_pct": 56.84,
-      "execution_time_ms": 1.533,
+      "execution_time_ms": 1.586,
       "tee_would_fire": true,
       "missing_patterns": [],
       "min_reduction_met": true,
-      "correctness_ok": true
+      "correctness_ok": true,
+      "stages": [
+        {
+          "stage_type": "remove_ansi",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 95,
+          "tokens_after": 95,
+          "tokens_saved": 0
+        },
+        {
+          "stage_type": "group_repeated",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 95,
+          "tokens_after": 70,
+          "tokens_saved": 25
+        },
+        {
+          "stage_type": "strip_lines",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 70,
+          "tokens_after": 41,
+          "tokens_saved": 29
+        },
+        {
+          "stage_type": "deduplicate_consecutive",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 41,
+          "tokens_after": 41,
+          "tokens_saved": 0
+        }
+      ]
     },
     {
       "id": "yarn-build-script-failure",
@@ -385,11 +1645,49 @@
       "final_tokens": 22,
       "tokens_saved": 39,
       "compression_pct": 63.93,
-      "execution_time_ms": 0.185,
+      "execution_time_ms": 0.216,
       "tee_would_fire": true,
       "missing_patterns": [],
       "min_reduction_met": true,
-      "correctness_ok": true
+      "correctness_ok": true,
+      "stages": [
+        {
+          "stage_type": "remove_ansi",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 61,
+          "tokens_after": 61,
+          "tokens_saved": 0
+        },
+        {
+          "stage_type": "group_repeated",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 61,
+          "tokens_after": 61,
+          "tokens_saved": 0
+        },
+        {
+          "stage_type": "strip_lines",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 61,
+          "tokens_after": 22,
+          "tokens_saved": 39
+        },
+        {
+          "stage_type": "deduplicate_consecutive",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 22,
+          "tokens_after": 22,
+          "tokens_saved": 0
+        }
+      ]
     },
     {
       "id": "prettier-check-many-files",
@@ -402,11 +1700,49 @@
       "final_tokens": 60,
       "tokens_saved": 6,
       "compression_pct": 9.09,
-      "execution_time_ms": 0.275,
+      "execution_time_ms": 0.176,
       "tee_would_fire": true,
       "missing_patterns": [],
       "min_reduction_met": true,
-      "correctness_ok": true
+      "correctness_ok": true,
+      "stages": [
+        {
+          "stage_type": "remove_ansi",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 66,
+          "tokens_after": 66,
+          "tokens_saved": 0
+        },
+        {
+          "stage_type": "strip_lines",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 66,
+          "tokens_after": 60,
+          "tokens_saved": 6
+        },
+        {
+          "stage_type": "deduplicate_consecutive",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 60,
+          "tokens_after": 60,
+          "tokens_saved": 0
+        },
+        {
+          "stage_type": "max_tokens",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 60,
+          "tokens_after": 60,
+          "tokens_saved": 0
+        }
+      ]
     },
     {
       "id": "tsc-repeated-type-error",
@@ -416,14 +1752,52 @@
       "matched_filter": "tsc",
       "filter_correct": true,
       "original_tokens": 139,
-      "final_tokens": 131,
-      "tokens_saved": 8,
-      "compression_pct": 5.76,
-      "execution_time_ms": 0.769,
+      "final_tokens": 91,
+      "tokens_saved": 48,
+      "compression_pct": 34.53,
+      "execution_time_ms": 1.246,
       "tee_would_fire": true,
       "missing_patterns": [],
       "min_reduction_met": true,
-      "correctness_ok": true
+      "correctness_ok": true,
+      "stages": [
+        {
+          "stage_type": "remove_ansi",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 139,
+          "tokens_after": 139,
+          "tokens_saved": 0
+        },
+        {
+          "stage_type": "group_repeated",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 139,
+          "tokens_after": 99,
+          "tokens_saved": 40
+        },
+        {
+          "stage_type": "strip_lines",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 99,
+          "tokens_after": 91,
+          "tokens_saved": 8
+        },
+        {
+          "stage_type": "max_tokens",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 91,
+          "tokens_after": 91,
+          "tokens_saved": 0
+        }
+      ]
     },
     {
       "id": "tsc-distinct-errors",
@@ -436,11 +1810,49 @@
       "final_tokens": 96,
       "tokens_saved": 7,
       "compression_pct": 6.8,
-      "execution_time_ms": 0.165,
+      "execution_time_ms": 0.211,
       "tee_would_fire": true,
       "missing_patterns": [],
       "min_reduction_met": true,
-      "correctness_ok": true
+      "correctness_ok": true,
+      "stages": [
+        {
+          "stage_type": "remove_ansi",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 103,
+          "tokens_after": 103,
+          "tokens_saved": 0
+        },
+        {
+          "stage_type": "group_repeated",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 103,
+          "tokens_after": 103,
+          "tokens_saved": 0
+        },
+        {
+          "stage_type": "strip_lines",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 103,
+          "tokens_after": 96,
+          "tokens_saved": 7
+        },
+        {
+          "stage_type": "max_tokens",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 96,
+          "tokens_after": 96,
+          "tokens_saved": 0
+        }
+      ]
     },
     {
       "id": "jest-failing-suite",
@@ -453,11 +1865,49 @@
       "final_tokens": 130,
       "tokens_saved": 71,
       "compression_pct": 35.32,
-      "execution_time_ms": 1.485,
+      "execution_time_ms": 1.136,
       "tee_would_fire": true,
       "missing_patterns": [],
       "min_reduction_met": true,
-      "correctness_ok": true
+      "correctness_ok": true,
+      "stages": [
+        {
+          "stage_type": "remove_ansi",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 201,
+          "tokens_after": 201,
+          "tokens_saved": 0
+        },
+        {
+          "stage_type": "strip_lines",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 201,
+          "tokens_after": 130,
+          "tokens_saved": 71
+        },
+        {
+          "stage_type": "deduplicate_consecutive",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 130,
+          "tokens_after": 130,
+          "tokens_saved": 0
+        },
+        {
+          "stage_type": "max_tokens",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 130,
+          "tokens_after": 130,
+          "tokens_saved": 0
+        }
+      ]
     },
     {
       "id": "jest-all-passing",
@@ -470,11 +1920,49 @@
       "final_tokens": 74,
       "tokens_saved": 0,
       "compression_pct": 0.0,
-      "execution_time_ms": 0.015,
+      "execution_time_ms": 0.005,
       "tee_would_fire": false,
       "missing_patterns": [],
       "min_reduction_met": true,
-      "correctness_ok": true
+      "correctness_ok": true,
+      "stages": [
+        {
+          "stage_type": "remove_ansi",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 74,
+          "tokens_after": 74,
+          "tokens_saved": 0
+        },
+        {
+          "stage_type": "strip_lines",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 74,
+          "tokens_after": 27,
+          "tokens_saved": 47
+        },
+        {
+          "stage_type": "deduplicate_consecutive",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 27,
+          "tokens_after": 27,
+          "tokens_saved": 0
+        },
+        {
+          "stage_type": "max_tokens",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 27,
+          "tokens_after": 27,
+          "tokens_saved": 0
+        }
+      ]
     },
     {
       "id": "vitest-failing-suite",
@@ -487,11 +1975,49 @@
       "final_tokens": 60,
       "tokens_saved": 47,
       "compression_pct": 43.93,
-      "execution_time_ms": 1.127,
+      "execution_time_ms": 0.955,
       "tee_would_fire": true,
       "missing_patterns": [],
       "min_reduction_met": true,
-      "correctness_ok": true
+      "correctness_ok": true,
+      "stages": [
+        {
+          "stage_type": "remove_ansi",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 107,
+          "tokens_after": 107,
+          "tokens_saved": 0
+        },
+        {
+          "stage_type": "strip_lines",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 107,
+          "tokens_after": 60,
+          "tokens_saved": 47
+        },
+        {
+          "stage_type": "deduplicate_consecutive",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 60,
+          "tokens_after": 60,
+          "tokens_saved": 0
+        },
+        {
+          "stage_type": "max_tokens",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 60,
+          "tokens_after": 60,
+          "tokens_saved": 0
+        }
+      ]
     },
     {
       "id": "vitest-all-passing",
@@ -504,11 +2030,49 @@
       "final_tokens": 67,
       "tokens_saved": 0,
       "compression_pct": 0.0,
-      "execution_time_ms": 0.006,
+      "execution_time_ms": 0.01,
       "tee_would_fire": false,
       "missing_patterns": [],
       "min_reduction_met": true,
-      "correctness_ok": true
+      "correctness_ok": true,
+      "stages": [
+        {
+          "stage_type": "remove_ansi",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 67,
+          "tokens_after": 67,
+          "tokens_saved": 0
+        },
+        {
+          "stage_type": "strip_lines",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 67,
+          "tokens_after": 24,
+          "tokens_saved": 43
+        },
+        {
+          "stage_type": "deduplicate_consecutive",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 24,
+          "tokens_after": 24,
+          "tokens_saved": 0
+        },
+        {
+          "stage_type": "max_tokens",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 24,
+          "tokens_after": 24,
+          "tokens_saved": 0
+        }
+      ]
     },
     {
       "id": "next-successful-build",
@@ -521,11 +2085,49 @@
       "final_tokens": 125,
       "tokens_saved": 53,
       "compression_pct": 29.78,
-      "execution_time_ms": 1.895,
+      "execution_time_ms": 1.414,
       "tee_would_fire": true,
       "missing_patterns": [],
       "min_reduction_met": true,
-      "correctness_ok": true
+      "correctness_ok": true,
+      "stages": [
+        {
+          "stage_type": "remove_ansi",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 178,
+          "tokens_after": 178,
+          "tokens_saved": 0
+        },
+        {
+          "stage_type": "strip_lines",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 178,
+          "tokens_after": 125,
+          "tokens_saved": 53
+        },
+        {
+          "stage_type": "deduplicate_consecutive",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 125,
+          "tokens_after": 125,
+          "tokens_saved": 0
+        },
+        {
+          "stage_type": "max_tokens",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 125,
+          "tokens_after": 125,
+          "tokens_saved": 0
+        }
+      ]
     },
     {
       "id": "next-type-error-build-failure",
@@ -538,11 +2140,49 @@
       "final_tokens": 79,
       "tokens_saved": 18,
       "compression_pct": 18.56,
-      "execution_time_ms": 0.285,
+      "execution_time_ms": 0.361,
       "tee_would_fire": true,
       "missing_patterns": [],
       "min_reduction_met": true,
-      "correctness_ok": true
+      "correctness_ok": true,
+      "stages": [
+        {
+          "stage_type": "remove_ansi",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 97,
+          "tokens_after": 97,
+          "tokens_saved": 0
+        },
+        {
+          "stage_type": "strip_lines",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 97,
+          "tokens_after": 79,
+          "tokens_saved": 18
+        },
+        {
+          "stage_type": "deduplicate_consecutive",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 79,
+          "tokens_after": 79,
+          "tokens_saved": 0
+        },
+        {
+          "stage_type": "max_tokens",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 79,
+          "tokens_after": 79,
+          "tokens_saved": 0
+        }
+      ]
     },
     {
       "id": "turbo-multi-package-build",
@@ -555,11 +2195,40 @@
       "final_tokens": 114,
       "tokens_saved": 23,
       "compression_pct": 16.79,
-      "execution_time_ms": 1.202,
+      "execution_time_ms": 1.106,
       "tee_would_fire": true,
       "missing_patterns": [],
       "min_reduction_met": true,
-      "correctness_ok": true
+      "correctness_ok": true,
+      "stages": [
+        {
+          "stage_type": "remove_ansi",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 137,
+          "tokens_after": 137,
+          "tokens_saved": 0
+        },
+        {
+          "stage_type": "strip_lines",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 137,
+          "tokens_after": 114,
+          "tokens_saved": 23
+        },
+        {
+          "stage_type": "deduplicate_consecutive",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 114,
+          "tokens_after": 114,
+          "tokens_saved": 0
+        }
+      ]
     },
     {
       "id": "turbo-wrapped-task-failure",
@@ -572,11 +2241,40 @@
       "final_tokens": 128,
       "tokens_saved": 22,
       "compression_pct": 14.67,
-      "execution_time_ms": 0.573,
+      "execution_time_ms": 0.312,
       "tee_would_fire": true,
       "missing_patterns": [],
       "min_reduction_met": true,
-      "correctness_ok": true
+      "correctness_ok": true,
+      "stages": [
+        {
+          "stage_type": "remove_ansi",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 150,
+          "tokens_after": 150,
+          "tokens_saved": 0
+        },
+        {
+          "stage_type": "strip_lines",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 150,
+          "tokens_after": 128,
+          "tokens_saved": 22
+        },
+        {
+          "stage_type": "deduplicate_consecutive",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 128,
+          "tokens_after": 128,
+          "tokens_saved": 0
+        }
+      ]
     },
     {
       "id": "cat-nginx-config-comments",
@@ -589,11 +2287,40 @@
       "final_tokens": 140,
       "tokens_saved": 42,
       "compression_pct": 23.08,
-      "execution_time_ms": 1.789,
+      "execution_time_ms": 1.131,
       "tee_would_fire": true,
       "missing_patterns": [],
       "min_reduction_met": true,
-      "correctness_ok": true
+      "correctness_ok": true,
+      "stages": [
+        {
+          "stage_type": "strip_lines",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 182,
+          "tokens_after": 140,
+          "tokens_saved": 42
+        },
+        {
+          "stage_type": "deduplicate_consecutive",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 140,
+          "tokens_after": 140,
+          "tokens_saved": 0
+        },
+        {
+          "stage_type": "max_tokens",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 140,
+          "tokens_after": 140,
+          "tokens_saved": 0
+        }
+      ]
     },
     {
       "id": "cat-deploy-shell-script",
@@ -606,11 +2333,40 @@
       "final_tokens": 63,
       "tokens_saved": 17,
       "compression_pct": 21.25,
-      "execution_time_ms": 0.297,
+      "execution_time_ms": 0.224,
       "tee_would_fire": true,
       "missing_patterns": [],
       "min_reduction_met": true,
-      "correctness_ok": true
+      "correctness_ok": true,
+      "stages": [
+        {
+          "stage_type": "strip_lines",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 80,
+          "tokens_after": 63,
+          "tokens_saved": 17
+        },
+        {
+          "stage_type": "deduplicate_consecutive",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 63,
+          "tokens_after": 63,
+          "tokens_saved": 0
+        },
+        {
+          "stage_type": "max_tokens",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 63,
+          "tokens_after": 63,
+          "tokens_saved": 0
+        }
+      ]
     },
     {
       "id": "cat-python-payment-processor",
@@ -623,11 +2379,49 @@
       "final_tokens": 161,
       "tokens_saved": 135,
       "compression_pct": 45.61,
-      "execution_time_ms": 0.838,
+      "execution_time_ms": 0.709,
       "tee_would_fire": true,
       "missing_patterns": [],
       "min_reduction_met": true,
-      "correctness_ok": true
+      "correctness_ok": true,
+      "stages": [
+        {
+          "stage_type": "python_ast_summarize",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 296,
+          "tokens_after": 161,
+          "tokens_saved": 135
+        },
+        {
+          "stage_type": "strip_lines",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 161,
+          "tokens_after": 161,
+          "tokens_saved": 0
+        },
+        {
+          "stage_type": "deduplicate_consecutive",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 161,
+          "tokens_after": 161,
+          "tokens_saved": 0
+        },
+        {
+          "stage_type": "max_tokens",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 161,
+          "tokens_after": 161,
+          "tokens_saved": 0
+        }
+      ]
     },
     {
       "id": "cat-python-webhook-handlers",
@@ -640,11 +2434,49 @@
       "final_tokens": 132,
       "tokens_saved": 101,
       "compression_pct": 43.35,
-      "execution_time_ms": 1.188,
+      "execution_time_ms": 0.563,
       "tee_would_fire": true,
       "missing_patterns": [],
       "min_reduction_met": true,
-      "correctness_ok": true
+      "correctness_ok": true,
+      "stages": [
+        {
+          "stage_type": "python_ast_summarize",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 233,
+          "tokens_after": 133,
+          "tokens_saved": 100
+        },
+        {
+          "stage_type": "strip_lines",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 133,
+          "tokens_after": 133,
+          "tokens_saved": 0
+        },
+        {
+          "stage_type": "deduplicate_consecutive",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 133,
+          "tokens_after": 132,
+          "tokens_saved": 1
+        },
+        {
+          "stage_type": "max_tokens",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 132,
+          "tokens_after": 132,
+          "tokens_saved": 0
+        }
+      ]
     },
     {
       "id": "cat-javascript-retry-fetch-short",
@@ -657,11 +2489,49 @@
       "final_tokens": 93,
       "tokens_saved": 79,
       "compression_pct": 45.93,
-      "execution_time_ms": 16.214,
+      "execution_time_ms": 10.03,
       "tee_would_fire": true,
       "missing_patterns": [],
       "min_reduction_met": true,
-      "correctness_ok": true
+      "correctness_ok": true,
+      "stages": [
+        {
+          "stage_type": "code_ast_summarize",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 172,
+          "tokens_after": 93,
+          "tokens_saved": 79
+        },
+        {
+          "stage_type": "strip_lines",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 93,
+          "tokens_after": 93,
+          "tokens_saved": 0
+        },
+        {
+          "stage_type": "deduplicate_consecutive",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 93,
+          "tokens_after": 93,
+          "tokens_saved": 0
+        },
+        {
+          "stage_type": "max_tokens",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 93,
+          "tokens_after": 93,
+          "tokens_saved": 0
+        }
+      ]
     },
     {
       "id": "cat-javascript-cart-service-medium",
@@ -674,11 +2544,49 @@
       "final_tokens": 162,
       "tokens_saved": 381,
       "compression_pct": 70.17,
-      "execution_time_ms": 1.769,
+      "execution_time_ms": 1.4,
       "tee_would_fire": true,
       "missing_patterns": [],
       "min_reduction_met": true,
-      "correctness_ok": true
+      "correctness_ok": true,
+      "stages": [
+        {
+          "stage_type": "code_ast_summarize",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 543,
+          "tokens_after": 162,
+          "tokens_saved": 381
+        },
+        {
+          "stage_type": "strip_lines",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 162,
+          "tokens_after": 162,
+          "tokens_saved": 0
+        },
+        {
+          "stage_type": "deduplicate_consecutive",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 162,
+          "tokens_after": 162,
+          "tokens_saved": 0
+        },
+        {
+          "stage_type": "max_tokens",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 162,
+          "tokens_after": 162,
+          "tokens_saved": 0
+        }
+      ]
     },
     {
       "id": "cat-javascript-notification-dispatch-large",
@@ -691,11 +2599,49 @@
       "final_tokens": 385,
       "tokens_saved": 1155,
       "compression_pct": 75.0,
-      "execution_time_ms": 3.789,
+      "execution_time_ms": 2.213,
       "tee_would_fire": true,
       "missing_patterns": [],
       "min_reduction_met": true,
-      "correctness_ok": true
+      "correctness_ok": true,
+      "stages": [
+        {
+          "stage_type": "code_ast_summarize",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 1540,
+          "tokens_after": 385,
+          "tokens_saved": 1155
+        },
+        {
+          "stage_type": "strip_lines",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 385,
+          "tokens_after": 385,
+          "tokens_saved": 0
+        },
+        {
+          "stage_type": "deduplicate_consecutive",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 385,
+          "tokens_after": 385,
+          "tokens_saved": 0
+        },
+        {
+          "stage_type": "max_tokens",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 385,
+          "tokens_after": 385,
+          "tokens_saved": 0
+        }
+      ]
     },
     {
       "id": "cat-javascript-vendor-bundle-minified",
@@ -708,11 +2654,49 @@
       "final_tokens": 224,
       "tokens_saved": 0,
       "compression_pct": 0.0,
-      "execution_time_ms": 0.777,
+      "execution_time_ms": 0.867,
       "tee_would_fire": false,
       "missing_patterns": [],
       "min_reduction_met": true,
-      "correctness_ok": true
+      "correctness_ok": true,
+      "stages": [
+        {
+          "stage_type": "code_ast_summarize",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 224,
+          "tokens_after": 224,
+          "tokens_saved": 0
+        },
+        {
+          "stage_type": "strip_lines",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 224,
+          "tokens_after": 224,
+          "tokens_saved": 0
+        },
+        {
+          "stage_type": "deduplicate_consecutive",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 224,
+          "tokens_after": 224,
+          "tokens_saved": 0
+        },
+        {
+          "stage_type": "max_tokens",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 224,
+          "tokens_after": 224,
+          "tokens_saved": 0
+        }
+      ]
     },
     {
       "id": "cat-javascript-gateway-client-heavily-commented",
@@ -725,11 +2709,49 @@
       "final_tokens": 348,
       "tokens_saved": 934,
       "compression_pct": 72.85,
-      "execution_time_ms": 1.868,
+      "execution_time_ms": 3.865,
       "tee_would_fire": true,
       "missing_patterns": [],
       "min_reduction_met": true,
-      "correctness_ok": true
+      "correctness_ok": true,
+      "stages": [
+        {
+          "stage_type": "code_ast_summarize",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 1282,
+          "tokens_after": 509,
+          "tokens_saved": 773
+        },
+        {
+          "stage_type": "strip_lines",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 509,
+          "tokens_after": 348,
+          "tokens_saved": 161
+        },
+        {
+          "stage_type": "deduplicate_consecutive",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 348,
+          "tokens_after": 348,
+          "tokens_saved": 0
+        },
+        {
+          "stage_type": "max_tokens",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 348,
+          "tokens_after": 348,
+          "tokens_saved": 0
+        }
+      ]
     },
     {
       "id": "cat-typescript-currency-utils-short",
@@ -742,11 +2764,49 @@
       "final_tokens": 84,
       "tokens_saved": 47,
       "compression_pct": 35.88,
-      "execution_time_ms": 4.034,
+      "execution_time_ms": 3.918,
       "tee_would_fire": true,
       "missing_patterns": [],
       "min_reduction_met": true,
-      "correctness_ok": true
+      "correctness_ok": true,
+      "stages": [
+        {
+          "stage_type": "code_ast_summarize",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 131,
+          "tokens_after": 84,
+          "tokens_saved": 47
+        },
+        {
+          "stage_type": "strip_lines",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 84,
+          "tokens_after": 84,
+          "tokens_saved": 0
+        },
+        {
+          "stage_type": "deduplicate_consecutive",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 84,
+          "tokens_after": 84,
+          "tokens_saved": 0
+        },
+        {
+          "stage_type": "max_tokens",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 84,
+          "tokens_after": 84,
+          "tokens_saved": 0
+        }
+      ]
     },
     {
       "id": "cat-typescript-orders-service-large",
@@ -759,11 +2819,49 @@
       "final_tokens": 654,
       "tokens_saved": 567,
       "compression_pct": 46.44,
-      "execution_time_ms": 3.108,
+      "execution_time_ms": 2.676,
       "tee_would_fire": true,
       "missing_patterns": [],
       "min_reduction_met": true,
-      "correctness_ok": true
+      "correctness_ok": true,
+      "stages": [
+        {
+          "stage_type": "code_ast_summarize",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 1221,
+          "tokens_after": 654,
+          "tokens_saved": 567
+        },
+        {
+          "stage_type": "strip_lines",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 654,
+          "tokens_after": 654,
+          "tokens_saved": 0
+        },
+        {
+          "stage_type": "deduplicate_consecutive",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 654,
+          "tokens_after": 654,
+          "tokens_saved": 0
+        },
+        {
+          "stage_type": "max_tokens",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 654,
+          "tokens_after": 654,
+          "tokens_saved": 0
+        }
+      ]
     },
     {
       "id": "cat-typescript-domain-model-interface-heavy",
@@ -776,11 +2874,49 @@
       "final_tokens": 450,
       "tokens_saved": 30,
       "compression_pct": 6.25,
-      "execution_time_ms": 2.901,
+      "execution_time_ms": 1.279,
       "tee_would_fire": true,
       "missing_patterns": [],
       "min_reduction_met": true,
-      "correctness_ok": true
+      "correctness_ok": true,
+      "stages": [
+        {
+          "stage_type": "code_ast_summarize",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 480,
+          "tokens_after": 450,
+          "tokens_saved": 30
+        },
+        {
+          "stage_type": "strip_lines",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 450,
+          "tokens_after": 450,
+          "tokens_saved": 0
+        },
+        {
+          "stage_type": "deduplicate_consecutive",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 450,
+          "tokens_after": 450,
+          "tokens_saved": 0
+        },
+        {
+          "stage_type": "max_tokens",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 450,
+          "tokens_after": 450,
+          "tokens_saved": 0
+        }
+      ]
     },
     {
       "id": "cat-typescript-orders-controller-decorator-heavy",
@@ -793,11 +2929,49 @@
       "final_tokens": 447,
       "tokens_saved": 192,
       "compression_pct": 30.05,
-      "execution_time_ms": 3.474,
+      "execution_time_ms": 1.477,
       "tee_would_fire": true,
       "missing_patterns": [],
       "min_reduction_met": true,
-      "correctness_ok": true
+      "correctness_ok": true,
+      "stages": [
+        {
+          "stage_type": "code_ast_summarize",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 639,
+          "tokens_after": 447,
+          "tokens_saved": 192
+        },
+        {
+          "stage_type": "strip_lines",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 447,
+          "tokens_after": 447,
+          "tokens_saved": 0
+        },
+        {
+          "stage_type": "deduplicate_consecutive",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 447,
+          "tokens_after": 447,
+          "tokens_saved": 0
+        },
+        {
+          "stage_type": "max_tokens",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 447,
+          "tokens_after": 447,
+          "tokens_saved": 0
+        }
+      ]
     },
     {
       "id": "cat-typescript-repository-generic-heavy",
@@ -810,11 +2984,49 @@
       "final_tokens": 368,
       "tokens_saved": 231,
       "compression_pct": 38.56,
-      "execution_time_ms": 3.361,
+      "execution_time_ms": 1.412,
       "tee_would_fire": true,
       "missing_patterns": [],
       "min_reduction_met": true,
-      "correctness_ok": true
+      "correctness_ok": true,
+      "stages": [
+        {
+          "stage_type": "code_ast_summarize",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 599,
+          "tokens_after": 368,
+          "tokens_saved": 231
+        },
+        {
+          "stage_type": "strip_lines",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 368,
+          "tokens_after": 368,
+          "tokens_saved": 0
+        },
+        {
+          "stage_type": "deduplicate_consecutive",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 368,
+          "tokens_after": 368,
+          "tokens_saved": 0
+        },
+        {
+          "stage_type": "max_tokens",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 368,
+          "tokens_after": 368,
+          "tokens_saved": 0
+        }
+      ]
     },
     {
       "id": "cat-typescript-parsing-overload-heavy",
@@ -827,11 +3039,49 @@
       "final_tokens": 318,
       "tokens_saved": 168,
       "compression_pct": 34.57,
-      "execution_time_ms": 6.815,
+      "execution_time_ms": 1.347,
       "tee_would_fire": true,
       "missing_patterns": [],
       "min_reduction_met": true,
-      "correctness_ok": true
+      "correctness_ok": true,
+      "stages": [
+        {
+          "stage_type": "code_ast_summarize",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 486,
+          "tokens_after": 318,
+          "tokens_saved": 168
+        },
+        {
+          "stage_type": "strip_lines",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 318,
+          "tokens_after": 318,
+          "tokens_saved": 0
+        },
+        {
+          "stage_type": "deduplicate_consecutive",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 318,
+          "tokens_after": 318,
+          "tokens_saved": 0
+        },
+        {
+          "stage_type": "max_tokens",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 318,
+          "tokens_after": 318,
+          "tokens_saved": 0
+        }
+      ]
     },
     {
       "id": "cat-tsx-shopping-cart-component",
@@ -844,11 +3094,49 @@
       "final_tokens": 223,
       "tokens_saved": 647,
       "compression_pct": 74.37,
-      "execution_time_ms": 7.75,
+      "execution_time_ms": 2.115,
       "tee_would_fire": true,
       "missing_patterns": [],
       "min_reduction_met": true,
-      "correctness_ok": true
+      "correctness_ok": true,
+      "stages": [
+        {
+          "stage_type": "code_ast_summarize",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 870,
+          "tokens_after": 223,
+          "tokens_saved": 647
+        },
+        {
+          "stage_type": "strip_lines",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 223,
+          "tokens_after": 223,
+          "tokens_saved": 0
+        },
+        {
+          "stage_type": "deduplicate_consecutive",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 223,
+          "tokens_after": 223,
+          "tokens_saved": 0
+        },
+        {
+          "stage_type": "max_tokens",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 223,
+          "tokens_after": 223,
+          "tokens_saved": 0
+        }
+      ]
     },
     {
       "id": "generic-ls-la",
@@ -861,11 +3149,49 @@
       "final_tokens": 108,
       "tokens_saved": 0,
       "compression_pct": 0.0,
-      "execution_time_ms": 0.473,
+      "execution_time_ms": 0.254,
       "tee_would_fire": false,
       "missing_patterns": [],
       "min_reduction_met": true,
-      "correctness_ok": true
+      "correctness_ok": true,
+      "stages": [
+        {
+          "stage_type": "remove_ansi",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 108,
+          "tokens_after": 108,
+          "tokens_saved": 0
+        },
+        {
+          "stage_type": "strip_lines",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 108,
+          "tokens_after": 108,
+          "tokens_saved": 0
+        },
+        {
+          "stage_type": "deduplicate_consecutive",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 108,
+          "tokens_after": 108,
+          "tokens_saved": 0
+        },
+        {
+          "stage_type": "max_tokens",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 108,
+          "tokens_after": 108,
+          "tokens_saved": 0
+        }
+      ]
     },
     {
       "id": "generic-build-tool-ansi-repeats",
@@ -878,11 +3204,49 @@
       "final_tokens": 35,
       "tokens_saved": 8,
       "compression_pct": 18.6,
-      "execution_time_ms": 0.43,
+      "execution_time_ms": 0.246,
       "tee_would_fire": true,
       "missing_patterns": [],
       "min_reduction_met": true,
-      "correctness_ok": true
+      "correctness_ok": true,
+      "stages": [
+        {
+          "stage_type": "remove_ansi",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 43,
+          "tokens_after": 41,
+          "tokens_saved": 2
+        },
+        {
+          "stage_type": "strip_lines",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 41,
+          "tokens_after": 41,
+          "tokens_saved": 0
+        },
+        {
+          "stage_type": "deduplicate_consecutive",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 41,
+          "tokens_after": 35,
+          "tokens_saved": 6
+        },
+        {
+          "stage_type": "max_tokens",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 35,
+          "tokens_after": 35,
+          "tokens_saved": 0
+        }
+      ]
     },
     {
       "id": "markdown-design-doc-long",
@@ -895,11 +3259,40 @@
       "final_tokens": 2613,
       "tokens_saved": 1095,
       "compression_pct": 29.53,
-      "execution_time_ms": 14.4,
+      "execution_time_ms": 3.363,
       "tee_would_fire": true,
       "missing_patterns": [],
       "min_reduction_met": true,
-      "correctness_ok": true
+      "correctness_ok": true,
+      "stages": [
+        {
+          "stage_type": "strip_lines",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 3708,
+          "tokens_after": 3708,
+          "tokens_saved": 0
+        },
+        {
+          "stage_type": "deduplicate_consecutive",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 3708,
+          "tokens_after": 3708,
+          "tokens_saved": 0
+        },
+        {
+          "stage_type": "max_tokens",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 3708,
+          "tokens_after": 2613,
+          "tokens_saved": 1095
+        }
+      ]
     },
     {
       "id": "markdown-readme-short",
@@ -912,11 +3305,40 @@
       "final_tokens": 413,
       "tokens_saved": 0,
       "compression_pct": 0.0,
-      "execution_time_ms": 1.385,
+      "execution_time_ms": 0.648,
       "tee_would_fire": false,
       "missing_patterns": [],
       "min_reduction_met": true,
-      "correctness_ok": true
+      "correctness_ok": true,
+      "stages": [
+        {
+          "stage_type": "strip_lines",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 413,
+          "tokens_after": 413,
+          "tokens_saved": 0
+        },
+        {
+          "stage_type": "deduplicate_consecutive",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 413,
+          "tokens_after": 413,
+          "tokens_saved": 0
+        },
+        {
+          "stage_type": "max_tokens",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 413,
+          "tokens_after": 413,
+          "tokens_saved": 0
+        }
+      ]
     },
     {
       "id": "document-text-project-notes-long",
@@ -929,11 +3351,40 @@
       "final_tokens": 2162,
       "tokens_saved": 502,
       "compression_pct": 18.84,
-      "execution_time_ms": 5.343,
+      "execution_time_ms": 1.526,
       "tee_would_fire": true,
       "missing_patterns": [],
       "min_reduction_met": true,
-      "correctness_ok": true
+      "correctness_ok": true,
+      "stages": [
+        {
+          "stage_type": "strip_lines",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 2664,
+          "tokens_after": 2664,
+          "tokens_saved": 0
+        },
+        {
+          "stage_type": "deduplicate_consecutive",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 2664,
+          "tokens_after": 2664,
+          "tokens_saved": 0
+        },
+        {
+          "stage_type": "max_tokens",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 2664,
+          "tokens_after": 2162,
+          "tokens_saved": 502
+        }
+      ]
     },
     {
       "id": "document-text-rst-short",
@@ -946,11 +3397,40 @@
       "final_tokens": 304,
       "tokens_saved": 0,
       "compression_pct": 0.0,
-      "execution_time_ms": 0.899,
+      "execution_time_ms": 0.456,
       "tee_would_fire": false,
       "missing_patterns": [],
       "min_reduction_met": true,
-      "correctness_ok": true
+      "correctness_ok": true,
+      "stages": [
+        {
+          "stage_type": "strip_lines",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 304,
+          "tokens_after": 304,
+          "tokens_saved": 0
+        },
+        {
+          "stage_type": "deduplicate_consecutive",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 304,
+          "tokens_after": 304,
+          "tokens_saved": 0
+        },
+        {
+          "stage_type": "max_tokens",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 304,
+          "tokens_after": 304,
+          "tokens_saved": 0
+        }
+      ]
     },
     {
       "id": "docx-design-doc-long",
@@ -963,11 +3443,40 @@
       "final_tokens": 2419,
       "tokens_saved": 460,
       "compression_pct": 15.98,
-      "execution_time_ms": 1.343,
+      "execution_time_ms": 1.084,
       "tee_would_fire": true,
       "missing_patterns": [],
       "min_reduction_met": true,
-      "correctness_ok": true
+      "correctness_ok": true,
+      "stages": [
+        {
+          "stage_type": "strip_lines",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 2879,
+          "tokens_after": 2879,
+          "tokens_saved": 0
+        },
+        {
+          "stage_type": "deduplicate_consecutive",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 2879,
+          "tokens_after": 2879,
+          "tokens_saved": 0
+        },
+        {
+          "stage_type": "max_tokens",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 2879,
+          "tokens_after": 2419,
+          "tokens_saved": 460
+        }
+      ]
     },
     {
       "id": "docx-readme-short",
@@ -980,11 +3489,40 @@
       "final_tokens": 107,
       "tokens_saved": 0,
       "compression_pct": 0.0,
-      "execution_time_ms": 0.313,
+      "execution_time_ms": 0.252,
       "tee_would_fire": false,
       "missing_patterns": [],
       "min_reduction_met": true,
-      "correctness_ok": true
+      "correctness_ok": true,
+      "stages": [
+        {
+          "stage_type": "strip_lines",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 107,
+          "tokens_after": 107,
+          "tokens_saved": 0
+        },
+        {
+          "stage_type": "deduplicate_consecutive",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 107,
+          "tokens_after": 107,
+          "tokens_saved": 0
+        },
+        {
+          "stage_type": "max_tokens",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 107,
+          "tokens_after": 107,
+          "tokens_saved": 0
+        }
+      ]
     },
     {
       "id": "pdf-design-doc-long",
@@ -997,11 +3535,40 @@
       "final_tokens": 1423,
       "tokens_saved": 1082,
       "compression_pct": 43.19,
-      "execution_time_ms": 1.125,
+      "execution_time_ms": 0.685,
       "tee_would_fire": true,
       "missing_patterns": [],
       "min_reduction_met": true,
-      "correctness_ok": true
+      "correctness_ok": true,
+      "stages": [
+        {
+          "stage_type": "strip_lines",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 2505,
+          "tokens_after": 2505,
+          "tokens_saved": 0
+        },
+        {
+          "stage_type": "deduplicate_consecutive",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 2505,
+          "tokens_after": 2505,
+          "tokens_saved": 0
+        },
+        {
+          "stage_type": "max_tokens",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 2505,
+          "tokens_after": 1423,
+          "tokens_saved": 1082
+        }
+      ]
     },
     {
       "id": "pdf-notes-short",
@@ -1014,11 +3581,836 @@
       "final_tokens": 103,
       "tokens_saved": 0,
       "compression_pct": 0.0,
-      "execution_time_ms": 0.415,
+      "execution_time_ms": 0.204,
       "tee_would_fire": false,
       "missing_patterns": [],
       "min_reduction_met": true,
-      "correctness_ok": true
+      "correctness_ok": true,
+      "stages": [
+        {
+          "stage_type": "strip_lines",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 103,
+          "tokens_after": 103,
+          "tokens_saved": 0
+        },
+        {
+          "stage_type": "deduplicate_consecutive",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 103,
+          "tokens_after": 103,
+          "tokens_saved": 0
+        },
+        {
+          "stage_type": "max_tokens",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 103,
+          "tokens_after": 103,
+          "tokens_saved": 0
+        }
+      ]
+    },
+    {
+      "id": "docker-build-success",
+      "category": "docker",
+      "ecosystem": "CI/Build",
+      "command": "docker build -t myapp .",
+      "matched_filter": "docker-build",
+      "filter_correct": true,
+      "original_tokens": 368,
+      "final_tokens": 242,
+      "tokens_saved": 126,
+      "compression_pct": 34.24,
+      "execution_time_ms": 1.89,
+      "tee_would_fire": true,
+      "missing_patterns": [],
+      "min_reduction_met": true,
+      "correctness_ok": true,
+      "stages": [
+        {
+          "stage_type": "remove_ansi",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 368,
+          "tokens_after": 368,
+          "tokens_saved": 0
+        },
+        {
+          "stage_type": "strip_lines",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 368,
+          "tokens_after": 242,
+          "tokens_saved": 126
+        },
+        {
+          "stage_type": "deduplicate_consecutive",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 242,
+          "tokens_after": 242,
+          "tokens_saved": 0
+        },
+        {
+          "stage_type": "max_tokens",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 242,
+          "tokens_after": 242,
+          "tokens_saved": 0
+        }
+      ]
+    },
+    {
+      "id": "docker-build-failure",
+      "category": "docker",
+      "ecosystem": "CI/Build",
+      "command": "docker buildx build -t myapp .",
+      "matched_filter": "docker-build",
+      "filter_correct": true,
+      "original_tokens": 270,
+      "final_tokens": 268,
+      "tokens_saved": 2,
+      "compression_pct": 0.74,
+      "execution_time_ms": 0.471,
+      "tee_would_fire": true,
+      "missing_patterns": [],
+      "min_reduction_met": true,
+      "correctness_ok": true,
+      "stages": [
+        {
+          "stage_type": "remove_ansi",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 270,
+          "tokens_after": 270,
+          "tokens_saved": 0
+        },
+        {
+          "stage_type": "strip_lines",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 270,
+          "tokens_after": 268,
+          "tokens_saved": 2
+        },
+        {
+          "stage_type": "deduplicate_consecutive",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 268,
+          "tokens_after": 268,
+          "tokens_saved": 0
+        },
+        {
+          "stage_type": "max_tokens",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 268,
+          "tokens_after": 268,
+          "tokens_saved": 0
+        }
+      ]
+    },
+    {
+      "id": "gradle-build-success",
+      "category": "gradle",
+      "ecosystem": "CI/Build",
+      "command": "./gradlew build",
+      "matched_filter": "gradle",
+      "filter_correct": true,
+      "original_tokens": 254,
+      "final_tokens": 95,
+      "tokens_saved": 159,
+      "compression_pct": 62.6,
+      "execution_time_ms": 3.396,
+      "tee_would_fire": true,
+      "missing_patterns": [],
+      "min_reduction_met": true,
+      "correctness_ok": true,
+      "stages": [
+        {
+          "stage_type": "remove_ansi",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 254,
+          "tokens_after": 254,
+          "tokens_saved": 0
+        },
+        {
+          "stage_type": "group_repeated",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 254,
+          "tokens_after": 254,
+          "tokens_saved": 0
+        },
+        {
+          "stage_type": "group_repeated",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 254,
+          "tokens_after": 254,
+          "tokens_saved": 0
+        },
+        {
+          "stage_type": "strip_lines",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 254,
+          "tokens_after": 95,
+          "tokens_saved": 159
+        },
+        {
+          "stage_type": "max_tokens",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 95,
+          "tokens_after": 95,
+          "tokens_saved": 0
+        }
+      ]
+    },
+    {
+      "id": "gradle-build-failure",
+      "category": "gradle",
+      "ecosystem": "CI/Build",
+      "command": "./gradlew test",
+      "matched_filter": "gradle",
+      "filter_correct": true,
+      "original_tokens": 130,
+      "final_tokens": 128,
+      "tokens_saved": 2,
+      "compression_pct": 1.54,
+      "execution_time_ms": 0.41,
+      "tee_would_fire": true,
+      "missing_patterns": [],
+      "min_reduction_met": true,
+      "correctness_ok": true,
+      "stages": [
+        {
+          "stage_type": "remove_ansi",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 130,
+          "tokens_after": 130,
+          "tokens_saved": 0
+        },
+        {
+          "stage_type": "group_repeated",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 130,
+          "tokens_after": 130,
+          "tokens_saved": 0
+        },
+        {
+          "stage_type": "group_repeated",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 130,
+          "tokens_after": 130,
+          "tokens_saved": 0
+        },
+        {
+          "stage_type": "strip_lines",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 130,
+          "tokens_after": 128,
+          "tokens_saved": 2
+        },
+        {
+          "stage_type": "max_tokens",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 128,
+          "tokens_after": 128,
+          "tokens_saved": 0
+        }
+      ]
+    },
+    {
+      "id": "maven-build-success",
+      "category": "maven",
+      "ecosystem": "CI/Build",
+      "command": "mvn test",
+      "matched_filter": "maven",
+      "filter_correct": true,
+      "original_tokens": 340,
+      "final_tokens": 209,
+      "tokens_saved": 131,
+      "compression_pct": 38.53,
+      "execution_time_ms": 1.588,
+      "tee_would_fire": true,
+      "missing_patterns": [],
+      "min_reduction_met": true,
+      "correctness_ok": true,
+      "stages": [
+        {
+          "stage_type": "remove_ansi",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 340,
+          "tokens_after": 340,
+          "tokens_saved": 0
+        },
+        {
+          "stage_type": "group_repeated",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 340,
+          "tokens_after": 340,
+          "tokens_saved": 0
+        },
+        {
+          "stage_type": "strip_lines",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 340,
+          "tokens_after": 209,
+          "tokens_saved": 131
+        },
+        {
+          "stage_type": "max_tokens",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 209,
+          "tokens_after": 209,
+          "tokens_saved": 0
+        }
+      ]
+    },
+    {
+      "id": "maven-build-failure",
+      "category": "maven",
+      "ecosystem": "CI/Build",
+      "command": "mvn compile",
+      "matched_filter": "maven",
+      "filter_correct": true,
+      "original_tokens": 294,
+      "final_tokens": 294,
+      "tokens_saved": 0,
+      "compression_pct": 0.0,
+      "execution_time_ms": 0.623,
+      "tee_would_fire": true,
+      "missing_patterns": [],
+      "min_reduction_met": true,
+      "correctness_ok": true,
+      "stages": [
+        {
+          "stage_type": "remove_ansi",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 294,
+          "tokens_after": 294,
+          "tokens_saved": 0
+        },
+        {
+          "stage_type": "group_repeated",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 294,
+          "tokens_after": 294,
+          "tokens_saved": 0
+        },
+        {
+          "stage_type": "strip_lines",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 294,
+          "tokens_after": 294,
+          "tokens_saved": 0
+        },
+        {
+          "stage_type": "max_tokens",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 294,
+          "tokens_after": 294,
+          "tokens_saved": 0
+        }
+      ]
+    },
+    {
+      "id": "github-actions-run-success",
+      "category": "github-actions",
+      "ecosystem": "CI/Build",
+      "command": "gh run view 12345 --log",
+      "matched_filter": "github-actions",
+      "filter_correct": true,
+      "original_tokens": 247,
+      "final_tokens": 89,
+      "tokens_saved": 158,
+      "compression_pct": 63.97,
+      "execution_time_ms": 0.947,
+      "tee_would_fire": true,
+      "missing_patterns": [],
+      "min_reduction_met": true,
+      "correctness_ok": true,
+      "stages": [
+        {
+          "stage_type": "remove_ansi",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 247,
+          "tokens_after": 247,
+          "tokens_saved": 0
+        },
+        {
+          "stage_type": "regex_replace",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 247,
+          "tokens_after": 124,
+          "tokens_saved": 123
+        },
+        {
+          "stage_type": "group_repeated",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 124,
+          "tokens_after": 105,
+          "tokens_saved": 19
+        },
+        {
+          "stage_type": "strip_lines",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 105,
+          "tokens_after": 89,
+          "tokens_saved": 16
+        },
+        {
+          "stage_type": "max_tokens",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 89,
+          "tokens_after": 89,
+          "tokens_saved": 0
+        }
+      ]
+    },
+    {
+      "id": "github-actions-run-failure",
+      "category": "github-actions",
+      "ecosystem": "CI/Build",
+      "command": "gh run view 12346 --log-failed",
+      "matched_filter": "github-actions",
+      "filter_correct": true,
+      "original_tokens": 192,
+      "final_tokens": 81,
+      "tokens_saved": 111,
+      "compression_pct": 57.81,
+      "execution_time_ms": 0.311,
+      "tee_would_fire": true,
+      "missing_patterns": [],
+      "min_reduction_met": true,
+      "correctness_ok": true,
+      "stages": [
+        {
+          "stage_type": "remove_ansi",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 192,
+          "tokens_after": 192,
+          "tokens_saved": 0
+        },
+        {
+          "stage_type": "regex_replace",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 192,
+          "tokens_after": 91,
+          "tokens_saved": 101
+        },
+        {
+          "stage_type": "group_repeated",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 91,
+          "tokens_after": 91,
+          "tokens_saved": 0
+        },
+        {
+          "stage_type": "strip_lines",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 91,
+          "tokens_after": 81,
+          "tokens_saved": 10
+        },
+        {
+          "stage_type": "max_tokens",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 81,
+          "tokens_after": 81,
+          "tokens_saved": 0
+        }
+      ]
+    },
+    {
+      "id": "java-spring-boot-startup-failure",
+      "category": "java",
+      "ecosystem": "Java",
+      "command": "java -jar demo.jar",
+      "matched_filter": "java",
+      "filter_correct": true,
+      "original_tokens": 1114,
+      "final_tokens": 494,
+      "tokens_saved": 620,
+      "compression_pct": 55.66,
+      "execution_time_ms": 0.586,
+      "tee_would_fire": true,
+      "missing_patterns": [],
+      "min_reduction_met": true,
+      "correctness_ok": true,
+      "stages": [
+        {
+          "stage_type": "remove_ansi",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 1114,
+          "tokens_after": 1114,
+          "tokens_saved": 0
+        },
+        {
+          "stage_type": "group_repeated",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 1114,
+          "tokens_after": 495,
+          "tokens_saved": 619
+        },
+        {
+          "stage_type": "strip_lines",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 495,
+          "tokens_after": 494,
+          "tokens_saved": 1
+        },
+        {
+          "stage_type": "deduplicate_consecutive",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 494,
+          "tokens_after": 494,
+          "tokens_saved": 0
+        },
+        {
+          "stage_type": "max_tokens",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 494,
+          "tokens_after": 494,
+          "tokens_saved": 0
+        }
+      ]
+    },
+    {
+      "id": "java-null-pointer-exception",
+      "category": "java",
+      "ecosystem": "Java",
+      "command": "java -cp target/classes com.example.orders.BatchRunner",
+      "matched_filter": "java",
+      "filter_correct": true,
+      "original_tokens": 170,
+      "final_tokens": 170,
+      "tokens_saved": 0,
+      "compression_pct": 0.0,
+      "execution_time_ms": 0.307,
+      "tee_would_fire": true,
+      "missing_patterns": [],
+      "min_reduction_met": true,
+      "correctness_ok": true,
+      "stages": [
+        {
+          "stage_type": "remove_ansi",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 170,
+          "tokens_after": 170,
+          "tokens_saved": 0
+        },
+        {
+          "stage_type": "group_repeated",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 170,
+          "tokens_after": 170,
+          "tokens_saved": 0
+        },
+        {
+          "stage_type": "strip_lines",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 170,
+          "tokens_after": 170,
+          "tokens_saved": 0
+        },
+        {
+          "stage_type": "deduplicate_consecutive",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 170,
+          "tokens_after": 170,
+          "tokens_saved": 0
+        },
+        {
+          "stage_type": "max_tokens",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 170,
+          "tokens_after": 170,
+          "tokens_saved": 0
+        }
+      ]
+    },
+    {
+      "id": "java-illegal-state-exception",
+      "category": "java",
+      "ecosystem": "Java",
+      "command": "java -jar orders-service.jar",
+      "matched_filter": "java",
+      "filter_correct": true,
+      "original_tokens": 728,
+      "final_tokens": 214,
+      "tokens_saved": 514,
+      "compression_pct": 70.6,
+      "execution_time_ms": 0.48,
+      "tee_would_fire": true,
+      "missing_patterns": [],
+      "min_reduction_met": true,
+      "correctness_ok": true,
+      "stages": [
+        {
+          "stage_type": "remove_ansi",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 728,
+          "tokens_after": 728,
+          "tokens_saved": 0
+        },
+        {
+          "stage_type": "group_repeated",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 728,
+          "tokens_after": 214,
+          "tokens_saved": 514
+        },
+        {
+          "stage_type": "strip_lines",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 214,
+          "tokens_after": 214,
+          "tokens_saved": 0
+        },
+        {
+          "stage_type": "deduplicate_consecutive",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 214,
+          "tokens_after": 214,
+          "tokens_saved": 0
+        },
+        {
+          "stage_type": "max_tokens",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 214,
+          "tokens_after": 214,
+          "tokens_saved": 0
+        }
+      ]
+    },
+    {
+      "id": "java-deep-nested-exception",
+      "category": "java",
+      "ecosystem": "Java",
+      "command": "java -cp target/classes com.example.calc.CalculatorTest",
+      "matched_filter": "java",
+      "filter_correct": true,
+      "original_tokens": 859,
+      "final_tokens": 98,
+      "tokens_saved": 761,
+      "compression_pct": 88.59,
+      "execution_time_ms": 0.426,
+      "tee_would_fire": true,
+      "missing_patterns": [],
+      "min_reduction_met": true,
+      "correctness_ok": true,
+      "stages": [
+        {
+          "stage_type": "remove_ansi",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 859,
+          "tokens_after": 859,
+          "tokens_saved": 0
+        },
+        {
+          "stage_type": "group_repeated",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 859,
+          "tokens_after": 99,
+          "tokens_saved": 760
+        },
+        {
+          "stage_type": "strip_lines",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 99,
+          "tokens_after": 98,
+          "tokens_saved": 1
+        },
+        {
+          "stage_type": "deduplicate_consecutive",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 98,
+          "tokens_after": 98,
+          "tokens_saved": 0
+        },
+        {
+          "stage_type": "max_tokens",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 98,
+          "tokens_after": 98,
+          "tokens_saved": 0
+        }
+      ]
+    },
+    {
+      "id": "java-multi-level-caused-by-chain",
+      "category": "java",
+      "ecosystem": "Java",
+      "command": "java -jar payment-batch.jar",
+      "matched_filter": "java",
+      "filter_correct": true,
+      "original_tokens": 669,
+      "final_tokens": 254,
+      "tokens_saved": 415,
+      "compression_pct": 62.03,
+      "execution_time_ms": 0.705,
+      "tee_would_fire": true,
+      "missing_patterns": [],
+      "min_reduction_met": true,
+      "correctness_ok": true,
+      "stages": [
+        {
+          "stage_type": "remove_ansi",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 669,
+          "tokens_after": 669,
+          "tokens_saved": 0
+        },
+        {
+          "stage_type": "group_repeated",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 669,
+          "tokens_after": 254,
+          "tokens_saved": 415
+        },
+        {
+          "stage_type": "strip_lines",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 254,
+          "tokens_after": 254,
+          "tokens_saved": 0
+        },
+        {
+          "stage_type": "deduplicate_consecutive",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 254,
+          "tokens_after": 254,
+          "tokens_saved": 0
+        },
+        {
+          "stage_type": "max_tokens",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 254,
+          "tokens_after": 254,
+          "tokens_saved": 0
+        }
+      ]
     }
   ]
 }

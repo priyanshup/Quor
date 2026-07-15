@@ -146,20 +146,39 @@ on_empty = "tsc: no issues found."
 type = "remove_ansi"
 
 [[filter.stages]]
+type = "group_repeated"
+# QB-044: shape-based grouping (exact_match=false) was rejected here in the
+# original QB-006C design — see git history / docs/ALGORITHMS.md — because
+# it would treat *any* two lines matching the generic `error TS\d+:` shape
+# as "the same repetition" regardless of whether the error code/message
+# actually matched, and tsc realistically produces long runs of genuinely
+# *different* diagnostics back-to-back (one per file, one per call site)
+# far more often than mypy does. The location-normalized mechanism proven
+# on pytest/mypy removes exactly that risk: location_pattern captures only
+# the `file(line,col)` prefix, so two lines only ever group if everything
+# after it — including the TS error code and full message — is
+# byte-identical. Must run before strip_lines below: strip_lines's own
+# preserve_patterns PROTECTs every diagnostic line first, and
+# group_repeated never touches PROTECT lines (same ordering already
+# established for pytest/mypy/npm). scope="global" additionally lets
+# same-message errors collapse even when not adjacent — real tsc runs
+# interleave unrelated diagnostics between repeats of the same root cause
+# far more often than this filter's small benchmark corpus shows.
+# min_count=2 (lower than mypy's 3): safe here specifically because the
+# comparison is exact-after-location-removal, not shape-based — the same
+# reasoning eslint's exact_match=True block above already relies on at
+# min_count=2.
+patterns = ['^\S+\(\d+,\d+\): error TS\d+: ']
+location_pattern = '^(\S+\(\d+,\d+\)): '
+min_count = 2
+scope = "global"
+
+[[filter.stages]]
 type = "strip_lines"
-# Deliberately no group_repeated stage, unlike mypy in build.toml — tried
-# first, but rejected after benchmark testing exposed a real correctness
-# problem: shape-based grouping (exact_match=false) treats *any* two lines
-# matching the same generic `error TS\d+:` shape as "the same repetition",
-# regardless of whether the error code/message actually matches. mypy's
-# single-project-message-repetition scenario rarely hits this because its
-# samples/tests happen to keep distinct errors non-adjacent, but tsc
-# realistically produces long runs of genuinely *different* diagnostics
-# back-to-back (one per file, one per call site) far more often — so the
-# same shape-based collapsing would silently merge unrelated errors and
-# lose their distinct text. Same conclusion ruff.toml already reached for
-# lint violations ("No repetition collapsing... a lint rule violated 50
-# times produces 50 lines, unlike mypy") — tsc gets the same treatment.
+# Deliberately no shape-based (exact_match=false) grouping in *this* stage
+# — see the group_repeated stage above for why, and how QB-044's
+# location-normalized mechanism now safely covers repeated diagnostics
+# instead.
 patterns = [
     '^Found \d+ errors?( in \d+ files?)?\.?$',
     '^\s*$',
@@ -203,6 +222,45 @@ must_not_contain = ["(×", "Found 3 errors"]
 description = "Routed correctly via npx/pnpm wrapper forms"
 input = "src/index.ts(3,7): error TS7006: Parameter 'x' implicitly has an 'any' type.\nFound 1 error in 1 file.\n"
 must_contain = ["TS7006"]
+
+[[filter.tests]]
+description = "QB-044: repeated identical diagnostic across different files, non-adjacent (global scope), collapses; the unrelated diagnostic in between stays untouched"
+input = "src/a.ts(1,1): error TS2345: Argument of type 'string' is not assignable to parameter of type 'number'.\nsrc/other.ts(4,4): error TS7006: Parameter 'y' implicitly has an 'any' type.\nsrc/b.ts(9,9): error TS2345: Argument of type 'string' is not assignable to parameter of type 'number'.\nFound 3 errors in 3 files.\n"
+must_contain = [
+    "src/a.ts(1,1): error TS2345: Argument of type 'string' is not assignable to parameter of type 'number'.",
+    "1 more with the same message at:",
+    "src/b.ts(9,9)",
+    "src/other.ts(4,4): error TS7006",
+]
+must_not_contain = [
+    "src/b.ts(9,9): error TS2345: Argument of type 'string' is not assignable to parameter of type 'number'.",
+    "Found 3 errors",
+]
+
+[[filter.tests]]
+description = "QB-044: repeated identical diagnostic across different line/column numbers in the same file, non-adjacent, collapses"
+input = "src/foo.ts(10,5): error TS2345: Argument of type 'string' is not assignable to parameter of type 'number'.\nsrc/bar.ts(2,2): error TS7006: Parameter 'x' implicitly has an 'any' type.\nsrc/foo.ts(41,5): error TS2345: Argument of type 'string' is not assignable to parameter of type 'number'.\nFound 3 errors in 2 files.\n"
+must_contain = [
+    "src/foo.ts(10,5): error TS2345: Argument of type 'string' is not assignable to parameter of type 'number'.",
+    "1 more with the same message at:",
+    "src/foo.ts(41,5)",
+    "src/bar.ts(2,2): error TS7006",
+]
+must_not_contain = [
+    "src/foo.ts(41,5): error TS2345: Argument of type 'string' is not assignable to parameter of type 'number'.",
+]
+
+[[filter.tests]]
+description = "QB-044 safety: same TS error code with different message text never collapses — only the location prefix is stripped, never the message"
+input = "src/a.ts(1,1): error TS2345: Argument of type 'string' is not assignable to parameter of type 'number'.\nsrc/b.ts(2,2): error TS2345: Argument of type 'boolean' is not assignable to parameter of type 'number'.\nFound 2 errors in 2 files.\n"
+must_contain = ["src/a.ts(1,1)", "src/b.ts(2,2)", "'string'", "'boolean'"]
+must_not_contain = ["more with the same message", "(×"]
+
+[[filter.tests]]
+description = "QB-044: a single occurrence of a diagnostic is left completely unchanged"
+input = "src/foo.ts(10,5): error TS2345: Argument of type 'string' is not assignable to parameter of type 'number'.\nFound 1 error in 1 file.\n"
+must_contain = ["src/foo.ts(10,5): error TS2345: Argument of type 'string' is not assignable to parameter of type 'number'."]
+must_not_contain = ["more with the same message", "(×"]
 
 # ---------------------------------------------------------------------------
 # jest — test runner (QB-006C)

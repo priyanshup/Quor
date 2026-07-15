@@ -35,6 +35,17 @@ _KNOWN_BASE_COMMANDS: frozenset[str] = frozenset(
                     # command in its own right, not a wrapped tool
         "turbo",    # QB-006C: Turborepo task runner — same, wraps arbitrary
                     # per-package scripts but is itself the invoked command
+        "gradle",       # QB-045: Gradle wrapper/CLI build noise
+        "gradlew",      # same, invoked without the leading "./" (rare but
+                        # some shells/PATH setups allow it)
+        "./gradlew",    # same, the common Unix wrapper-script invocation
+        "gradlew.bat",  # same, Windows wrapper-script invocation
+        "mvn",          # QB-045: Maven CLI build noise
+        "mvnw",         # same, wrapper invoked without "./"
+        "./mvnw",       # same, the common Unix wrapper-script invocation
+        "mvnw.cmd",     # same, Windows wrapper-script invocation
+        "java",         # QB-056: bare JVM invocation (java -jar app.jar,
+                        # java -cp ... Main) — Java stack-trace compression
     }
 )
 
@@ -65,10 +76,17 @@ TRANSPARENT_PREFIXES: tuple[str, ...] = (
 )
 
 # Docker/podman style transparent prefixes that consume more tokens
-TRANSPARENT_MULTI_WORD_PREFIXES: tuple[tuple[str, int], ...] = (
-    # (first_token, total_tokens_consumed_including_container_name)
-    ("docker", 3),     # docker exec <container>
-    ("podman", 3),     # podman exec <container>
+TRANSPARENT_MULTI_WORD_PREFIXES: tuple[tuple[str, str, int], ...] = (
+    # (first_token, required_subcommand, total_tokens_consumed_including_container_name)
+    #
+    # QB-045: this used to match on `first_token` alone, so "docker build -t
+    # foo ." was silently swallowed as a fake "docker exec"-shaped transparent
+    # prefix (consuming "docker build -t" as the "prefix", leaving "foo ." as
+    # a bogus "wrapped command") — docker build could never be routed to its
+    # own filter. Gating on the literal "exec" subcommand restricts this to
+    # the one shape it was actually designed for.
+    ("docker", "exec", 3),     # docker exec <container>
+    ("podman", "exec", 3),     # podman exec <container>
 )
 
 # Pipe targets that make rewriting unsafe (output is consumed by a tool)
@@ -114,6 +132,25 @@ def is_known_command(base: str, args: list[str]) -> bool:
             and args[0] == "-m"
             and args[1] in _KNOWN_PYTHON_SUBCOMMANDS
         )
+    if base in ("docker", "docker-compose"):
+        # QB-045: docker has many subcommands (run, ps, logs, ...) that are
+        # out of scope; `docker exec <container> <cmd>` never reaches here at
+        # all (handled earlier as a transparent prefix). Only route the
+        # *build* subcommand, in each of its real invocation shapes.
+        if not args:
+            return False
+        if base == "docker-compose":
+            return args[0] == "build"
+        if args[0] == "build":
+            return True
+        if args[0] == "buildx" and len(args) >= 2 and args[1] == "build":
+            return True
+        return args[0] == "compose" and len(args) >= 2 and args[1] == "build"
+    if base == "gh":
+        # QB-045: only gh's own CI-log-retrieval subcommands are in scope —
+        # every other gh subcommand (pr, issue, repo, ...) passes through
+        # untouched, same subcommand-gating discipline as python -m above.
+        return len(args) >= 2 and args[0] == "run" and args[1] in ("view", "watch")
     return base in _KNOWN_BASE_COMMANDS
 
 
@@ -152,9 +189,16 @@ def is_transparent_prefix(words: list[str]) -> tuple[str, list[str]] | None:
     if first in TRANSPARENT_PREFIXES:
         return (first, words[1:])
 
-    # Multi-word transparent prefixes (docker exec <container>)
-    for keyword, consume in TRANSPARENT_MULTI_WORD_PREFIXES:
-        if first == keyword and len(words) > consume - 1:
+    # Multi-word transparent prefixes (docker exec <container>) — gated on
+    # the required subcommand so e.g. "docker build ..." (QB-045) is never
+    # mistaken for this shape.
+    for keyword, subcommand, consume in TRANSPARENT_MULTI_WORD_PREFIXES:
+        if (
+            first == keyword
+            and len(words) > 1
+            and words[1] == subcommand
+            and len(words) > consume - 1
+        ):
             # e.g. "docker exec mycontainer" → consume first 3 tokens
             prefix_words = words[:consume]
             return (" ".join(prefix_words), words[consume:])

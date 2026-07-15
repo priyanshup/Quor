@@ -9,6 +9,34 @@ abort_unless = ["FAILED", "ERROR", "error"]
 on_empty = "All tests passed."
 
 [[filter.stages]]
+type = "group_repeated"
+# QB-044 slice 1+2: collapse repeated "short test summary info" FAILED lines
+# that share the exact same failure message at a different test location —
+# e.g. the same assertion failing across several parametrized cases. Must
+# run before strip_lines below: strip_lines's own preserve_patterns PROTECTs
+# every "FAILED" line, and group_repeated never touches PROTECT lines (same
+# ordering QB-014 already established for mypy/npm in build.toml/node.toml).
+# The trigger pattern only matches pytest's "FAILED <nodeid> - <message>"
+# summary-line shape (requires the " - " separator), so it never touches the
+# earlier, message-less "FAILED <nodeid>" lines interleaved with PASSED —
+# those have no message to compare, so grouping them would only ever lose
+# information about which tests failed, never save anything meaningful.
+patterns = ['^FAILED\s+\S+\s+-\s+']
+# location_pattern captures just the nodeid (file::test[params]) between
+# "FAILED " and " - " — the only thing excluded from the comparison key.
+# Everything after " - " (the actual failure message) is compared verbatim
+# and never rewritten.
+location_pattern = '^FAILED\s+(\S+)\s+-\s+'
+min_count = 2
+# QB-044 slice 2: real parametrized-test failures are almost never adjacent
+# in pytest's "short test summary info" block — other tests' FAILED lines
+# sit between repeats of the same root-cause message. scope="global" scans
+# the whole line stream instead of only consecutive lines, using the same
+# byte-identical-after-location-removal comparison as slice 1 — still no
+# shape matching, no fuzzy comparison, just no longer adjacency-restricted.
+scope = "global"
+
+[[filter.stages]]
 type = "strip_lines"
 patterns = [
     '^[.sFPE]+$',
@@ -75,3 +103,53 @@ description = "Framework traceback frames stripped; user frame and exception pre
 input = "FAILED tests/test_views.py::test_index\nTraceback (most recent call last):\n  File \"/home/user/myproject/views.py\", line 10, in index\n    return render(request)\n  File \"/usr/lib/python3.11/site-packages/django/core/handlers/base.py\", line 55, in _get_response\n    response = wrapped_callback(request)\nZeroDivisionError: division by zero"
 must_contain = ["FAILED", "Traceback", "views.py\", line 10, in index", "ZeroDivisionError"]
 must_not_contain = ["site-packages/django"]
+
+[[filter.tests]]
+description = "QB-044: repeated parametrized failures with the same message at different locations collapse; first kept verbatim, repeats replaced by a location summary"
+input = "FAILED tests/test_math.py::test_add[1-2] - AssertionError: Values must be positive\nFAILED tests/test_math.py::test_add[3-4] - AssertionError: Values must be positive\nFAILED tests/test_math.py::test_add[5-6] - AssertionError: Values must be positive\n3 failed in 0.5s\n"
+must_contain = [
+    "FAILED tests/test_math.py::test_add[1-2] - AssertionError: Values must be positive",
+    "2 more with the same message at:",
+    "test_add[3-4]",
+    "test_add[5-6]",
+]
+must_not_contain = [
+    "FAILED tests/test_math.py::test_add[3-4] - AssertionError: Values must be positive",
+    "FAILED tests/test_math.py::test_add[5-6] - AssertionError: Values must be positive",
+]
+
+[[filter.tests]]
+description = "QB-044 safety: FAILED summary lines with genuinely different messages are never merged, even at the same trigger shape"
+input = "FAILED tests/test_auth.py::test_logout - AssertionError: assert False is True\nFAILED tests/test_payment.py::test_charge_duplicate - Failed: DID NOT RAISE <class 'src.payments.errors.DuplicateChargeError'>\n2 failed in 0.4s\n"
+must_contain = [
+    "FAILED tests/test_auth.py::test_logout - AssertionError: assert False is True",
+    "FAILED tests/test_payment.py::test_charge_duplicate - Failed: DID NOT RAISE <class 'src.payments.errors.DuplicateChargeError'>",
+]
+must_not_contain = ["more with the same message"]
+
+[[filter.tests]]
+description = "QB-044 slice 2: non-adjacent repeats of the same message collapse across an unrelated failure in between (global scope); the unrelated line keeps its own position and text, and the first occurrence is kept verbatim"
+input = "FAILED tests/test_math.py::test_add[1] - AssertionError: Values must be positive\nFAILED tests/test_other.py::test_unrelated - AssertionError: Something else entirely\nFAILED tests/test_math.py::test_add[2] - AssertionError: Values must be positive\n3 failed in 0.6s\n"
+must_contain = [
+    "FAILED tests/test_math.py::test_add[1] - AssertionError: Values must be positive",
+    "1 more with the same message at:",
+    "test_add[2]",
+    "FAILED tests/test_other.py::test_unrelated - AssertionError: Something else entirely",
+]
+must_not_contain = [
+    "FAILED tests/test_math.py::test_add[2] - AssertionError: Values must be positive",
+]
+
+[[filter.tests]]
+description = "QB-044 slice 2 safety: two singleton messages scattered around a repeated one keep their own normalized keys and are never merged into its group"
+input = "FAILED tests/test_math.py::test_add[1] - AssertionError: Values must be positive\nFAILED tests/test_math.py::test_sub[1] - AssertionError: Values must be negative\nFAILED tests/test_math.py::test_mul[1] - AssertionError: Cannot multiply by zero\nFAILED tests/test_math.py::test_add[2] - AssertionError: Values must be positive\n4 failed in 0.7s\n"
+must_contain = [
+    "FAILED tests/test_math.py::test_add[1] - AssertionError: Values must be positive",
+    "1 more with the same message at:",
+    "test_add[2]",
+    "FAILED tests/test_math.py::test_sub[1] - AssertionError: Values must be negative",
+    "FAILED tests/test_math.py::test_mul[1] - AssertionError: Cannot multiply by zero",
+]
+must_not_contain = [
+    "FAILED tests/test_math.py::test_add[2] - AssertionError: Values must be positive",
+]

@@ -1,0 +1,370 @@
+# quor built-in filter: CI & native-build tooling (QB-045, first slice)
+#
+# Covers ecosystems that previously had no dedicated filter at all and fell
+# through to the generic fallback (quor/filters/builtin/z_generic.toml, which
+# only does remove_ansi + deduplicate_consecutive + a blind 1000-token
+# max_tokens clamp — no structure-aware noise removal): Docker/BuildKit build
+# output, Gradle, Maven, and GitHub Actions run logs fetched via `gh run
+# view`/`gh run watch`. npm/pnpm/yarn already have their own dedicated
+# filters (node.toml, QB-006A) and are deliberately untouched here.
+#
+# Composed entirely from existing stage types (remove_ansi, strip_lines,
+# group_repeated, deduplicate_consecutive, max_tokens) — no new stage, no
+# registry/dispatcher/Pipeline/Engine/ContentMask/StageHandler change.
+# Requires docker/docker-compose/gh (subcommand-gated), gradle/gradlew/mvn/
+# mvnw to be known commands (see quor/rewrite/rules.py) for their output to
+# ever be routed through Quor at all.
+schema_version = 1
+
+# ---------------------------------------------------------------------------
+# docker build / docker buildx build / docker compose build
+# ---------------------------------------------------------------------------
+
+[[filter]]
+name = "docker-build"
+match_command = '^docker(-compose)?\s+build\b|^docker\s+(buildx|compose)\s+build\b'
+
+[[filter.stages]]
+type = "remove_ansi"
+
+[[filter.stages]]
+type = "strip_lines"
+# BuildKit's per-layer digest download/extract ticks (the "#N sha256:...
+# X.XXMB / Y.YYMB" lines) repeat many times per layer with only the byte
+# counter changing — pure progress noise, same category as pnpm's "Progress:
+# resolved N, reused M" lines in node.toml. The classic (non-BuildKit)
+# docker-pull-style per-layer status lines (12-char hex layer ID prefix) are
+# the same kind of noise under the older output format.
+patterns = [
+    '^#\d+ sha256:[0-9a-f]{12,64}(\s|$)',
+    '^#\d+ extracting sha256:',
+    '^[0-9a-f]{12}: (Waiting|Pulling fs layer|Downloading|Verifying Checksum|Download complete|Extracting|Pull complete)\b',
+    '^\s*$',
+]
+preserve_patterns = [
+    '(?i)error',
+    'failed to solve',
+    '^Dockerfile:\d+',
+    '^-{5,}$',
+    '^>>> ',
+    '^Successfully (built|tagged)',
+]
+
+[[filter.stages]]
+type = "deduplicate_consecutive"
+
+[[filter.stages]]
+type = "max_tokens"
+limit = 600
+strategy = "tail"
+
+[[filter.tests]]
+description = "Successful build: layer digest download/extract ticks stripped; step banners and final image tag preserved"
+input = "#1 [internal] load build definition from Dockerfile\n#1 DONE 0.0s\n\n#4 [1/5] FROM docker.io/library/node:18-slim\n#4 sha256:1111111111111111111111111111111111111111111111111111111111111111 1.42MB / 28.51MB 0.2s\n#4 sha256:1111111111111111111111111111111111111111111111111111111111111111 8.39MB / 28.51MB 0.4s\n#4 sha256:1111111111111111111111111111111111111111111111111111111111111111 28.51MB / 28.51MB 0.8s done\n#4 extracting sha256:1111111111111111111111111111111111111111111111111111111111111111 0.1s done\n#4 DONE 1.1s\n\n#7 [4/5] RUN npm ci --omit=dev\n#7 DONE 6.3s\n\nSuccessfully built 9999999999999999999999999999999999999999999999999999999999999999\nSuccessfully tagged myapp:latest\n"
+must_contain = ["#1 [internal] load build definition from Dockerfile", "#4 [1/5] FROM docker.io/library/node:18-slim", "#7 [4/5] RUN npm ci --omit=dev", "Successfully built", "Successfully tagged myapp:latest"]
+must_not_contain = ["1.42MB / 28.51MB", "8.39MB / 28.51MB", "extracting sha256:1111111111111111111111111111111111111111111111111111111111111111 0.1s"]
+
+[[filter.tests]]
+description = "Failed build: RUN step error and Dockerfile context preserved; unrelated cached-layer ticks stripped"
+input = "#3 [1/4] FROM docker.io/library/node:18-slim\n#3 CACHED\n\n#6 [4/4] RUN npm run build\n#6 1.203 src/index.ts(10,5): error TS2345: Argument of type 'string' is not assignable to parameter of type 'number'.\n#6 ERROR: process \"/bin/sh -c npm run build\" did not complete successfully: exit code: 2\n------\n > [4/4] RUN npm run build:\n1.203 src/index.ts(10,5): error TS2345: Argument of type 'string' is not assignable to parameter of type 'number'.\n------\nDockerfile:8\n--------------------\n   7 |     RUN npm ci\n   8 | >>> RUN npm run build\n   9 |     COPY . .\n--------------------\nERROR: failed to solve: process \"/bin/sh -c npm run build\" did not complete successfully: exit code: 2\n"
+must_contain = ["error TS2345", "ERROR: process", "Dockerfile:8", ">>> RUN npm run build", "failed to solve"]
+
+[[filter.tests]]
+description = "Classic (non-BuildKit) docker-pull-style layer progress stripped; final digest line preserved"
+input = "7d63c13d9b9b: Pulling fs layer\n7d63c13d9b9b: Waiting\n7d63c13d9b9b: Downloading [==>       ]  4.2MB/28MB\n7d63c13d9b9b: Downloading [========> ] 20.1MB/28MB\n7d63c13d9b9b: Verifying Checksum\n7d63c13d9b9b: Download complete\n7d63c13d9b9b: Extracting [=====>    ]  8.3MB/28MB\n7d63c13d9b9b: Pull complete\nDigest: sha256:abc123\nStatus: Downloaded newer image for node:18-slim\n"
+must_contain = ["Digest: sha256:abc123", "Status: Downloaded newer image for node:18-slim"]
+must_not_contain = ["Downloading [==>", "Verifying Checksum", "Pull complete"]
+
+# ---------------------------------------------------------------------------
+# gradle / ./gradlew / gradlew.bat
+# ---------------------------------------------------------------------------
+
+[[filter]]
+name = "gradle"
+match_command = '^\.?/?gradlew?(\.bat)?(?=\s|$)'
+
+[[filter.stages]]
+type = "remove_ansi"
+
+[[filter.stages]]
+type = "group_repeated"
+# QB-056: a failing Gradle test (or a Spring Boot app started via
+# `bootRun`) can print a full Java stack trace to the console, and that
+# trace's own noise (JDK/reflection/Spring/JUnit/Gradle-test-worker frames)
+# was previously left completely untouched by this filter — see
+# java.toml's own module docstring for the full pattern rationale and the
+# exception-header/Caused-by/Suppressed/"... N more" safety guarantees.
+# Reused byte-for-byte from java.toml rather than duplicated by hand so the
+# two stay in sync; must run before the deprecation-warning group_repeated
+# and strip_lines stages below — same "group_repeated before strip_lines"
+# ordering already established for pytest/mypy/tsc (strip_lines's
+# preserve_patterns would otherwise PROTECT any framework frame whose class
+# name happens to contain "Exception" — e.g. Spring's
+# ExceptionHandlerExceptionResolver — before this stage ever saw it).
+preserve_patterns = [
+    '^Exception in thread\b',
+    '^Caused by:',
+    '^\s*Suppressed:',
+    '^\s*\.\.\.\s*\d+\s*more\b',
+]
+patterns = [
+    '^\s*at (java\.base/|javax\.|jdk\.internal\.|sun\.reflect\.|sun\.rmi\.|com\.sun\.proxy\.|org\.springframework\.|org\.junit\.|org\.gradle\.|worker\.org\.gradle\.|org\.apache\.maven\.|org\.apache\.catalina\.|org\.apache\.tomcat\.|org\.hibernate\.|org\.eclipse\.jetty\.|io\.netty\.|reactor\.|net\.sf\.cglib\.|org\.springframework\.cglib\.)',
+]
+min_count = 3
+
+[[filter.stages]]
+type = "group_repeated"
+# exact_match left at its default (false, shape-based): intentional, same
+# generic-wrapper-noise rationale as npm/pnpm/yarn in node.toml — we only
+# want "N deprecation notices happened", not to preserve each one verbatim.
+patterns = ['(?i)^Deprecated Gradle features were used']
+min_count = 2
+
+[[filter.stages]]
+type = "strip_lines"
+# Dependency-resolution download lines and the live percentage progress bar
+# are pure noise (never diagnostic) — same treatment as npm/pnpm's install
+# progress lines in node.toml. The deprecation-warning CTA lines are
+# boilerplate nagging, same category as npm's funding/audit nags.
+patterns = [
+    '^Download https?://\S+',
+    '^<[=\-]+>\s*\d+% EXECUTING',
+    "(?i)^You can use '--warning-mode all'",
+    '(?i)^See https?://\S+/userguide/command_line_interface',
+    '^\s*$',
+]
+preserve_patterns = [
+    '(?i)\bfailed\b',
+    '(?i)error',
+    '(?i)exception',
+    '^BUILD (SUCCESSFUL|FAILED)',
+    'actionable tasks:',
+    '^> Task ',
+    '^\* ',
+]
+
+[[filter.stages]]
+type = "max_tokens"
+limit = 500
+strategy = "tail"
+
+[[filter.tests]]
+description = "Successful build: dependency downloads and deprecation CTA stripped; task list and summary preserved"
+input = "> Task :app:compileJava\n> Task :app:test\nDownload https://repo.maven.apache.org/maven2/org/junit/jupiter/junit-jupiter/5.10.0/junit-jupiter-5.10.0.pom\nDownload https://repo.maven.apache.org/maven2/org/junit/jupiter/junit-jupiter-api/5.10.0/junit-jupiter-api-5.10.0.pom\n\nBUILD SUCCESSFUL in 12s\n7 actionable tasks: 7 executed\n\nDeprecated Gradle features were used in this build, making it incompatible with Gradle 9.0.\nYou can use '--warning-mode all' to show the individual deprecation warnings.\nSee https://docs.gradle.org/8.5/userguide/command_line_interface.html#sec:command_line_warnings\n"
+must_contain = ["> Task :app:compileJava", "> Task :app:test", "BUILD SUCCESSFUL in 12s", "7 actionable tasks: 7 executed"]
+must_not_contain = ["Download https://repo.maven.apache.org", "warning-mode all", "docs.gradle.org"]
+
+[[filter.tests]]
+description = "Failed build: task failure, assertion, and failure report preserved"
+input = "> Task :app:test\n\nMyTest > additionTest FAILED\n    java.lang.AssertionError: expected: <5> but was: <4>\n        at MyTest.additionTest(MyTest.java:12)\n\n> Task :app:test FAILED\n\nFAILURE: Build failed with an exception.\n\n* What went wrong:\nExecution failed for task ':app:test'.\n> There were failing tests. See the report at: file:///project/build/reports/tests/test/index.html\n\nBUILD FAILED in 4s\n"
+must_contain = ["additionTest FAILED", "AssertionError: expected: <5> but was: <4>", "FAILURE: Build failed with an exception", "BUILD FAILED in 4s"]
+
+[[filter.tests]]
+description = "Repeated deprecation-feature lines collapse to a count; live progress-bar noise stripped"
+input = "<=========----> 75% EXECUTING [12s]\n<==============> 100% EXECUTING [15s]\nDeprecated Gradle features were used in this build.\nDeprecated Gradle features were used in this build.\nBUILD SUCCESSFUL in 15s\n"
+must_contain = ["(×2)", "BUILD SUCCESSFUL in 15s"]
+must_not_contain = ["EXECUTING [12s]", "EXECUTING [15s]"]
+
+[[filter.tests]]
+description = "QB-056: bootRun startup failure through gradlew — Spring/JDK stack-frame noise collapses, Caused-by chain and exception messages survive"
+input = "> Task :bootRun\n\nException in thread \"main\" org.springframework.context.ApplicationContextException: Unable to start web server\n\tat org.springframework.boot.web.embedded.tomcat.TomcatWebServer.initialize(TomcatWebServer.java:120)\n\tat org.springframework.boot.web.embedded.tomcat.TomcatServletWebServerFactory.getWebServer(TomcatServletWebServerFactory.java:198)\n\tat org.springframework.boot.SpringApplication.run(SpringApplication.java:315)\n\tat com.example.demo.DemoApplication.main(DemoApplication.java:10)\nCaused by: java.net.BindException: Address already in use\n\tat java.base/sun.nio.ch.Net.bind0(Native Method)\n\tat java.base/sun.nio.ch.Net.bind(Net.java:565)\n\tat java.base/sun.nio.ch.Net.bind(Net.java:554)\n\t... 6 more\n\n> Task :bootRun FAILED\n\nFAILURE: Build failed with an exception.\n\nBUILD FAILED in 3s\n"
+must_contain = [
+    "Exception in thread \"main\" org.springframework.context.ApplicationContextException: Unable to start web server",
+    "com.example.demo.DemoApplication.main(DemoApplication.java:10)",
+    "Caused by: java.net.BindException: Address already in use",
+    "... 6 more",
+    "BUILD FAILED in 3s",
+    "(×",
+]
+must_not_contain = [
+    "at org.springframework.boot.web.embedded.tomcat.TomcatServletWebServerFactory.getWebServer(TomcatServletWebServerFactory.java:198)",
+    "at java.base/sun.nio.ch.Net.bind(Net.java:554)",
+]
+
+# ---------------------------------------------------------------------------
+# maven / ./mvnw
+# ---------------------------------------------------------------------------
+
+[[filter]]
+name = "maven"
+match_command = '^\.?/?mvnw?(\.cmd)?(?=\s|$)'
+
+[[filter.stages]]
+type = "remove_ansi"
+
+[[filter.stages]]
+type = "group_repeated"
+# QB-056: same Java stack-frame noise reduction as gradle's block above
+# (see java.toml's module docstring) — maven's `-e`/`mvn test` failure
+# output can print a full raw stack trace through Surefire the same way
+# gradle's does. Must run before strip_lines below for the same reason.
+preserve_patterns = [
+    '^Exception in thread\b',
+    '^Caused by:',
+    '^\s*Suppressed:',
+    '^\s*\.\.\.\s*\d+\s*more\b',
+]
+patterns = [
+    '^\s*at (java\.base/|javax\.|jdk\.internal\.|sun\.reflect\.|sun\.rmi\.|com\.sun\.proxy\.|org\.springframework\.|org\.junit\.|org\.gradle\.|worker\.org\.gradle\.|org\.apache\.maven\.|org\.apache\.catalina\.|org\.apache\.tomcat\.|org\.hibernate\.|org\.eclipse\.jetty\.|io\.netty\.|reactor\.|net\.sf\.cglib\.|org\.springframework\.cglib\.)',
+]
+min_count = 3
+
+[[filter.stages]]
+type = "strip_lines"
+# Maven's horizontal-rule separators and dependency-download lines are pure
+# cosmetic/progress noise, never diagnostic — the compiler/surefire plugin
+# banners, BUILD SUCCESS/FAILURE, and Total time lines carry the real signal.
+patterns = [
+    '^\[INFO\] -{10,}\s*$',
+    '^\[INFO\] Downloading from ',
+    '^\[INFO\] Downloaded from ',
+    '^\s*$',
+]
+preserve_patterns = [
+    '\[ERROR\]',
+    '\[WARNING\]',
+    '^\[INFO\] BUILD (SUCCESS|FAILURE)',
+    '^\[INFO\] Total time',
+    '(?i)Tests run:',
+    '^\[INFO\] ---',
+]
+
+[[filter.stages]]
+type = "max_tokens"
+limit = 500
+strategy = "tail"
+
+[[filter.tests]]
+description = "Successful build: horizontal rules and dependency-download noise stripped; plugin banners, test summary, and BUILD SUCCESS preserved"
+input = "[INFO] Scanning for projects...\n[INFO] ------------------------------------------------------------------------\n[INFO] Building myapp 1.0.0\n[INFO] ------------------------------------------------------------------------\n[INFO] Downloading from central: https://repo.maven.apache.org/maven2/org/junit/junit-bom/5.10.0/junit-bom-5.10.0.pom\n[INFO] Downloaded from central: https://repo.maven.apache.org/maven2/org/junit/junit-bom/5.10.0/junit-bom-5.10.0.pom (12 kB at 145 kB/s)\n[INFO] --- maven-surefire-plugin:3.1.2:test (default-test) @ myapp ---\n[INFO] Tests run: 12, Failures: 0, Errors: 0, Skipped: 0\n[INFO] BUILD SUCCESS\n[INFO] Total time:  4.213 s\n"
+must_contain = ["Building myapp 1.0.0", "maven-surefire-plugin:3.1.2:test", "Tests run: 12, Failures: 0, Errors: 0, Skipped: 0", "BUILD SUCCESS", "Total time:  4.213 s"]
+must_not_contain = ["Downloading from central", "Downloaded from central"]
+
+[[filter.tests]]
+description = "Failed build: compilation error and BUILD FAILURE preserved"
+input = "[INFO] --- maven-compiler-plugin:3.11.0:compile (default-compile) @ myapp ---\n[ERROR] COMPILATION ERROR :\n[ERROR] /project/src/main/java/App.java:[10,5] cannot find symbol\n  symbol:   method doThing()\n[INFO] BUILD FAILURE\n[INFO] Total time:  1.842 s\n[ERROR] Failed to execute goal org.apache.maven.plugins:maven-compiler-plugin:3.11.0:compile (default-compile) on project myapp: Compilation failure\n"
+must_contain = ["COMPILATION ERROR", "cannot find symbol", "BUILD FAILURE", "Failed to execute goal"]
+
+[[filter.tests]]
+description = "QB-056: Surefire test failure with a full raw stack trace (mvn test -e) — reflection/JUnit frame noise collapses, user's test frame and exception message survive"
+input = "[INFO] --- maven-surefire-plugin:3.1.2:test (default-test) @ myapp ---\n[ERROR] Tests run: 1, Failures: 0, Errors: 1, Skipped: 0\njava.lang.ArithmeticException: / by zero\n\tat com.example.calc.Calculator.divide(Calculator.java:12)\n\tat com.example.calc.CalculatorTest.testDivideByZero(CalculatorTest.java:19)\n\tat java.base/jdk.internal.reflect.NativeMethodAccessorImpl.invoke0(Native Method)\n\tat java.base/jdk.internal.reflect.NativeMethodAccessorImpl.invoke(NativeMethodAccessorImpl.java:77)\n\tat org.junit.platform.commons.util.ReflectionUtils.invokeMethod(ReflectionUtils.java:728)\n[INFO] BUILD FAILURE\n[INFO] Total time:  2.105 s\n"
+must_contain = [
+    "Tests run: 1, Failures: 0, Errors: 1, Skipped: 0",
+    "java.lang.ArithmeticException: / by zero",
+    "at com.example.calc.Calculator.divide(Calculator.java:12)",
+    "at com.example.calc.CalculatorTest.testDivideByZero(CalculatorTest.java:19)",
+    "BUILD FAILURE",
+    "(×",
+]
+must_not_contain = [
+    "at java.base/jdk.internal.reflect.NativeMethodAccessorImpl.invoke(NativeMethodAccessorImpl.java:77)",
+    "at org.junit.platform.commons.util.ReflectionUtils.invokeMethod(ReflectionUtils.java:728)",
+]
+
+# ---------------------------------------------------------------------------
+# GitHub Actions run logs (gh run view --log / gh run watch)
+#
+# Every real line in a `gh run view --log` dump carries a fixed-width
+# ISO-8601 timestamp prefix — e.g. "2026-07-15T10:23:45.1234567Z " (4-digit
+# year, 7-digit fractional seconds, literal "Z", one trailing space) — the
+# .NET round-trip ("o") format the GitHub Actions runner itself always emits,
+# on every line, with no configuration and no variation. QB-045's first slice
+# left this alone (stripping it means rewriting line *content*, which only
+# regex_replace does among this filter's stages); this pass adds a
+# regex_replace stage, first in the pipeline, to remove exactly that prefix
+# and nothing else. Because it now strips the prefix before any other stage
+# runs, the patterns below that used to expect "<token> ##[...]" (the
+# timestamp counting as that leading token) are anchored directly on
+# "##[...]" instead.
+# ---------------------------------------------------------------------------
+
+[[filter]]
+name = "github-actions"
+match_command = '^gh\s+run\s+(view|watch)\b'
+
+[[filter.stages]]
+type = "remove_ansi"
+
+[[filter.stages]]
+type = "regex_replace"
+# Removes only the timestamp prefix (including its one trailing space) —
+# ##[group]/##[endgroup]/##[error]/##[warning] annotations and all normal log
+# content are left byte-for-byte unchanged, just with the prefix gone. No
+# preserve_patterns here deliberately: the timestamp is noise on *every* line
+# including ##[error]/##[warning] ones, so it's removed uniformly rather than
+# rescued on lines later stages will protect for other reasons. Anchored and
+# exact (4-digit year, 2-digit month/day/hour/min/sec, 7-digit fractional
+# seconds, literal "Z ") — a line that doesn't match this precise shape is
+# left completely alone (fail-open by construction: no match, no rewrite).
+rules = [
+    { pattern = '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{7}Z ', replacement = '' },
+]
+
+[[filter.stages]]
+type = "group_repeated"
+# exact_match left at its default (false, shape-based): intentional, same
+# generic-annotation-noise rationale as npm/pnpm/yarn's warning collapsing in
+# node.toml — a matrix build or a linter step commonly emits the same kind of
+# ##[warning] annotation many times; "N warnings happened" is the useful
+# summary, not each repeat verbatim. Anchored directly on "##[warning]" (not
+# "^\S+ ##\[warning\]" as before this pass) since the timestamp token that
+# used to precede it is now gone by the time this stage runs. Must run before
+# strip_lines below: strip_lines's own preserve_patterns PROTECTs every
+# ##[warning]/##[error] line, and group_repeated never touches PROTECT lines
+# (same ordering already established for mypy/npm/tsc).
+patterns = ['^##\[warning\]']
+min_count = 2
+
+[[filter.stages]]
+type = "strip_lines"
+# Bare ##[endgroup] closers carry zero information beyond "a step ended" —
+# same treatment as turbo's cache-status preamble bullets in node.toml.
+# Anchored directly on "##[endgroup]" (no leading "\S+ " token) since the
+# timestamp that used to precede it is already stripped by the regex_replace
+# stage above.
+patterns = [
+    '^##\[endgroup\]\s*$',
+    '^\s*$',
+]
+preserve_patterns = [
+    '##\[error\]',
+    '##\[warning\]',
+    '(?i)error',
+    '(?i)failed',
+    '(?i)exception',
+]
+
+[[filter.stages]]
+type = "max_tokens"
+limit = 800
+strategy = "tail"
+
+[[filter.tests]]
+description = "Timestamp prefix removed, remainder of the line untouched (canonical example)"
+input = "2026-07-15T12:45:13.1234567Z ##[group]Build\n"
+must_contain = ["##[group]Build"]
+must_not_contain = ["2026-07-15T12:45:13.1234567Z"]
+
+[[filter.tests]]
+description = "Timestamp stripped from every line, including indented content; the indentation itself (part of the remainder, not the prefix) survives"
+input = "2026-07-15T10:23:40.1234567Z ##[group]Run actions/checkout@v4\n2026-07-15T10:23:40.3456789Z   repository: acme/myapp\n2026-07-15T10:23:41.1234567Z ##[endgroup]\n"
+must_contain = ["##[group]Run actions/checkout@v4", "  repository: acme/myapp"]
+must_not_contain = ["2026-07-15T10:23:40.1234567Z", "2026-07-15T10:23:40.3456789Z", "2026-07-15T10:23:41.1234567Z"]
+
+[[filter.tests]]
+description = "Successful run: timestamps stripped from every line; bare ##[endgroup] closer lines stripped entirely; step content and summary preserved"
+input = "2026-07-15T10:23:40.1234567Z ##[group]Run actions/checkout@v4\n2026-07-15T10:23:41.1234567Z ##[endgroup]\n2026-07-15T10:23:43.1234567Z ##[group]Run npm ci\n2026-07-15T10:23:50.1234567Z added 512 packages, and audited 513 packages in 7s\n2026-07-15T10:23:50.2234567Z ##[endgroup]\n2026-07-15T10:23:51.1234567Z ##[group]Run npm test\n2026-07-15T10:23:55.1234567Z Tests:       48 passed, 48 total\n2026-07-15T10:23:55.2234567Z ##[endgroup]\n"
+must_contain = ["##[group]Run actions/checkout@v4", "added 512 packages, and audited 513 packages in 7s", "Tests:       48 passed, 48 total"]
+must_not_contain = ["2026-07-15T10:23:41.1234567Z", "2026-07-15T10:23:50.2234567Z", "##[endgroup]"]
+
+[[filter.tests]]
+description = "Failed run: timestamps stripped; ##[error] annotation and failing test detail preserved verbatim"
+input = "2026-07-15T10:24:00.1234567Z ##[group]Run npm test\n2026-07-15T10:24:05.1234567Z FAIL  src/math.test.js\n2026-07-15T10:24:05.2234567Z   ● adds numbers\n2026-07-15T10:24:05.4234567Z     Expected: 5\n2026-07-15T10:24:05.5234567Z     Received: 4\n2026-07-15T10:24:05.6234567Z Tests:       1 failed, 47 passed, 48 total\n2026-07-15T10:24:05.7234567Z ##[endgroup]\n2026-07-15T10:24:06.1234567Z ##[error]Process completed with exit code 1.\n"
+must_contain = ["FAIL  src/math.test.js", "Expected: 5", "Received: 4", "Tests:       1 failed, 47 passed, 48 total", "##[error]Process completed with exit code 1."]
+must_not_contain = ["2026-07-15T10:24:06.1234567Z"]
+
+[[filter.tests]]
+description = "Repeated ##[warning] annotations (e.g. the same deprecation notice across a matrix build) collapse to a count after timestamp normalization; the summary line survives untouched"
+input = "2026-07-15T10:23:40.1000000Z ##[warning]This action is deprecated, update to v5\n2026-07-15T10:23:42.1000000Z ##[warning]This action is deprecated, update to v5\n2026-07-15T10:23:44.1000000Z ##[group]Run npm test\n2026-07-15T10:23:45.1000000Z Tests:       10 passed, 10 total\n2026-07-15T10:23:45.2000000Z ##[endgroup]\n"
+must_contain = ["This action is deprecated, update to v5", "(×2)", "Tests:       10 passed, 10 total"]
+must_not_contain = ["2026-07-15T10:23:40.1000000Z", "2026-07-15T10:23:42.1000000Z"]

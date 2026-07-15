@@ -55,6 +55,16 @@ def _install_real_hooks(tmp_path: Path, settings_path: Path) -> None:
     settings_path.write_text(orjson.dumps(settings).decode("utf-8"), encoding="utf-8")
 
 
+def _make_hook_stale(tmp_path: Path, script_name: str = "claude-hook.ps1") -> None:
+    """Rewrite an installed hook script's embedded schema marker to 0 — an
+    old install left over from before the current `schema_version`."""
+    import re
+
+    path = tmp_path / "hooks" / script_name
+    content = path.read_text(encoding="utf-8")
+    path.write_text(re.sub(r"# quor-hook-schema: .+", "# quor-hook-schema: 0", content), encoding="utf-8")
+
+
 # ---------------------------------------------------------------------------
 # quor validate
 # ---------------------------------------------------------------------------
@@ -133,6 +143,70 @@ class TestExplain:
             result = runner.invoke(app, ["explain", "git status"])
         assert result.exit_code == 1
         assert "Could not run command" in result.output
+
+
+class TestExplainCompressionSummary:
+    """QB-057: the deterministic per-stage compression breakdown."""
+
+    def test_compression_summary_shown_with_savings(self) -> None:
+        # git-status's strip_lines stage strips both lines here ("On branch"
+        # and "nothing to commit" both match its patterns) — a real,
+        # non-zero saving to assert on.
+        proc = _make_proc(
+            stdout="On branch main\nnothing to commit, working tree clean\n"
+        )
+        with patch("subprocess.run", return_value=proc):
+            result = runner.invoke(app, ["explain", "git status"])
+        assert result.exit_code == 0
+        assert "Compression summary" in result.output
+        assert "Strip lines:" in result.output
+        assert "Final:" in result.output
+        assert "Saved:" in result.output
+
+    def test_zero_saving_stage_omitted_from_summary(self) -> None:
+        # deduplicate_consecutive has nothing to dedupe here (no repeated
+        # lines survive strip_lines), so it must not appear as a bullet.
+        proc = _make_proc(
+            stdout="On branch main\nnothing to commit, working tree clean\n"
+        )
+        with patch("subprocess.run", return_value=proc):
+            result = runner.invoke(app, ["explain", "git status"])
+        assert "Deduplicate consecutive:" not in result.output
+
+    def test_no_compression_summary_when_nothing_saved(self) -> None:
+        # Every line here survives git-status's strip_lines/dedupe stages
+        # untouched, so total savings is zero and the whole section is
+        # omitted rather than shown as an empty header.
+        proc = _make_proc(stdout="modified:   src/main.py\n")
+        with patch("subprocess.run", return_value=proc):
+            result = runner.invoke(app, ["explain", "git status"])
+        assert result.exit_code == 0
+        assert "Compression summary" not in result.output
+        assert "Final:" in result.output
+        assert "Saved: 0 tokens (0.0%)" in result.output
+
+    def test_saved_equals_original_minus_final(self) -> None:
+        import re
+
+        proc = _make_proc(
+            stdout="On branch main\nnothing to commit, working tree clean\n"
+        )
+        with patch("subprocess.run", return_value=proc):
+            result = runner.invoke(app, ["explain", "git status"])
+
+        original = int(re.search(r"Original: ([\d,]+) tokens", result.output).group(1).replace(",", ""))
+        final = int(re.search(r"Final: ([\d,]+) tokens", result.output).group(1).replace(",", ""))
+        saved = int(re.search(r"Saved: ([\d,]+) tokens", result.output).group(1).replace(",", ""))
+        assert saved == original - final
+
+    def test_output_deterministic_across_runs(self) -> None:
+        proc = _make_proc(
+            stdout="On branch main\nnothing to commit, working tree clean\n"
+        )
+        with patch("subprocess.run", return_value=proc):
+            first = runner.invoke(app, ["explain", "git status"]).output
+            second = runner.invoke(app, ["explain", "git status"]).output
+        assert first == second
 
 
 # ---------------------------------------------------------------------------
@@ -932,6 +1006,164 @@ class TestDoctor:
 
 
 # ---------------------------------------------------------------------------
+# quor doctor --fix
+# ---------------------------------------------------------------------------
+
+
+class TestDoctorFix:
+    """`--fix` deterministically repairs missing/unregistered/stale hooks by
+    reusing init.py's own write primitives, then re-runs the normal check
+    list. Not an installer: a hook with neither a script nor a settings.json
+    entry (never set up at all) is left alone — see `test_never_initialized_hook_left_for_manual_init`.
+    """
+
+    def test_stale_hook_repaired(self, tmp_path: Path) -> None:
+        settings_path = tmp_path / "settings.json"
+        _install_real_hooks(tmp_path, settings_path)
+        _make_hook_stale(tmp_path)
+
+        with patch("platformdirs.user_data_dir", return_value=str(tmp_path)):
+            result = runner.invoke(app, ["doctor", "--fix", "--settings-path", str(settings_path)])
+
+        assert result.exit_code == 0
+        assert "Bash hook script regenerated" in result.output
+        assert "✓ Bash hook up to date" in result.output  # the re-run, now healthy
+        assert "✓ All checks passed" in result.output
+
+        content = (tmp_path / "hooks" / "claude-hook.ps1").read_text(encoding="utf-8")
+        assert "# quor-hook-schema: 1" in content
+
+    def test_missing_hook_script_recreated(self, tmp_path: Path) -> None:
+        """Script deleted (e.g. by hand) but settings.json still points at
+        it — a degraded, previously-installed hook, not a fresh install."""
+        settings_path = tmp_path / "settings.json"
+        _install_real_hooks(tmp_path, settings_path)
+        (tmp_path / "hooks" / "claude-hook.ps1").unlink()
+
+        with patch("platformdirs.user_data_dir", return_value=str(tmp_path)):
+            result = runner.invoke(app, ["doctor", "--fix", "--settings-path", str(settings_path)])
+
+        assert result.exit_code == 0
+        assert "Bash hook script regenerated" in result.output
+        assert (tmp_path / "hooks" / "claude-hook.ps1").exists()
+        assert "✓ Bash hook script installed" in result.output
+
+    def test_missing_settings_registration_repaired(self, tmp_path: Path) -> None:
+        """Script exists on disk (proof Quor's Claude integration was set
+        up before) but settings.json doesn't reference it — re-register it,
+        don't touch anything else already in settings.json."""
+        from quor.adapters.hook_manifest import HOOK_SPECS, render_hook_script
+
+        settings_path = tmp_path / "settings.json"
+        hooks_dir = tmp_path / "hooks"
+        hooks_dir.mkdir(parents=True, exist_ok=True)
+        for spec in HOOK_SPECS:
+            (hooks_dir / spec.script_name).write_text(
+                render_hook_script(spec, python=sys.executable), encoding="utf-8"
+            )
+        # Pre-existing, unrelated settings.json content that must survive.
+        settings_path.write_text(
+            orjson.dumps({"hooks": {}, "unrelatedSetting": "keep-me"}).decode("utf-8"),
+            encoding="utf-8",
+        )
+
+        with patch("platformdirs.user_data_dir", return_value=str(tmp_path)):
+            result = runner.invoke(app, ["doctor", "--fix", "--settings-path", str(settings_path)])
+
+        assert result.exit_code == 0
+        assert "Claude settings repaired" in result.output
+        assert "✓ Bash hook registered in settings.json" in result.output
+        assert "✓ Read hook registered in settings.json" in result.output
+
+        data = orjson.loads(settings_path.read_bytes())
+        assert data["unrelatedSetting"] == "keep-me"  # nothing unrelated was touched
+
+    def test_never_initialized_hook_left_for_manual_init(self, tmp_path: Path) -> None:
+        """No script and no settings.json entry at all — Claude integration
+        was simply never set up. --fix must not silently opt the user in;
+        that stays `quor init --claude`'s job."""
+        settings_path = tmp_path / "settings.json"
+
+        with patch("platformdirs.user_data_dir", return_value=str(tmp_path)):
+            result = runner.invoke(app, ["doctor", "--fix", "--settings-path", str(settings_path)])
+
+        assert "✓ Hooks already current" in result.output
+        assert "hook script regenerated" not in result.output
+        assert not (tmp_path / "hooks").exists()
+        assert not settings_path.exists()
+        assert result.exit_code == ExitCode.GENERAL_ERROR  # still unhealthy — never installed
+        assert "run `quor init --claude`" in result.output
+
+    def test_already_healthy_performs_no_writes(self, tmp_path: Path) -> None:
+        settings_path = tmp_path / "settings.json"
+        _install_real_hooks(tmp_path, settings_path)
+
+        with (
+            patch("platformdirs.user_data_dir", return_value=str(tmp_path)),
+            patch("quor.cli.commands.init._write_text_atomic") as mock_write_text,
+            patch("quor.cli.commands.init._write_json_atomic") as mock_write_json,
+        ):
+            result = runner.invoke(app, ["doctor", "--fix", "--settings-path", str(settings_path)])
+
+        assert result.exit_code == 0
+        assert "✓ Hooks already current" in result.output
+        mock_write_text.assert_not_called()
+        mock_write_json.assert_not_called()
+
+    def test_one_repair_failing_does_not_stop_the_rest(self, tmp_path: Path) -> None:
+        """The Bash hook's write fails; the Read hook must still be repaired
+        and settings.json must still be updated for it."""
+        from quor.cli.commands.init import _write_text_atomic as real_write_text_atomic
+
+        settings_path = tmp_path / "settings.json"
+        _install_real_hooks(tmp_path, settings_path)
+        _make_hook_stale(tmp_path, "claude-hook.ps1")
+        _make_hook_stale(tmp_path, "claude-hook-read.ps1")
+
+        def _flaky_write(path: Path, content: str) -> None:
+            if "claude-hook.ps1" in str(path):
+                raise OSError("permission denied")
+            real_write_text_atomic(path, content)
+
+        with (
+            patch("platformdirs.user_data_dir", return_value=str(tmp_path)),
+            patch("quor.cli.commands.init._write_text_atomic", side_effect=_flaky_write),
+        ):
+            result = runner.invoke(app, ["doctor", "--fix", "--settings-path", str(settings_path)])
+
+        assert "✗ Bash hook script regenerated" in result.output
+        assert "permission denied" in result.output
+        assert "✓ Read hook script regenerated" in result.output
+        assert "✓ Claude settings repaired" in result.output
+        # Re-run confirms Read actually recovered despite Bash's failure.
+        assert "✓ Read hook up to date" in result.output
+        assert "✗ Bash hook up to date" in result.output
+        assert result.exit_code == ExitCode.GENERAL_ERROR
+
+    def test_idempotent_second_fix_run_performs_zero_additional_work(self, tmp_path: Path) -> None:
+        settings_path = tmp_path / "settings.json"
+        _install_real_hooks(tmp_path, settings_path)
+        _make_hook_stale(tmp_path)
+
+        with patch("platformdirs.user_data_dir", return_value=str(tmp_path)):
+            first = runner.invoke(app, ["doctor", "--fix", "--settings-path", str(settings_path)])
+            assert "✓ All checks passed" in first.output
+
+            with (
+                patch("quor.cli.commands.init._write_text_atomic") as mock_write_text,
+                patch("quor.cli.commands.init._write_json_atomic") as mock_write_json,
+            ):
+                second = runner.invoke(
+                    app, ["doctor", "--fix", "--settings-path", str(settings_path)]
+                )
+
+        assert second.exit_code == 0
+        assert "✓ Hooks already current" in second.output
+        mock_write_text.assert_not_called()
+        mock_write_json.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
 # quor doctor — PostToolUse/Read hook capability checks (QB-007A)
 # ---------------------------------------------------------------------------
 
@@ -1091,6 +1323,200 @@ class TestHookConfigHealth:
         assert result.exit_code == ExitCode.GENERAL_ERROR
         assert "✗ Bash hook up to date" in result.output
         assert "no schema marker" in result.output
+
+
+# ---------------------------------------------------------------------------
+# Post-upgrade stale-hook nudge (root() callback in cli/main.py)
+# ---------------------------------------------------------------------------
+
+
+class TestStaleHookNudge:
+    """`should_warn_stale_hooks()`/`root()`'s one-line nudge — surfaces
+    `doctor`'s own stale-hook detection without requiring the user to run it
+    after a `pip install --upgrade quor` (see README's "Upgrading Quor").
+    Warn-once-per-schema: a stale install that hasn't changed must not
+    re-nag on every CLI invocation (see the warn-once tests below)."""
+
+    _NUDGE = "hooks are out of date"
+
+    @staticmethod
+    def _make_hooks_stale(tmp_path: Path) -> None:
+        import re
+
+        content = (tmp_path / "hooks" / "claude-hook.ps1").read_text(encoding="utf-8")
+        stale_content = re.sub(r"# quor-hook-schema: .+", "# quor-hook-schema: 0", content)
+        (tmp_path / "hooks" / "claude-hook.ps1").write_text(stale_content, encoding="utf-8")
+
+    def test_no_nudge_when_never_initialized(self) -> None:
+        """No hook scripts on disk at all (Claude integration never run) —
+        nothing to be stale, so no nudge."""
+        result = runner.invoke(app, ["validate"])
+        assert result.exit_code == 0
+        assert self._NUDGE not in result.output
+
+    def test_no_nudge_when_hooks_up_to_date(self, tmp_path: Path) -> None:
+        settings_path = tmp_path / "settings.json"
+        _install_real_hooks(tmp_path, settings_path)
+        with patch("platformdirs.user_data_dir", return_value=str(tmp_path)):
+            result = runner.invoke(app, ["validate"])
+        assert result.exit_code == 0
+        assert self._NUDGE not in result.output
+
+    def test_nudge_shown_and_never_blocks_when_hooks_stale(self, tmp_path: Path) -> None:
+        settings_path = tmp_path / "settings.json"
+        _install_real_hooks(tmp_path, settings_path)
+        self._make_hooks_stale(tmp_path)
+
+        with patch("platformdirs.user_data_dir", return_value=str(tmp_path)):
+            result = runner.invoke(app, ["validate"])
+        assert self._NUDGE in result.output
+        assert "quor init --claude" in result.output
+        # Non-blocking: validate's own output and exit code are unaffected.
+        assert result.exit_code == 0
+        assert "git-status" in result.output
+
+    def test_nudge_suppressed_before_doctor(self, tmp_path: Path) -> None:
+        """`doctor` already reports staleness in full detail — the one-liner
+        ahead of it would be pure duplication, so root() skips it there."""
+        settings_path = tmp_path / "settings.json"
+        _install_real_hooks(tmp_path, settings_path)
+        self._make_hooks_stale(tmp_path)
+
+        with patch("platformdirs.user_data_dir", return_value=str(tmp_path)):
+            result = runner.invoke(app, ["doctor", "--settings-path", str(settings_path)])
+        assert self._NUDGE not in result.output
+        assert "✗ Bash hook up to date" in result.output  # doctor's own detail still shown
+
+    def test_nudge_suppressed_before_init(self, tmp_path: Path) -> None:
+        """`init --claude` is the fix itself — no nudge ahead of it either."""
+        settings_path = tmp_path / "settings.json"
+        _install_real_hooks(tmp_path, settings_path)
+        self._make_hooks_stale(tmp_path)
+
+        # Avoid init's real ~1-1.5s PowerShell execution-policy check (see
+        # TestInit._fast_execution_policy_check below) — incidental here.
+        policy_proc = MagicMock(spec=subprocess.CompletedProcess)
+        policy_proc.returncode = 0
+        policy_proc.stdout = "RemoteSigned"
+        with (
+            patch("platformdirs.user_data_dir", return_value=str(tmp_path)),
+            patch("quor.cli.commands.init.subprocess.run", return_value=policy_proc),
+        ):
+            result = runner.invoke(
+                app, ["init", "--claude", "--yes", "--settings-path", str(settings_path)]
+            )
+        assert self._NUDGE not in result.output
+
+    def test_first_stale_detection_prints_and_persists_state(self, tmp_path: Path) -> None:
+        """First time hooks are seen stale: warn, and record the schema
+        signature that was warned about."""
+        from quor.cli.commands.doctor import _STALE_WARN_STATE_FILENAME
+
+        settings_path = tmp_path / "settings.json"
+        _install_real_hooks(tmp_path, settings_path)
+        self._make_hooks_stale(tmp_path)
+
+        with patch("platformdirs.user_data_dir", return_value=str(tmp_path)):
+            result = runner.invoke(app, ["validate"])
+        assert self._NUDGE in result.output
+
+        state = orjson.loads((tmp_path / _STALE_WARN_STATE_FILENAME).read_bytes())
+        assert state == {"bash": 1, "read": 1}
+
+    def test_second_invocation_does_not_repeat_warning(self, tmp_path: Path) -> None:
+        """Same stale install, no changes in between: the second CLI
+        invocation must stay silent — this is the whole point of persisting
+        the warned-about schema signature."""
+        settings_path = tmp_path / "settings.json"
+        _install_real_hooks(tmp_path, settings_path)
+        self._make_hooks_stale(tmp_path)
+
+        with patch("platformdirs.user_data_dir", return_value=str(tmp_path)):
+            first = runner.invoke(app, ["validate"])
+            second = runner.invoke(app, ["validate"])
+        assert self._NUDGE in first.output
+        assert self._NUDGE not in second.output
+        assert second.exit_code == 0
+
+    def test_running_init_clears_warning_state(self, tmp_path: Path) -> None:
+        """After the user actually fixes the install (`quor init --claude`),
+        the next command must not warn, and the persisted state must be
+        cleared — not just suppressed — so a later real staleness isn't
+        mistaken for one already warned about. `init`/`doctor` themselves
+        never run the check (see test_nudge_suppressed_before_init/doctor
+        above), so clearing only happens on the *next* qualifying command
+        after init — asserted here via that follow-up `validate` call, not
+        immediately after `init` returns."""
+        from quor.cli.commands.doctor import _STALE_WARN_STATE_FILENAME
+
+        settings_path = tmp_path / "settings.json"
+        _install_real_hooks(tmp_path, settings_path)
+        self._make_hooks_stale(tmp_path)
+
+        policy_proc = MagicMock(spec=subprocess.CompletedProcess)
+        policy_proc.returncode = 0
+        policy_proc.stdout = "RemoteSigned"
+        with (
+            patch("platformdirs.user_data_dir", return_value=str(tmp_path)),
+            patch("quor.cli.commands.init.subprocess.run", return_value=policy_proc),
+        ):
+            runner.invoke(app, ["validate"])  # warns once, persists state
+            assert (tmp_path / _STALE_WARN_STATE_FILENAME).exists()
+
+            init_result = runner.invoke(
+                app, ["init", "--claude", "--yes", "--settings-path", str(settings_path)]
+            )
+            assert init_result.exit_code == 0
+
+            result = runner.invoke(app, ["validate"])
+        assert self._NUDGE not in result.output
+        assert not (tmp_path / _STALE_WARN_STATE_FILENAME).exists()
+
+    def test_future_schema_bump_warns_again(self, tmp_path: Path) -> None:
+        """A hook that reads as up to date under today's HOOK_SPECS must warn
+        again — exactly once — once a future Quor release bumps that hook's
+        schema_version, even though the on-disk script hasn't changed."""
+        import dataclasses
+
+        from quor.adapters.hook_manifest import HOOK_SPECS
+
+        settings_path = tmp_path / "settings.json"
+        _install_real_hooks(tmp_path, settings_path)  # matches today's schema exactly
+
+        bumped_specs = tuple(
+            dataclasses.replace(spec, schema_version=spec.schema_version + 1)
+            if spec.hook_id == "bash"
+            else spec
+            for spec in HOOK_SPECS
+        )
+
+        with patch("platformdirs.user_data_dir", return_value=str(tmp_path)):
+            before = runner.invoke(app, ["validate"])
+            assert self._NUDGE not in before.output  # up to date under today's schema
+
+            with patch("quor.cli.commands.doctor.HOOK_SPECS", bumped_specs):
+                after_bump_first = runner.invoke(app, ["validate"])
+                after_bump_second = runner.invoke(app, ["validate"])
+
+        assert self._NUDGE in after_bump_first.output
+        assert self._NUDGE not in after_bump_second.output
+
+    def test_corrupted_state_file_fails_open(self, tmp_path: Path) -> None:
+        """A corrupt (or otherwise unreadable) state file must never block
+        the command it precedes — worst case, the warning just fires again
+        as if nothing had been recorded."""
+        from quor.cli.commands.doctor import _STALE_WARN_STATE_FILENAME
+
+        settings_path = tmp_path / "settings.json"
+        _install_real_hooks(tmp_path, settings_path)
+        self._make_hooks_stale(tmp_path)
+        (tmp_path / _STALE_WARN_STATE_FILENAME).write_text("not valid json {{{", encoding="utf-8")
+
+        with patch("platformdirs.user_data_dir", return_value=str(tmp_path)):
+            result = runner.invoke(app, ["validate"])
+        assert result.exit_code == 0
+        assert self._NUDGE in result.output
+        assert "git-status" in result.output  # validate's own output still ran
 
 
 # ---------------------------------------------------------------------------

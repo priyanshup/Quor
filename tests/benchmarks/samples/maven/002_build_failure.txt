@@ -1,0 +1,22 @@
+[INFO] Scanning for projects...
+[INFO] ------------------------------------------------------------------------
+[INFO] Building myapp 1.0.0
+[INFO] ------------------------------------------------------------------------
+[INFO] --- maven-compiler-plugin:3.11.0:compile (default-compile) @ myapp ---
+[INFO] Compiling 8 source files to /project/target/classes
+[INFO] -------------------------------------------------------------
+[ERROR] COMPILATION ERROR :
+[INFO] -------------------------------------------------------------
+[ERROR] /project/src/main/java/App.java:[10,5] cannot find symbol
+  symbol:   method doThing()
+  location: class App
+[INFO] 1 error
+[INFO] -------------------------------------------------------------
+[INFO] ------------------------------------------------------------------------
+[INFO] BUILD FAILURE
+[INFO] ------------------------------------------------------------------------
+[INFO] Total time:  1.842 s
+[ERROR] Failed to execute goal org.apache.maven.plugins:maven-compiler-plugin:3.11.0:compile (default-compile) on project myapp: Compilation failure
+[ERROR] /project/src/main/java/App.java:[10,5] cannot find symbol
+[ERROR]
+[ERROR] -> [Help 1]
