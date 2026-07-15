@@ -1,0 +1,48 @@
+diff --git a/src/inventory/warehouse_allocator.py b/src/inventory/warehouse_allocator.py
+index 1d2e3f4..4f5a6b7 100644
+--- a/src/inventory/warehouse_allocator.py
++++ b/src/inventory/warehouse_allocator.py
+@@ -5,32 +5,32 @@ class WarehouseAllocator:
+     def __init__(self, warehouses, distance_matrix):
+         self._warehouses = warehouses
+         self._distance_matrix = distance_matrix
+         self._reservation_log = []
+         self._last_allocation = None
+         self._retry_count = 0
+         self._max_retries = 3
+         self._metrics = AllocationMetrics()
+         self._lock = threading.Lock()
+         self._cache = {}
+         self._cache_ttl_seconds = 300
+         self._fallback_warehouse_id = warehouses[0].id if warehouses else None
+         self._enabled_regions = {w.region for w in warehouses}
+         self._audit = AuditLog(component="warehouse_allocator")
+
+     def allocate(self, order):
+         with self._lock:
+             candidates = self._eligible_warehouses(order)
+             if not candidates:
+                 raise NoEligibleWarehouseError(order.id)
+
+             ranked = sorted(
+                 candidates,
+                 key=lambda w: self._distance_matrix.distance(w.id, order.destination_zip),
+             )
+
+-            chosen = ranked[0]
+-            reservation = self._reserve(chosen, order)
+-            self._reservation_log.append(reservation)
+-            self._last_allocation = chosen
+-            return reservation
++            chosen = self._pick_with_capacity_check(ranked, order)
++            reservation = self._reserve(chosen, order)
++            self._reservation_log.append(reservation)
++            self._last_allocation = chosen
++            self._metrics.record_allocation(chosen.id, order.total_units)
++            return reservation
+
+     def _eligible_warehouses(self, order):
+         return [
+             w for w in self._warehouses
+             if w.region in self._enabled_regions and w.can_fulfill(order)
+         ]

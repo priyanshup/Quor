@@ -1,0 +1,40 @@
+diff --git a/src/utils/stringHelpers.js b/src/utils/string-helpers.js
+similarity index 88%
+rename from src/utils/stringHelpers.js
+rename to src/utils/string-helpers.js
+index 7c8d9e0..1f2a3b4 100644
+--- a/src/utils/stringHelpers.js
++++ b/src/utils/string-helpers.js
+@@ -1,15 +1,19 @@
+-export function slugify(input) {
+-  return input.toLowerCase().replace(/\s+/g, "-");
++export function slugify(input, options = {}) {
++  const { maxLength = 80 } = options;
++  const slug = input
++    .trim()
++    .toLowerCase()
++    .replace(/[^a-z0-9\s-]/g, "")
++    .replace(/\s+/g, "-");
++  return slug.slice(0, maxLength);
+ }
+
+ export function truncate(input, maxChars) {
+   if (input.length <= maxChars) {
+     return input;
+   }
+-  return input.slice(0, maxChars) + "...";
++  return `${input.slice(0, maxChars - 1)}…`;
+ }
+
+ export function capitalize(input) {
+   return input.charAt(0).toUpperCase() + input.slice(1);
+ }
+diff --git a/src/utils/index.js b/src/utils/index.js
+index 8d9e0f1..2a3b4c5 100644
+--- a/src/utils/index.js
++++ b/src/utils/index.js
+@@ -1,4 +1,4 @@
+-export { slugify, truncate, capitalize } from "./stringHelpers";
++export { slugify, truncate, capitalize } from "./string-helpers";
+ export { formatMoney } from "./money";
+ export { debounce, throttle } from "./timing";

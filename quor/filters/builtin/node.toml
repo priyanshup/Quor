@@ -407,6 +407,13 @@ patterns = [
     '(?i)^to address (all|\d+) (issues?|vulnerabilit)',
     '(?i)^\s*npm audit fix( --force)?\s*$',
     '(?i)^run `npm audit` for details\.?$',
+    # QB-052: the npm-version upgrade nag prints on nearly every invocation
+    # regardless of subcommand — same "wrapper noise" category as the
+    # funding/audit CTAs above, just missed originally. Real usage showed
+    # npm's small real average savings (-9.1%) being eaten by fixed per-run
+    # overhead; this is pure boilerplate with nothing in preserve_patterns
+    # below that would need rescuing from it.
+    '(?i)^npm notice\b',
 ]
 preserve_patterns = [
     '(?i)\berror\b',
@@ -441,6 +448,12 @@ must_not_contain = ["To address all issues, run", "Run `npm audit` for details"]
 description = "npm ERR! failure output never touched"
 input = "npm warn deprecated foo@1.0.0: old\nnpm ERR! code ENOENT\nnpm ERR! syscall open\nnpm ERR! path /some/path/package.json\nnpm ERR! errno -4058\n"
 must_contain = ["npm ERR! code ENOENT", "npm ERR! errno -4058"]
+
+[[filter.tests]]
+description = "QB-052: npm version-upgrade notice banner stripped; install summary preserved"
+input = "npm notice \nnpm notice New major version of npm available! 9.8.1 -> 10.2.4\nnpm notice Changelog: https://github.com/npm/cli/releases/tag/v10.2.4\nnpm notice To update run: npm install -g npm@10.2.4\nnpm notice \nadded 152 packages, and audited 153 packages in 4s\n\nfound 0 vulnerabilities\n"
+must_contain = ["added 152 packages, and audited 153 packages in 4s", "found 0 vulnerabilities"]
+must_not_contain = ["npm notice", "New major version"]
 
 # ---------------------------------------------------------------------------
 # npx — package resolution/auto-install preamble only

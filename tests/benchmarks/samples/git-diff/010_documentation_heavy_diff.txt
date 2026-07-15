@@ -1,0 +1,65 @@
+diff --git a/docs/architecture/payments-overview.md b/docs/architecture/payments-overview.md
+index 0c1d2e3..3e4f5a6 100644
+--- a/docs/architecture/payments-overview.md
++++ b/docs/architecture/payments-overview.md
+@@ -1,10 +1,14 @@
+ # Payments Architecture Overview
+
+-This document describes how the payments subsystem processes charges,
+-refunds, and webhooks.
++This document describes how the payments subsystem processes charges,
++refunds, webhooks, and disputes. It is the canonical reference for anyone
++onboarding onto the payments team or integrating a new payment method.
+
+ ## Components
+
+-- **PaymentProcessor** — validates and submits charges to the gateway.
++- **PaymentProcessor** — validates and submits charges to the gateway,
++  guarding against duplicate pending charges via the ledger.
+ - **Ledger** — the source of truth for account balances.
+-- **WebhookHandler** — verifies and dispatches incoming gateway events.
++- **WebhookHandler** — verifies and dispatches incoming gateway events,
++  retrying with exponential backoff on transient failures.
++- **DisputeManager** — new in this revision; tracks chargebacks and
++  coordinates evidence submission with the gateway.
+
+ ## Charge lifecycle
+
+@@ -13,20 +17,34 @@
+ 1. Client calls `PaymentProcessor.charge()`.
+ 2. The processor checks the ledger for an existing pending charge with the
+    same idempotency key. If found, it raises `DuplicateChargeError`.
+-3. Otherwise, the gateway is called and the result recorded in the ledger.
++3. Otherwise, the gateway is called and the result recorded in the ledger.
++   The ledger write and gateway call are not atomic — see "Known
++   limitations" below for how we currently handle the reconciliation gap.
+
+-## Refunds
++## Disputes
+
+-Refunds are processed synchronously and always reference the original
+-charge ID. Partial refunds are supported; the sum of all refunds against
+-a charge can never exceed the original charge amount.
++A dispute (chargeback) arrives as a `dispute.created` webhook event.
++`DisputeManager` creates a case record, notifies the merchant, and starts a
++7-day evidence collection window. When the merchant submits evidence via
++the admin console, `DisputeManager.submitEvidence()` forwards it to the
++gateway and transitions the case to `under_review`.
++
++## Refunds
++
++Refunds are processed synchronously and always reference the original
++charge ID. Partial refunds are supported; the sum of all refunds against
++a charge can never exceed the original charge amount. A refund issued
++while a dispute is `under_review` is blocked and surfaces a
++`DisputeInProgressError` to the caller.
+
+ ## Known limitations
+
+ - The gateway call and ledger write in step 3 are not wrapped in a
+   distributed transaction. A crash between the two can leave a charge
+   recorded at the gateway but not in the ledger; the nightly
+   reconciliation job (`reconcile_charges.py`) detects and repairs this.
++- `DisputeManager` does not yet support partial-evidence resubmission —
++  see the tracking issue in the payments backlog before relying on it for
++  a dispute that spans multiple evidence rounds.

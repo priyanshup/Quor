@@ -1,0 +1,53 @@
+diff --git a/src/checkout/pricing.py b/src/checkout/pricing.py
+index 7f8a9b0..0000000 100644
+--- a/src/checkout/pricing.py
++++ b/src/checkout/pricing.py
+@@ -12,17 +12,25 @@ class PricingEngine:
+     def calculate_total(self, cart: Cart) -> int:
+         subtotal = sum(item.unit_price_cents * item.quantity for item in cart.items)
+-<<<<<<< HEAD
+-        if cart.customer.is_member:
+-            subtotal = int(subtotal * 0.95)
+-        return subtotal + self._shipping_cost(cart)
+-=======
+-        discount = self._promo_engine.best_discount(cart)
+-        if discount:
+-            subtotal -= discount.amount_cents
+-        return max(subtotal, 0)
+->>>>>>> feature/promo-engine
++        if cart.customer.is_member:
++            subtotal = int(subtotal * 0.95)
++
++        discount = self._promo_engine.best_discount(cart)
++        if discount:
++            subtotal -= discount.amount_cents
++
++        subtotal = max(subtotal, 0)
++        return subtotal + self._shipping_cost(cart)
+
+     def _shipping_cost(self, cart: Cart) -> int:
+-<<<<<<< HEAD
+-        return 0 if cart.subtotal_cents() > 5000 else 599
+-=======
+-        return self._shipping_table.lookup(cart.destination_zone)
+->>>>>>> feature/promo-engine
++        if cart.subtotal_cents() > 5000:
++            return 0
++        return self._shipping_table.lookup(cart.destination_zone)
+diff --git a/tests/checkout/test_pricing.py b/tests/checkout/test_pricing.py
+index 8a9b0c1..1c2d3e4 100644
+--- a/tests/checkout/test_pricing.py
++++ b/tests/checkout/test_pricing.py
+@@ -20,3 +20,14 @@ def test_member_discount_applied():
+     total = engine.calculate_total(cart)
+
+     assert total == 950
++
++
++def test_promo_discount_stacks_with_membership():
++    cart = fake_cart(subtotal_cents=1000, member=True, promo_amount_cents=100)
++    engine = PricingEngine(promo_engine=FakePromoEngine(), shipping_table=FakeShippingTable())
++
++    total = engine.calculate_total(cart)
++
++    assert total == 850

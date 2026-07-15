@@ -1,16 +1,40 @@
 # Quor
 
-> A rule-based command-output optimization and context-compression layer that reduces unnecessary LLM context while preserving important information.
+[![PyPI](https://img.shields.io/pypi/v/quor)](https://pypi.org/project/quor/)
+[![Python](https://img.shields.io/pypi/pyversions/quor)](https://pypi.org/project/quor/)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue)](https://github.com/priyanshup/Quor/blob/main/LICENSE)
 
-> **Status:** v0.4.1 is the latest version [available on PyPI](https://pypi.org/project/quor/) (see [CHANGELOG](https://github.com/priyanshup/Quor/blob/main/CHANGELOG.md)). All 10 implementation phases complete (1,421 tests passing, ruff + mypy clean, verified on Python 3.11 and 3.14 across multiple machines).
+**Quor cuts the noise out of what your AI coding assistant reads** — deterministic, rule-based compression for command output, source files, and documents, so more of the context window is spent on things that actually matter.
+
+> **Status:** [v0.4.1](https://pypi.org/project/quor/) is the latest release ([CHANGELOG](https://github.com/priyanshup/Quor/blob/main/CHANGELOG.md)) — 1,421 tests passing, `ruff`/`mypy` clean, verified on Python 3.11–3.14 on Windows and Linux.
 
 ---
 
 ## What is Quor?
 
-AI coding assistants spend a large share of their context window on raw command output — passing test runs, unchanged git status lines, repeated warnings, verbose build logs. That's prompt size the assistant pays for on every turn, and it crowds out the signal that actually matters: the failure, the diff, the one line that changed.
+Quor sits between your shell (or Claude Code's `Read` tool) and the assistant's context window. It runs your command — or reads your file — exactly as it would happen anyway, then applies a deterministic filtering pipeline that strips low-signal content while preserving everything that indicates success, failure, or change. The result: a smaller, higher-signal prompt, never a different one.
 
-Quor sits between your shell and the assistant's context window. It runs your command exactly as it would run anyway, then applies a deterministic filtering pipeline that removes low-signal output while preserving everything that indicates success, failure, or change. The result is a smaller, higher-signal prompt — not a different one.
+## Why Quor exists
+
+AI coding assistants burn a large share of their context window on things that carry no real information: 500 passing test lines, unchanged `git status` entries, repeated build warnings, a 40-page PDF's page furniture. That's prompt size you pay for on every turn — and it crowds out the one line that actually matters, like the failing assertion or the changed diff hunk. Quor removes the noise, not the signal.
+
+## Key features
+
+| Feature | What it means |
+|---|---|
+| **Deterministic** | Same input → same output, always. No LLM calls, no ML models, no randomness in the filtering path. |
+| **Fail-open** | A broken filter, plugin crash, or timeout falls back to the original, unfiltered output — never blocks your command or hides information. |
+| **Transparent** | `quor explain "pytest tests/"` shows exactly what was removed, stage by stage. Filters are plain TOML you can read, edit, and version-control. |
+| **Nothing is unrecoverable** | Every compressed output's true raw content is cached locally and linked (`[full output: <path>]`) — the original is always one click away. |
+| **Secret-aware** | Warns on stderr if a known credential pattern (GitHub, AWS, Slack, private key) survives compression. Never redacts or removes it silently. |
+| **Plugin-extensible** | Third-party stages and lifecycle plugins register via standard Python entry points — no core changes needed. |
+| **Non-compiler architecture** | Quor doesn't parse or semantically understand your command — it runs the real tool and applies text-level rules to the real output. |
+| **Windows-native, pip-installable** | `pip install quor` — no Rust toolchain, no compilation step. |
+
+> [!NOTE]
+> Quor never changes what a command does, what it's allowed to access, or what it returns on your own terminal. It only changes what gets forwarded into the assistant's context window.
+
+## How Quor works
 
 ```
 git status          →  <your Python interpreter> -m quor git status
@@ -20,119 +44,10 @@ git status          →  <your Python interpreter> -m quor git status
         optimized output → AI assistant context
 ```
 
-**Key properties:**
-
-- **Deterministic preprocessing.** Same input always produces the same output. No LLM calls, no ML models, no non-determinism in the filtering path itself.
-- **Token reduction and context optimization.** Removes low-signal output (unchanged lines, repeated noise, verbose logs) so more of the assistant's context budget is spent on content that matters.
-- **Fail-open.** Every layer degrades to the original, unfiltered output on error rather than risking data loss. A broken filter, a plugin crash, or a timeout never blocks your command or hides information — it just means nothing gets removed that turn.
-- **Transparent, rule-based processing.** Every filtering decision is traceable: `quor explain "pytest tests/"` shows exactly what each stage removed and why. Filters are plain TOML you can read, edit, and version-control.
-- **Plugin extensible.** Third-party stages and lifecycle plugins register via standard Python entry-points — no core changes required to add support for a new tool or add custom telemetry/policy logic.
-- **Non-compiler architecture.** Quor doesn't parse, execute, or semantically understand the command it runs — it runs the real tool, captures the real output, and applies text-level rules. There's no static analysis and nothing that changes what a command actually does or returns.
-- **Windows-native, pip-installable.** `pip install quor` — no Rust toolchain, no Homebrew, no compilation step.
-
-Quor does not change what a command does, what it's allowed to access, or what it returns to you on your own terminal — it only changes what gets forwarded into the assistant's context window, deterministically and transparently.
-
----
-
-## How Quor Works
-
-1. **The command executes normally.** Quor runs the real command (`git status`, `pytest`, etc.) exactly as it would run without Quor — same process, same exit code, same side effects.
-2. **The output is captured.** Quor reads the command's stdout before it reaches the AI assistant.
-3. **A deterministic filtering pipeline runs.** Rule-based stages (configurable, auditable, no ML) mark each line as keep, remove, or protect.
-4. **Important information is preserved.** Failures, diffs, errors, and anything matching a "protect" rule are never removed, no matter what else a filter is configured to strip.
-5. **The optimized output is sent to the AI assistant.** A smaller, higher-signal version of the same output — never a summarized or reworded one.
-
-Two other things happen automatically, both to stderr only — the AI's actual context (stdout) is never affected by either:
-- **Secret detection.** If a known token pattern (GitHub, AWS, Slack, a private key header) survives compression, Quor warns on stderr. It never redacts or removes the secret — this is a heads-up, not a filter.
-- **First-run tips.** Your first 5 filtered commands each print a one-line stats summary to stderr (tokens before/after, and a pointer to `quor gain`). Silent from the 6th command onward.
-
----
-
-## Performance & Token Reduction
-
-### How Quor reduces context
-
-Quor's pipeline annotates every output line with one of three decisions —
-`KEEP`, `COMPRESS`, or `PROTECT` — and the final render drops every
-`COMPRESS` line. Reduction comes entirely from removing lines that carry no
-new information for the assistant, never from summarizing, rewriting, or
-truncating the meaning of the lines that remain.
-
-**Algorithms responsible for compression:**
-
-- `remove_ansi` — strips lines that are pure terminal escape/color codes once stripped of formatting.
-- `strip_lines` — removes lines matching configured noise patterns (e.g. `PASSED` lines, dot-progress output), while `preserve_patterns` marks matching lines `PROTECT` unconditionally.
-- `deduplicate_consecutive` — collapses runs of identical adjacent lines to the first occurrence.
-- `group_repeated` — collapses N repetitions of a matched pattern into the first instance plus a `(×N)` count.
-- `max_tokens` — truncates beyond a configured budget using a `head`, `tail`, or `both` strategy, only after the above stages have already removed redundant content. The budget is a **best-effort target, not a guarantee**: `PROTECT` lines (see below) always take precedence and are never truncated to meet it, so rendered output can exceed the configured limit when protected content alone is large (e.g. a `git diff` with many changed lines — see "Why reduction varies by content" below).
-- `python_ast_summarize` — compresses Python function/method bodies to their signature + docstring using a stdlib `ast` parse (no type inference, no rewriting of kept lines); fails open on invalid syntax or non-Python input, returning the file unmodified.
-
-A few additional stages (`truncate_lines`, `regex_replace`, `match_output`) exist for narrower cases — see [docs/final/CLAUDE.md](https://github.com/priyanshup/Quor/blob/main/docs/final/CLAUDE.md)'s "Built-in stages" list. For the complete, currently-supported command-by-command reference — which filter handles what, what it does and doesn't optimize, and known limitations — see [docs/final/COMMAND_SUPPORT.md](https://github.com/priyanshup/Quor/blob/main/docs/final/COMMAND_SUPPORT.md).
-
-### Why reduction varies by content
-
-Compression ratio depends entirely on how repetitive or verbose the actual
-output is — there is no fixed "Quor compression rate." A clean `pytest`
-run with 500 passing tests and one failure compresses aggressively (500
-near-identical `PASSED` lines carry no new information). A `git diff`
-against a single changed file compresses very little, because nearly every
-line is already signal.
-
-**Compresses well:** long runs of passing test output, unchanged `git
-status` entries, repeated build warnings, verbose dependency-resolution
-logs, ANSI-heavy terminal formatting.
-
-**Intentionally preserved, never compressed:** failures, tracebacks,
-`AssertionError` and similar exception text, diff hunks, anything matching
-a filter's `preserve_patterns`, and any line already marked `PROTECT` by an
-earlier stage — no later stage can downgrade a `PROTECT` decision.
-
-**Nothing removed is unrecoverable.** Before compressing, Quor caches the true raw command output
-to a local, content-addressed file (`~/.local/share/quor/tee/{hash}.txt`) and appends `[full
-output: <path>]` to the compressed result. If the compressed version ever lacks detail you need,
-the original is still on disk — this is what makes aggressive compression safe rather than risky.
-
-### Why determinism matters here
-
-Because every stage is a rule (pattern match, dedup, count, or budget) and
-never a model call, the same input always produces the same output, and
-`quor explain <command>` can show the exact stage-by-stage reasoning behind
-every decision. This is what makes the behavior auditable and predictable
-in a way a summarization-based approach cannot be: nothing is ever
-paraphrased, and nothing is removed without a rule you can inspect (and
-override) in a TOML file.
-
-### Benchmark framework
-
-Token savings should be measured as:
-
-```
-reduction % = 1 - (output_tokens / input_tokens)
-```
-
-using Quor's own `char / 4` token estimator (`quor/tracking/db.py::count_tokens`,
-documented as a ±20% approximation — the same figure `quor gain` reports),
-against a representative sample of *real* command output for each scenario,
-not synthetic or cherry-picked examples. A credible benchmark run should
-capture, per scenario: the command, raw output token count, filtered output
-token count, which filter/stages fired, and whether the output was a
-passing run, a failing run, or a mixed run — since pass/fail mix is the
-single biggest driver of reduction percentage for test-runner output.
-
-| Scenario | Input Tokens | Output Tokens | Reduction % | Notes |
-|---|---|---|---|---|
-| `pytest` — large suite, all passing | *To be measured* | *To be measured* | *To be measured* | |
-| `pytest` — large suite, one failure | *To be measured* | *To be measured* | *To be measured* | |
-| `git status` — many unchanged files | *To be measured* | *To be measured* | *To be measured* | |
-| `git diff` — single small file changed | *To be measured* | *To be measured* | *To be measured* | |
-| `ruff check` — clean | *To be measured* | *To be measured* | *To be measured* | |
-| `ruff check` — several violations | *To be measured* | *To be measured* | *To be measured* | |
-
-No measurements have been recorded yet. `quor gain` will report real,
-per-project figures once Quor is in use; this table will be populated from
-that data (or a dedicated benchmark script) rather than estimated.
-
----
+1. **The command runs normally** — same process, same exit code, same side effects.
+2. **Quor captures the output** before it reaches the assistant.
+3. **A rule-based pipeline marks each line** `KEEP`, `COMPRESS`, or `PROTECT` — no ML, fully auditable.
+4. **Only `COMPRESS` lines are dropped.** Failures, diffs, tracebacks, and anything matching a `preserve_patterns` rule are never removed.
 
 ## Installation
 
@@ -141,23 +56,9 @@ pip install quor
 quor init --claude
 ```
 
-That's it — `quor` and `qr` are both installed as commands, and `quor init --claude` wires up the Claude Code hook. Requires Python 3.11+.
+Requires **Python 3.11+**. This installs `quor` and `qr` as commands and wires up the Claude Code hook.
 
-### Updating
-
-```bash
-pip install --upgrade quor
-```
-
-`quor init --claude` does not need to be re-run after an upgrade — the installed hook script is a thin wrapper that always calls the currently-installed `quor` package, so upgrading the package is enough on its own. Check what changed in [CHANGELOG.md](https://github.com/priyanshup/Quor/blob/main/CHANGELOG.md), and confirm the new version with:
-
-```bash
-pip show quor
-```
-
----
-
-## Quick Start
+## Quick start
 
 ```bash
 # 1. Install
@@ -169,14 +70,15 @@ quor init --claude
 # 3. Confirm everything is healthy
 quor doctor
 
-# 4. See what Quor would do to a real command, without running anything for real
+# 4. Preview what Quor would do to a real command — nothing is run for real
 quor explain "pytest tests/"
 
 # 5. After using Claude Code for a while, check your savings
 quor gain
 ```
 
-Expected output for step 3 (`quor doctor`) on a healthy install:
+<details>
+<summary>Expected <code>quor doctor</code> output on a healthy install</summary>
 
 ```
 ✓ Python ≥ 3.11 — 3.11
@@ -195,137 +97,130 @@ Expected output for step 3 (`quor doctor`) on a healthy install:
 ✓ Plugin discovery — no third-party plugins installed
 ```
 
-If any line shows `✗`, `quor doctor` prints what to run to fix it (usually `quor init --claude`).
+Any `✗` line tells you exactly what to run to fix it (usually `quor init --claude`).
+</details>
 
----
+## Supported AI assistants
 
-## Troubleshooting
+| Assistant | Support |
+|---|---|
+| **Claude Code** | ✅ Full support — `PreToolUse` (Bash) and `PostToolUse` (Read) hooks, installed via `quor init --claude`. |
+| Any other assistant | Not supported today. |
 
-**`'pip' is not recognized` / `'python' is not recognized`**
+## Supported languages & formats
 
-The Python installer's "Add python.exe to PATH" option is easy to miss, especially on a per-user install. Two fixes:
+**Structure-aware source reading** (via Claude Code's `Read` tool — function/method bodies are compressed to signature + docstring, everything else preserved):
 
-- Fastest, no setup needed: use the `py` launcher or full module invocation instead of the bare command:
+| Language | Extensions |
+|---|---|
+| Python | `.py` |
+| JavaScript | `.js`, `.jsx`, `.mjs`, `.cjs` |
+| TypeScript / TSX | `.ts`, `.tsx` |
+| Go | `.go` |
+| Rust | `.rs` |
+| Java | `.java` |
+| C# | `.cs` |
 
-  ```bash
-  py -m pip install quor
-  py -m quor doctor
-  ```
+> [!NOTE]
+> Go, Rust, Java, and C# analyzers ship as optional extras (`quor[go]`, `quor[rust]`, `quor[java]`, `quor[csharp]`) — install the one you need, e.g. `pip install "quor[go]"`.
 
-- Permanent fix: add your Python install's base folder and its `Scripts` subfolder to your **User** PATH (Windows key → "Edit environment variables for your account" → select `Path` → Edit → New). This does not require admin rights. Close and reopen your terminal afterward — existing windows won't see the change.
+**Document reading** (structure — headings, lists, tables — extracted instead of raw text):
 
-**Multiple Python versions installed, unsure which one Quor uses**
+| Format | Extensions |
+|---|---|
+| Markdown | `.md`, `.markdown` |
+| Plain text | `.txt`, `.rst` |
+| Word | `.docx` |
+| PDF | `.pdf` |
 
-Use the `py` launcher to be explicit:
+**Command-output filters:** `git`, `pytest`, `mypy`/`ruff` (build tooling), and the Node.js/TypeScript toolchain (`npm`, `npx`, `pnpm`, `yarn`, ESLint, `tsc`, Jest, Vitest, Prettier, Next.js, Turbo), plus a generic ANSI-stripping fallback for anything else.
 
-```bash
-py --list          # show all installed versions
-py -3.11 -m pip install quor
-py -3.11 -m quor doctor
-```
+## Benchmarks
 
-**`pip.exe` / `quor.exe` "Access is denied" on a locked-down corporate machine**
+Quor ships a committed benchmark suite (`tests/benchmarks/`) — 60 cases across 27 categories — that runs automatically in CI and fails the build on regression. The numbers below are measured results from that suite, not live estimates:
 
-`pip install quor` creates `quor.exe`/`qr.exe` — small, unsigned launcher stubs in your Python install's `Scripts` folder that just re-invoke the interpreter. Some corporate endpoint-protection / application-control policies allow the interpreter itself (`python.exe`, usually a signed, known binary from a trusted install path) but block execution of these newly created, unsigned wrapper scripts, even though they do nothing but call back into that same interpreter.
+| Filter | Sample | Reduction |
+|---|---|---|
+| Markdown / plain text | long document | 29.5% / 18.8% |
+| Markdown / plain text | short document | 0% |
+| DOCX | long design doc | 16.0% |
+| DOCX | short README | 0.0% |
+| PDF | long design doc | 43.2% |
+| PDF | short notes | 0.0% |
 
-This only affects commands *you* type directly. Every command Claude Code runs automatically already invokes the interpreter directly — `<your Python interpreter> -m quor ...`, never `quor.exe`/`qr.exe` — so the PreToolUse hook is unaffected by this policy (see [docs/final/DECISIONS.md](https://github.com/priyanshup/Quor/blob/main/docs/final/DECISIONS.md) ADR-029). When typing commands yourself, use the same enterprise-safe form, going through the interpreter instead of the wrapper:
+> [!NOTE]
+> Reduction is entirely content-dependent — there's no fixed "Quor compression rate." A short file or a small diff is already mostly signal and compresses little; that's correct behavior, not underperformance. Run `quor gain` after real usage to see your own project's numbers (a ±20% estimate, using a `char / 4` token approximation).
 
-```bash
-py -m pip install quor
-py -m quor doctor
-```
+## Configuration
 
-or, if the `py` launcher isn't available (e.g. on Linux/macOS):
-
-```bash
-python -m pip install quor
-python -m quor doctor
-```
-
-**Installing into a virtual environment on Windows and getting strange import errors**
-
-If your venv's path is deeply nested (e.g. under a long temp directory), Windows' classic 260-character path limit can silently truncate files during install. Create the venv somewhere short (e.g. `C:\myvenv`) and reinstall.
-
-**`quor doctor` shows a red `✗` for "Hook script installed"**
-
-Run `quor init --claude` — this is expected on any install where the hook hasn't been wired up yet, not a bug.
-
-**`quor doctor` shows a red `✗` for "No conflicting PreToolUse hooks"**
-
-Another tool (a competing token-optimizer like RTK/Zap, Headroom AI, Comet, or similar) already has a `PreToolUse` Bash hook registered in Claude Code's `settings.json`. **This is not safe to ignore.** Claude Code has no supported way for two `PreToolUse` hooks to both rewrite the same Bash command — depending on registration order, one hook's rewrite can be silently dropped ([anthropics/claude-code#15897](https://github.com/anthropics/claude-code/issues/15897), a known limitation, not something Quor can work around). With two hook tools active, Quor's compression, the other tool's, or both may simply not apply — with no error telling you so.
-
-Only one `PreToolUse` Bash hook tool should be active at a time. Run `quor init --claude` again to see exactly which other hook is registered, then disable that tool (or remove its entry from `settings.json`) — "review the conflict" means resolve it, not run both.
-
-**Checking which version of Quor is installed**
-
-There's no `quor --version` flag yet — use:
+Filters are plain TOML, resolved in three tiers — **project** overrides **user** overrides **built-in**. You rarely need to touch this to get value from Quor, but every filter is inspectable and editable:
 
 ```bash
-pip show quor
+quor validate path/to/filter.toml   # validate a filter config
+quor schema                          # print the filter JSON Schema
 ```
 
----
-
-## Commands (V1)
+## Common commands
 
 | Command | Description |
 |---|---|
 | `quor init --claude` | Install the Claude Code hook |
-| `quor explain <cmd>` | Show stage-by-stage trace of what Quor removed |
+| `quor explain <cmd>` | Show a stage-by-stage trace of what Quor removed |
 | `quor gain` | Show cumulative token savings (±20%) |
 | `quor verify` | Run all inline filter tests |
 | `quor validate [file]` | Validate a filter config file |
 | `quor doctor` | Health check — hook responding? Tests passing? |
-| `quor schema` | Output the filter file JSON Schema to stdout |
+| `quor schema` | Output the filter JSON Schema to stdout |
 
-Both `quor` and `qr` are registered as entry points.
+Both `quor` and `qr` are registered entry points for every command above.
 
----
+## Troubleshooting
 
-## Roadmap: Observability (Planned)
+| Problem | Fix |
+|---|---|
+| `'pip'`/`'python'` not recognized | Use `py -m pip install quor` / `py -m quor doctor`, or add Python's install + `Scripts` folder to your **User** PATH. |
+| Multiple Python versions, unsure which is used | `py --list`, then `py -3.11 -m pip install quor`. |
+| `quor doctor` shows ✗ for "Hook script installed" | Run `quor init --claude` — expected until the hook is wired up. |
+| `quor doctor` shows ✗ for "No conflicting PreToolUse hooks" | Another tool already owns Claude Code's `PreToolUse` Bash hook. Two hooks rewriting the same command is unsupported and can silently drop one's changes — disable the other tool. |
+| Strange import errors after installing into a venv | Windows' 260-character path limit may be truncating files under a deeply nested path — create the venv somewhere short (e.g. `C:\myvenv`). |
+| Checking the installed version | `pip show quor` (`quor --version` doesn't exist yet). |
 
-The following are **planned, not yet implemented.** They're listed here so
-it's clear what to expect next, not as claims about current behavior:
+> [!WARNING]
+> **`pip.exe`/`quor.exe` "Access is denied" on a locked-down corporate machine.** Some endpoint-protection policies block the small, unsigned `quor.exe`/`qr.exe` launcher stubs `pip` creates, even though they only re-invoke the interpreter. This never affects Claude Code itself — every command it runs already goes through `<your Python interpreter> -m quor ...` directly, never the launcher. When typing commands yourself, use the same enterprise-safe form:
+> ```bash
+> py -m pip install quor
+> py -m quor doctor
+> ```
+> (or `python -m ...` if `py` isn't available).
 
-- **Compression statistics** — richer per-run breakdowns than `quor gain`'s
-  current cumulative view (per-stage contribution, per-filter history).
-- **Estimated token savings inline** — surfacing the ±20% estimate at the
-  point of use, not only via a separate `quor gain` invocation.
-- **Before/after preview** — a way to see the unfiltered and filtered
-  output side by side without needing to run `quor explain` separately.
-- **Dry-run mode** — run the filtering pipeline and report what *would* be
-  removed without actually altering the output sent to the assistant.
-- **Verbose diagnostics** — an opt-in detailed trace mode for debugging
-  filter behavior, beyond what `quor explain` already provides.
+## FAQ
 
-See [docs/final/ROADMAP.md](https://github.com/priyanshup/Quor/blob/main/docs/final/ROADMAP.md) for the full
-version-by-version plan.
+**Does Quor use AI, or send my data anywhere?**
+No. Filtering is entirely rule-based (pattern match, dedup, count, budget) and runs locally — no LLM calls, no network calls.
 
----
+**Does Quor change what my command does?**
+No. It runs the real command unmodified, with the same exit code and side effects. It only changes what's forwarded into the assistant's context.
 
-## Development Status
+**What if compression removes something I actually needed?**
+Nothing is unrecoverable — the true raw output is cached locally and a `[full output: <path>]` link is appended to the compressed result.
 
-| Phase | Description | Status |
-|---|---|---|
-| 0 | Repository setup | **Complete** |
-| 1 | ContentMask primitive + pipeline engine | **Complete** |
-| 2 | Built-in compression stages | **Complete** |
-| 3 | Filter config + registry | **Complete** |
-| 4 | Command rewriter + classifier | **Complete** |
-| 5 | Claude Code hook adapter | **Complete** |
-| 6 | SQLite + JSONL tracking | **Complete** |
-| 7 | CLI commands | **Complete** |
-| 8 | Plugin infrastructure | **Complete** |
-| 9 | Plugin discovery & loading | **Complete** |
-| 10 | Packaging & release | **Complete** — [v0.4.1 on PyPI](https://pypi.org/project/quor/) (first released as v0.1.0) |
+**Which OS does Quor support?**
+Windows is the primary development and CI target; CI also verifies Ubuntu (Linux) on every change.
 
-1,421 tests passing, ruff + mypy clean on `quor/` and `tests/`, verified on Python 3.11, 3.13, and 3.14. See [docs/final/PROJECT_STATUS.md](https://github.com/priyanshup/Quor/blob/main/docs/final/PROJECT_STATUS.md) for the current snapshot, [docs/final/IMPLEMENTATION_PLAN.md](https://github.com/priyanshup/Quor/blob/main/docs/final/IMPLEMENTATION_PLAN.md) for the full roadmap, and [CHANGELOG.md](https://github.com/priyanshup/Quor/blob/main/CHANGELOG.md) for the full release notes.
+**Which AI coding assistant does Quor support today?**
+Claude Code only, via its `PreToolUse`/`PostToolUse` hooks.
 
-The operating-mode system (AUDIT / OPTIMIZE / SIMULATE) is intentionally display-only in this release — `quor doctor` and `quor gain` show the configured mode, but the dispatcher doesn't yet branch on it. This is a scoped, documented roadmap item, not a bug; see `docs/final/PROJECT_STATUS.md` for details.
+**What does "Mode: audit" mean in `quor doctor`?**
+Quor has a planned AUDIT / OPTIMIZE / SIMULATE mode system. Today only the mode is displayed — it doesn't yet change filtering behavior.
 
----
+**How do I see how much Quor has actually saved me?**
+`quor gain` — reports cumulative token savings, ±20%.
 
-## Development Setup
+## Roadmap
+
+Quor is under active development. Released features and their history live in [CHANGELOG.md](https://github.com/priyanshup/Quor/blob/main/CHANGELOG.md); what's being considered next is tracked in the project's backlog on GitHub.
+
+## Contributing
 
 ```bash
 git clone https://github.com/priyanshup/Quor.git
@@ -335,24 +230,7 @@ pip install -e ./tests/fixtures/test_plugin
 pytest tests/
 ```
 
-The second install step is required for the plugin-discovery tests — see
-[CONTRIBUTING.md](https://github.com/priyanshup/Quor/blob/main/CONTRIBUTING.md) for why it's a separate step rather than
-a `pyproject.toml` dev dependency.
-
-A separate compression benchmark suite (`tests/benchmarks/`) validates real-world compression
-quality against a committed baseline and runs automatically as part of `pytest tests/`; it can
-also be run standalone (`python -m tests.benchmarks.run_benchmarks`) for a full report — see
-[tests/benchmarks/README.md](https://github.com/priyanshup/Quor/blob/main/tests/benchmarks/README.md).
-
-Requires Python 3.11+. Windows is the primary development and CI target. Pure Python — no `uv` or other non-pip tooling required.
-
----
-
-## Contributing
-
 See [CONTRIBUTING.md](https://github.com/priyanshup/Quor/blob/main/CONTRIBUTING.md) for the full contributor guide, [CODE_OF_CONDUCT.md](https://github.com/priyanshup/Quor/blob/main/CODE_OF_CONDUCT.md) for community standards, and [SECURITY.md](https://github.com/priyanshup/Quor/blob/main/SECURITY.md) to report a vulnerability.
-
----
 
 ## License
 

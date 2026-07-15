@@ -827,8 +827,19 @@ bundled with QB-035's now-unrelated multi-agent-support half — see QB-035 in
 doesn't need to be one large effort, and languages can be prioritized by real usage data once it
 exists (see QB-047, QB-054).
 
-**Status:** Proposed. Not scoped or implemented. No language chosen as "first" yet — worth deciding
-based on real user-base composition once there is one, rather than guessing.
+**Correction (documentation consistency pass):** the "Status" line below was stale.
+`pyproject.toml`'s `go`/`java`/`rust`/`csharp` optional extras already declare
+`tree-sitter-go`/`tree-sitter-java`/`tree-sitter-rust`/`tree-sitter-c-sharp` and describe
+implemented, fail-open analyzers (`analyze_go()`, `analyze_java()`, `analyze_rust()`,
+`analyze_csharp()` in `quor/pipeline/ast_summarize/`), each reusing the same
+`tree-sitter<0.26.0`-ceiling and ERROR-node-overlap rule as the shipped JS/TS/TSX analyzers. This
+work is implemented, not proposed — it has not yet been reflected in a `CHANGELOG.md` release entry
+or moved to [Completed](#completed), which should happen in a follow-up pass together with the
+verification detail (dates, test counts, benchmark measurements) that a proper Completed write-up
+needs and that isn't available from `pyproject.toml` alone.
+
+**Status:** Implemented (Go, Rust, Java, C# analyzers and `quor[go]`/`quor[java]`/`quor[rust]`/
+`quor[csharp]` extras all present in `pyproject.toml`) — not yet released/CHANGELOG'd.
 
 </details>
 
