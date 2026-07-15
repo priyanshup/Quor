@@ -5,10 +5,20 @@ sys.argv[1:] = ["git", "status"] → subprocess runs git status, output filtered
 
 Execution order:
   subprocess → PRE_FILTER plugins → ContentMask filter → POST_FILTER plugins
-    → tee (ADR-023, if enabled and output changed) → stdout
+    → tee (ADR-023, if enabled and output changed) → concise-output
+    instruction (if enabled) → stdout
 
 Tee is a dispatcher-level concern only — it never touches ContentMask,
 Pipeline, or any StageHandler. See quor/pipeline/tee.py.
+
+The concise-output instruction is likewise dispatcher-level only: it is
+prepended to the already-assembled output right before the final
+`sys.stdout.write`, never fed back into ContentMask/tee/plugins, and only
+applied when filtering actually changed the output (`filtered != captured`)
+— true passthrough (`filter_config is None`) and a no-op filter match (e.g.
+the generic fallback on already-clean output) both stay byte-identical to
+`captured`, preserving the existing "original, unfiltered output" fail-open
+contract. See CONCISE_INSTRUCTION_ENABLED below.
 """
 
 from __future__ import annotations
@@ -36,6 +46,25 @@ from quor.pipeline.tee import (
     write_tee,
 )
 from quor.tracking.db import TrackingDB, count_tokens, track_invocation
+
+# ---------------------------------------------------------------------------
+# Concise-output instruction — a short, generic nudge prepended to compressed
+# output so the assistant favors concise, non-repetitive replies without
+# changing what the user asked for. Flip CONCISE_INSTRUCTION_ENABLED or edit
+# CONCISE_INSTRUCTION to disable or extend it; neither requires touching
+# run_dispatch() itself.
+# ---------------------------------------------------------------------------
+CONCISE_INSTRUCTION_ENABLED = True
+
+CONCISE_INSTRUCTION = "Respond concisely and avoid repeating information already stated.\n\n"
+
+
+def _with_concise_instruction(text: str) -> str:
+    """Prepend CONCISE_INSTRUCTION to `text` when enabled; no-op otherwise."""
+    if not CONCISE_INSTRUCTION_ENABLED:
+        return text
+    return CONCISE_INSTRUCTION + text
+
 
 if TYPE_CHECKING:
     # Deferred at runtime (see _setup_plugins/_run_pre_filter_plugins/
@@ -113,6 +142,13 @@ def run_dispatch(args: list[str], tracking: TrackingDB | None = None) -> int:
         content_type=content_type,
     )
 
+    # Whether filtering actually changed anything, before tee's own footer
+    # (which only ever appends on top of a genuine change) can add more —
+    # gates the concise-output instruction below so a no-op filter match
+    # (e.g. the generic fallback on already-clean output) stays byte-
+    # identical to `captured`, exactly like true passthrough.
+    content_changed = filtered != captured
+
     # --- Tee: cache raw output + append recovery footer if it changed (ADR-023) ---
     filtered = _apply_tee(filter_config, captured=captured, final_output=filtered)
 
@@ -133,7 +169,8 @@ def run_dispatch(args: list[str], tracking: TrackingDB | None = None) -> int:
         final_tokens=count_tokens(filtered),
     )
 
-    sys.stdout.write(filtered)
+    output = _with_concise_instruction(filtered) if content_changed else filtered
+    sys.stdout.write(output)
     sys.stdout.flush()
     return proc.returncode
 

@@ -17,7 +17,7 @@ from pydantic import ValidationError
 
 from quor.adapters.base import HookInput, HookOutput, ToolInput
 from quor.adapters.claude import HOOK_COMMAND, HOOK_PS1_TEMPLATE, run_hook
-from quor.adapters.dispatcher import run_dispatch
+from quor.adapters.dispatcher import CONCISE_INSTRUCTION, run_dispatch
 from quor.filters.registry import FilterRegistry
 from quor.rewrite.invocation import get_quor_invocation
 
@@ -528,6 +528,61 @@ class TestDispatcher:
 
 
 # ---------------------------------------------------------------------------
+# run_dispatch() — concise-output instruction
+# ---------------------------------------------------------------------------
+
+
+class TestConciseInstruction:
+    def test_prepended_when_a_filter_compresses_output(self) -> None:
+        proc = _make_proc(
+            stdout=(
+                "PASSED tests/test_a.py::test_x\n"
+                "FAILED tests/test_b.py::test_y\n"
+                "    AssertionError: got False\n"
+            )
+        )
+        captured = io.StringIO()
+        with (
+            patch("subprocess.run", return_value=proc),
+            patch("sys.stdout", captured),
+        ):
+            run_dispatch(["pytest", "tests/"])
+
+        assert captured.getvalue().startswith(CONCISE_INSTRUCTION)
+
+    def test_absent_on_passthrough(self) -> None:
+        """No filter matched: output must stay byte-identical (fail-open
+        contract) — the instruction is only prepended on the compressed path."""
+        proc = _make_proc(stdout="hello world\n")
+        captured = io.StringIO()
+        with (
+            patch("subprocess.run", return_value=proc),
+            patch("sys.stdout", captured),
+        ):
+            run_dispatch(["echo", "hello"])
+
+        assert captured.getvalue() == "hello world\n"
+
+    def test_disabled_via_module_flag(self) -> None:
+        proc = _make_proc(
+            stdout=(
+                "PASSED tests/test_a.py::test_x\n"
+                "FAILED tests/test_b.py::test_y\n"
+                "    AssertionError: got False\n"
+            )
+        )
+        captured = io.StringIO()
+        with (
+            patch("subprocess.run", return_value=proc),
+            patch("sys.stdout", captured),
+            patch("quor.adapters.dispatcher.CONCISE_INSTRUCTION_ENABLED", False),
+        ):
+            run_dispatch(["pytest", "tests/"])
+
+        assert not captured.getvalue().startswith(CONCISE_INSTRUCTION)
+
+
+# ---------------------------------------------------------------------------
 # run_dispatch() — tee mechanism (ADR-023)
 # ---------------------------------------------------------------------------
 
@@ -774,10 +829,12 @@ class TestDispatcherTee:
             run_dispatch(["pytest", "tests/"])
         dispatcher_output = captured.getvalue()
 
-        # Dispatcher output is exactly "filter's own output" + footer —
-        # nothing about the body itself changed because tee ran afterward.
-        assert dispatcher_output.startswith(filter_only_output)
-        footer = dispatcher_output[len(filter_only_output) :]
+        # Dispatcher output is exactly the concise-output instruction +
+        # "filter's own output" + footer — nothing about the body itself
+        # changed because tee ran afterward, and the instruction is prepended
+        # only as the very last step before stdout (see CONCISE_INSTRUCTION).
+        assert dispatcher_output.startswith(CONCISE_INSTRUCTION + filter_only_output)
+        footer = dispatcher_output[len(CONCISE_INSTRUCTION + filter_only_output) :]
         assert footer.startswith("\n[full output:")
 
         # The filter alone already respects its own max_tokens=500 budget

@@ -27,6 +27,7 @@ from quor.adapters.base import (
     ReadToolInput,
 )
 from quor.adapters.claude_read import HOOK_READ_COMMAND, HOOK_READ_PS1_TEMPLATE, run_hook
+from quor.adapters.dispatcher import CONCISE_INSTRUCTION
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -196,6 +197,22 @@ class TestRunHookCompression:
         updated = result["hookSpecificOutput"].get("updatedToolOutput")
         assert isinstance(updated, str)
         assert len(updated) < len(large_payload["tool_response"])
+
+    def test_compressed_output_is_prefixed_with_concise_instruction(self) -> None:
+        """Consistency with the Bash dispatcher path: genuinely compressed
+        Read output carries the same CONCISE_INSTRUCTION prefix."""
+        large_payload = _make_read_payload(
+            file_path="notes.md", tool_response="line of filler text. " * 10_000
+        )
+        result = _run_hook_with(large_payload)
+        updated = result["hookSpecificOutput"]["updatedToolOutput"]
+        assert updated.startswith(CONCISE_INSTRUCTION)
+
+    def test_unchanged_content_has_no_instruction(self) -> None:
+        """No-op case (small, already-clean content): updatedToolOutput is
+        omitted entirely, so no instruction is injected either."""
+        result = _run_hook_with(_make_read_payload())
+        assert "updatedToolOutput" not in result["hookSpecificOutput"]
 
 
 # ---------------------------------------------------------------------------

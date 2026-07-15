@@ -27,6 +27,7 @@ import pytest
 from reportlab.pdfgen import canvas
 
 from quor.adapters.claude_read import run_hook
+from quor.adapters.dispatcher import CONCISE_INSTRUCTION
 from quor.filters.registry import FilterRegistry
 
 # ---------------------------------------------------------------------------
@@ -297,7 +298,9 @@ class TestDocxPdfExtraction:
 
         result = _run_hook(_read_payload(str(path), "irrelevant original"))
         updated = result["hookSpecificOutput"].get("updatedToolOutput")
-        assert updated == "# Title\n\nJust a short paragraph with nothing special."
+        assert updated == (
+            CONCISE_INSTRUCTION + "# Title\n\nJust a short paragraph with nothing special."
+        )
 
     def test_docx_omits_update_when_tool_response_already_matches_extracted_text(
         self, tmp_path: Path
