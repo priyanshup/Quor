@@ -474,7 +474,14 @@ proposed repetitive-hunk collapsing, not yet implemented) or "this whole
 file's diff is generated noise" (QB-055's proposed huge-unchanged-region
 summarization, also not yet implemented). Only ever collapses runs already
 marked `KEEP`; it cannot loosen an existing `PROTECT` decision, so it has no
-effect on filters where too much content is already protected.
+effect on filters where too much content is already protected — which is
+exactly why git-diff's own `preserve_patterns` correctness mattered: an
+over-broad pattern silently starves this stage of eligible lines. Fixed
+2026-07-15 (see backlog.md's QB-041 "Fix update") — git-diff's
+`preserve_patterns` carried bare `'conflict'`/`'Error'` substring matches
+that force-protected ordinary context lines merely mentioning an
+Error-suffixed identifier, fragmenting runs this stage could otherwise have
+collapsed whole.
 
 ---
 
