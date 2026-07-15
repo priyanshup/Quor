@@ -25,6 +25,7 @@ ENV/
 .coverage.*
 htmlcov/
 coverage.xml
+full_ci_repro.txt
 
 # Benchmark run output (generated per-run; the committed baseline lives at
 # tests/benchmarks/baseline.json, not here)
