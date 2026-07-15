@@ -49,7 +49,7 @@ dev = [
     # ruff/mypy are exact-pinned: new releases regularly add lint rules or
     # tighten checks, which silently breaks CI without any code change unless
     # local and CI resolve the identical version (see DECISIONS.md).
-    "mypy==2.2.0",
+    "mypy==2.3.0",
     "ruff==0.15.20",
     # python-docx (QB-007E2) is listed here too, not just in `documents`
     # below, so contributors running the full test suite get real DOCX
