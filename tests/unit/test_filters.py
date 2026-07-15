@@ -381,6 +381,74 @@ class TestFilterApply:
         assert any("Skipping" in str(w.message) for w in caught)
 
 
+# ---------------------------------------------------------------------------
+# Registry — apply never-expand safeguard
+# ---------------------------------------------------------------------------
+
+
+class TestNeverExpandOutputSafeguard:
+    """`FilterRegistry.apply()` must never return a rendered result that is
+    actually larger than the original — it should fall back to the original
+    content instead. Token counts are only an estimate (`count_tokens` is
+    `ceil(len/4)`), so a tie at the token-count level is broken by actual
+    byte length. No shipped built-in filter can trigger any of this on its
+    own (see `TestFilterNeverExpandsOutput` above), so these tests use
+    `regex_replace` — the one built-in stage whose replacement text is
+    config-controlled and can be made arbitrarily longer or shorter than its
+    match — to force each case directly.
+    """
+
+    reg = FilterRegistry(skip_user=True, skip_project=True)
+
+    @staticmethod
+    def _regex_filter(pattern: str, replacement: str) -> FilterConfig:
+        return _simple_filter(
+            stages=[
+                {
+                    "type": "regex_replace",
+                    "rules": [{"pattern": pattern, "replacement": replacement}],
+                }
+            ]
+        )
+
+    def test_smaller_compressed_output_is_returned(self) -> None:
+        from quor.tracking.db import count_tokens
+
+        fc = self._regex_filter("hello", "hi")
+        content = "hello world"
+        result = self.reg.apply(fc, content)
+        assert count_tokens(result) < count_tokens(content)
+        assert result == "hi world"
+
+    def test_equal_token_count_and_not_shorter_falls_back_to_original(self) -> None:
+        from quor.tracking.db import count_tokens
+
+        fc = self._regex_filter("^a$", "abcd")
+        content = "a"
+        assert count_tokens("abcd") == count_tokens(content)  # sanity: same token bucket
+        result = self.reg.apply(fc, content)
+        assert result == content
+
+    def test_equal_token_count_but_byte_length_shorter_returns_compressed(self) -> None:
+        from quor.tracking.db import count_tokens
+
+        fc = self._regex_filter("^abcd$", "a")
+        content = "abcd"
+        assert count_tokens("a") == count_tokens(content)  # sanity: same token bucket
+        assert len("a") < len(content)  # sanity: byte-length tie-breaker should prefer this
+        result = self.reg.apply(fc, content)
+        assert result == "a"
+
+    def test_larger_compressed_output_falls_back_to_original(self) -> None:
+        from quor.tracking.db import count_tokens
+
+        fc = self._regex_filter("^a$", "abcdefghij")
+        content = "a"
+        assert count_tokens("abcdefghij") > count_tokens(content)  # sanity
+        result = self.reg.apply(fc, content)
+        assert result == content
+
+
 class TestLargeInputPerformance:
     """IA-S03 (RELEASE_CRITERIA.md): a 10MB input must not hang the pipeline.
     Verified manually during the 2026-07-08 gate walk (0.58s) but had no

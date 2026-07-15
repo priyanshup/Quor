@@ -1,0 +1,64 @@
+diff --git a/src/workers/email_worker.py b/src/workers/email_worker.py
+index 2e3f4a5..5a6b7c8 100644
+--- a/src/workers/email_worker.py
++++ b/src/workers/email_worker.py
+@@ -8,10 +8,14 @@ class EmailWorker:
+     def __init__(self, queue, sender, settings):
+         self._queue = queue
+         self._sender = sender
+-        self._batch_size = settings.get("batch_size", 10)
++        self._batch_size = settings.get("batch_size", 25)
++        self._max_retries = settings.get("max_retries", 3)
++        self._retry_backoff_seconds = settings.get("retry_backoff_seconds", 5)
+
+     def run_once(self):
+         batch = self._queue.pop_batch(self._batch_size)
+         for message in batch:
+-            self._sender.send(message)
++            self._send_with_retry(message)
++
++    def _send_with_retry(self, message):
++        for attempt in range(self._max_retries):
++            try:
++                self._sender.send(message)
++                return
++            except TransientSendError:
++                time.sleep(self._retry_backoff_seconds * (attempt + 1))
++        self._sender.send_to_dead_letter(message)
+diff --git a/config/workers.yaml b/config/workers.yaml
+index 3f4a5b6..6b7c8d9 100644
+--- a/config/workers.yaml
++++ b/config/workers.yaml
+@@ -1,10 +1,13 @@
+ email_worker:
+-  batch_size: 10
++  batch_size: 25
++  max_retries: 3
++  retry_backoff_seconds: 5
+   poll_interval_seconds: 15
+   enabled: true
+
+ sms_worker:
+   batch_size: 20
+   poll_interval_seconds: 10
+   enabled: true
++  max_retries: 2
+diff --git a/tests/workers/test_email_worker.py b/tests/workers/test_email_worker.py
+index 4a5b6c7..7c8d9e0 100644
+--- a/tests/workers/test_email_worker.py
++++ b/tests/workers/test_email_worker.py
+@@ -12,3 +12,15 @@ def test_run_once_sends_batch():
+     worker.run_once()
+
+     assert sender.sent_count == 10
++
++
++def test_run_once_retries_transient_failures():
++    sender = FlakySender(fail_times=2)
++    queue = FakeQueue(messages=[fake_message()])
++    worker = EmailWorker(queue, sender, settings={"batch_size": 1, "retry_backoff_seconds": 0})
++
++    worker.run_once()
++
++    assert sender.sent_count == 1
++    assert sender.attempt_count == 3

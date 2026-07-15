@@ -347,11 +347,13 @@ class TestFilterRegistryEarlyExitIntegration:
 
     def _apply_with_flag(self, filter_config: object, content: str, *, early_exit: bool) -> str:
         """Reimplements FilterRegistry.apply()'s exact abort_unless/abort_if/
-        on_empty logic (unmodified, untouched by this task) so the ONLY
-        variable between the two calls being compared is early_exit itself —
-        calling apply() directly for one side and _run_pipeline() for the
-        other would also let the abort_unless/abort_if short-circuit (which
-        never even reaches the pipeline) confound the comparison."""
+        on_empty/never-expand logic so the ONLY variable between the two
+        calls being compared is early_exit itself — calling apply() directly
+        for one side and _run_pipeline() for the other would also let the
+        abort_unless/abort_if short-circuit (which never even reaches the
+        pipeline) confound the comparison."""
+        from quor.tracking.db import count_tokens
+
         if filter_config.abort_unless and not any(  # type: ignore[attr-defined]
             s in content for s in filter_config.abort_unless  # type: ignore[attr-defined]
         ):
@@ -365,6 +367,12 @@ class TestFilterRegistryEarlyExitIntegration:
         ).mask.render()
         if not rendered.strip() and filter_config.on_empty:  # type: ignore[attr-defined]
             return filter_config.on_empty  # type: ignore[attr-defined]
+        rendered_tokens = count_tokens(rendered)
+        content_tokens = count_tokens(content)
+        if rendered_tokens > content_tokens:
+            return content
+        if rendered_tokens == content_tokens and len(rendered) >= len(content):
+            return content
         return rendered
 
     def test_apply_output_identical_with_and_without_early_exit(self) -> None:

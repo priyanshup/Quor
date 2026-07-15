@@ -1,0 +1,131 @@
+diff --git a/src/notifications/dispatcher.py b/src/notifications/dispatcher.py
+index 1c2d3e4..5f6a7b8 100644
+--- a/src/notifications/dispatcher.py
++++ b/src/notifications/dispatcher.py
+@@ -1,7 +1,7 @@
+-from src.notifications.legacy_channels import EmailChannel, SmsChannel
++from src.notifications.channels import EmailChannel, SmsChannel, PushChannel
+
+ class NotificationDispatcher:
+-    def __init__(self, email: EmailChannel, sms: SmsChannel):
++    def __init__(self, email: EmailChannel, sms: SmsChannel, push: PushChannel):
+         self._email = email
+         self._sms = sms
++        self._push = push
+
+-    def send(self, event):
+-        self._email.send_legacy(event)
+-        self._sms.send_legacy(event)
++    def send(self, event):
++        self._email.send(event)
++        self._sms.send(event)
++        self._push.send(event)
+diff --git a/src/notifications/legacy_channels.py b/src/notifications/channels.py
+similarity index 61%
+rename from src/notifications/legacy_channels.py
+rename to src/notifications/channels.py
+index 2d3e4f5..6a7b8c9 100644
+--- a/src/notifications/legacy_channels.py
++++ b/src/notifications/channels.py
+@@ -1,15 +1,23 @@
+ class EmailChannel:
+     def __init__(self, client):
+         self._client = client
+
+-    def send_legacy(self, event):
+-        self._client.send_mail(event.recipient, event.subject, event.body)
++    def send(self, event):
++        return self._client.send_mail(event.recipient, event.subject, event.body)
+
+
+ class SmsChannel:
+     def __init__(self, client):
+         self._client = client
+
+-    def send_legacy(self, event):
+-        self._client.send_sms(event.recipient, event.body)
++    def send(self, event):
++        return self._client.send_sms(event.recipient, event.body)
++
++
++class PushChannel:
++    def __init__(self, client):
++        self._client = client
++
++    def send(self, event):
++        return self._client.send_push(event.recipient, event.body)
+diff --git a/src/notifications/factory.py b/src/notifications/factory.py
+index 3e4f5a6..7b8c9d0 100644
+--- a/src/notifications/factory.py
++++ b/src/notifications/factory.py
+@@ -1,10 +1,12 @@
+-from src.notifications.legacy_channels import EmailChannel, SmsChannel
++from src.notifications.channels import EmailChannel, SmsChannel, PushChannel
+ from src.notifications.dispatcher import NotificationDispatcher
+
+
+ def build_dispatcher(settings):
+     email = EmailChannel(settings.email_client)
+     sms = SmsChannel(settings.sms_client)
+-    return NotificationDispatcher(email, sms)
++    push = PushChannel(settings.push_client)
++    return NotificationDispatcher(email, sms, push)
+diff --git a/tests/notifications/test_dispatcher.py b/tests/notifications/test_dispatcher.py
+index 4f5a6b7..8c9d0e1 100644
+--- a/tests/notifications/test_dispatcher.py
++++ b/tests/notifications/test_dispatcher.py
+@@ -1,17 +1,20 @@
+-from src.notifications.legacy_channels import EmailChannel, SmsChannel
++from src.notifications.channels import EmailChannel, SmsChannel, PushChannel
+ from src.notifications.dispatcher import NotificationDispatcher
+
+
+ def test_send_fans_out_to_all_channels():
+     email = FakeEmailChannel()
+     sms = FakeSmsChannel()
+-    dispatcher = NotificationDispatcher(email, sms)
++    push = FakePushChannel()
++    dispatcher = NotificationDispatcher(email, sms, push)
+
+     dispatcher.send(fake_event())
+
+     assert email.sent
+     assert sms.sent
++    assert push.sent
+diff --git a/tests/notifications/test_channels.py b/tests/notifications/test_channels.py
+index 5a6b7c8..9d0e1f2 100644
+--- a/tests/notifications/test_channels.py
++++ b/tests/notifications/test_channels.py
+@@ -1,11 +1,17 @@
+-from src.notifications.legacy_channels import EmailChannel
++from src.notifications.channels import EmailChannel, PushChannel
+
+
+-def test_email_channel_sends_via_legacy_client():
++def test_email_channel_sends_via_client():
+     client = FakeMailClient()
+     channel = EmailChannel(client)
+
+-    channel.send_legacy(fake_event())
++    channel.send(fake_event())
+
+     assert client.last_recipient == "customer@example.com"
++
++
++def test_push_channel_sends_via_client():
++    client = FakePushClient()
++    channel = PushChannel(client)
++    channel.send(fake_event())
++    assert client.last_recipient == "customer@example.com"
+diff --git a/src/notifications/README.md b/src/notifications/README.md
+index 6b7c8d9..0e1f2a3 100644
+--- a/src/notifications/README.md
++++ b/src/notifications/README.md
+@@ -1,6 +1,7 @@
+ # Notifications
+
+-Channels live in `legacy_channels.py` and are wired together in
++Channels live in `channels.py` (now including `PushChannel`) and are wired
++together in
+ `factory.py`. `NotificationDispatcher` fans a single event out to every
+ configured channel.

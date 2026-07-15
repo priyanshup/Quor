@@ -48,6 +48,7 @@ from quor.pipeline.stages.regex_replace import RegexReplaceConfig, RegexReplaceS
 from quor.pipeline.stages.remove_ansi import RemoveAnsiConfig, RemoveAnsiStage
 from quor.pipeline.stages.strip_lines import StripLinesConfig, StripLinesStage
 from quor.pipeline.stages.truncate_lines import TruncateLinesConfig, TruncateLinesStage
+from quor.tracking.db import count_tokens
 
 # Maps stage type string → (handler class, config class)
 _STAGE_HANDLERS: dict[str, tuple[type, type[StageConfig]]] = {
@@ -253,6 +254,23 @@ class FilterRegistry:
 
         if not rendered.strip() and filter_config.on_empty:
             return filter_config.on_empty
+
+        # Never-expand safeguard: a stage with attacker-/config-controlled
+        # replacement text (regex_replace, match_output) or a third-party
+        # plugin could in principle grow the output instead of shrinking it
+        # (see QB-017's investigation in backlog.md — no *built-in filter*
+        # does this today, but nothing upstream of this point structurally
+        # prevents it). If the compressed render is not actually smaller
+        # than what went in, prefer the original over paying for a filter
+        # that made things worse. Token counts are estimated (count_tokens
+        # is ceil(len/4)), so a tie is broken by actual byte length — the
+        # ground truth count_tokens is only approximating.
+        rendered_tokens = count_tokens(rendered)
+        content_tokens = count_tokens(content)
+        if rendered_tokens > content_tokens:
+            return content
+        if rendered_tokens == content_tokens and len(rendered) >= len(content):
+            return content
 
         return rendered
 
