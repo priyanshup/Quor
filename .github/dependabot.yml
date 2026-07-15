@@ -4,6 +4,14 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
+    ignore:
+      # tree-sitter 0.26.0 has a reproducible native-level memory-corruption
+      # bug (segfault) — see pyproject.toml's dev-extra tree-sitter comment
+      # for the full bisection record from QB-005C. pyproject.toml pins
+      # tree-sitter <0.26.0 deliberately; don't let dependabot keep proposing
+      # bumps past that ceiling until a release is verified not to reproduce it.
+      - dependency-name: "tree-sitter"
+        versions: [">=0.26.0"]
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
