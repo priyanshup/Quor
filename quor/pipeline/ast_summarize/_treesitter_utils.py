@@ -33,7 +33,7 @@ if TYPE_CHECKING:
     from tree_sitter import Node
 
 
-def statement_block_interior_lines(node: Node) -> set[int]:
+def statement_block_interior_lines(node: Node, block_type: str = "statement_block") -> set[int]:
     """Return the 1-indexed line numbers strictly between a function-like
     node's `{` and `}` lines — i.e. its actual body content, excluding both
     brace lines. The opening `{` is, in standard JS/TS style, on the same
@@ -42,18 +42,22 @@ def statement_block_interior_lines(node: Node) -> set[int]:
     must be explicitly excluded from compression, not just the signature
     text before them, or the signature itself would be destroyed.
 
-    Empty for: a body that isn't a `statement_block` at all (a
+    `block_type` names the grammar's own node type for a brace-delimited
+    block (`"statement_block"` for JS/TS, `"block"` for Go — QB-046) —
+    defaults to the JS/TS value so existing callers are unaffected.
+
+    Empty for: a body that isn't a block of the expected type at all (a
     single-expression arrow function, e.g. `(a) => a + 1`, or a
     signature-only declaration with no body at all — an overload signature
     or an abstract method — mirrors Python's same-line-body rule,
     generalized: there is no brace-delimited block to compress in the
-    first place), or a `statement_block` whose open/close braces are on
+    first place), or a block whose open/close braces are on
     the same or adjacent lines (a same-line body `function f() { return
     1; }`, or a genuinely empty body `function f() {\\n}` — nothing
     meaningful to compress either way).
     """
     body = node.child_by_field_name("body")
-    if body is None or body.type != "statement_block":
+    if body is None or body.type != block_type:
         return set()
 
     start_row = body.start_point.row  # row of "{"
@@ -102,11 +106,19 @@ def has_error_overlap(node: Node, error_ranges: list[tuple[int, int]]) -> bool:
     return any(err_start <= node_end and err_end >= node_start for err_start, err_end in error_ranges)
 
 
-def add_candidate(node: Node, error_ranges: list[tuple[int, int]], lines: set[int]) -> None:
+def add_candidate(
+    node: Node,
+    error_ranges: list[tuple[int, int]],
+    lines: set[int],
+    block_type: str = "statement_block",
+) -> None:
     """Compute `node`'s body-interior compress range and, unless it
     overlaps an ERROR/MISSING node anywhere in the tree (QB-005A Section
-    4.1 — mandatory, not optional), add it to `lines`."""
-    candidate = statement_block_interior_lines(node)
+    4.1 — mandatory, not optional), add it to `lines`.
+
+    `block_type` is passed straight through to
+    `statement_block_interior_lines()` — see its own docstring."""
+    candidate = statement_block_interior_lines(node, block_type)
     if not candidate:
         return
     if has_error_overlap(node, error_ranges):
