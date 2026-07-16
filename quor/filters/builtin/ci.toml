@@ -46,7 +46,7 @@ preserve_patterns = [
     'failed to solve',
     '^Dockerfile:\d+',
     '^-{5,}$',
-    '^>>> ',
+    '\|\s*>>> ',
     '^Successfully (built|tagged)',
 ]
 
