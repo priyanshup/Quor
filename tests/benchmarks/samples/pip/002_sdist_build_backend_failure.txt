@@ -1,0 +1,26 @@
+Collecting legacy-widget==0.1
+  Downloading legacy-widget-0.1.tar.gz (9.2 kB)
+  Installing build dependencies: started
+  Installing build dependencies: finished with status 'done'
+  Getting requirements to build wheel: started
+  Getting requirements to build wheel: finished with status 'done'
+  Preparing metadata (pyproject.toml): started
+  Preparing metadata (pyproject.toml): finished with status 'error'
+  error: subprocess-exited-with-error
+
+  x Preparing metadata (pyproject.toml) did not run successfully.
+  | exit code: 1
+  |> [6 lines of output]
+  | Traceback (most recent call last):
+  |   File "<string>", line 2, in <module>
+  |   File "legacy_widget/setup.py", line 4, in <module>
+  |     from distutils.core import setup
+  | ModuleNotFoundError: No module named 'distutils'
+  |> [end of output]
+
+  note: This error originates from a subprocess, and is likely not a problem with pip.
+ERROR: metadata-generation-failed
+
+Encountered error while generating package metadata.
+
+See above for output.

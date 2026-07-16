@@ -1,0 +1,17 @@
+Using version ^3.0.2 for flask
+
+Updating dependencies
+Resolving dependencies...
+
+Package operations: 8 installs, 0 updates, 0 removals
+
+  - Installing blinker (1.7.0)
+  - Installing click (8.1.7)
+  - Installing itsdangerous (2.1.2)
+  - Installing markupsafe (2.1.5)
+  - Installing jinja2 (3.1.3)
+  - Installing werkzeug (3.0.1)
+  - Installing colorama (0.4.6)
+  - Installing flask (3.0.2)
+
+Writing lock file

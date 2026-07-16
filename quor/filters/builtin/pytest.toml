@@ -49,7 +49,7 @@ patterns = [
     '^collecting\s',
     '=+ test session starts =+',
     '=+ short test summary info =+',
-    '^cacheprovider',
+    '^cachedir:',
     # Stack trace frame dedup: a failing test's traceback through Django/
     # Flask/pytest's own internals is often 90% framework frames the user
     # never needs to see (docs/archive/product-discovery/competitive-research.md
@@ -62,6 +62,26 @@ patterns = [
     # matched here (Windows' stdlib path has no equivalently unambiguous
     # marker, e.g. a user folder literally named "lib" would false-positive).
     '(?i)^\s*File "[^"]*(?:site-packages|dist-packages)[^"]*", line \d+, in',
+    # QB-060: the pattern above only matches Python's *classic* traceback
+    # shape ("File "x", line N, in func"), which is `--tb=native`-only.
+    # pytest's actual *default* traceback renderer (verified: real pytest
+    # 9.1.1 output, no config overrides) never prints that shape at all —
+    # it uses its own "<path>:<line>: in <func>" frame header instead (no
+    # "File" keyword, no comma before "line"). Both a stdlib call chain and
+    # a site-packages dependency's internals go through the same renderer,
+    # but only the site-packages-anchored frames are stripped here, for the
+    # same reason bare stdlib paths are excluded above: pytest shows these
+    # paths *relative to rootdir*, so a stdlib frame reached via several
+    # ".." segments has no equivalently unambiguous marker to gate on
+    # cross-platform, while "site-packages"/"dist-packages" in the path is
+    # unambiguous everywhere.
+    '^\S*(?:site-packages|dist-packages)\S*:\d+: in \S+$',
+    # QB-060: pytest's own fixed boilerplate URL, always appended verbatim
+    # under "warnings summary" whenever any warning was captured
+    # (_pytest/terminal.py's literal "-- Docs: https://docs.pytest.org/..."
+    # string) — carries no information beyond the URL itself, same category
+    # as npm's funding/audit nag stripping (QB-052, node.toml).
+    '^-- Docs: https://docs\.pytest\.org/',
 ]
 preserve_patterns = [
     'FAILED',
@@ -153,3 +173,38 @@ must_contain = [
 must_not_contain = [
     "FAILED tests/test_math.py::test_add[2] - AssertionError: Values must be positive",
 ]
+
+[[filter.tests]]
+description = "QB-060: pytest's actual default-shape site-packages frame headers ('<path>:<line>: in <func>', no 'File' keyword) are stripped; the raise-site frame, exception, and message survive"
+input = "FAILED tests/test_lib.py::test_bad_call\n\n    def test_bad_call():\n>       requests.get(\"not-a-valid-url\")\n\ntest_lib.py:4: \n_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _\n..\\..\\..\\Python314\\Lib\\site-packages\\requests\\api.py:87: in get\n    return request(\"get\", url, params=params, **kwargs)\n..\\..\\..\\Python314\\Lib\\site-packages\\requests\\sessions.py:635: in request\n    prep = self.prepare_request(req)\n\nself = <PreparedRequest [GET]>, url = 'not-a-valid-url'\n\n>           raise MissingSchema(\nE           requests.exceptions.MissingSchema: Invalid URL 'not-a-valid-url': No scheme supplied.\n\n..\\..\\..\\Python314\\Lib\\site-packages\\requests\\models.py:514: MissingSchema\nFAILED tests/test_lib.py::test_bad_call - requests.exceptions.MissingSchema: Invalid URL\n"
+must_contain = [
+    "return request(\"get\", url, params=params, **kwargs)",
+    "prep = self.prepare_request(req)",
+    "raise MissingSchema(",
+    "E           requests.exceptions.MissingSchema: Invalid URL 'not-a-valid-url': No scheme supplied.",
+]
+must_not_contain = [
+    "site-packages\\requests\\api.py:87: in get",
+    "site-packages\\requests\\sessions.py:635: in request",
+]
+
+[[filter.tests]]
+description = "QB-060: classic 'File \"x\", line N, in func' shape (--tb=native) is still handled by the original pattern, unaffected by the new default-shape pattern"
+input = "FAILED tests/test_views.py::test_checkout_view\n\nTraceback (most recent call last):\n  File \"/workspace/app/tests/test_views.py\", line 22, in test_checkout_view\n    response = client.get(\"/checkout/\")\n  File \"/usr/lib/python3.11/site-packages/django/test/client.py\", line 815, in get\n    response = super().get(path, data=data)\n  File \"/workspace/app/views.py\", line 48, in checkout_view\n    cart = request.session[\"cart\"]\nKeyError: 'cart'\n"
+must_contain = [
+    "response = client.get(\"/checkout/\")",
+    "File \"/workspace/app/views.py\", line 48, in checkout_view",
+    "KeyError: 'cart'",
+]
+must_not_contain = [
+    "File \"/usr/lib/python3.11/site-packages/django/test/client.py\", line 815, in get",
+]
+
+[[filter.tests]]
+description = "QB-060: warnings-summary Docs URL boilerplate stripped; the warning itself and the failure summary survive"
+input = "================================== FAILURES ===================================\ntest_sample.py::test_fail_param[1] FAILED\n\n============================== warnings summary ===============================\ntest_sample.py::test_fail_param[1]\n  /project/test_sample.py:12: DeprecationWarning: this is deprecated\n    warnings.warn(\"this is deprecated\", DeprecationWarning)\n\n-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html\nFAILED test_sample.py::test_fail_param[1] - assert 1 == 999\n"
+must_contain = [
+    "DeprecationWarning: this is deprecated",
+    "FAILED test_sample.py::test_fail_param[1] - assert 1 == 999",
+]
+must_not_contain = ["docs.pytest.org"]

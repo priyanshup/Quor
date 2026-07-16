@@ -1370,3 +1370,89 @@ must_contain = [
     "warning: 'gets' is deprecated",
     "warning: unused variable 'retry_count'",
 ]
+
+# ---------------------------------------------------------------------------
+# QB-060: pip (bare `pip`/`pip3`, `python -m pip`)
+# ---------------------------------------------------------------------------
+
+[[case]]
+id = "pip-requirements-txt-mostly-cached"
+category = "pip"
+ecosystem = "Python Packaging"
+command = "pip install -r requirements.txt"
+sample_file = "samples/pip/001_requirements_txt_mostly_cached.txt"
+expected_filter = "pip"
+min_reduction_pct = 40.0
+must_contain = [
+    "Successfully installed click-8.1.7 flask-3.0.2 itsdangerous-2.1.2 jinja2-3.1.3",
+]
+must_not_contain = [
+    "Requirement already satisfied",
+    "Collecting flask",
+    "Downloading flask-3.0.2",
+    "A new release of pip is available",
+]
+
+[[case]]
+id = "pip-sdist-build-backend-failure"
+category = "pip"
+ecosystem = "Python Packaging"
+command = "pip install legacy-widget==0.1"
+sample_file = "samples/pip/002_sdist_build_backend_failure.txt"
+expected_filter = "pip"
+min_reduction_pct = 5.0
+must_contain = [
+    "Preparing metadata (pyproject.toml): finished with status 'error'",
+    "ModuleNotFoundError: No module named 'distutils'",
+    "ERROR: metadata-generation-failed",
+]
+
+[[case]]
+id = "pip-version-not-found-error"
+category = "pip"
+ecosystem = "Python Packaging"
+command = "pip install requests==999.999"
+sample_file = "samples/pip/003_version_not_found_error.txt"
+expected_filter = "pip"
+min_reduction_pct = 0.0
+must_contain = [
+    "ERROR: Could not find a version that satisfies the requirement requests==999.999",
+    "ERROR: No matching distribution found for requests==999.999",
+]
+
+# ---------------------------------------------------------------------------
+# QB-060: Poetry (bare `poetry`, `python -m poetry`)
+# ---------------------------------------------------------------------------
+
+[[case]]
+id = "poetry-default-add-terse"
+category = "poetry"
+ecosystem = "Python Packaging"
+command = "poetry add flask"
+sample_file = "samples/poetry/001_default_add_terse.txt"
+expected_filter = "poetry"
+min_reduction_pct = 0.0
+must_contain = [
+    "Package operations: 8 installs, 0 updates, 0 removals",
+    "- Installing flask (3.0.2)",
+    "Writing lock file",
+]
+
+[[case]]
+id = "poetry-verbose-add-conflict"
+category = "poetry"
+ecosystem = "Python Packaging"
+command = "poetry add flask -vv"
+sample_file = "samples/poetry/002_verbose_add_conflict.txt"
+expected_filter = "poetry"
+min_reduction_pct = 20.0
+must_contain = [
+    "Could not find a matching version of package flask",
+    "raise ValueError(f\"Could not find a matching version of package {name}\")",
+]
+must_not_contain = [
+    "Found: C:\\Users\\dev\\AppData\\Local\\Programs\\Python\\Python312\\python.EXE",
+    "Checking keyring availability",
+    "site-packages\\cleo\\commands\\base_command.py:117 in run",
+    "site-packages\\poetry\\console\\commands\\installer_command.py:39 in execute",
+]
