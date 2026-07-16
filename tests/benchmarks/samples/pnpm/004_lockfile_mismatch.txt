@@ -1,0 +1,9 @@
+Lockfile is up to date, resolution step is skipped
+ ERR_PNPM_OUTDATED_LOCKFILE  Cannot install with "frozen-lockfile" because pnpm-lock.yaml is not up to date with <ROOT>/package.json
+
+Failure reason:
+specifiers in the lockfile don't match specifiers in package.json:
+* 2 dependencies were added: react-router-dom@^6.20.0, zustand@^4.4.7
+* 1 dependencies were removed: redux@^4.2.1
+
+Note that in CI environments this setting is enabled by default. If you don't want to use a frozen lockfile, set "frozen-lockfile" to "false"

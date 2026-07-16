@@ -1,0 +1,10 @@
+bun install v1.0.25 (9c68abdb)
+
+warn: incorrect peer dependency "react@^18.0.0"
+warn: incorrect peer dependency "react-dom@^18.0.0"
+
+ + axios@1.6.2
+ + react@17.0.2
+ + typescript@5.3.3
+
+ 47 packages installed [1.24s]

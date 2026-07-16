@@ -3,6 +3,14 @@
 # the high-value Node/JS toolchain (QB-006C: tsc, jest, vitest, prettier,
 # next, turbo).
 #
+# QB-059 added `bun` as a new dedicated filter (previously entirely unrouted
+# — not a known base command at all) and hardened the pnpm/yarn blocks'
+# diagnostic-shape coverage (dependency-resolution failures, peer-dependency
+# conflicts, lockfile mismatches, workspace errors, lifecycle script
+# failures) — see each block's own QB-059 comments for the two real bugs
+# found and fixed along the way (pnpm's over-broad WARN-line collapsing,
+# yarn's word-boundary gap that deleted Berry's own failure summary).
+#
 # Generic-only for the npm/npx/pnpm/yarn blocks: strips noise that these
 # wrappers themselves print on every invocation (progress ticks, funding/audit
 # nags, deprecation warning spam, step banners) regardless of what subcommand
@@ -575,11 +583,18 @@ type = "remove_ansi"
 
 [[filter.stages]]
 type = "group_repeated"
-# exact_match left at its default (false, shape-based): intentional, same
-# generic-noise rationale as npm/npx above — pnpm's WARN lines cover varied
-# deprecated/peer-dependency notices, and we only want "N warnings occurred,
-# here's one" rather than preserving every distinct package name.
-patterns = ['(?i)^\s*warn\b']
+# QB-059: narrowed from a bare '^\s*warn\b' to 'warn\s+deprecated\b' —
+# mirrors npm/npx's own deprecation-warning pattern exactly (reuse, not a
+# new idiom). The old bare pattern was shape-matching on *any* WARN line
+# regardless of content, which is unsafe: pnpm's "WARN  Issues with peer
+# dependencies found" header and a "WARN deprecated foo@1.0.0: ..." line
+# share that shape but are two genuinely different, individually
+# user-actionable diagnostics — verified they would silently merge into
+# one collapsed line under the old pattern, discarding whichever warning
+# didn't happen to be first. Deprecation notices are the one pnpm warning
+# type that's genuinely fungible (the specific package rarely changes what
+# action you take), the same reasoning npm's own pattern already relies on.
+patterns = ['(?i)^\s*warn\s+deprecated\b']
 min_count = 2
 
 [[filter.stages]]
@@ -597,6 +612,18 @@ preserve_patterns = [
     '(?i)^dependencies:$',
     '(?i)\bvulnerabilit',
     '(?i)^severity:',
+    # QB-059: defense-in-depth documentation for the diagnostic shapes this
+    # filter is now explicitly meant to preserve (peer-dependency conflicts,
+    # workspace protocol errors, lifecycle script failures) — none of these
+    # are actually at risk from any strip/collapse pattern above (no pattern
+    # in this filter targets a WARN-header, tree-drawing, or ELIFECYCLE
+    # line), so nothing here changes observable behavior; it documents
+    # intent the same way java.toml's own preserve_patterns comment does.
+    '(?i)unmet peer',
+    '(?i)missing peer',
+    '(?i)issues with peer dependencies',
+    '✕',
+    '(?i)elifecycle',
 ]
 
 [[filter.stages]]
@@ -613,6 +640,50 @@ description = "pnpm structured fetch error preserved despite progress noise"
 input = "Progress: resolved 10, reused 0, downloaded 0\nERR_PNPM_FETCH_404  GET https://registry.npmjs.org/nonexistent-pkg: Not Found - 404\n"
 must_contain = ["ERR_PNPM_FETCH_404"]
 must_not_contain = ["Progress: resolved"]
+
+[[filter.tests]]
+description = "QB-059: a genuine deprecation-warning run still collapses (unaffected by the narrowing), but a distinct peer-dependency-issues header adjacent to it is never absorbed into that run's count"
+input = "WARN  Issues with peer dependencies found\nWARN deprecated core-js@2.6.12: core-js@<3.23.3 is no longer maintained\nWARN deprecated request@2.88.2: request has been deprecated\nPackages: +1\n"
+must_contain = [
+    "WARN  Issues with peer dependencies found",
+    "WARN deprecated core-js@2.6.12: core-js@<3.23.3 is no longer maintained (×2)",
+]
+must_not_contain = [
+    "WARN  Issues with peer dependencies found (×",
+    "WARN deprecated request@2.88.2: request has been deprecated\n",
+]
+
+[[filter.tests]]
+description = "QB-059: peer-dependency conflict tree (unmet/missing peer, ✕ markers) survives in full, none of it is stripped or collapsed"
+input = "WARN  Issues with peer dependencies found\n.\n├─┬ react-dom 18.2.0\n│ └── ✕ unmet peer react@^18.2.0: found 17.0.2\n└─┬ some-lib 1.0.0\n  └── ✕ missing peer typescript@>=4.5\n"
+must_contain = [
+    "✕ unmet peer react@^18.2.0: found 17.0.2",
+    "✕ missing peer typescript@>=4.5",
+]
+
+[[filter.tests]]
+description = "QB-059: lockfile mismatch (frozen-lockfile CI failure) — the ERR_PNPM_OUTDATED_LOCKFILE header and its failure-reason detail both survive"
+input = "Lockfile is up to date, resolution step is skipped\n ERR_PNPM_OUTDATED_LOCKFILE  Cannot install with \"frozen-lockfile\" because pnpm-lock.yaml is not up to date with <ROOT>/package.json\n\nFailure reason:\nspecifiers in the lockfile don't match specifiers in package.json:\n* 1 dependencies were added: react-router-dom@^6.20.0\n"
+must_contain = [
+    "ERR_PNPM_OUTDATED_LOCKFILE",
+    "Failure reason:",
+    "react-router-dom@^6.20.0",
+]
+must_not_contain = ["Lockfile is up to date"]
+
+[[filter.tests]]
+description = "QB-059: workspace protocol error (package referenced but absent from the workspace) survives"
+input = "Progress: resolved 42, reused 40, downloaded 0\n ERR_PNPM_WORKSPACE_PKG_NOT_FOUND  In : \"@myorg/ui\" is in the dependencies but no package named \"@myorg/ui\" is present in the workspace\n"
+must_contain = ["ERR_PNPM_WORKSPACE_PKG_NOT_FOUND", "@myorg/ui"]
+must_not_contain = ["Progress: resolved"]
+
+[[filter.tests]]
+description = "QB-059: lifecycle script failure — the wrapped build script's own error output and the ELIFECYCLE marker both survive"
+input = "> my-app@1.0.0 build /home/dev/my-app\n> tsc -b\n\nsrc/index.ts:10:5 - error TS2345: Argument of type 'string' is not assignable to parameter of type 'number'.\n\nFound 1 error.\n\n ELIFECYCLE  Command failed with exit code 2.\n"
+must_contain = [
+    "error TS2345: Argument of type 'string' is not assignable to parameter of type 'number'.",
+    "ELIFECYCLE  Command failed with exit code 2.",
+]
 
 # ---------------------------------------------------------------------------
 # yarn — install/add/upgrade wrapper noise (classic + Berry step banners)
@@ -642,7 +713,20 @@ patterns = [
     '(?i)^info visit http',
 ]
 preserve_patterns = [
-    '(?i)\berror\b',
+    # QB-059: widened from '\berror\b' to '\berrors?\b' — the singular-only
+    # pattern has a real word-boundary gap: \berror\b requires a boundary
+    # immediately after "error", which "errors" never has (the following
+    # "s" is itself a word character). Verified this let Yarn Berry's own
+    # completion-status line — "➤ YN0000: · Failed with errors in 842ms" —
+    # fall through to the '^➤ YN0000:' strip pattern below and be deleted
+    # outright, even on a genuine install failure (the filter's *only*
+    # signal that anything went wrong). Widening to '\berrors?\b' is a
+    # strict superset of the old pattern (every prior match still matches),
+    # so no currently-passing case is affected; it only rescues the plural
+    # form. Checked before '^➤ YN0000:' below per strip_lines' own
+    # documented precedence (preserve_patterns always wins).
+    '(?i)\berrors?\b',
+    '(?i)\bfailed\b',
     '(?i)^success\b',
     '(?i)^done in \d',
     '(?i)\bvulnerabilit',
@@ -662,6 +746,126 @@ must_not_contain = ["Resolving packages", "Fetching packages", "Linking dependen
 description = "Repeated peer-dependency warnings collapse; command failure preserved"
 input = "warning \"eslint > file-entry-cache@6.0.1\" has unmet peer dependency \"flat-cache@^3.0.4\".\nwarning \"eslint > table@6.8.1\" has unmet peer dependency \"ajv@^8.0.1\".\nerror Command failed with exit code 1.\n"
 must_contain = ["unmet peer dependency", "(×2)", "error Command failed with exit code 1."]
+
+[[filter.tests]]
+description = "QB-059: Yarn Berry install failure — the step banner is stripped, but the 'Failed with errors' completion line (previously deleted by the plural word-boundary gap) survives, along with the specific peer-dependency error that caused it"
+input = "➤ YN0000: · Resolution step\n➤ YN0001: │ workspace-app@workspace:. doesn't provide typescript (p66c35), requested by @myorg/utils\n➤ YN0000: · Failed with errors in 842ms\n"
+must_contain = [
+    "workspace-app@workspace:. doesn't provide typescript",
+    "➤ YN0000: · Failed with errors in 842ms",
+]
+must_not_contain = ["➤ YN0000: · Resolution step"]
+
+[[filter.tests]]
+description = "QB-059: Yarn Berry successful install — step banners are still stripped as pure noise, nothing is falsely preserved"
+input = "➤ YN0000: · Resolution step\n➤ YN0000: · Fetch step\n➤ YN0000: · Link step\n➤ YN0000: · Done in 1s 234ms\n"
+must_not_contain = ["Resolution step", "Fetch step", "Link step", "Done in 1s 234ms"]
+
+[[filter.tests]]
+description = "QB-059: lockfile mismatch under --frozen-lockfile survives"
+input = "yarn install v1.22.19\n[1/4] Resolving packages...\nerror Your lockfile needs to be updated, but yarn was run with '--frozen-lockfile'.\ninfo Visit https://yarnpkg.com/en/docs/cli/install for documentation about this command.\n"
+must_contain = ["error Your lockfile needs to be updated, but yarn was run with '--frozen-lockfile'."]
+must_not_contain = ["Resolving packages", "Visit https://yarnpkg.com"]
+
+[[filter.tests]]
+description = "QB-059: workspace configuration error survives"
+input = "yarn install v1.22.19\n[1/4] Resolving packages...\nerror Workspaces can only be enabled in private projects.\n"
+must_contain = ["error Workspaces can only be enabled in private projects."]
+
+[[filter.tests]]
+description = "QB-059: lifecycle script failure — the wrapped script's own error output, the failure line, and the doc-link CTA noise are each handled correctly"
+input = "yarn run v1.22.19\n$ tsc -b\nsrc/index.ts:10:5 - error TS2345: Argument of type 'string' is not assignable to parameter of type 'number'.\nerror Command failed with exit code 2.\ninfo Visit https://yarnpkg.com/en/docs/cli/run for documentation about this command.\n"
+must_contain = [
+    "error TS2345: Argument of type 'string' is not assignable to parameter of type 'number'.",
+    "error Command failed with exit code 2.",
+]
+must_not_contain = ["Visit https://yarnpkg.com"]
+
+# ---------------------------------------------------------------------------
+# bun — install/add/remove/run wrapper noise (QB-059)
+#
+# Bun's own diagnostics are consistently prefixed `error:`/`warn:` (lowercase,
+# colon-terminated — unlike npm's `npm ERR!`/pnpm's ` ERR_PNPM_*`/yarn's
+# `error `/`warning ` conventions, but the same "always contains the literal
+# word error/warn" property every other filter in this file already relies
+# on). Deliberately conservative compared to npm/pnpm/yarn above: this
+# filter strips only blank lines and collapses repeated `warn:` lines,
+# nothing else. Bun's exact wrapper-noise output (spinner/progress lines,
+# a resolution preamble, etc.) is not yet well-established in this corpus
+# the way npm's/pnpm's/yarn's decade-plus-old, thoroughly-documented output
+# shapes are — QB-059 chose not to invent unverified strip patterns against
+# a fast-moving CLI (violates "deterministic only, no heuristics"). The
+# version/hash banner line ("bun install v1.0.25 (9c68abdb)") is left alone
+# for the same reason yarn's own "yarn install v1.22.19" banner is: low
+# enough cost that a dedicated strip pattern isn't worth the risk of a false
+# positive. No max_tokens stage — same reasoning as npm/npx/pnpm/yarn/turbo
+# above: `bun run <script>`/`bun test` wrap an arbitrary user-defined
+# command whose real output must never be truncated.
+# ---------------------------------------------------------------------------
+
+[[filter]]
+name = "bun"
+match_command = '^bun\b'
+
+[[filter.stages]]
+type = "remove_ansi"
+
+[[filter.stages]]
+type = "group_repeated"
+# Shape-based (default), same generic-noise rationale as npm/pnpm above —
+# collapsing repeated bun warn: lines (e.g. several incorrect-peer-dependency
+# notices) to one example + count.
+patterns = ['(?i)^\s*warn:']
+min_count = 2
+
+[[filter.stages]]
+type = "strip_lines"
+patterns = [
+    '^\s*$',
+]
+preserve_patterns = [
+    '(?i)^\s*error:',
+    '(?i)^\s*warn:',
+    '(?i)\berrors?\b',
+    '(?i)\bfailed\b',
+    '(?i)lockfile',
+]
+
+[[filter.stages]]
+type = "deduplicate_consecutive"
+
+[[filter.tests]]
+description = "Blank lines stripped; successful install summary and per-package install lines survive"
+input = "bun install v1.0.25 (9c68abdb)\n\n + react@18.2.0\n + typescript@5.3.3\n\n 24 packages installed [812.00ms]\n"
+must_contain = ["+ react@18.2.0", "+ typescript@5.3.3", "24 packages installed [812.00ms]"]
+
+[[filter.tests]]
+description = "Repeated peer-dependency warnings collapse to one example + count"
+input = "warn: incorrect peer dependency \"react@^18.0.0\"\nwarn: incorrect peer dependency \"react-dom@^18.0.0\"\n 2 packages installed [400.00ms]\n"
+must_contain = ["incorrect peer dependency", "(×2)", "2 packages installed [400.00ms]"]
+
+[[filter.tests]]
+description = "Dependency resolution failure (no matching version) survives untouched"
+input = "bun install v1.0.25 (9c68abdb)\nerror: No matching version found for \"lodash@^99.0.0\"\n"
+must_contain = ["error: No matching version found for \"lodash@^99.0.0\""]
+
+[[filter.tests]]
+description = "Lockfile mismatch under --frozen-lockfile survives"
+input = "bun install v1.0.25 (9c68abdb)\nerror: lockfile had changes, but lockfile is frozen\n"
+must_contain = ["error: lockfile had changes, but lockfile is frozen"]
+
+[[filter.tests]]
+description = "Workspace dependency-not-found error survives"
+input = "bun install v1.0.25 (9c68abdb)\nerror: Workspace dependency \"@myorg/ui\" not found\n"
+must_contain = ["error: Workspace dependency \"@myorg/ui\" not found"]
+
+[[filter.tests]]
+description = "Lifecycle script failure — the wrapped script's own error output and bun's own failure line both survive"
+input = "$ tsc -b\nsrc/index.ts:10:5 - error TS2345: Argument of type 'string' is not assignable to parameter of type 'number'.\nerror: script \"build\" exited with code 2 (tsc -b)\n"
+must_contain = [
+    "error TS2345: Argument of type 'string' is not assignable to parameter of type 'number'.",
+    "error: script \"build\" exited with code 2 (tsc -b)",
+]
 
 # ---------------------------------------------------------------------------
 # next — Next.js CLI: build/dev/start step noise (QB-006C)
