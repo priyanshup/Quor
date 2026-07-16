@@ -4389,6 +4389,39 @@ appropriately out of scope.
 
 ---
 
+#### QB-062 — Eliminate redundant per-invocation config reads and registry rebuilds
+
+**Effort:** Small · **Value:** Low · **Category:** Performance
+
+`run_dispatch()`'s `_setup_plugins()` and `_apply_tee()` each called `load_user_config()`
+independently, so a dispatch exercising both paths read and re-validated `config.toml` twice; the
+same duplication existed between `quor doctor`'s `_check_mode()`/`_check_tee()`, and the benchmark
+runner rebuilt a `FilterRegistry` (Pydantic-validating every builtin filter TOML) once per case
+instead of once per run.
+
+<details>
+<summary>Technical details</summary>
+
+**Problem:** No behavior was wrong, only wasted work — `load_user_config()` re-read+re-parsed+
+re-validated the same file up to twice per dispatch/doctor run, and `run_benchmarks.py` measured
+~42ms/`FilterRegistry` construction x 102 cases ≈ 4.3s of pure redundant re-parsing per pytest
+session.
+
+**Resolution:** `run_dispatch()` now passes a memoizing closure (`get_user_config`) into
+`_setup_plugins()`/`_apply_tee()` so both share one read; `_run_doctor()` loads `QuorUserConfig`
+once and passes it into `_check_mode()`/`_check_tee()`; `run_case()` now draws from a
+`functools.lru_cache`-wrapped `_builtin_registry()` instead of constructing a fresh
+`FilterRegistry` per case. `run_dispatch()` also now reuses `_run_pre_filter_plugins()`'s already-
+computed `detect()` result instead of re-scanning `pre_output` a second time when `PRE_FILTER`
+left the content unchanged. No observable behavior changed — verified via the full test suite and
+`quor verify` passing unmodified.
+
+**Status:** Resolved — implemented on `refactor/qb-062-dedupe-per-invocation-config-reads`.
+
+</details>
+
+---
+
 #### QB-064 — Fix docker-build BuildKit step-echo preserve pattern
 
 **Effort:** Small · **Value:** Low · **Category:** Bug Fix

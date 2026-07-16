@@ -28,6 +28,7 @@ noisy across machines and CI runners and would make the suite flaky.
 
 from __future__ import annotations
 
+import functools
 import statistics
 import time
 import tomllib
@@ -200,6 +201,23 @@ def load_manifest(manifest_path: Path = DEFAULT_MANIFEST) -> list[BenchmarkCase]
 # ---------------------------------------------------------------------------
 
 
+@functools.lru_cache(maxsize=1)
+def _builtin_registry() -> FilterRegistry:
+    """`FilterRegistry(skip_user=True, skip_project=True)` reads the exact
+    same builtin filter TOML files with the exact same arguments on every
+    call — run_case() previously constructed a fresh one per case, which
+    measured at ~42ms/construction (Pydantic validation of every builtin
+    filter dominates, not the file I/O) x 102 cases = ~4.3s of pure
+    redundant re-parsing in a single pytest session. Safe to share one
+    instance for the life of this process: nothing in this test module (or
+    anywhere else that imports it) mutates FilterRegistry's internal state
+    or monkeypatches `quor.filters.registry._BUILTIN_DIR` after
+    construction, so every call would have produced byte-identical filters
+    anyway.
+    """
+    return FilterRegistry(skip_user=True, skip_project=True)
+
+
 def _find_filter_by_name(registry: FilterRegistry, name: str) -> Any:
     """Mirrors `quor/adapters/claude_read.py`'s own `_find_filter_by_name`
     helper exactly (same composition from `FilterRegistry.all_filters()`,
@@ -233,7 +251,7 @@ def run_case(case: BenchmarkCase, benchmarks_dir: Path = BENCHMARKS_DIR) -> Benc
     benchmark against, not a stand-in for that unknown "before" value.
     """
     sample_path = benchmarks_dir / case.sample_file
-    registry = FilterRegistry(skip_user=True, skip_project=True)
+    registry = _builtin_registry()
 
     if sample_path.suffix.lower() in _EXTRACTION_EXTENSIONS:
         from quor.pipeline.extract.registry import extract
