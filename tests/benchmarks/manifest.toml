@@ -1141,6 +1141,26 @@ min_reduction_pct = 0.0
 must_contain = ["COMPILATION ERROR", "cannot find symbol", "BUILD FAILURE", "Failed to execute goal"]
 
 [[case]]
+id = "maven-bare-header-deep-recursion"
+category = "maven"
+ecosystem = "CI/Build"
+# QB-061: same bare-exception-header regression as java's own
+# "java-bare-header-deep-recursion" case above — a raw Surefire-dumped
+# exception header with no "Exception in thread" wrapper, followed by a
+# deep recursion stack long enough to exceed max_tokens's tail budget on
+# its own. Regression coverage for the finding that maven's block had the
+# same gap java.toml did.
+command = "mvn test"
+sample_file = "samples/maven/003_bare_header_deep_recursion.txt"
+expected_filter = "maven"
+min_reduction_pct = 30.0
+must_contain = [
+    "com.example.orders.OrderValidationException: order graph exceeds maximum nesting depth (500)",
+    "at com.example.orders.OrderGraphValidator.validate(OrderGraphValidator.java:30)",
+    "BUILD FAILURE",
+]
+
+[[case]]
 id = "github-actions-run-success"
 category = "github-actions"
 ecosystem = "CI/Build"
@@ -1239,6 +1259,27 @@ must_contain = [
     "... 9 more",
     "Caused by: java.io.IOException: Connection reset by peer",
     "... 12 more",
+]
+
+[[case]]
+id = "java-bare-header-deep-recursion"
+category = "java"
+ecosystem = "Java"
+# QB-061: a bare exception header (no "Exception in thread" JVM wrapper —
+# the shape a manually-printed trace uses, since that wrapper is only ever
+# emitted by the JVM's own uncaught-exception handler on the thread that
+# actually died) followed by a deep, non-fungible recursion stack long
+# enough to exceed max_tokens's tail budget on its own. Regression coverage
+# for the finding that this header previously had no preserve_pattern
+# anywhere in java.toml's pipeline and could be silently dropped.
+command = "java -cp target/classes com.example.orders.BatchValidationRunner"
+sample_file = "samples/java/006_bare_header_deep_recursion.txt"
+expected_filter = "java"
+min_reduction_pct = 25.0
+must_contain = [
+    "com.example.orders.OrderValidationException: order graph exceeds maximum nesting depth (500)",
+    "at com.example.orders.OrderGraphValidator.validate(OrderGraphValidator.java:30)",
+    "at com.example.orders.BatchValidationRunner.main(BatchValidationRunner.java:14)",
 ]
 
 # ---------------------------------------------------------------------------

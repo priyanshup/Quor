@@ -29,10 +29,12 @@ import sys
 import time
 import uuid
 import warnings
+from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from quor.config.model import FilterConfig
+from quor.config.loader import load_user_config
+from quor.config.model import FilterConfig, QuorUserConfig
 from quor.filters.registry import FilterRegistry
 from quor.pipeline.content_type import detect
 from quor.pipeline.onboarding import MAX_ONBOARDING_COMMANDS, record_filtered_command
@@ -105,10 +107,26 @@ def run_dispatch(args: list[str], tracking: TrackingDB | None = None) -> int:
     # --- Tee cleanup: once per dispatch, throttled internally (ADR-023) ---
     _cleanup_tee_safe()
 
-    filter_config, registry = _lookup_filter(cmd_str)
-    plugin_registry, plugin_ctx = _setup_plugins()
+    # QuorUserConfig.toml is read+parsed+validated at most once per dispatch:
+    # _setup_plugins() (only when plugins are discovered) and _apply_tee()
+    # (whenever the non-passthrough path is reached) each previously called
+    # load_user_config() independently, so a dispatch with both active read
+    # the same on-disk file twice. get_user_config() is a plain memoizing
+    # closure local to this one call — nothing is cached across dispatches
+    # or processes, so this changes nothing about *what* is read, only how
+    # many times.
+    cached_user_config: QuorUserConfig | None = None
 
-    pre_output = _run_pre_filter_plugins(
+    def get_user_config() -> QuorUserConfig:
+        nonlocal cached_user_config
+        if cached_user_config is None:
+            cached_user_config = load_user_config()
+        return cached_user_config
+
+    filter_config, registry = _lookup_filter(cmd_str)
+    plugin_registry, plugin_ctx = _setup_plugins(get_user_config)
+
+    pre_output, raw_content_type = _run_pre_filter_plugins(
         plugin_registry, plugin_ctx, cmd_str=cmd_str, captured=captured
     )
 
@@ -129,7 +147,17 @@ def run_dispatch(args: list[str], tracking: TrackingDB | None = None) -> int:
         sys.stdout.flush()
         return proc.returncode
 
-    content_type = detect(pre_output).value
+    # detect() is a pure function of its text argument. When PRE_FILTER
+    # plugins left the content byte-identical to `captured` (the common
+    # case — most plugins annotate rather than transform), `raw_content_type`
+    # (already computed on `captured` inside _run_pre_filter_plugins for the
+    # plugin payload) is reused instead of re-scanning the same text a
+    # second time. Any content_type-affecting change to `pre_output` still
+    # gets a fresh detect() call, exactly as before.
+    if raw_content_type is not None and pre_output == captured:
+        content_type = raw_content_type
+    else:
+        content_type = detect(pre_output).value
     filtered = _apply_content_filter(
         registry, filter_config, pre_output, content_type=content_type
     )
@@ -150,7 +178,9 @@ def run_dispatch(args: list[str], tracking: TrackingDB | None = None) -> int:
     content_changed = filtered != captured
 
     # --- Tee: cache raw output + append recovery footer if it changed (ADR-023) ---
-    filtered = _apply_tee(filter_config, captured=captured, final_output=filtered)
+    filtered = _apply_tee(
+        filter_config, captured=captured, final_output=filtered, get_user_config=get_user_config
+    )
 
     _teardown_plugins(plugin_registry, plugin_ctx)
     track_invocation(
@@ -218,10 +248,18 @@ def _lookup_filter(cmd_str: str) -> tuple[FilterConfig | None, FilterRegistry | 
         return None, None
 
 
-def _setup_plugins() -> tuple[PluginRegistry, PluginContext | None]:
+def _setup_plugins(
+    get_user_config: Callable[[], QuorUserConfig] = load_user_config,
+) -> tuple[PluginRegistry, PluginContext | None]:
     """Discover and initialize plugins for this invocation (fail-open; empty
     registry = no-op). Returns plugin_ctx=None if there are no plugins to
-    run or discovery/initialization raised."""
+    run or discovery/initialization raised.
+
+    `get_user_config` defaults to `load_user_config` itself (a fresh read)
+    so any direct caller keeps today's exact behavior; `run_dispatch()`
+    passes its own memoizing closure so this and `_apply_tee()` share one
+    read of config.toml per dispatch instead of each doing their own.
+    """
     from quor.plugins.base import ExecutionMode, PluginContext
     from quor.plugins.registry import PluginRegistry
 
@@ -229,12 +267,11 @@ def _setup_plugins() -> tuple[PluginRegistry, PluginContext | None]:
     plugin_ctx: PluginContext | None = None
 
     try:
-        from quor.config.loader import load_user_config
         from quor.pipeline.plugin_loader import discover_plugins
 
         discover_plugins(plugin_registry, use_cache=True, tier="user")
         if plugin_registry.all_plugins():
-            mode_str = load_user_config().mode
+            mode_str = get_user_config().mode
             try:
                 mode = ExecutionMode(mode_str)
             except ValueError:
@@ -260,28 +297,35 @@ def _run_pre_filter_plugins(
     *,
     cmd_str: str,
     captured: str,
-) -> str:
+) -> tuple[str, str | None]:
     """Run PRE_FILTER plugins against the raw captured output. Fail-open:
-    returns `captured` unchanged if there are no active plugins or a plugin
-    raises."""
+    returns `(captured, None)` unchanged if there are no active plugins or a
+    plugin raises.
+
+    Also returns the `content_type` detect() computed on `captured` for the
+    plugin payload (or None if it was never computed, i.e. no active
+    plugins) — the caller reuses this instead of calling detect() a second
+    time on the same text when PRE_FILTER left the content unchanged.
+    """
     if plugin_ctx is None:
-        return captured
+        return captured, None
     try:
         from quor.plugins.base import PluginCategory, PluginPayload
 
+        content_type = detect(captured).value
         pre_payload = PluginPayload(
             command=cmd_str,
             raw_output=captured,
             current_output=captured,
-            content_type=detect(captured).value,
+            content_type=content_type,
         )
         pre_payload = plugin_registry.run_category(
             PluginCategory.PRE_FILTER, pre_payload, plugin_ctx
         )
-        return pre_payload.current_output
+        return pre_payload.current_output, content_type
     except Exception as exc:  # noqa: BLE001
         warnings.warn(f"[quor] PRE_FILTER plugin error: {exc}", stacklevel=1)
-        return captured
+        return captured, None
 
 
 def _apply_content_filter(
@@ -388,7 +432,13 @@ def _maybe_print_onboarding_tip_safe(
         warnings.warn(f"[quor] onboarding tip error: {exc}", stacklevel=1)
 
 
-def _apply_tee(filter_config: FilterConfig, *, captured: str, final_output: str) -> str:
+def _apply_tee(
+    filter_config: FilterConfig,
+    *,
+    captured: str,
+    final_output: str,
+    get_user_config: Callable[[], QuorUserConfig] = load_user_config,
+) -> str:
     """Tee the raw output, and append a recovery footer only when doing so
     doesn't cost more tokens than the filter actually saved. Fail-open.
 
@@ -421,11 +471,12 @@ def _apply_tee(filter_config: FilterConfig, *, captured: str, final_output: str)
 
     On any error, returns `final_output` unchanged — tee must never affect
     stdout or the exit code (ADR-018 fail-open).
+
+    `get_user_config` defaults to `load_user_config` itself (a fresh read),
+    same rationale as `_setup_plugins`' own parameter of the same name.
     """
     try:
-        from quor.config.loader import load_user_config
-
-        user_config = load_user_config()
+        user_config = get_user_config()
         if not (user_config.tee_enabled and filter_config.tee):
             return final_output
 

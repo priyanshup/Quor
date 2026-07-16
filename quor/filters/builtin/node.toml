@@ -702,7 +702,17 @@ type = "group_repeated"
 # tested below — two different peer-dependency warnings (different package
 # names) are expected to collapse together into one example + count, the
 # same generic-noise rationale as npm/npx/pnpm above.
-patterns = ['(?i)^warning\b']
+#
+# Narrowed to the "has unmet peer dependency" shape specifically (was a bare
+# '^warning\b', mirroring pnpm's own QB-059 fix at the pnpm block above): a
+# bare warning-prefix pattern shape-matches *any* two consecutive yarn
+# `warning `-prefixed lines regardless of type — yarn classic emits several
+# non-fungible warning shapes under that same prefix ("No license field",
+# engine-incompatibility, "Yarn is out of date", ...) that must never be
+# silently merged into a peer-dependency count the way pnpm's bare
+# '^\s*warn\b' incorrectly merged its own "Issues with peer dependencies"
+# header into deprecation-warning runs.
+patterns = ['(?i)^warning\b.*has unmet peer dependency']
 min_count = 2
 
 [[filter.stages]]
@@ -813,9 +823,15 @@ type = "remove_ansi"
 [[filter.stages]]
 type = "group_repeated"
 # Shape-based (default), same generic-noise rationale as npm/pnpm above —
-# collapsing repeated bun warn: lines (e.g. several incorrect-peer-dependency
-# notices) to one example + count.
-patterns = ['(?i)^\s*warn:']
+# collapsing repeated bun warn: lines to one example + count.
+#
+# Narrowed to the "incorrect peer dependency" shape specifically (was a bare
+# '^\s*warn:', the same overly-broad-prefix bug pnpm's own QB-059 fix
+# already addressed at the pnpm block above): bun's `warn:` prefix also
+# covers unrelated, non-fungible diagnostics (duplicate-dependency notices,
+# ignored-postinstall-script warnings, lockfile warnings, ...) that a bare
+# prefix match would silently merge together.
+patterns = ['(?i)^\s*warn:\s*incorrect peer dependency']
 min_count = 2
 
 [[filter.stages]]
