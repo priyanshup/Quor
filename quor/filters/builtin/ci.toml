@@ -203,6 +203,14 @@ preserve_patterns = [
     '^Caused by:',
     '^\s*Suppressed:',
     '^\s*\.\.\.\s*\d+\s*more\b',
+    # QB-061: same bare-exception-header gap java.toml had (see that file's
+    # identical pattern for the full rationale) — maven's own strip_lines
+    # preserve_patterns below only cover [ERROR]/[WARNING]/BUILD/Total
+    # time/Tests run/--- markers, not a raw Surefire-dumped exception
+    # header, and max_tokens below has no preserve_patterns at all. PROTECT
+    # set here is permanent for the rest of this pipeline, so this one
+    # addition covers strip_lines and max_tokens too.
+    '^[\w$]+(?:\.[\w$]+)*(?:Exception|Error): ',
 ]
 patterns = [
     '^\s*at (java\.base/|javax\.|jdk\.internal\.|sun\.reflect\.|sun\.rmi\.|com\.sun\.proxy\.|org\.springframework\.|org\.junit\.|org\.gradle\.|worker\.org\.gradle\.|org\.apache\.maven\.|org\.apache\.catalina\.|org\.apache\.tomcat\.|org\.hibernate\.|org\.eclipse\.jetty\.|io\.netty\.|reactor\.|net\.sf\.cglib\.|org\.springframework\.cglib\.)',
@@ -259,6 +267,14 @@ must_contain = [
 must_not_contain = [
     "at java.base/jdk.internal.reflect.NativeMethodAccessorImpl.invoke(NativeMethodAccessorImpl.java:77)",
     "at org.junit.platform.commons.util.ReflectionUtils.invokeMethod(ReflectionUtils.java:728)",
+]
+
+[[filter.tests]]
+description = "QB-061 regression: a bare exception header (no \"Exception in thread\" wrapper) followed by a deep, non-collapsible user-code recursion stack that pushes the trace's total size past max_tokens's 500-token tail budget — the header and BUILD FAILURE marker must both survive; verified this exact fixture drops the header under the pre-fix preserve_patterns list"
+input = "[INFO] --- maven-surefire-plugin:3.1.2:test (default-test) @ myapp ---\n[ERROR] Tests run: 1, Failures: 0, Errors: 1, Skipped: 0\ncom.example.calc.RecursionOverflowException: recursion depth exceeded while evaluating expression\n\tat com.example.calc.ExpressionEvaluator.evaluate(ExpressionEvaluator.java:80)\n\tat com.example.calc.ExpressionEvaluator.evaluate(ExpressionEvaluator.java:81)\n\tat com.example.calc.ExpressionEvaluator.evaluate(ExpressionEvaluator.java:82)\n\tat com.example.calc.ExpressionEvaluator.evaluate(ExpressionEvaluator.java:83)\n\tat com.example.calc.ExpressionEvaluator.evaluate(ExpressionEvaluator.java:84)\n\tat com.example.calc.ExpressionEvaluator.evaluate(ExpressionEvaluator.java:85)\n\tat com.example.calc.ExpressionEvaluator.evaluate(ExpressionEvaluator.java:86)\n\tat com.example.calc.ExpressionEvaluator.evaluate(ExpressionEvaluator.java:87)\n\tat com.example.calc.ExpressionEvaluator.evaluate(ExpressionEvaluator.java:88)\n\tat com.example.calc.ExpressionEvaluator.evaluate(ExpressionEvaluator.java:89)\n\tat com.example.calc.ExpressionEvaluator.evaluate(ExpressionEvaluator.java:90)\n\tat com.example.calc.ExpressionEvaluator.evaluate(ExpressionEvaluator.java:91)\n\tat com.example.calc.ExpressionEvaluator.evaluate(ExpressionEvaluator.java:92)\n\tat com.example.calc.ExpressionEvaluator.evaluate(ExpressionEvaluator.java:93)\n\tat com.example.calc.ExpressionEvaluator.evaluate(ExpressionEvaluator.java:94)\n\tat com.example.calc.ExpressionEvaluator.evaluate(ExpressionEvaluator.java:95)\n\tat com.example.calc.ExpressionEvaluator.evaluate(ExpressionEvaluator.java:96)\n\tat com.example.calc.ExpressionEvaluator.evaluate(ExpressionEvaluator.java:97)\n\tat com.example.calc.ExpressionEvaluator.evaluate(ExpressionEvaluator.java:98)\n\tat com.example.calc.ExpressionEvaluator.evaluate(ExpressionEvaluator.java:99)\n\tat com.example.calc.ExpressionEvaluator.evaluate(ExpressionEvaluator.java:100)\n\tat com.example.calc.ExpressionEvaluator.evaluate(ExpressionEvaluator.java:101)\n\tat com.example.calc.ExpressionEvaluator.evaluate(ExpressionEvaluator.java:102)\n\tat com.example.calc.ExpressionEvaluator.evaluate(ExpressionEvaluator.java:103)\n\tat com.example.calc.ExpressionEvaluator.evaluate(ExpressionEvaluator.java:104)\n\tat com.example.calc.ExpressionEvaluator.evaluate(ExpressionEvaluator.java:105)\n\tat com.example.calc.ExpressionEvaluator.evaluate(ExpressionEvaluator.java:106)\n\tat com.example.calc.ExpressionEvaluator.evaluate(ExpressionEvaluator.java:107)\n\tat com.example.calc.ExpressionEvaluator.evaluate(ExpressionEvaluator.java:108)\n\tat com.example.calc.ExpressionEvaluator.evaluate(ExpressionEvaluator.java:109)\n[INFO] BUILD FAILURE\n[INFO] Total time:  2.105 s\n"
+must_contain = [
+    "com.example.calc.RecursionOverflowException: recursion depth exceeded while evaluating expression",
+    "BUILD FAILURE",
 ]
 
 # ---------------------------------------------------------------------------
