@@ -1,0 +1,43 @@
+============================= test session starts ==============================
+platform linux -- Python 3.11.0, pytest-7.4.0, pluggy-1.0.0
+rootdir: /workspace/storefront
+plugins: cov-5.0.0, anyio-4.2.0
+collecting ... collected 5 items
+
+PASSED tests/test_pricing.py::test_apply_discount[10-90]
+FAILED tests/test_pricing.py::test_apply_discount[-5-100]
+FAILED tests/test_pricing.py::test_apply_discount[-20-100]
+FAILED tests/test_pricing.py::test_apply_discount[150-100]
+PASSED tests/test_pricing.py::test_apply_discount[50-50]
+
+================================= FAILURES ====================================
+_____________________ test_apply_discount[-5-100] ______________________________
+
+    @pytest.mark.parametrize("discount_pct,expected", [(-5, 100), (-20, 100), (150, 100)])
+    def test_apply_discount(discount_pct, expected):
+        result = apply_discount(100, discount_pct)
+>       assert result <= 100
+E       AssertionError: discount_pct must be clamped to [0, 100]
+
+tests/test_pricing.py:14: AssertionError
+_____________________ test_apply_discount[-20-100] ______________________________
+
+    def test_apply_discount(discount_pct, expected):
+        result = apply_discount(100, discount_pct)
+>       assert result <= 100
+E       AssertionError: discount_pct must be clamped to [0, 100]
+
+tests/test_pricing.py:14: AssertionError
+_____________________ test_apply_discount[150-100] _____________________________
+
+    def test_apply_discount(discount_pct, expected):
+        result = apply_discount(100, discount_pct)
+>       assert result <= 100
+E       AssertionError: discount_pct must be clamped to [0, 100]
+
+tests/test_pricing.py:14: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_pricing.py::test_apply_discount[-5-100] - AssertionError: discount_pct must be clamped to [0, 100]
+FAILED tests/test_pricing.py::test_apply_discount[-20-100] - AssertionError: discount_pct must be clamped to [0, 100]
+FAILED tests/test_pricing.py::test_apply_discount[150-100] - AssertionError: discount_pct must be clamped to [0, 100]
+3 failed, 2 passed in 0.28s

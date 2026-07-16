@@ -1,0 +1,4 @@
+bun install v1.0.25 (9c68abdb)
+
+error: No matching version found for "left-pad@^99.0.0"
+note: package "left-pad" exists on npm but "^99.0.0" is not a valid version

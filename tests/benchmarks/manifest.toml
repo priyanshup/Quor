@@ -62,6 +62,16 @@ min_reduction_pct = 5.0
 must_contain = ["Unmerged paths", "both modified:   src/config/settings.py"]
 
 [[case]]
+id = "git-status-renamed-file-ahead-of-remote"
+category = "git-status"
+ecosystem = "Git"
+command = "git status"
+sample_file = "samples/git-status/003_renamed_file_ahead_of_remote.txt"
+expected_filter = "git-status"
+min_reduction_pct = 55.0
+must_contain = ["renamed:    src/utils/stringHelpers.js -> src/utils/string-helpers.js", "modified:   src/index.js"]
+
+[[case]]
 id = "git-log-recent-history"
 category = "git-log"
 ecosystem = "Git"
@@ -80,6 +90,16 @@ sample_file = "samples/git-log/002_hotfix_branch_history.txt"
 expected_filter = "git-log"
 min_reduction_pct = 10.0
 must_contain = ["fix: guard against null session token"]
+
+[[case]]
+id = "git-log-merge-commit"
+category = "git-log"
+ecosystem = "Git"
+command = "git log"
+sample_file = "samples/git-log/003_merge_commit_history.txt"
+expected_filter = "git-log"
+min_reduction_pct = 38.0
+must_contain = ["Merge pull request #142 from acme/fix/webhook-retry", "fix: retry webhook delivery on 5xx responses"]
 
 [[case]]
 id = "git-diff-single-file-bugfix"
@@ -232,6 +252,31 @@ min_reduction_pct = 15.0
 must_contain = ["KeyError: 'cart'", "storefront/views.py\", line 48, in checkout_view", "FAILED tests/test_views.py::test_checkout_view"]
 
 [[case]]
+id = "pytest-collection-error"
+category = "pytest"
+ecosystem = "Python"
+command = "pytest"
+sample_file = "samples/pytest/004_collection_error.txt"
+expected_filter = "pytest"
+min_reduction_pct = 22.0
+must_contain = ["ERROR collecting tests/test_cart.py", "ModuleNotFoundError: No module named 'src.pricing.rules'", "ERROR tests/test_cart.py"]
+
+[[case]]
+id = "pytest-parametrized-failures"
+category = "pytest"
+ecosystem = "Python"
+command = "pytest"
+sample_file = "samples/pytest/005_parametrized_failures.txt"
+expected_filter = "pytest"
+min_reduction_pct = 18.0
+must_contain = [
+    "FAILED tests/test_pricing.py::test_apply_discount[-5-100] - AssertionError: discount_pct must be clamped to [0, 100]",
+    "2 more with the same message at:",
+    "test_apply_discount[-20-100]",
+    "test_apply_discount[150-100]",
+]
+
+[[case]]
 id = "mypy-repeated-type-error"
 category = "mypy"
 ecosystem = "Python"
@@ -250,6 +295,16 @@ sample_file = "samples/mypy/002_distinct_errors_no_repetition.txt"
 expected_filter = "mypy"
 min_reduction_pct = 5.0
 must_contain = ["Missing return statement", "has no attribute \"get_json\""]
+
+[[case]]
+id = "mypy-clean-run-no-issues"
+category = "mypy"
+ecosystem = "Python"
+command = "mypy src/"
+sample_file = "samples/mypy/003_clean_run_no_issues.txt"
+expected_filter = "mypy"
+min_reduction_pct = 0.0
+must_contain = ["Success: no issues found in 47 source files"]
 
 [[case]]
 id = "ruff-multi-file-violations"
@@ -405,6 +460,16 @@ min_reduction_pct = 5.0
 must_contain = ["ERR_PNPM_OUTDATED_LOCKFILE", "Failure reason:", "react-router-dom@^6.20.0"]
 
 [[case]]
+id = "pnpm-peer-dependency-conflict"
+category = "pnpm"
+ecosystem = "JavaScript"
+command = "pnpm install"
+sample_file = "samples/pnpm/005_peer_dependency_conflict.txt"
+expected_filter = "pnpm"
+min_reduction_pct = 14.0
+must_contain = ["✕ unmet peer react@^18.2.0: found 17.0.2", "✕ missing peer react-dom@^18.0.0", "Packages: +87", "Done in 5.4s"]
+
+[[case]]
 id = "yarn-dependency-conflict"
 category = "yarn"
 ecosystem = "JavaScript"
@@ -413,6 +478,16 @@ sample_file = "samples/yarn/003_dependency_conflict.txt"
 expected_filter = "yarn"
 min_reduction_pct = 5.0
 must_contain = ["doesn't provide typescript", "doesn't provide react-dom", "Failed with errors in 1s 42ms"]
+
+[[case]]
+id = "yarn-frozen-lockfile-mismatch"
+category = "yarn"
+ecosystem = "JavaScript"
+command = "yarn install --frozen-lockfile"
+sample_file = "samples/yarn/004_frozen_lockfile_mismatch.txt"
+expected_filter = "yarn"
+min_reduction_pct = 24.0
+must_contain = ["error Your lockfile needs to be updated, but yarn was run with '--frozen-lockfile'."]
 
 [[case]]
 id = "bun-successful-install-with-warnings"
@@ -433,6 +508,16 @@ sample_file = "samples/bun/002_lifecycle_script_failure.txt"
 expected_filter = "bun"
 min_reduction_pct = 0.0
 must_contain = ["Failed to compile.", "Type error: Argument of type 'string'", "script \"build\" exited with code 1"]
+
+[[case]]
+id = "bun-dependency-resolution-failure"
+category = "bun"
+ecosystem = "JavaScript"
+command = "bun add left-pad"
+sample_file = "samples/bun/003_dependency_resolution_failure.txt"
+expected_filter = "bun"
+min_reduction_pct = 0.0
+must_contain = ["error: No matching version found for \"left-pad@^99.0.0\"", "note: package \"left-pad\" exists on npm but \"^99.0.0\" is not a valid version"]
 
 [[case]]
 id = "prettier-check-many-files"
@@ -716,6 +801,153 @@ sample_file = "samples/cat-tsx/001_shopping_cart_component.tsx"
 expected_filter = "cat-tsx"
 min_reduction_pct = 40.0
 must_contain = ["export function ShoppingCart({ customerId }: ShoppingCartProps) {", "export interface CartLineItemProps {", "function CartLineItem({", "renders the current cart contents"]
+
+# ---------------------------------------------------------------------------
+# QB-046 benchmark backfill: cat-csharp/cat-go/cat-java/cat-rust shipped with
+# AST summarization support but zero benchmark corpus representation (each
+# had only 4 synthetic-snippet inline filter tests). These cases use
+# realistic, multi-method domain files (mirroring the storefront/payments
+# fictional codebase the cat-python/cat-javascript/cat-typescript cases
+# already use) instead of trivial one-function snippets.
+# ---------------------------------------------------------------------------
+
+[[case]]
+id = "cat-csharp-payment-processor"
+category = "cat-csharp"
+ecosystem = "C#"
+command = "cat src/Payments/PaymentProcessor.cs"
+sample_file = "samples/cat-csharp/001_payment_processor.cs"
+expected_filter = "cat-csharp"
+min_reduction_pct = 30.0
+must_contain = [
+    "public string Charge(string accountId, int amount)",
+    "Charge an account, guarding against duplicate pending charges.",
+    "public class DuplicateChargeException : Exception",
+    "public DuplicateChargeException(string accountId)",
+]
+must_not_contain = ["_gateway.Charge(accountId, amount);", "Console.WriteLine($\"charging account"]
+
+[[case]]
+id = "cat-csharp-order-service-namespaced"
+category = "cat-csharp"
+ecosystem = "C#"
+command = "cat src/Orders/OrderService.cs"
+sample_file = "samples/cat-csharp/002_order_service.cs"
+expected_filter = "cat-csharp"
+min_reduction_pct = 36.0
+must_contain = [
+    "public enum OrderStatus",
+    "Pending,",
+    "Shipped,",
+    "public interface IOrderRepository",
+    "public class OrderService : IOrderService",
+    "public Order CreateOrder(string customerId, List<LineItem> items)",
+    "public void ShipOrder(string orderId)",
+]
+must_not_contain = ["_repository.Save(order);", "_notifier.NotifyOrderCreated(order);"]
+
+[[case]]
+id = "cat-go-cart-service"
+category = "cat-go"
+ecosystem = "Go"
+command = "cat cart/service.go"
+sample_file = "samples/cat-go/001_cart_service.go"
+expected_filter = "cat-go"
+min_reduction_pct = 20.0
+must_contain = [
+    "package cart",
+    "const MaxQuantityPerItem = 20",
+    "type LineItem struct {",
+    "type Storage interface {",
+    "func (c *CartService) AddItem(sku string, quantity int, unitPriceCents int) error {",
+    "// AddItem adds quantity units of sku to the cart",
+]
+must_not_contain = ["c.items[sku] = LineItem{SKU: sku, Quantity: next, UnitPriceCents: unitPriceCents}"]
+
+[[case]]
+id = "cat-go-payment-processor-func-literal"
+category = "cat-go"
+ecosystem = "Go"
+command = "cat payments/processor.go"
+sample_file = "samples/cat-go/002_payment_processor.go"
+expected_filter = "cat-go"
+min_reduction_pct = 22.0
+must_contain = [
+    "package payments",
+    "type Gateway interface {",
+    "func (p *Processor) Charge(accountID string, amount int) (string, error) {",
+    "var validateAmount = func(amount int) error {",
+]
+must_not_contain = ["log.Printf(\"charging account %s for %d\", accountID, amount)", "return errors.New(\"amount must be positive\")"]
+
+[[case]]
+id = "cat-java-order-service"
+category = "cat-java"
+ecosystem = "Java"
+command = "cat src/main/java/com/example/storefront/orders/OrderService.java"
+sample_file = "samples/cat-java/001_order_service.java"
+expected_filter = "cat-java"
+min_reduction_pct = 42.0
+must_contain = [
+    "public class OrderService {",
+    "Creates, ships, and cancels customer orders.",
+    "public Order createOrder(String customerId, List<LineItem> items) {",
+    "interface OrderRepository {",
+    "enum OrderStatus {",
+    "PENDING,",
+    "class OrderNotFoundException extends RuntimeException {",
+]
+must_not_contain = ["repository.save(order);", "notifier.notifyOrderCreated(order);"]
+
+[[case]]
+id = "cat-java-notification-dispatcher-lambda-field"
+category = "cat-java"
+ecosystem = "Java"
+command = "cat src/main/java/com/example/storefront/notifications/NotificationDispatcher.java"
+sample_file = "samples/cat-java/002_notification_dispatcher.java"
+expected_filter = "cat-java"
+min_reduction_pct = 30.0
+must_contain = [
+    "public class NotificationDispatcher implements Notifier {",
+    "private final Consumer<Exception> defaultFailureHandler = (ex) -> {",
+    "public void dispatch(NotificationEvent event) {",
+    "interface NotificationChannel {",
+]
+must_not_contain = ["System.err.println(\"notification dispatch failed: \" + ex.getMessage());", "channel.send(event);"]
+
+[[case]]
+id = "cat-rust-cart-service"
+category = "cat-rust"
+ecosystem = "Rust"
+command = "cat src/cart/service.rs"
+sample_file = "samples/cat-rust/001_cart_service.rs"
+expected_filter = "cat-rust"
+min_reduction_pct = 32.0
+must_contain = [
+    "pub const MAX_QUANTITY_PER_ITEM: u32 = 20;",
+    "pub struct LineItem {",
+    "pub enum CartError {",
+    "impl CartService {",
+    "pub fn add_item(&mut self, sku: &str, quantity: u32, unit_price_cents: u64) -> Result<(), CartError> {",
+]
+must_not_contain = ["return Err(CartError::QuantityExceeded(quantity));"]
+
+[[case]]
+id = "cat-rust-payment-processor-trait-impl"
+category = "cat-rust"
+ecosystem = "Rust"
+command = "cat src/payments/processor.rs"
+sample_file = "samples/cat-rust/002_payment_processor.rs"
+expected_filter = "cat-rust"
+min_reduction_pct = 28.0
+must_contain = [
+    "pub enum PaymentError {",
+    "impl fmt::Display for PaymentError {",
+    "pub trait Gateway {",
+    "pub struct Processor<G: Gateway, L: Ledger> {",
+    "pub fn charge(&mut self, account_id: &str, amount: u64) -> Result<String, PaymentError> {",
+]
+must_not_contain = ["println!(\"charging account {} for {}\", account_id, amount);"]
 
 [[case]]
 id = "generic-ls-la"
@@ -1068,6 +1300,19 @@ must_contain = [
     "undefined reference to `shutdown_engine'",
     "undefined reference to `validate_input'",
     "collect2: error: ld returned 1 exit status",
+]
+
+[[case]]
+id = "gcc-fatal-missing-header"
+category = "gcc"
+ecosystem = "C/C++"
+command = "gcc -c main.c"
+sample_file = "samples/gcc/006_fatal_missing_header.txt"
+expected_filter = "gcc"
+min_reduction_pct = 10.0
+must_contain = [
+    "fatal error: engine.h: No such file or directory",
+    "#include \"engine.h\"",
 ]
 
 [[case]]
