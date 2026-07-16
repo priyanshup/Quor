@@ -46,6 +46,18 @@ _KNOWN_BASE_COMMANDS: frozenset[str] = frozenset(
         "mvnw.cmd",     # same, Windows wrapper-script invocation
         "java",         # QB-056: bare JVM invocation (java -jar app.jar,
                         # java -cp ... Main) — Java stack-trace compression
+        "gcc",          # QB-058: native C/C++ compiler diagnostics — see
+        "g++",          # the "gcc" filter block in gcc.toml. clang/clang++
+        "clang",        # share the same filter (near-identical diagnostic
+        "clang++",      # shape), not a separate one per compiler.
+        "bun",          # QB-059: bare Bun invocation (bun install, bun add,
+                        # bun run <script>, ...) — previously entirely
+                        # unrouted (not a known base command, and "bunx" is a
+                        # transparent prefix, not this). See the "bun" filter
+                        # block in node.toml. `bunx` itself is intentionally
+                        # left as a transparent prefix — see its own comment
+                        # in TRANSPARENT_PREFIXES below; this task only asked
+                        # for `bun` routing.
     }
 )
 
@@ -64,7 +76,14 @@ _KNOWN_PYTHON_SUBCOMMANDS: frozenset[str] = frozenset(
 # npx/yarn/pnpm are deliberately NOT here (QB-006A): they are now known base
 # commands in their own right (see _KNOWN_BASE_COMMANDS above) so their own
 # generic wrapper noise gets filtered, regardless of what they wrap underneath.
-# bunx stays a transparent prefix — Bun is out of scope for QB-006A.
+# bunx stays a transparent prefix — QB-059 added bare `bun` as a known base
+# command (its own install/add/run wrapper noise now gets filtered), but
+# left `bunx` untouched: unlike npx's QB-006A migration, nothing in QB-059
+# asked for `bunx`'s resolution-preamble noise to be filtered, and its
+# current transparent-prefix behavior (skip straight to whatever it wraps)
+# is still strictly safer than guessing at unverified `bunx`-specific output
+# shapes — see the "remaining opportunities" note this decision is tracked
+# under.
 TRANSPARENT_PREFIXES: tuple[str, ...] = (
     "sudo",
     "doas",

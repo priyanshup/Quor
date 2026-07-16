@@ -1,0 +1,23 @@
+In file included from /usr/include/c++/11/vector:60,
+                 from /usr/include/c++/11/bits/stl_algobase.h:64,
+                 from /usr/include/c++/11/bits/char_traits.h:39,
+                 from /usr/include/c++/11/string:40,
+                 from /usr/include/c++/11/bits/locale_classes.h:40,
+                 from /usr/include/c++/11/bits/ios_base.h:41,
+                 from src/widget.cpp:2:
+/usr/include/c++/11/bits/stl_algo.h: In instantiation of 'void std::__sort(_RandomAccessIterator, _RandomAccessIterator, _Compare) [with _RandomAccessIterator = Widget*; _Compare = __gnu_cxx::__ops::_Iter_comp_iter<CompareWidgets>]':
+/usr/include/c++/11/bits/stl_algo.h:1980:25:   required from 'void std::__introsort_loop(_RandomAccessIterator, _RandomAccessIterator, _Size, _Compare) [with _RandomAccessIterator = Widget*; _Size = long int; _Compare = __gnu_cxx::__ops::_Iter_comp_iter<CompareWidgets>]'
+/usr/include/c++/11/bits/stl_algo.h:1990:25:   required from 'void std::sort(_RAIter, _RAIter, _Compare) [with _RAIter = Widget*; _Compare = CompareWidgets]'
+src/widget.cpp:40:15:   required from here
+/usr/include/c++/11/bits/stl_algo.h:1928:26: error: no match for call to '(CompareWidgets) (Widget&, Widget&)'
+ 1928 |           if (__comp(__val, *(__first + __half)))
+      |               ~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+src/widget.cpp:20:10: note: candidate: 'bool CompareWidgets::operator()(const Widget&, const Widget&, bool) const'
+/usr/include/c++/11/bits/predefined_ops.h:38:17: note: candidate: 'constexpr bool __gnu_cxx::__ops::_Iter_comp_iter<_Compare>::operator()(_Iterator1, _Iterator2) [with _Iterator1 = Widget*; _Iterator2 = Widget*; _Compare = CompareWidgets]'
+/usr/include/c++/11/bits/predefined_ops.h:38:17: note:   no known conversion for argument 1 from 'Widget' to '_Iterator1' {aka 'Widget*'}
+/usr/include/c++/11/bits/stl_algo.h:1930:26: error: no match for call to '(CompareWidgets) (Widget&, Widget&)'
+ 1930 |           if (__comp(*(__first + __half), *(__last - 1)))
+      |               ~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+src/widget.cpp:20:10: note: candidate: 'bool CompareWidgets::operator()(const Widget&, const Widget&, bool) const'
+/usr/include/c++/11/bits/predefined_ops.h:38:17: note: candidate: 'constexpr bool __gnu_cxx::__ops::_Iter_comp_iter<_Compare>::operator()(_Iterator1, _Iterator2) [with _Iterator1 = Widget*; _Iterator2 = Widget*; _Compare = CompareWidgets]'
+/usr/include/c++/11/bits/predefined_ops.h:38:17: note:   no known conversion for argument 1 from 'Widget' to '_Iterator1' {aka 'Widget*'}

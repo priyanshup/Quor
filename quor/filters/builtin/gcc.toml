@@ -1,0 +1,267 @@
+# quor built-in filter: GCC/Clang compiler diagnostics (QB-058)
+#
+# Covers bare gcc/g++/clang/clang++ invocations. Their diagnostic shape is
+# effectively identical between the two toolchains (`file:line:col: severity:
+# message`, a source-line gutter, and a caret/tilde underline), so one filter
+# serves all four commands rather than duplicating a near-identical config
+# per compiler, the same reasoning java.toml serves every `java` invocation
+# with one filter regardless of which framework threw the exception.
+#
+# Composed entirely from existing stage types (remove_ansi, group_repeated,
+# strip_lines, deduplicate_consecutive, max_tokens) — no new stage, no
+# registry/dispatcher/Pipeline/Engine/ContentMask/StageHandler change.
+# Requires gcc/g++/clang/clang++ to be known base commands
+# (quor/rewrite/rules.py) for their output to ever be routed through Quor at
+# all.
+#
+# Noise sources unique to compiler diagnostics, and how each is handled:
+#
+# 1. System-header include chains ("In file included from X, from Y, ..."):
+#    collapsed by the first group_repeated stage below, but ONLY the chain
+#    lines whose path is a known system/library header prefix
+#    (/usr/include, /usr/lib/gcc, /usr/local/include, /opt/...). A chain's
+#    final line is nearly always the user's own source file (e.g.
+#    "from src/widget.cpp:2:") and deliberately never matches this
+#    library-path-gated pattern, so it always survives as its own KEEP line
+#    — the same "collapse known non-user frames, never the user's own"
+#    principle java.toml already established for JVM stack frames.
+# 2. Template-instantiation stacks ("required from 'X'", "In instantiation
+#    of") are the C++ analog of a stack trace and get the same
+#    library-path-gated treatment as (1) above: only frames anchored in a
+#    system header collapse; a user's own template call site never does.
+# 3. The bare terminal marker "required from here" carries no information
+#    beyond its own location (unlike "required from 'X'", which names the
+#    instantiation) — repeats of it anywhere in the run (not just
+#    consecutive) collapse via the location-normalized global-scope
+#    mechanism proven on mypy/tsc (QB-044), which loses nothing: every
+#    collapsed occurrence's location is enumerated in the inserted summary
+#    line.
+# 4. Repeated overload-candidate notes from system headers ("note:
+#    candidate: ...") — the same library-path gating as (1)/(2); a
+#    candidate declared in the user's own code is never collapsed.
+# 5. The same warning message recurring at many different locations (e.g. a
+#    deprecated call used throughout one file) — the exact same
+#    location-normalized global-scope mechanism as (3), reused for
+#    `warning:` lines instead of `required from here`.
+# 6. Pure count summaries ("N warnings generated.", "cc1: ... warnings being
+#    treated as errors") carry no information beyond what the kept
+#    diagnostic lines already show — stripped outright, same as mypy's
+#    "Found N errors" / tsc's "Found N errors in N files".
+# 7. Blank lines and consecutive byte-identical duplicate lines.
+#
+# Never touched by ANY pattern in this file (no collapsing, no stripping):
+# `error:` diagnostic lines, the source-line gutter (`  N | ...`) and
+# caret/tilde underline (gcc's `  | ^~~~` gutter form, or clang's bare
+# `  ^~~~` form, both PROTECTed explicitly against max_tokens truncation),
+# and linker errors (`undefined reference to`, `collect2: error`) — none of
+# these ever match a strip/collapse pattern above, so they survive by
+# construction, not because of a special-case exemption. `warning:`/`note:`
+# lines are never fully removed either, but — as items 3/4/5 above describe
+# — a repeated one CAN be collapsed to one instance + a location summary
+# that still lists every occurrence's location; no warning/note message is
+# ever discarded outright, only de-duplicated.
+schema_version = 1
+
+[[filter]]
+name = "gcc"
+match_command = '^(gcc|g\+\+|clang\+\+|clang)(?=\s|$)'
+abort_unless = ["error", "Error", "warning", "Warning", "note"]
+on_empty = "gcc: no diagnostics."
+
+[[filter.stages]]
+type = "remove_ansi"
+
+[[filter.stages]]
+type = "group_repeated"
+# Shape-based (exact_match=false), run-scope (consecutive only), min_count=3
+# — mirrors java.toml's package-prefix-gated frame collapsing exactly.
+# preserve_patterns deliberately does NOT include "note:" — the candidate
+# note pattern below must still be reachable by this stage's own collapse
+# pass. "error:"/"warning:" are protected so no pattern here could ever
+# accidentally absorb a real diagnostic line into a collapsed run.
+preserve_patterns = [
+    'error:',
+]
+# Deliberately does NOT include 'warning:' — the second group_repeated
+# stage below (location-normalized, global scope) intentionally collapses
+# repeated `warning:` lines, and PROTECT is permanent (the engine never
+# lets a later stage un-PROTECT a line), so protecting 'warning:' here
+# would silently block that later stage from ever running on any warning
+# line. None of the four patterns below could ever match a `warning:`- or
+# `error:`-shaped line anyway (they require "In file included from"/
+# "from "/"required from"/"In instantiation of"/"note: candidate:"
+# shapes), so 'error:' above is defense-in-depth documentation, not a
+# functional necessity — same reasoning java.toml's own preserve_patterns
+# comment gives.
+patterns = [
+    # System-header include chain lines only — a chain's final "from
+    # <user-file>:N:" line never has a library-prefixed path, so it never
+    # matches this pattern and always survives as its own line.
+    '^(In file included from |\s+from )(/usr/include/|/usr/lib/gcc/|/usr/local/include/|/opt/)\S*:\d+[,:]?\s*$',
+    # Template-instantiation stack frames anchored in a system header.
+    '^(/usr/include/|/usr/lib/gcc/|/usr/local/include/|/opt/)\S*:\d+:\d+:\s+required from ',
+    '^(/usr/include/|/usr/lib/gcc/|/usr/local/include/|/opt/)\S*: In instantiation of ',
+    # Overload-candidate notes anchored in a system header (STL/boost-style
+    # overload-resolution spam).
+    '^(/usr/include/|/usr/lib/gcc/|/usr/local/include/|/opt/)\S*:\d+:\d+: note: candidate:',
+]
+min_count = 3
+
+[[filter.stages]]
+type = "group_repeated"
+# Location-normalized, global scope (QB-044 mechanism, reused as-is) — the
+# same technique mypy/tsc use for "same message at a different location".
+# "required from here" carries no information beyond its own location, so
+# collapsing it anywhere in the run (not just consecutively) loses nothing:
+# every collapsed location is listed in the inserted summary line. The same
+# mechanism applied to `warning:` lines collapses a deprecated-API warning
+# repeated at many call sites down to one instance + a location list.
+location_pattern = '^(\S+:\d+:\d+):'
+patterns = [
+    '^\S+:\d+:\d+:\s+required from here$',
+    '^\S+:\d+:\d+: warning: ',
+]
+min_count = 3
+scope = "global"
+
+[[filter.stages]]
+type = "strip_lines"
+patterns = [
+    '^\s*$',
+    '^\d+ warnings? generated\.?$',
+    '^\d+ errors? generated\.?$',
+    '^\d+ warnings? and \d+ errors? generated\.?$',
+    '^compilation terminated\.$',
+    '^cc1(plus)?: .*warnings being treated as errors$',
+]
+preserve_patterns = [
+    'error:',
+    'warning:',
+    'note:',
+    # gcc's source-line gutter ("  5 | code") and caret/tilde underline
+    # ("  | ^~~~"); clang's bare (gutter-less) caret/tilde underline.
+    '^\s*(\d+\s*)?\|',
+    '^\s*[\^~]+\s*$',
+    'undefined reference to',
+    'collect2: error',
+]
+
+[[filter.stages]]
+type = "deduplicate_consecutive"
+
+[[filter.stages]]
+type = "max_tokens"
+limit = 500
+strategy = "tail"
+# Deliberately does NOT list 'warning:'/'note:' here. Unlike strip_lines,
+# max_tokens's (and group_repeated's/remove_ansi's) preserve_patterns can
+# resurrect an already-COMPRESS line back to PROTECT (ADR-035, engine.py's
+# own docstring) — the two group_repeated stages above intentionally
+# COMPRESS repeated warning/note lines, and a blanket 'warning:'/'note:'
+# pattern here would silently undo that collapsing on any output large
+# enough to reach this stage. 'error:' is safe to list: no stage in this
+# file ever collapses an `error:` line, so there is nothing for it to
+# resurrect.
+preserve_patterns = [
+    'error:',
+    '^\s*(\d+\s*)?\|',
+    '^\s*[\^~]+\s*$',
+    'undefined reference to',
+    'collect2: error',
+]
+
+[[filter.tests]]
+description = "abort_unless: clean run (no diagnostics at all) is untouched"
+input = ""
+must_contain = []
+
+[[filter.tests]]
+description = "Syntax error: diagnostic, code excerpt, and caret all survive; the disambiguation note survives too"
+input = "foo.c: In function 'main':\nfoo.c:5:5: error: 'x' undeclared (first use in this function)\n    5 |     x = 5;\n      |     ^\nfoo.c:5:5: note: each undeclared identifier is reported only once for each function it appears in\n"
+must_contain = [
+    "foo.c:5:5: error: 'x' undeclared (first use in this function)",
+    "5 |     x = 5;",
+    "^",
+    "note: each undeclared identifier is reported only once",
+]
+
+[[filter.tests]]
+description = "clang-style diagnostic: bare (gutter-less) caret/tilde underline survives, count summary is stripped"
+input = "foo.c:5:5: error: use of undeclared identifier 'x'\n    x = 5;\n    ^\n1 error generated.\n"
+must_contain = ["error: use of undeclared identifier 'x'", "    ^"]
+must_not_contain = ["1 error generated"]
+
+[[filter.tests]]
+description = "System-header include chain collapses to first + (xN); the chain's final line (the user's own file) is never absorbed into the run"
+input = "In file included from /usr/include/c++/11/vector:60,\n                 from /usr/include/c++/11/bits/stl_algobase.h:64,\n                 from /usr/include/c++/11/bits/char_traits.h:39,\n                 from /usr/include/c++/11/string:40,\n                 from src/widget.cpp:2:\nsrc/widget.cpp:10:5: error: 'foo' was not declared in this scope\n   10 |     foo();\n      |     ^~~\n"
+must_contain = [
+    "In file included from /usr/include/c++/11/vector:60, (×4)",
+    "from src/widget.cpp:2:",
+    "src/widget.cpp:10:5: error: 'foo' was not declared in this scope",
+]
+must_not_contain = [
+    "from /usr/include/c++/11/bits/char_traits.h:39,",
+    "from /usr/include/c++/11/string:40,",
+]
+
+[[filter.tests]]
+description = "Template instantiation failure: library-anchored required-from/instantiation/candidate-note frames collapse, but the user's own required-from-here call site and both candidate mismatches survive"
+input = "/usr/include/c++/11/bits/stl_algo.h: In instantiation of 'void std::__sort(_RandomAccessIterator, _RandomAccessIterator, _Compare) [with _RandomAccessIterator = Widget*; _Compare = CompareWidgets]':\n/usr/include/c++/11/bits/stl_algo.h:1980:25:   required from 'void std::sort(_RAIter, _RAIter, _Compare) [with _RAIter = Widget*; _Compare = CompareWidgets]'\n/usr/include/c++/11/bits/stl_algo.h:1985:25:   required from 'void std::sort2(_RAIter, _RAIter, _Compare) [with _RAIter = Widget*; _Compare = CompareWidgets]'\n/usr/include/c++/11/bits/stl_algo.h:1990:25:   required from 'void std::sort3(_RAIter, _RAIter, _Compare) [with _RAIter = Widget*; _Compare = CompareWidgets]'\nsrc/widget.cpp:40:15:   required from here\n/usr/include/c++/11/bits/stl_algo.h:1928:26: error: no match for call to '(CompareWidgets) (Widget&, Widget&)'\n 1928 |           if (__comp(__val, *(__first + __half)))\n      |               ~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~\nsrc/widget.cpp:20:10: note: candidate: 'bool CompareWidgets::operator()(const Widget&, const Widget&, bool)'\n/usr/include/c++/11/bits/predefined_ops.h:38:17: note: candidate: 'constexpr bool __gnu_cxx::__ops::_Iter_comp_iter<_Compare>::operator()(_Iterator1, _Iterator2)'\n/usr/include/c++/11/bits/predefined_ops.h:40:17: note: candidate: 'constexpr bool __gnu_cxx::__ops::_Iter_comp_iter<_Compare>::operator()(_Iterator3, _Iterator4)'\n/usr/include/c++/11/bits/predefined_ops.h:42:17: note: candidate: 'constexpr bool __gnu_cxx::__ops::_Iter_comp_iter<_Compare>::operator()(_Iterator5, _Iterator6)'\n"
+must_contain = [
+    "required from 'void std::sort(_RAIter, _RAIter, _Compare)",
+    "(×3)",
+    "src/widget.cpp:40:15:   required from here",
+    "error: no match for call to '(CompareWidgets) (Widget&, Widget&)'",
+    "src/widget.cpp:20:10: note: candidate: 'bool CompareWidgets::operator()",
+]
+must_not_contain = [
+    "required from 'void std::sort2",
+    "required from 'void std::sort3",
+    "_Iterator3, _Iterator4",
+    "_Iterator5, _Iterator6",
+]
+
+[[filter.tests]]
+description = "QB-044-style: the bare 'required from here' terminal marker repeated at 3+ non-adjacent locations collapses; each location is listed in the summary, not discarded"
+input = "src/a.cpp:1:1:   required from here\nsrc/other.cpp:5:5: error: unrelated failure\nsrc/b.cpp:2:2:   required from here\nsrc/c.cpp:3:3:   required from here\n"
+must_contain = [
+    "src/a.cpp:1:1:   required from here",
+    "2 more with the same message at:",
+    "src/b.cpp:2:2",
+    "src/c.cpp:3:3",
+    "src/other.cpp:5:5: error: unrelated failure",
+]
+must_not_contain = [
+    "src/b.cpp:2:2:   required from here",
+    "src/c.cpp:3:3:   required from here",
+]
+
+[[filter.tests]]
+description = "Warning-heavy build: the same deprecation warning repeated at 4 locations collapses to one + a location summary; a distinct single warning is untouched; the trailing count summary is stripped"
+input = "src/legacy.c:10:5: warning: 'sprintf' is deprecated [-Wdeprecated-declarations]\nsrc/legacy.c:22:5: warning: 'sprintf' is deprecated [-Wdeprecated-declarations]\nsrc/legacy.c:35:5: warning: 'sprintf' is deprecated [-Wdeprecated-declarations]\nsrc/legacy.c:48:5: warning: 'sprintf' is deprecated [-Wdeprecated-declarations]\nsrc/legacy.c:60:5: warning: 'gets' is deprecated [-Wdeprecated-declarations]\n5 warnings generated.\n"
+must_contain = [
+    "src/legacy.c:10:5: warning: 'sprintf' is deprecated",
+    "3 more with the same message at:",
+    "src/legacy.c:60:5: warning: 'gets' is deprecated",
+]
+must_not_contain = [
+    "src/legacy.c:22:5: warning: 'sprintf' is deprecated",
+    "src/legacy.c:35:5: warning: 'sprintf' is deprecated",
+    "src/legacy.c:48:5: warning: 'sprintf' is deprecated",
+    "5 warnings generated",
+]
+
+[[filter.tests]]
+description = "Linker failure: every undefined-reference line survives individually (different symbols/call sites, never collapsed), and the collect2 summary is preserved as the root-cause marker"
+input = "/usr/bin/ld: /tmp/ccXXXXXX.o: in function `main':\nmain.c:(.text+0x1a): undefined reference to `compute_result'\nmain.c:(.text+0x2f): undefined reference to `compute_result'\nmain.c:(.text+0x44): undefined reference to `cleanup_resources'\ncollect2: error: ld returned 1 exit status\n"
+must_contain = [
+    "main.c:(.text+0x1a): undefined reference to `compute_result'",
+    "main.c:(.text+0x2f): undefined reference to `compute_result'",
+    "main.c:(.text+0x44): undefined reference to `cleanup_resources'",
+    "collect2: error: ld returned 1 exit status",
+]
+
+[[filter.tests]]
+description = "Blank lines between diagnostics are stripped; consecutive byte-identical duplicate lines are collapsed by deduplicate_consecutive"
+input = "src/a.c:1:1: error: first problem\n\n\nsrc/a.c:1:1: error: first problem\nsrc/b.c:2:2: error: second problem\n"
+must_contain = ["src/a.c:1:1: error: first problem", "src/b.c:2:2: error: second problem"]

@@ -1,0 +1,12 @@
+calc.c: In function 'compute':
+calc.c:8:20: error: expected ';' before 'return'
+    8 |     result = a + b
+      |                    ^
+calc.c:5:9: warning: unused variable 'unused_flag' [-Wunused-variable]
+    5 |     int unused_flag = 1;
+      |         ^~~~~~~~~~~
+calc.c: In function 'main':
+calc.c:22:5: error: 'compute' was not declared in this scope; did you mean 'computed'?
+   22 |     compute(a, b);
+      |     ^~~~~~~
+      |     computed

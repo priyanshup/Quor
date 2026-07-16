@@ -1,0 +1,11 @@
+main.c: In function 'process_data':
+main.c:15:9: warning: unused variable 'temp' [-Wunused-variable]
+   15 |     int temp = 0;
+      |         ^~~~
+main.c:42:14: warning: comparison of integer expressions of different signedness: 'int' and 'unsigned int' [-Wsign-compare]
+   42 |     for (int i = 0; i < count; i++) {
+      |                     ~~^~~~~~~
+main.c:58:5: warning: 'strcpy' is deprecated: This function is provided for compatibility reasons only. [-Wdeprecated-declarations]
+   58 |     strcpy(dest, src);
+      |     ^~~~~~
+3 warnings generated.

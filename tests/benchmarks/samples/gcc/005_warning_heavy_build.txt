@@ -1,0 +1,22 @@
+src/legacy.c:10:5: warning: 'sprintf' is deprecated: This function is provided for compatibility reasons only. [-Wdeprecated-declarations]
+   10 |     sprintf(buf, "%d", value);
+      |     ^~~~~~~
+src/legacy.c:22:5: warning: 'sprintf' is deprecated: This function is provided for compatibility reasons only. [-Wdeprecated-declarations]
+   22 |     sprintf(msg, "%s: %d", label, code);
+      |     ^~~~~~~
+src/legacy.c:35:5: warning: 'sprintf' is deprecated: This function is provided for compatibility reasons only. [-Wdeprecated-declarations]
+   35 |     sprintf(out, "%f", total);
+      |     ^~~~~~~
+src/legacy.c:48:5: warning: 'sprintf' is deprecated: This function is provided for compatibility reasons only. [-Wdeprecated-declarations]
+   48 |     sprintf(path, "%s/%s", dir, name);
+      |     ^~~~~~~
+src/legacy.c:61:5: warning: 'sprintf' is deprecated: This function is provided for compatibility reasons only. [-Wdeprecated-declarations]
+   61 |     sprintf(key, "%08x", hash);
+      |     ^~~~~~~
+src/legacy.c:74:5: warning: 'gets' is deprecated: This function is provided for compatibility reasons only. [-Wdeprecated-declarations]
+   74 |     gets(line);
+      |     ^~~~
+src/legacy.c:90:9: warning: unused variable 'retry_count' [-Wunused-variable]
+   90 |     int retry_count = 0;
+      |         ^~~~~~~~~~~
+7 warnings generated.

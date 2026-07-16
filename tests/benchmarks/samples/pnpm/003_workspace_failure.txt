@@ -1,0 +1,3 @@
+Progress: resolved 87, reused 82, downloaded 0, added 0
+ ERR_PNPM_WORKSPACE_PKG_NOT_FOUND  In : "@myorg/ui-kit" is in the dependencies but no package named "@myorg/ui-kit" is present in the workspace
+Meta: add "@myorg/ui-kit" to the workspace, or remove it from the dependencies of "apps/web"

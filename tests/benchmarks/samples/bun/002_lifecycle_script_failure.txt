@@ -1,0 +1,8 @@
+$ next build
+
+Failed to compile.
+
+./src/app/page.tsx:10:5
+Type error: Argument of type 'string' is not assignable to parameter of type 'number'.
+
+error: script "build" exited with code 1 (next build)

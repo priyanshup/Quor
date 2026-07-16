@@ -379,6 +379,61 @@ expected_filter = "yarn"
 min_reduction_pct = 15.0
 must_contain = ["error Command failed with exit code 2."]
 
+# ---------------------------------------------------------------------------
+# QB-059: pnpm/yarn diagnostic-shape coverage (peer-dependency conflicts,
+# lockfile mismatches, workspace errors) and the new bun filter
+# ---------------------------------------------------------------------------
+
+[[case]]
+id = "pnpm-workspace-failure"
+category = "pnpm"
+ecosystem = "JavaScript"
+command = "pnpm install"
+sample_file = "samples/pnpm/003_workspace_failure.txt"
+expected_filter = "pnpm"
+min_reduction_pct = 10.0
+must_contain = ["ERR_PNPM_WORKSPACE_PKG_NOT_FOUND", "@myorg/ui-kit"]
+
+[[case]]
+id = "pnpm-lockfile-mismatch"
+category = "pnpm"
+ecosystem = "JavaScript"
+command = "pnpm install --frozen-lockfile"
+sample_file = "samples/pnpm/004_lockfile_mismatch.txt"
+expected_filter = "pnpm"
+min_reduction_pct = 5.0
+must_contain = ["ERR_PNPM_OUTDATED_LOCKFILE", "Failure reason:", "react-router-dom@^6.20.0"]
+
+[[case]]
+id = "yarn-dependency-conflict"
+category = "yarn"
+ecosystem = "JavaScript"
+command = "yarn install --immutable"
+sample_file = "samples/yarn/003_dependency_conflict.txt"
+expected_filter = "yarn"
+min_reduction_pct = 5.0
+must_contain = ["doesn't provide typescript", "doesn't provide react-dom", "Failed with errors in 1s 42ms"]
+
+[[case]]
+id = "bun-successful-install-with-warnings"
+category = "bun"
+ecosystem = "JavaScript"
+command = "bun install"
+sample_file = "samples/bun/001_successful_install_with_warnings.txt"
+expected_filter = "bun"
+min_reduction_pct = 10.0
+must_contain = ["incorrect peer dependency", "(×2)", "47 packages installed [1.24s]"]
+
+[[case]]
+id = "bun-lifecycle-script-failure"
+category = "bun"
+ecosystem = "JavaScript"
+command = "bun run build"
+sample_file = "samples/bun/002_lifecycle_script_failure.txt"
+expected_filter = "bun"
+min_reduction_pct = 0.0
+must_contain = ["Failed to compile.", "Type error: Argument of type 'string'", "script \"build\" exited with code 1"]
+
 [[case]]
 id = "prettier-check-many-files"
 category = "prettier"
@@ -952,4 +1007,80 @@ must_contain = [
     "... 9 more",
     "Caused by: java.io.IOException: Connection reset by peer",
     "... 12 more",
+]
+
+# ---------------------------------------------------------------------------
+# QB-058: GCC/Clang compiler diagnostics (bare gcc/g++/clang/clang++)
+# ---------------------------------------------------------------------------
+
+[[case]]
+id = "gcc-successful-build-with-warnings"
+category = "gcc"
+ecosystem = "C/C++"
+command = "clang -Wall -c main.c"
+sample_file = "samples/gcc/001_successful_build_with_warnings.txt"
+expected_filter = "gcc"
+min_reduction_pct = 0.0
+must_contain = [
+    "warning: unused variable 'temp'",
+    "warning: comparison of integer expressions of different signedness",
+    "warning: 'strcpy' is deprecated",
+]
+
+[[case]]
+id = "gcc-syntax-error"
+category = "gcc"
+ecosystem = "C/C++"
+command = "gcc -c calc.c"
+sample_file = "samples/gcc/002_syntax_error.txt"
+expected_filter = "gcc"
+min_reduction_pct = 0.0
+must_contain = [
+    "error: expected ';' before 'return'",
+    "error: 'compute' was not declared in this scope",
+    "warning: unused variable 'unused_flag'",
+]
+
+[[case]]
+id = "gcc-template-instantiation-failure"
+category = "gcc"
+ecosystem = "C/C++"
+command = "g++ -std=c++17 -c src/widget.cpp"
+sample_file = "samples/gcc/003_template_instantiation_failure.txt"
+expected_filter = "gcc"
+min_reduction_pct = 8.0
+must_contain = [
+    "error: no match for call to '(CompareWidgets) (Widget&, Widget&)'",
+    "src/widget.cpp:40:15:   required from here",
+    "src/widget.cpp:20:10: note: candidate: 'bool CompareWidgets::operator()",
+]
+
+[[case]]
+id = "gcc-linker-failure"
+category = "gcc"
+ecosystem = "C/C++"
+command = "gcc -o app main.o"
+sample_file = "samples/gcc/004_linker_failure.txt"
+expected_filter = "gcc"
+min_reduction_pct = 0.0
+must_contain = [
+    "undefined reference to `initialize_engine'",
+    "undefined reference to `shutdown_engine'",
+    "undefined reference to `validate_input'",
+    "collect2: error: ld returned 1 exit status",
+]
+
+[[case]]
+id = "gcc-warning-heavy-build"
+category = "gcc"
+ecosystem = "C/C++"
+command = "clang -Wall -Wextra -c src/legacy.c"
+sample_file = "samples/gcc/005_warning_heavy_build.txt"
+expected_filter = "gcc"
+min_reduction_pct = 25.0
+must_contain = [
+    "warning: 'sprintf' is deprecated",
+    "more with the same message at:",
+    "warning: 'gets' is deprecated",
+    "warning: unused variable 'retry_count'",
 ]

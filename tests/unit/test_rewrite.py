@@ -243,6 +243,29 @@ class TestRules:
     def test_known_command_yarn(self) -> None:
         assert is_known_command("yarn", []) is True
 
+    def test_known_command_gcc(self) -> None:
+        assert is_known_command("gcc", ["-o", "a.out", "a.c"]) is True
+
+    def test_known_command_g_plus_plus(self) -> None:
+        assert is_known_command("g++", ["-std=c++17", "-c", "widget.cpp"]) is True
+
+    def test_known_command_clang(self) -> None:
+        assert is_known_command("clang", ["-Wall", "-c", "main.c"]) is True
+
+    def test_known_command_clang_plus_plus(self) -> None:
+        assert is_known_command("clang++", ["-c", "widget.cpp"]) is True
+
+    def test_known_command_bun(self) -> None:
+        assert is_known_command("bun", ["install"]) is True
+
+    def test_known_command_bun_run(self) -> None:
+        assert is_known_command("bun", ["run", "build"]) is True
+
+    def test_bunx_still_transparent_prefix_not_known_base_command(self) -> None:
+        """QB-059 routed bare `bun`, but deliberately left `bunx` as a
+        transparent prefix, not a known base command in its own right."""
+        assert is_known_command("bunx", ["cowsay"]) is False
+
     def test_structured_output_json_flag(self) -> None:
         assert has_structured_output_flag(["--json"]) is True
 

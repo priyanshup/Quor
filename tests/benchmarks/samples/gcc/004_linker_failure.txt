@@ -1,0 +1,8 @@
+/usr/bin/ld: /tmp/ccAbC123.o: in function `main':
+main.c:(.text+0x1a): undefined reference to `initialize_engine'
+/usr/bin/ld: main.c:(.text+0x2f): undefined reference to `initialize_engine'
+/usr/bin/ld: main.c:(.text+0x44): undefined reference to `shutdown_engine'
+/usr/bin/ld: /tmp/ccAbC123.o: in function `process':
+/usr/bin/ld: main.c:(.text+0x88): undefined reference to `validate_input'
+/usr/bin/ld: main.c:(.text+0xa3): undefined reference to `validate_input'
+collect2: error: ld returned 1 exit status

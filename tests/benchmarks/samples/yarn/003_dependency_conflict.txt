@@ -1,0 +1,4 @@
+➤ YN0000: · Resolution step
+➤ YN0002: │ workspace-app@workspace:. doesn't provide typescript (p66c35), requested by @myorg/eslint-config (peer dependency)
+➤ YN0002: │ workspace-app@workspace:. doesn't provide react-dom (p88a12), requested by @myorg/ui-kit (peer dependency)
+➤ YN0000: · Failed with errors in 1s 42ms
