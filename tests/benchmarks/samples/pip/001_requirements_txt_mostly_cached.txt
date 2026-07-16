@@ -1,0 +1,22 @@
+Requirement already satisfied: certifi in c:\project\.venv\lib\site-packages (2024.2.2)
+Requirement already satisfied: charset-normalizer in c:\project\.venv\lib\site-packages (3.3.2)
+Requirement already satisfied: idna in c:\project\.venv\lib\site-packages (3.6)
+Requirement already satisfied: urllib3 in c:\project\.venv\lib\site-packages (2.2.1)
+Requirement already satisfied: six in c:\project\.venv\lib\site-packages (1.16.0)
+Collecting flask==3.0.2
+  Downloading flask-3.0.2-py3-none-any.whl.metadata (3.6 kB)
+Collecting click>=8.1.3 (from flask==3.0.2)
+  Downloading click-8.1.7-py3-none-any.whl.metadata (3.0 kB)
+Collecting itsdangerous>=2.1.2 (from flask==3.0.2)
+  Downloading itsdangerous-2.1.2-py3-none-any.whl.metadata (1.9 kB)
+Collecting jinja2>=3.1.2 (from flask==3.0.2)
+  Downloading Jinja2-3.1.3-py3-none-any.whl.metadata (3.3 kB)
+Downloading flask-3.0.2-py3-none-any.whl (101 kB)
+Downloading click-8.1.7-py3-none-any.whl (97 kB)
+Downloading itsdangerous-2.1.2-py3-none-any.whl (15 kB)
+Downloading Jinja2-3.1.3-py3-none-any.whl (133 kB)
+Installing collected packages: itsdangerous, click, jinja2, flask
+Successfully installed click-8.1.7 flask-3.0.2 itsdangerous-2.1.2 jinja2-3.1.3
+
+[notice] A new release of pip is available: 24.0 -> 24.1
+[notice] To update, run: python.exe -m pip install --upgrade pip

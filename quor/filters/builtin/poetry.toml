@@ -1,0 +1,110 @@
+# quor built-in filter: Poetry (QB-060)
+#
+# Covers bare `poetry` and `python -m poetry` (install/add/update/remove/
+# lock/...) — previously entirely unrouted (not a known base command; see
+# `_KNOWN_BASE_COMMANDS`/`_KNOWN_PYTHON_SUBCOMMANDS` in quor/rewrite/rules.py).
+#
+# Composed entirely from existing stage types (remove_ansi, strip_lines,
+# deduplicate_consecutive, max_tokens) — no new stage, no
+# registry/dispatcher/Pipeline/Engine/ContentMask/StageHandler change.
+#
+# Poetry's *default* (non-verbose) output is already terse and information-
+# dense — a real `poetry install`/`add`/`update` prints one line per package
+# operation ("- Installing x (1.2.3)") with no per-package progress ticks
+# when not attached to a TTY (verified: piped/non-interactive Poetry 2.4.1
+# output never shows the interactive spinner's intermediate Pending/
+# Downloading states, only each package's final line) — so unlike pip/npm
+# there is no default-mode install-progress noise to strip here. The real,
+# verified noise is entirely `-v`/`-vv` verbose-mode environment-probe
+# output, both confirmed against Poetry's own source (poetry 2.4.1):
+#
+# 1. "Checking keyring availability: Available" — a single call site
+#    (poetry/utils/password_manager.py's `PasswordManager.preflight_check`),
+#    gated on `io.is_verbose()`. Pure environment-probe noise, never
+#    diagnostic.
+# 2. "Found: <python-executable-path>" — a single call site
+#    (poetry/utils/env/python/manager.py's `get_preferred_python`), gated on
+#    `Verbosity.VERBOSE`. Reports which interpreter Poetry picked; redundant
+#    with `pyproject.toml`'s own `requires-python` and never itself
+#    diagnostic of a failure.
+# 3. Internal Cleo/Poetry-framework traceback frames in a `-vv` uncaught-
+#    exception render ("  5  <path>/site-packages/cleo/commands/
+#    base_command.py:117 in run") — Cleo's own verbose exception formatter,
+#    confirmed by triggering a real Poetry-internal exception (a
+#    `ValueError` from `_find_best_version_for_package`). Only frames whose
+#    path contains `site-packages`/`dist-packages` are stripped — the same
+#    library-path-gated principle java.toml/gcc.toml/pytest.toml already use
+#    for JVM/GCC/Python stack frames, so a user's own plugin code (never
+#    installed under site-packages) is never touched. Only the frame's own
+#    header line is stripped; its indented source-code line is left alone
+#    (no distinguishing marker of its own — Safety Rule #3: when uncertain,
+#    keep it), and the actual exception name/message/source-excerpt block
+#    that follows the numbered stack never matches this pattern at all.
+#
+# Deliberately NOT touched: "Using virtualenv: <path>" — same text is also
+# the *entire, primary, always-shown* output of `poetry env use <python>`
+# (poetry/console/commands/env/use.py), so unlike (1)/(2) above it is not
+# safely identifiable as noise from line content alone; stripping it
+# unconditionally would silently eat that command's only output.
+schema_version = 1
+
+[[filter]]
+name = "poetry"
+match_command = '^poetry(?=\s|$)|^python3?\s+-m\s+poetry(?=\s|$)'
+
+[[filter.stages]]
+type = "remove_ansi"
+
+[[filter.stages]]
+type = "strip_lines"
+patterns = [
+    '^Checking keyring availability: (Available|Unavailable)$',
+    '^Found: \S+$',
+    '^\s*\d+\s+\S*(?:site-packages|dist-packages)\S*:\d+ in \S+$',
+]
+preserve_patterns = [
+    'Error',
+    'error',
+    'Warning',
+]
+
+[[filter.stages]]
+type = "deduplicate_consecutive"
+
+[[filter.stages]]
+type = "max_tokens"
+limit = 400
+strategy = "tail"
+
+[[filter.tests]]
+description = "Default (non-verbose) successful add: already terse, passes through with its per-package operation lines intact"
+input = "Using version ^2.34.2 for requests\n\nUpdating dependencies\nResolving dependencies...\n\nPackage operations: 5 installs, 0 updates, 0 removals\n\n  - Installing certifi (2026.6.17)\n  - Installing charset-normalizer (3.4.9)\n  - Installing idna (3.18)\n  - Installing urllib3 (2.7.0)\n  - Installing requests (2.34.2)\n\nWriting lock file\n"
+must_contain = ["Package operations: 5 installs, 0 updates, 0 removals", "- Installing requests (2.34.2)", "Writing lock file"]
+
+[[filter.tests]]
+description = "Default (non-verbose) version-not-found error survives completely untouched"
+input = "\nCould not find a matching version of package flask\n"
+must_contain = ["Could not find a matching version of package flask"]
+
+[[filter.tests]]
+description = "-v verbose environment probes stripped; 'Using virtualenv' (also env-use's own primary output) is left alone"
+input = "Found: C:\\Python314\\python.EXE\nUsing virtualenv: C:\\Users\\me\\AppData\\Local\\pypoetry\\Cache\\virtualenvs\\proj-abc123-py3.14\nChecking keyring availability: Available\n\nCould not find a matching version of package flask\n"
+must_contain = ["Using virtualenv: C:\\Users\\me\\AppData\\Local\\pypoetry\\Cache\\virtualenvs\\proj-abc123-py3.14", "Could not find a matching version of package flask"]
+must_not_contain = ["Found: C:\\Python314\\python.EXE", "Checking keyring availability"]
+
+[[filter.tests]]
+description = "-vv internal exception: Cleo/Poetry-framework numbered stack frames (site-packages-anchored) collapse; the exception name, message, and source excerpt survive verbatim"
+input = "Found: C:\\Python314\\python.EXE\nUsing virtualenv: C:\\Users\\me\\AppData\\Local\\pypoetry\\Cache\\virtualenvs\\proj-abc123-py3.14\nChecking keyring availability: Available\n\n\n  ValueError\n\n  Could not find a matching version of package flask\n\n  at ~\\AppData\\Local\\Programs\\Python\\Python314\\Lib\\site-packages\\poetry\\console\\commands\\init.py:457 in _find_best_version_for_package\n      455|         if not package:\n    > 457|             raise ValueError(f\"Could not find a matching version of package {name}\")\n      458|\n\n   5  ~\\AppData\\Local\\Programs\\Python\\Python314\\Lib\\site-packages\\cleo\\commands\\base_command.py:117 in run\n        return self.execute(io) or 0\n\n   4  ~\\AppData\\Local\\Programs\\Python\\Python314\\Lib\\site-packages\\poetry\\console\\commands\\installer_command.py:39 in execute\n        return super().execute(io)\n"
+must_contain = [
+    "ValueError",
+    "Could not find a matching version of package flask",
+    "raise ValueError(f\"Could not find a matching version of package {name}\")",
+    "return self.execute(io) or 0",
+    "return super().execute(io)",
+]
+must_not_contain = [
+    "5  ~\\AppData\\Local\\Programs\\Python\\Python314\\Lib\\site-packages\\cleo\\commands\\base_command.py:117 in run",
+    "4  ~\\AppData\\Local\\Programs\\Python\\Python314\\Lib\\site-packages\\poetry\\console\\commands\\installer_command.py:39 in execute",
+    "Found: C:\\Python314\\python.EXE",
+    "Checking keyring availability",
+]

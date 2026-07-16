@@ -1,0 +1,37 @@
+Found: C:\Users\dev\AppData\Local\Programs\Python\Python312\python.EXE
+Using virtualenv: C:\Users\dev\AppData\Local\pypoetry\Cache\virtualenvs\storefront-K5lW5eug-py3.12
+Checking keyring availability: Available
+
+Updating dependencies
+Resolving dependencies...
+
+
+  ValueError
+
+  Could not find a matching version of package flask
+
+  at ~\AppData\Local\Programs\Python\Python312\Lib\site-packages\poetry\console\commands\init.py:457 in _find_best_version_for_package
+      453|         )
+      454|
+      455|         if not package:
+      456|             # TODO: find similar
+    > 457|             raise ValueError(f"Could not find a matching version of package {name}")
+      458|
+      459|         version = package.version.without_local()
+      460|         return package.pretty_name, f"^{version.to_string()}"
+      461|
+
+   5  ~\AppData\Local\Programs\Python\Python312\Lib\site-packages\cleo\commands\base_command.py:117 in run
+        return self.execute(io) or 0
+
+   4  ~\AppData\Local\Programs\Python\Python312\Lib\site-packages\poetry\console\commands\installer_command.py:39 in execute
+        return super().execute(io)
+
+   3  ~\AppData\Local\Programs\Python\Python312\Lib\site-packages\cleo\commands\command.py:61 in execute
+        return self.handle()
+
+   2  ~\AppData\Local\Programs\Python\Python312\Lib\site-packages\poetry\console\commands\add.py:234 in handle
+        requirements = self._determine_requirements(
+
+   1  ~\AppData\Local\Programs\Python\Python312\Lib\site-packages\poetry\console\commands\init.py:428 in _determine_requirements
+        name, _ = self._find_best_version_for_package(

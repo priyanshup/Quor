@@ -58,6 +58,16 @@ _KNOWN_BASE_COMMANDS: frozenset[str] = frozenset(
                         # left as a transparent prefix — see its own comment
                         # in TRANSPARENT_PREFIXES below; this task only asked
                         # for `bun` routing.
+        "pip",          # QB-060: bare pip invocation (pip install/download/
+        "pip3",         # uninstall/wheel) — install/build-backend progress
+                        # chatter noise. See the "pip" filter block in
+                        # pip.toml. `pip3` shares the same filter (identical
+                        # output shape, just the Python-3-suffixed entry
+                        # point some systems install alongside `pip`).
+        "poetry",       # QB-060: bare Poetry invocation — verbose-mode
+                        # (-v/-vv) environment-probe noise and internal
+                        # (Cleo/Poetry-framework) traceback frames. See the
+                        # "poetry" filter block in poetry.toml.
     }
 )
 
@@ -67,6 +77,10 @@ _KNOWN_PYTHON_SUBCOMMANDS: frozenset[str] = frozenset(
         "pytest",
         "mypy",
         "ruff",
+        "pip",       # QB-060: `python -m pip ...` — same pip.toml filter as
+                     # the bare `pip`/`pip3` entry points above.
+        "poetry",    # QB-060: `python -m poetry ...` — same poetry.toml
+                     # filter as the bare `poetry` entry point above.
     }
 )
 

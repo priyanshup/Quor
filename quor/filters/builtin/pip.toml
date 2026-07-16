@@ -1,0 +1,129 @@
+# quor built-in filter: pip (QB-060)
+#
+# Covers bare `pip`/`pip3` and `python -m pip` (install/download/uninstall/
+# wheel/...) — previously entirely unrouted (not a known base command; see
+# `_KNOWN_BASE_COMMANDS`/`_KNOWN_PYTHON_SUBCOMMANDS` in quor/rewrite/rules.py).
+#
+# Composed entirely from existing stage types (remove_ansi, strip_lines,
+# deduplicate_consecutive, max_tokens) — no new stage, no
+# registry/dispatcher/Pipeline/Engine/ContentMask/StageHandler change.
+#
+# Every pattern below was verified against pip's own source (pip 26.1.2) and
+# a live install/uninstall/error run, not guessed from memory:
+#
+# 1. "Collecting X" / "Downloading X (size)" — pip's own per-package
+#    resolution/download progress (pip/_internal/operations/prepare.py's
+#    "Collecting %s", pip/_internal/network/download.py's "Downloading %s").
+#    One pair per package; for a `pip install -r requirements.txt` with many
+#    dependencies this is pure progress noise, never diagnostic — the same
+#    category as npm/pnpm's install-progress lines in node.toml. The final
+#    "Successfully installed ..." line already lists every resolved version,
+#    so nothing about *what got installed* is lost by removing these.
+# 2. "Requirement already satisfied: X in <path> (version)" — printed once
+#    per already-installed dependency (pip/_internal/resolution/legacy/
+#    resolver.py); the common case for a repeat `pip install -r
+#    requirements.txt` where most/all deps are already present. Zero
+#    diagnostic value — stripped outright, not counted (unlike a real
+#    warning, there's nothing meaningful to summarize as "N happened").
+# 3. Build-backend spinner ticks ("Installing build dependencies: started",
+#    "Getting requirements to build wheel: started", "Preparing metadata
+#    (pyproject.toml): started", ...) — pip/_internal/cli/spinners.py's
+#    shared spinner only ever finishes with one of three literal statuses:
+#    "done", "error", or "canceled" (verified: every `spinner.finish(...)`
+#    call site in pip's source). Only the "started" line and the
+#    "finished with status 'done'" line are stripped — "error"/"canceled"
+#    are a build-backend failure signal and are deliberately never matched,
+#    so a real build failure's finish-status line always survives.
+# 4. "[notice] A new release of pip is available: X -> Y" / "[notice] To
+#    update, run: ..." — pip's self-upgrade nag
+#    (pip/_internal/self_outdated_check.py), printed on nearly every
+#    invocation when a newer pip exists, regardless of subcommand. Same
+#    "wrapper boilerplate, not diagnostic" category as npm's version-upgrade
+#    notice (QB-052, node.toml).
+#
+# Deliberately NOT touched: the "Attempting uninstall: X" / "Found existing
+# installation: X" / "Uninstalling X:" / "Successfully uninstalled X" group
+# (only appears with --force-reinstall/--upgrade) — whether an uninstall
+# step is the reason a later step failed isn't reliably separable from a
+# genuine per-package failure without guessing, so it's left alone rather
+# than risk dropping context Safety Rule #3 style. Also not touched: the
+# "ERROR: ... (from versions: ...)" no-matching-version message — the full
+# version list it prints is arguably useful signal (it's the actual set of
+# versions an agent could pick from to fix the request), not noise.
+schema_version = 1
+
+[[filter]]
+name = "pip"
+match_command = '^pip3?(?=\s|$)|^python3?\s+-m\s+pip(?=\s|$)'
+
+[[filter.stages]]
+type = "remove_ansi"
+
+[[filter.stages]]
+type = "strip_lines"
+patterns = [
+    '^Collecting \S+',
+    '^\s*Downloading \S+',
+    '^Requirement already satisfied\b',
+    '^\s*(Installing (build|backend) dependencies|Getting requirements to build (wheel|editable)|Preparing (editable )?metadata \([^)]*\)|Building (wheel|editable) for \S+ \([^)]*\)|Checking if build backend supports build_editable): started$',
+    '^\s*(Installing (build|backend) dependencies|Getting requirements to build (wheel|editable)|Preparing (editable )?metadata \([^)]*\)|Building (wheel|editable) for \S+ \([^)]*\)|Checking if build backend supports build_editable): finished with status .done.$',
+    '^\[notice\] ',
+]
+preserve_patterns = [
+    'ERROR',
+    'error',
+    'WARNING',
+    '^Successfully installed',
+    '^Successfully uninstalled',
+]
+
+[[filter.stages]]
+type = "deduplicate_consecutive"
+
+[[filter.stages]]
+type = "max_tokens"
+limit = 400
+strategy = "tail"
+
+[[filter.tests]]
+description = "Simple successful install: Collecting/Downloading progress stripped, summary preserved"
+input = "Collecting six\n  Downloading six-1.17.0-py2.py3-none-any.whl.metadata (1.7 kB)\nDownloading six-1.17.0-py2.py3-none-any.whl (11 kB)\nInstalling collected packages: six\nSuccessfully installed six-1.17.0\n"
+must_contain = ["Installing collected packages: six", "Successfully installed six-1.17.0"]
+must_not_contain = ["Collecting six", "Downloading six-1.17.0"]
+
+[[filter.tests]]
+description = "Already-satisfied requirement stripped outright"
+input = "Requirement already satisfied: six in C:\\Python\\Lib\\site-packages (1.17.0)\n"
+must_contain = []
+must_not_contain = ["Requirement already satisfied"]
+
+[[filter.tests]]
+description = "Multi-package resolve: every Collecting/Downloading line stripped regardless of package; final summary lists every installed version"
+input = "Collecting requests\n  Downloading requests-2.34.2-py3-none-any.whl.metadata (4.8 kB)\nCollecting charset_normalizer<4,>=2 (from requests)\n  Downloading charset_normalizer-3.4.9-cp314-cp314-win_amd64.whl.metadata (42 kB)\nCollecting idna<4,>=2.5 (from requests)\n  Downloading idna-3.18-py3-none-any.whl.metadata (6.1 kB)\nDownloading requests-2.34.2-py3-none-any.whl (73 kB)\nDownloading charset_normalizer-3.4.9-cp314-cp314-win_amd64.whl (162 kB)\nDownloading idna-3.18-py3-none-any.whl (65 kB)\nInstalling collected packages: idna, charset_normalizer, requests\nSuccessfully installed charset_normalizer-3.4.9 idna-3.18 requests-2.34.2\n"
+must_contain = ["Successfully installed charset_normalizer-3.4.9 idna-3.18 requests-2.34.2"]
+must_not_contain = ["Collecting requests", "Collecting charset_normalizer", "Collecting idna", "Downloading requests-2.34.2", "Downloading charset_normalizer", "Downloading idna-3.18"]
+
+[[filter.tests]]
+description = "Build-from-sdist spinner ticks (started/finished 'done') stripped; a build-backend failure's finished status ('error') survives untouched"
+input = "Collecting flask==0.1\n  Downloading Flask-0.1.tar.gz (9.2 kB)\n  Installing build dependencies: started\n  Installing build dependencies: finished with status 'done'\n  Getting requirements to build wheel: started\n  Getting requirements to build wheel: finished with status 'done'\n  Preparing metadata (pyproject.toml): started\n  Preparing metadata (pyproject.toml): finished with status 'error'\nERROR: Failed building wheel for flask\n"
+must_contain = ["Preparing metadata (pyproject.toml): finished with status 'error'", "ERROR: Failed building wheel for flask"]
+must_not_contain = ["Installing build dependencies: started", "Installing build dependencies: finished", "Getting requirements to build wheel: started", "Getting requirements to build wheel: finished"]
+
+[[filter.tests]]
+description = "No-matching-version error survives completely untouched, including its full 'from versions' list"
+input = "ERROR: Could not find a version that satisfies the requirement requests==999.999 (from versions: 2.30.0, 2.31.0, 2.32.0)\nERROR: No matching distribution found for requests==999.999\n"
+must_contain = [
+    "ERROR: Could not find a version that satisfies the requirement requests==999.999 (from versions: 2.30.0, 2.31.0, 2.32.0)",
+    "ERROR: No matching distribution found for requests==999.999",
+]
+
+[[filter.tests]]
+description = "pip self-upgrade notice stripped; install summary preserved"
+input = "Collecting six\nDownloading six-1.17.0-py2.py3-none-any.whl (11 kB)\nInstalling collected packages: six\nSuccessfully installed six-1.17.0\n\n[notice] A new release of pip is available: 24.0 -> 24.1\n[notice] To update, run: python.exe -m pip install --upgrade pip\n"
+must_contain = ["Successfully installed six-1.17.0"]
+must_not_contain = ["A new release of pip is available", "To update, run"]
+
+[[filter.tests]]
+description = "Force-reinstall's uninstall/reinstall chatter is left untouched (not a targeted noise category)"
+input = "Collecting six\nDownloading six-1.17.0-py2.py3-none-any.whl (11 kB)\nInstalling collected packages: six\n  Attempting uninstall: six\n    Found existing installation: six 1.17.0\n    Uninstalling six-1.17.0:\n      Successfully uninstalled six-1.17.0\nSuccessfully installed six-1.17.0\n"
+must_contain = ["Attempting uninstall: six", "Found existing installation: six 1.17.0", "Uninstalling six-1.17.0:", "Successfully uninstalled six-1.17.0", "Successfully installed six-1.17.0"]

@@ -100,7 +100,7 @@ Quor is built to be safe on machines where nothing else is.
 
 **Assistant:** Claude Code (`PreToolUse` + `PostToolUse` hooks). Others not yet supported.
 
-**Commands:** `git`, `pytest`, `mypy`/`ruff`, the Node.js/TypeScript toolchain (`npm`, `pnpm`, `yarn`, ESLint, `tsc`, Jest, Vitest, Prettier, Next.js, Turbo), and a generic fallback for everything else.
+**Commands:** `git`, `pytest`, `mypy`/`ruff`, `pip`/`poetry`, the Node.js/TypeScript toolchain (`npm`, `pnpm`, `yarn`, ESLint, `tsc`, Jest, Vitest, Prettier, Next.js, Turbo), and a generic fallback for everything else.
 
 **Source reading:** Python (built in), JavaScript/JSX, TypeScript/TSX, Go, Rust, Java, C# — install what you need: `pip install "quor[go]"` (also `rust`, `java`, `csharp`; JS/TS bundled in `quor[javascript]`).
 
