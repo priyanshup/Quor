@@ -13,7 +13,6 @@ import pytest
 from quor.analytics.filter_baseline import BenchmarkFilterStats, load_benchmark_filter_stats
 from quor.analytics.filter_divergence import (
     LowPerformer,
-    UsageDivergence,
     compute_divergence,
     flag_low_performers,
 )
