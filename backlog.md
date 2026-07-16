@@ -4422,6 +4422,31 @@ left the content unchanged. No observable behavior changed — verified via the 
 
 ---
 
+#### QB-063 — Narrow yarn/bun peer-dependency warning grouping (QB-059 follow-up)
+
+**Effort:** Small · **Value:** Low · **Category:** Bug Fix
+
+QB-059 fixed pnpm's `group_repeated` peer-dependency-warning pattern from an over-broad bare
+`^\s*warn\b` prefix to the specific "Issues with peer dependencies" shape, but left yarn's
+`^warning\b` and bun's `^\s*warn:` blocks with the same bug: either prefix shape-matches *any* two
+consecutive warning lines regardless of type, silently merging non-fungible warnings (license
+notices, engine-incompatibility, duplicate-dependency notices, ...) into a peer-dependency count.
+
+<details>
+<summary>Technical details</summary>
+
+**Problem:** yarn's and bun's `group_repeated` patterns in `node.toml` were bare prefix matches,
+the same class of bug QB-059 already fixed for pnpm specifically.
+
+**Resolution:** Narrowed yarn's pattern to `(?i)^warning\b.*has unmet peer dependency` and bun's to
+`(?i)^\s*warn:\s*incorrect peer dependency` — mirroring pnpm's QB-059 fix exactly.
+
+**Status:** Resolved — implemented on `fix/qb-063-yarn-bun-peer-dependency-narrowing`.
+
+</details>
+
+---
+
 #### QB-064 — Fix docker-build BuildKit step-echo preserve pattern
 
 **Effort:** Small · **Value:** Low · **Category:** Bug Fix
