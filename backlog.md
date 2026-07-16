@@ -865,6 +865,14 @@ needs and that isn't available from `pyproject.toml` alone.
 **Status:** Implemented (Go, Rust, Java, C# analyzers and `quor[go]`/`quor[java]`/`quor[rust]`/
 `quor[csharp]` extras all present in `pyproject.toml`) — not yet released/CHANGELOG'd.
 
+**Benchmark backfill (`chore/qb-046-benchmark-corpus-expansion`):** `cat-csharp`/`cat-go`/`cat-java`/
+`cat-rust` shipped with zero benchmark corpus representation (each had only 4 synthetic-snippet
+inline filter tests). Added 8 realistic, multi-method domain-file cases (2 per language, mirroring
+the storefront/payments fictional codebase `cat-python`/`cat-javascript`/`cat-typescript` already
+use) plus `baseline.json` regression coverage. Bundled in the same PR with unrelated realism-
+hardening cases for several already-shipped filters (git-status, git-log, pytest, mypy, pnpm, yarn,
+bun, gcc) generated in the same pass — all pure benchmark-data additions, no source changes.
+
 </details>
 
 ---
@@ -4442,6 +4450,29 @@ the same class of bug QB-059 already fixed for pnpm specifically.
 `(?i)^\s*warn:\s*incorrect peer dependency` — mirroring pnpm's QB-059 fix exactly.
 
 **Status:** Resolved — implemented on `fix/qb-063-yarn-bun-peer-dependency-narrowing`.
+
+</details>
+
+---
+
+#### QB-064 — Fix docker-build BuildKit step-echo preserve pattern
+
+**Effort:** Small · **Value:** Low · **Category:** Bug Fix
+
+`ci.toml`'s docker-build filter's `preserve_patterns` included `'^>>> '` intended to keep BuildKit
+`RUN` step-echo lines, but BuildKit actually emits these prefixed with the step number (`#N |
+>>> ...`), never at the start of the line — so the pattern never matched real BuildKit output.
+
+<details>
+<summary>Technical details</summary>
+
+**Problem:** Anchored-at-line-start pattern never matched BuildKit's actual `#N |    >>> ...`
+step-echo shape.
+
+**Resolution:** Changed to `'\|\s*>>> '`, matching the `|` step-separator BuildKit always emits
+before the echoed command regardless of step number width.
+
+**Status:** Resolved — implemented on `fix/qb-064-docker-buildkit-step-echo-pattern`.
 
 </details>
 
