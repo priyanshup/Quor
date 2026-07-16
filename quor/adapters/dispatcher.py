@@ -389,9 +389,11 @@ def _maybe_print_onboarding_tip_safe(
 
 
 def _apply_tee(filter_config: FilterConfig, *, captured: str, final_output: str) -> str:
-    """Tee the raw output and append a recovery footer, if warranted. Fail-open.
+    """Tee the raw output, and append a recovery footer only when doing so
+    doesn't cost more tokens than the filter actually saved. Fail-open.
 
-    Tee fires only when all of these hold:
+    Tee fires (i.e. `write_tee()` runs and the failure counter is updated)
+    whenever all of these hold:
       - the global kill-switch (QuorUserConfig.tee_enabled) is on
       - this filter has not opted out (FilterConfig.tee is not False)
       - the final output actually differs from the true raw subprocess output
@@ -404,6 +406,18 @@ def _apply_tee(filter_config: FilterConfig, *, captured: str, final_output: str)
     MAX_CONSECUTIVE_TEE_FAILURES (quor.pipeline.tee) in a row, tee persists
     itself as disabled and stops attempting writes entirely until
     `quor doctor --reset-tee` — no automatic retry.
+
+    QB-052: the raw file is always written on a successful tee (recoverability
+    is preserved unconditionally), but the visible `"\n[full output: <path>]"`
+    footer is only appended to stdout when doing so keeps the total token
+    count at or below the true raw output's — i.e. when the filter's own
+    compression saved at least as many tokens as the footer costs. `mypy` and
+    other filters with small, mostly-non-repetitive real-world output were
+    consistently landing net-negative (QB-052's real-usage finding) purely
+    because this fixed-cost footer outweighed genuine, real savings; the
+    footer itself was the cause, not the filter's compression logic. Uses
+    `count_tokens()` (the same estimator every other token figure in Quor is
+    built from) — a direct comparison, not a new heuristic or threshold.
 
     On any error, returns `final_output` unchanged — tee must never affect
     stdout or the exit code (ADR-018 fail-open).
@@ -428,7 +442,11 @@ def _apply_tee(filter_config: FilterConfig, *, captured: str, final_output: str)
             return final_output
 
         record_tee_success()
-        return f"{final_output}\n[full output: {path}]"
+
+        with_footer = f"{final_output}\n[full output: {path}]"
+        if count_tokens(with_footer) > count_tokens(captured):
+            return final_output
+        return with_footer
     except Exception as exc:  # noqa: BLE001
         warnings.warn(f"[quor] tee error: {exc}", stacklevel=1)
         return final_output

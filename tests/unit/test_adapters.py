@@ -588,11 +588,23 @@ class TestConciseInstruction:
 
 
 class TestDispatcherTee:
+    # A generously large amount of PASSED noise (all stripped by the pytest
+    # filter) so genuine compression savings comfortably exceed the tee
+    # recovery footer's fixed path-length cost regardless of how deep the
+    # test's own tmp_path happens to be on a given machine (QB-052) — this
+    # fixture is meant to stay net-positive; see _TINY_CHANGED_OUTPUT below
+    # for the deliberately-small counterpart.
     _CHANGED_OUTPUT = (
-        "PASSED tests/test_a.py::test_x\n"
-        "FAILED tests/test_b.py::test_y\n"
+        "".join(f"PASSED tests/test_pad_{i}.py::test_ok\n" for i in range(100))
+        + "FAILED tests/test_b.py::test_y\n"
         "    AssertionError: got False\n"
     )
+
+    # QB-052: only one short PASSED line is stripped (a handful of tokens) —
+    # far less than the tee footer's fixed cost — so the visible footer must
+    # be suppressed here. Same shape as the real-world mypy/npm finding that
+    # motivated QB-052: small output, little to strip, footer dominates.
+    _TINY_CHANGED_OUTPUT = "PASSED tests/test_a.py::test_x\nFAILED tests/test_b.py::test_y\n"
 
     def test_footer_appended_when_output_changes(self) -> None:
         proc = _make_proc(stdout=self._CHANGED_OUTPUT)
@@ -811,7 +823,10 @@ class TestDispatcherTee:
         # PASSED lines get stripped (guarantees tee actually triggers), while
         # the 60 FAILED lines are protected by preserve_patterns and provide
         # enough weight to matter for the max_tokens=500 budget comparison.
-        passed_noise = "".join(f"PASSED tests/test_{i}.py::test_ok\n" for i in range(5))
+        # 200 lines (not just a handful) so the stripped savings comfortably
+        # exceed the tee footer's fixed path-length cost (QB-052) regardless
+        # of how deep the test's own tmp_path happens to be.
+        passed_noise = "".join(f"PASSED tests/test_{i}.py::test_ok\n" for i in range(200))
         many_failures = "".join(f"FAILED tests/test_{i}.py::test_case\n" for i in range(60))
         raw_output = passed_noise + many_failures
         proc = _make_proc(stdout=raw_output)
@@ -843,6 +858,84 @@ class TestDispatcherTee:
         # never subject to it.
         assert count_tokens(filter_only_output) <= 500 * 1.25
         assert count_tokens(dispatcher_output) > count_tokens(filter_only_output)
+
+    # -----------------------------------------------------------------
+    # QB-052: suppress the recovery footer when it would make the
+    # invocation net-negative (the footer costs more tokens than the
+    # filter actually saved).
+    # -----------------------------------------------------------------
+
+    def test_qb052_footer_retained_when_compression_stays_net_positive(self) -> None:
+        """When the filter's own savings comfortably exceed the tee
+        footer's fixed cost, behavior is unchanged from before QB-052: the
+        footer is appended and the raw output is recoverable from it."""
+        from quor.pipeline.tee import tee_path
+
+        proc = _make_proc(stdout=self._CHANGED_OUTPUT)
+        captured = io.StringIO()
+        with (
+            patch("subprocess.run", return_value=proc),
+            patch("sys.stdout", captured),
+        ):
+            run_dispatch(["pytest", "tests/"])
+
+        output = captured.getvalue()
+        expected_path = tee_path(self._CHANGED_OUTPUT)
+        assert f"[full output: {expected_path}]" in output
+        assert expected_path.exists()
+        assert expected_path.read_text(encoding="utf-8") == self._CHANGED_OUTPUT
+
+    def test_qb052_footer_suppressed_when_it_would_cause_net_expansion(self) -> None:
+        """mypy/npm-shaped case: the filter only strips a handful of tokens,
+        far less than the footer's fixed path-length cost. The visible
+        footer must be omitted — the printed output must never cost more
+        tokens than the true raw output would have — but the tee file is
+        still written unconditionally, so the raw output remains recoverable
+        on disk even though stdout doesn't advertise it."""
+        from quor.pipeline.tee import tee_path
+
+        proc = _make_proc(stdout=self._TINY_CHANGED_OUTPUT)
+        captured = io.StringIO()
+        with (
+            patch("subprocess.run", return_value=proc),
+            patch("sys.stdout", captured),
+        ):
+            run_dispatch(["pytest", "tests/"])
+
+        output = captured.getvalue()
+        assert "[full output:" not in output
+        assert output == CONCISE_INSTRUCTION + "FAILED tests/test_b.py::test_y\n"
+
+        # The tee file was still written for this exact raw content —
+        # "always generate the tee file" holds even when the footer is
+        # suppressed.
+        expected_path = tee_path(self._TINY_CHANGED_OUTPUT)
+        assert expected_path.exists()
+        assert expected_path.read_text(encoding="utf-8") == self._TINY_CHANGED_OUTPUT
+
+    def test_qb052_error_during_footer_token_check_fails_open(self) -> None:
+        """If the new token-count comparison itself raises, _apply_tee's
+        existing outer fail-open handler still wins — same ADR-018 contract
+        as any other tee-internal error, unchanged by QB-052."""
+        from quor.adapters.dispatcher import _apply_tee
+        from quor.filters.registry import FilterRegistry
+
+        registry = FilterRegistry(project_root=Path.cwd())
+        filter_config = registry.find("pytest tests/")
+        assert filter_config is not None
+        final_output = "FAILED tests/test_b.py::test_y\n    AssertionError: got False\n"
+
+        with patch(
+            "quor.adapters.dispatcher.count_tokens", side_effect=RuntimeError("boom")
+        ):
+            result = _apply_tee(
+                filter_config,
+                captured=self._CHANGED_OUTPUT,
+                final_output=final_output,
+            )
+
+        assert result == final_output
+        assert "[full output:" not in result
 
 
 # ---------------------------------------------------------------------------
