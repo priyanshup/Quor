@@ -16,6 +16,7 @@ from rich.markup import escape
 
 from quor.adapters.hook_manifest import HOOK_SPECS, ClaudeHookSpec
 from quor.config.loader import load_user_config
+from quor.config.model import QuorUserConfig
 from quor.errors import ExitCode
 from quor.filters.registry import FilterRegistry
 
@@ -110,8 +111,13 @@ def _run_doctor(
     checks.append(_check_hook_collision(settings_path))
     checks.append(_check_sqlite())
     checks.append(_check_filters())
-    checks.append(_check_mode())
-    checks.append(_check_tee())
+    # Loaded once and shared: _check_mode()/_check_tee() each need
+    # QuorUserConfig, and both always run in the same doctor invocation, so
+    # loading config.toml separately for each was a guaranteed duplicate
+    # read+parse+validate every single `quor doctor` run.
+    user_config = load_user_config()
+    checks.append(_check_mode(user_config))
+    checks.append(_check_tee(user_config))
     checks.append(_check_plugins())
 
     all_ok = True
@@ -569,12 +575,11 @@ def _check_filters() -> tuple[str, bool, str]:
     return ("Built-in filter tests pass", True, detail)
 
 
-def _check_mode() -> tuple[str, bool, str]:
-    mode = load_user_config().mode
-    return (f"Mode: {mode}", True, "")
+def _check_mode(user_config: QuorUserConfig) -> tuple[str, bool, str]:
+    return (f"Mode: {user_config.mode}", True, "")
 
 
-def _check_tee() -> tuple[str, bool, str]:
+def _check_tee(user_config: QuorUserConfig) -> tuple[str, bool, str]:
     """Report tee's status (ADR-023 / QB-013 adaptive fallback).
 
     Three distinct states, only one of which is flagged as a problem:
@@ -600,7 +605,7 @@ def _check_tee() -> tuple[str, bool, str]:
         )
         return ("Tee: disabled (filesystem unavailable)", False, hint)
 
-    if not load_user_config().tee_enabled:
+    if not user_config.tee_enabled:
         return ("Tee: disabled (disabled in config)", True, "")
 
     return ("Tee: enabled", True, "")
