@@ -4389,6 +4389,29 @@ appropriately out of scope.
 
 ---
 
+#### QB-064 — Fix docker-build BuildKit step-echo preserve pattern
+
+**Effort:** Small · **Value:** Low · **Category:** Bug Fix
+
+`ci.toml`'s docker-build filter's `preserve_patterns` included `'^>>> '` intended to keep BuildKit
+`RUN` step-echo lines, but BuildKit actually emits these prefixed with the step number (`#N |
+>>> ...`), never at the start of the line — so the pattern never matched real BuildKit output.
+
+<details>
+<summary>Technical details</summary>
+
+**Problem:** Anchored-at-line-start pattern never matched BuildKit's actual `#N |    >>> ...`
+step-echo shape.
+
+**Resolution:** Changed to `'\|\s*>>> '`, matching the `|` step-separator BuildKit always emits
+before the echoed command regardless of step number width.
+
+**Status:** Resolved — implemented on `fix/qb-064-docker-buildkit-step-echo-pattern`.
+
+</details>
+
+---
+
 ### Historical (superseded)
 
 *Kept for the record — not resolved work in its own right, but the original request that later,
