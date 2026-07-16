@@ -46,6 +46,16 @@ def gain(
         "--project",
         help="Project path to scope the summary to (default: current directory).",
     ),
+    filters: bool = typer.Option(
+        False,
+        "--filters",
+        help=(
+            "Also show per-filter real-usage analytics (QB-054): usage/"
+            "compression leaders and laggards, real-vs-benchmark "
+            "divergence, and usage trend over time. Records one snapshot "
+            "to the local analytics history each time this flag is used."
+        ),
+    ),
 ) -> None:
     """Show token savings for a project over the last N days."""
     project_path = (project or Path.cwd()).resolve()
@@ -61,9 +71,14 @@ def gain(
         console.print(
             f"[yellow]No invocations recorded for this project in the last {days} day(s).[/yellow]"
         )
+        if filters:
+            _print_filter_analytics(db_path, project_path, days=days)
         raise typer.Exit()
 
     _print_report(report)
+
+    if filters:
+        _print_filter_analytics(db_path, project_path, days=days)
 
 
 def _print_header(report: GainReport, *, project_path: Path, mode: str) -> None:
@@ -234,6 +249,26 @@ def _print_top_savings(report: GainReport) -> None:
         )
     console.print(filters_table)
     console.print()
+
+
+def _print_filter_analytics(db_path: Path, project_path: Path, *, days: int) -> None:
+    """QB-054: append one real-usage snapshot to the local analytics
+    history, then print the per-filter report built from it plus that
+    history (for the "growing over time" section). Deferred imports keep
+    the QB-054 modules out of `gain`'s default (no `--filters`) import
+    cost, matching this file's existing lazy-import style elsewhere.
+    """
+    from quor.analytics.filter_history import append_snapshot, build_entry
+    from quor.analytics.filter_report import render_filter_analytics_report
+    from quor.tracking.db import query_filter_analytics
+
+    report = query_filter_analytics(db_path, project_path, days=days)
+    history = append_snapshot(build_entry(report))
+
+    console.print()
+    console.rule(style="dim")
+    console.print()
+    console.print(render_filter_analytics_report(report, history), soft_wrap=True)
 
 
 def _print_notes() -> None:

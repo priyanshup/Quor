@@ -635,6 +635,146 @@ def query_gain(
 
 
 # ---------------------------------------------------------------------------
+# Read-side: query_filter_analytics (QB-054)
+# ---------------------------------------------------------------------------
+
+# The synthetic bucket label for rows with no matching filter
+# (`filter_name IS NULL`, always paired with `was_passthrough=1` — see
+# `InvocationRecord`'s own docstring). Grouping these under one label
+# rather than dropping them keeps `query_filter_analytics()` honest about
+# *all* invocations in the window, per QB-054's "reuse the existing
+# invocations table exactly as it is" requirement — a per-filter usage
+# report that silently excluded unmatched commands would overstate every
+# real filter's `usage_pct`.
+PASSTHROUGH_LABEL = "(no filter matched)"
+
+
+@dataclass(frozen=True)
+class FilterUsage:
+    """Aggregated stats for one `filter_name` (or `PASSTHROUGH_LABEL`) over
+    every invocation in the queried project/window.
+
+    Every field is computed directly from `invocations` columns that
+    already exist — no new data collected, no schema change. `was_passthrough`
+    is always 0 for a real filter_name group (a filter is only ever recorded
+    when one matched — see `InvocationRecord`'s docstring), so
+    `passthrough_pct` is always exactly 0.0 for those rows by construction;
+    it is only ever non-zero for the `PASSTHROUGH_LABEL` group, where it is
+    always exactly 100.0. Reported per-group anyway (not hardcoded) so the
+    numbers are read straight from SQL, not asserted by Python.
+    """
+
+    filter_name: str
+    invocation_count: int
+    usage_pct: float                # invocation_count / total_invocations * 100
+    original_tokens: int
+    final_tokens: int
+    tokens_saved: int                # original_tokens - final_tokens
+    avg_compression_pct: float       # tokens_saved / original_tokens * 100 (aggregate ratio, matches tests/benchmarks/benchmark_runner.py's own per-category convention)
+    passthrough_pct: float
+    avg_duration_ms: float
+
+
+@dataclass(frozen=True)
+class FilterAnalyticsReport:
+    """Per-filter breakdown for one project/window — the QB-054 counterpart
+    to `GainReport`'s single aggregate summary."""
+
+    total_invocations: int
+    days: int
+    filters: tuple[FilterUsage, ...]  # includes PASSTHROUGH_LABEL if any row is unmatched
+
+
+def query_filter_analytics(
+    db_path: Path,
+    project_path: Path,
+    days: int = 30,
+) -> FilterAnalyticsReport:
+    """Return a `FilterAnalyticsReport` grouped by `filter_name`, read from
+    SQLite. Mirrors `query_gain()`'s project-scoping/backfill logic exactly
+    (same helper functions, same window semantics) — this is a second view
+    over the same rows, not a second data source.
+    """
+    if not db_path.exists():
+        return FilterAnalyticsReport(total_invocations=0, days=days, filters=())
+
+    project_key = normalize_project_path(project_path)
+    if _is_degenerate_project_key(project_key):
+        raise ValueError(
+            f"project_path {str(project_path)!r} normalizes to {project_key!r}, "
+            "which has no directory segment of its own and is too broad to "
+            "safely scope a query (it would match every project under that "
+            "root/drive). Pass a specific project directory instead."
+        )
+    subdir_pattern = f"{_escape_like(project_key)}/%"
+    since = f"-{days} days"
+    project_filter = (
+        f"(project_key_normalized = ? OR project_key_normalized LIKE ? {_LIKE_ESCAPE_CLAUSE})"
+    )
+
+    with contextlib.closing(sqlite3.connect(str(db_path))) as conn:
+        conn.row_factory = sqlite3.Row
+
+        _ensure_project_identity_columns(conn)
+        conn.create_function("normalize_project_path", 1, normalize_project_path)
+        conn.execute(
+            """UPDATE invocations
+               SET project_key_normalized = normalize_project_path(project_path)
+               WHERE project_key_normalized IS NULL
+            """
+        )
+        conn.commit()
+
+        total_row = conn.execute(
+            f"""SELECT COUNT(*) AS n
+               FROM invocations
+               WHERE {project_filter}
+                 AND recorded_at >= datetime('now', ?)
+            """,
+            (project_key, subdir_pattern, since),
+        ).fetchone()
+        total = int(total_row["n"])
+
+        rows = conn.execute(
+            f"""SELECT
+                 COALESCE(filter_name, ?)               AS label,
+                 COUNT(*)                                AS n,
+                 COALESCE(SUM(original_tokens), 0)       AS orig_sum,
+                 COALESCE(SUM(final_tokens), 0)          AS final_sum,
+                 COALESCE(SUM(was_passthrough), 0)       AS passthroughs,
+                 COALESCE(AVG(duration_ms), 0.0)         AS avg_duration
+               FROM invocations
+               WHERE {project_filter}
+                 AND recorded_at >= datetime('now', ?)
+               GROUP BY label
+               ORDER BY n DESC, label ASC
+            """,
+            (PASSTHROUGH_LABEL, project_key, subdir_pattern, since),
+        ).fetchall()
+
+    filters = tuple(
+        FilterUsage(
+            filter_name=r["label"],
+            invocation_count=int(r["n"]),
+            usage_pct=(int(r["n"]) / total * 100) if total else 0.0,
+            original_tokens=int(r["orig_sum"]),
+            final_tokens=int(r["final_sum"]),
+            tokens_saved=int(r["orig_sum"]) - int(r["final_sum"]),
+            avg_compression_pct=(
+                (int(r["orig_sum"]) - int(r["final_sum"])) / int(r["orig_sum"]) * 100
+                if r["orig_sum"]
+                else 0.0
+            ),
+            passthrough_pct=(int(r["passthroughs"]) / int(r["n"]) * 100) if r["n"] else 0.0,
+            avg_duration_ms=float(r["avg_duration"]),
+        )
+        for r in rows
+    )
+
+    return FilterAnalyticsReport(total_invocations=total, days=days, filters=filters)
+
+
+# ---------------------------------------------------------------------------
 # Factory
 # ---------------------------------------------------------------------------
 

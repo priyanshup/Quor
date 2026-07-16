@@ -18,11 +18,13 @@ import orjson
 import pytest
 
 from quor.tracking.db import (
+    PASSTHROUGH_LABEL,
     InvocationRecord,
     TrackingDB,
     count_tokens,
     get_tracking_db,
     normalize_project_path,
+    query_filter_analytics,
     query_gain,
 )
 
@@ -840,6 +842,164 @@ class TestQueryGain:
     def test_read_hook_invocations_zero_on_empty_db(self, tmp_path: Path) -> None:
         report = query_gain(tmp_path / "missing.db", tmp_path)
         assert report.read_hook_invocations == 0
+
+
+class TestQueryFilterAnalytics:
+    """QB-054: per-filter breakdown, grouped by filter_name over the same
+    `invocations` table `TestQueryGain` already exercises. Reuses that
+    class's own `_populate` insertion helper (same schema, same columns —
+    no schema change)."""
+
+    def _populate(self, db_path: Path, records: list[dict]) -> None:
+        with sqlite3.connect(str(db_path)) as conn:
+            schema_sql = (
+                Path(__file__).parent.parent.parent / "quor" / "tracking" / "schema.sql"
+            ).read_text(encoding="utf-8")
+            conn.executescript(schema_sql)
+            for r in records:
+                conn.execute(
+                    """INSERT INTO invocations
+                       (command, project_path, original_tokens, final_tokens,
+                        filter_name, was_passthrough, duration_ms, recorded_at, schema_version)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        r.get("command", "git status"),
+                        r.get("project_path", "/proj"),
+                        r.get("original_tokens", 100),
+                        r.get("final_tokens", 20),
+                        r.get("filter_name", "git"),
+                        r.get("was_passthrough", 0),
+                        r.get("duration_ms", 10.0),
+                        r.get("recorded_at", datetime.now(UTC).isoformat()),
+                        1,
+                    ),
+                )
+            conn.commit()
+
+    def test_empty_db_returns_zero_filters(self, tmp_path: Path) -> None:
+        report = query_filter_analytics(tmp_path / "missing.db", tmp_path)
+        assert report.total_invocations == 0
+        assert report.filters == ()
+
+    def test_groups_by_filter_name(self, tmp_path: Path) -> None:
+        db_path = tmp_path / "quor.db"
+        self._populate(db_path, [
+            {"filter_name": "git-status", "original_tokens": 100, "final_tokens": 20, "project_path": "/proj"},
+            {"filter_name": "git-status", "original_tokens": 200, "final_tokens": 40, "project_path": "/proj"},
+            {"filter_name": "pytest", "original_tokens": 500, "final_tokens": 300, "project_path": "/proj"},
+        ])
+        report = query_filter_analytics(db_path, Path("/proj"))
+        assert report.total_invocations == 3
+        by_name = {f.filter_name: f for f in report.filters}
+        assert by_name["git-status"].invocation_count == 2
+        assert by_name["git-status"].original_tokens == 300
+        assert by_name["git-status"].final_tokens == 60
+        assert by_name["git-status"].tokens_saved == 240
+        assert by_name["pytest"].invocation_count == 1
+
+    def test_usage_pct_is_share_of_total_invocations(self, tmp_path: Path) -> None:
+        db_path = tmp_path / "quor.db"
+        self._populate(db_path, [
+            {"filter_name": "git-status", "original_tokens": 100, "final_tokens": 20, "project_path": "/proj"},
+            {"filter_name": "git-status", "original_tokens": 100, "final_tokens": 20, "project_path": "/proj"},
+            {"filter_name": "git-status", "original_tokens": 100, "final_tokens": 20, "project_path": "/proj"},
+            {"filter_name": "pytest", "original_tokens": 100, "final_tokens": 20, "project_path": "/proj"},
+        ])
+        report = query_filter_analytics(db_path, Path("/proj"))
+        by_name = {f.filter_name: f for f in report.filters}
+        assert by_name["git-status"].usage_pct == pytest.approx(75.0)
+        assert by_name["pytest"].usage_pct == pytest.approx(25.0)
+
+    def test_avg_compression_pct_is_aggregate_ratio_not_mean_of_rows(self, tmp_path: Path) -> None:
+        """Matches tests/benchmarks/benchmark_runner.py's own per-category
+        convention: sum(saved)/sum(original), not mean(per-row pct) — the
+        two differ whenever row sizes are unequal."""
+        db_path = tmp_path / "quor.db"
+        self._populate(db_path, [
+            # 90% off a big row, 0% off a tiny row.
+            {"filter_name": "git-diff", "original_tokens": 1000, "final_tokens": 100, "project_path": "/proj"},
+            {"filter_name": "git-diff", "original_tokens": 10, "final_tokens": 10, "project_path": "/proj"},
+        ])
+        report = query_filter_analytics(db_path, Path("/proj"))
+        f = report.filters[0]
+        # Aggregate ratio: (1000+10 - 100-10) / (1000+10) * 100 = 89.1...
+        assert f.avg_compression_pct == pytest.approx(900 / 1010 * 100)
+        # NOT the naive mean of [90.0, 0.0] == 45.0
+        assert f.avg_compression_pct != pytest.approx(45.0)
+
+    def test_avg_compression_pct_can_be_negative(self, tmp_path: Path) -> None:
+        """A filter that net-expands (QB-052's mypy/npm finding shape) must
+        show a negative percentage, not be clamped at zero."""
+        db_path = tmp_path / "quor.db"
+        self._populate(db_path, [
+            {"filter_name": "mypy", "original_tokens": 100, "final_tokens": 150, "project_path": "/proj"},
+        ])
+        report = query_filter_analytics(db_path, Path("/proj"))
+        assert report.filters[0].avg_compression_pct == pytest.approx(-50.0)
+
+    def test_unmatched_rows_grouped_under_passthrough_label(self, tmp_path: Path) -> None:
+        db_path = tmp_path / "quor.db"
+        self._populate(db_path, [
+            {"filter_name": None, "was_passthrough": 1, "original_tokens": 50, "final_tokens": 50, "project_path": "/proj"},
+            {"filter_name": "git-status", "original_tokens": 100, "final_tokens": 20, "project_path": "/proj"},
+        ])
+        report = query_filter_analytics(db_path, Path("/proj"))
+        by_name = {f.filter_name: f for f in report.filters}
+        assert PASSTHROUGH_LABEL in by_name
+        assert by_name[PASSTHROUGH_LABEL].invocation_count == 1
+        assert by_name[PASSTHROUGH_LABEL].passthrough_pct == pytest.approx(100.0)
+
+    def test_real_filter_passthrough_pct_is_always_zero(self, tmp_path: Path) -> None:
+        """was_passthrough is only ever 1 when filter_name is NULL (see
+        InvocationRecord's own docstring/write-side contract) — a real,
+        matched filter_name group can never contain a passthrough row."""
+        db_path = tmp_path / "quor.db"
+        self._populate(db_path, [
+            {"filter_name": "git-status", "was_passthrough": 0, "original_tokens": 100, "final_tokens": 20, "project_path": "/proj"},
+        ])
+        report = query_filter_analytics(db_path, Path("/proj"))
+        assert report.filters[0].passthrough_pct == 0.0
+
+    def test_avg_duration_ms(self, tmp_path: Path) -> None:
+        db_path = tmp_path / "quor.db"
+        self._populate(db_path, [
+            {"filter_name": "git-status", "duration_ms": 10.0, "original_tokens": 100, "final_tokens": 20, "project_path": "/proj"},
+            {"filter_name": "git-status", "duration_ms": 30.0, "original_tokens": 100, "final_tokens": 20, "project_path": "/proj"},
+        ])
+        report = query_filter_analytics(db_path, Path("/proj"))
+        assert report.filters[0].avg_duration_ms == pytest.approx(20.0)
+
+    def test_project_scoping_matches_query_gain(self, tmp_path: Path) -> None:
+        db_path = tmp_path / "quor.db"
+        self._populate(db_path, [
+            {"filter_name": "git-status", "original_tokens": 100, "final_tokens": 20, "project_path": "/proj"},
+            {"filter_name": "git-status", "original_tokens": 999, "final_tokens": 999, "project_path": "/other"},
+        ])
+        report = query_filter_analytics(db_path, Path("/proj"))
+        assert report.total_invocations == 1
+        assert report.filters[0].original_tokens == 100
+
+    def test_degenerate_project_key_raises(self, tmp_path: Path) -> None:
+        db_path = tmp_path / "quor.db"
+        self._populate(db_path, [{"project_path": "/proj"}])
+        with pytest.raises(ValueError):
+            query_filter_analytics(db_path, Path("/"))
+
+    def test_no_schema_change_columns_match_pre_existing_set(self, tmp_path: Path) -> None:
+        """QB-054 requirement: reuse the invocations table exactly as it
+        is. Running query_filter_analytics against a brand-new DB must not
+        add, rename, or remove any column — the exact same 10 columns
+        schema.sql/query_gain's own write path already define."""
+        db_path = tmp_path / "quor.db"
+        self._populate(db_path, [{"project_path": "/proj"}])
+        query_filter_analytics(db_path, Path("/proj"))  # exercises the same connection/backfill path
+        with sqlite3.connect(str(db_path)) as conn:
+            columns = {row[1] for row in conn.execute("PRAGMA table_info(invocations)")}
+        assert columns == {
+            "id", "command", "project_path", "original_tokens", "final_tokens",
+            "filter_name", "was_passthrough", "duration_ms", "recorded_at",
+            "schema_version", "project_key_normalized",
+        }
 
 
 class TestNormalizeProjectPath:

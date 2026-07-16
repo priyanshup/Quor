@@ -826,6 +826,96 @@ class TestGain:
         assert "NOTICE" not in result.output
 
 
+class TestGainFilters:
+    """QB-054: `quor gain --filters` — same six-command budget as `quor
+    gain` itself (it's a flag, not a new command), so this exercises it as
+    a flag on the existing command exactly like `TestGain` above."""
+
+    def _seed(self, tmp_path: Path) -> Path:
+        from quor.tracking.db import InvocationRecord, TrackingDB
+
+        db_path = tmp_path / "data" / "quor.db"
+        db = TrackingDB(db_path=db_path)
+        db.record(
+            InvocationRecord(
+                command="git status",
+                project_path=tmp_path.as_posix(),
+                original_tokens=100,
+                final_tokens=20,
+                filter_name="git-status",
+                was_passthrough=False,
+                duration_ms=5.0,
+            )
+        )
+        db.record(
+            InvocationRecord(
+                command="npm run bad-command",
+                project_path=tmp_path.as_posix(),
+                original_tokens=100,
+                final_tokens=150,  # net expansion -> should be flagged
+                filter_name="npm",
+                was_passthrough=False,
+                duration_ms=5.0,
+            )
+        )
+        db.flush()
+        db.close()
+        return db_path
+
+    def test_filters_flag_prints_per_filter_report(self, tmp_path: Path) -> None:
+        self._seed(tmp_path)
+        with patch("platformdirs.user_data_dir", return_value=str(tmp_path / "data")):
+            result = runner.invoke(
+                app, ["gain", "--project", str(tmp_path), "--days", "30", "--filters"]
+            )
+        assert result.exit_code == 0
+        output = result.output
+        # The ordinary gain report still prints (this is additive, not a
+        # replacement).
+        assert "YOU SAVED" in output
+        # Every QB-054-required section is present.
+        assert "most-used filters" in output
+        assert "Top compression performers" in output
+        assert "Worst compression performers" in output
+        assert "Negative or near-zero compression" in output
+        assert "Real usage vs benchmark divergence" in output
+        assert "Filters growing over time" in output
+        assert "git-status" in output
+        assert "npm" in output  # flagged as a low performer (net expansion)
+
+    def test_filters_flag_appends_one_history_snapshot_per_run(self, tmp_path: Path) -> None:
+        from quor.analytics.filter_history import load_history
+
+        self._seed(tmp_path)
+        history_path = tmp_path / "data" / "filter_analytics_history.json"
+
+        with patch("platformdirs.user_data_dir", return_value=str(tmp_path / "data")):
+            runner.invoke(app, ["gain", "--project", str(tmp_path), "--days", "30", "--filters"])
+            runner.invoke(app, ["gain", "--project", str(tmp_path), "--days", "30", "--filters"])
+
+        entries = load_history(history_path)
+        assert len(entries) == 2
+
+    def test_without_filters_flag_no_history_written(self, tmp_path: Path) -> None:
+        self._seed(tmp_path)
+        history_path = tmp_path / "data" / "filter_analytics_history.json"
+
+        with patch("platformdirs.user_data_dir", return_value=str(tmp_path / "data")):
+            result = runner.invoke(app, ["gain", "--project", str(tmp_path), "--days", "30"])
+
+        assert result.exit_code == 0
+        assert not history_path.exists()
+
+    def test_filters_flag_on_empty_db_still_reports(self, tmp_path: Path) -> None:
+        with patch("platformdirs.user_data_dir", return_value=str(tmp_path / "data")):
+            result = runner.invoke(
+                app, ["gain", "--project", str(tmp_path), "--filters"]
+            )
+        assert result.exit_code == 0
+        assert "No invocations recorded" in result.output
+        assert "most-used filters" in result.output
+
+
 # ---------------------------------------------------------------------------
 # quor verify
 # ---------------------------------------------------------------------------
