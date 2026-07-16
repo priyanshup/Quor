@@ -1,0 +1,10 @@
+Progress: resolved 87, reused 80, downloaded 3, added 87
+WARN  Issues with peer dependencies found
+.
+├─┬ react-dom 18.2.0
+│ └── ✕ unmet peer react@^18.2.0: found 17.0.2
+└─┬ @testing-library/react 14.1.2
+  └── ✕ missing peer react-dom@^18.0.0
+
+Packages: +87
+Done in 5.4s

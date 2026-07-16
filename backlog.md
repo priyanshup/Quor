@@ -865,6 +865,14 @@ needs and that isn't available from `pyproject.toml` alone.
 **Status:** Implemented (Go, Rust, Java, C# analyzers and `quor[go]`/`quor[java]`/`quor[rust]`/
 `quor[csharp]` extras all present in `pyproject.toml`) — not yet released/CHANGELOG'd.
 
+**Benchmark backfill (`chore/qb-046-benchmark-corpus-expansion`):** `cat-csharp`/`cat-go`/`cat-java`/
+`cat-rust` shipped with zero benchmark corpus representation (each had only 4 synthetic-snippet
+inline filter tests). Added 8 realistic, multi-method domain-file cases (2 per language, mirroring
+the storefront/payments fictional codebase `cat-python`/`cat-javascript`/`cat-typescript` already
+use) plus `baseline.json` regression coverage. Bundled in the same PR with unrelated realism-
+hardening cases for several already-shipped filters (git-status, git-log, pytest, mypy, pnpm, yarn,
+bun, gcc) generated in the same pass — all pure benchmark-data additions, no source changes.
+
 </details>
 
 ---

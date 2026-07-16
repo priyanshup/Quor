@@ -1,0 +1,21 @@
+============================= test session starts ==============================
+platform linux -- Python 3.11.0, pytest-7.4.0, pluggy-1.0.0
+rootdir: /workspace/storefront
+plugins: cov-5.0.0, anyio-4.2.0
+collecting ... collected 0 items / 1 error
+
+=================================== ERRORS ====================================
+_______________________ ERROR collecting tests/test_cart.py ___________________
+ImportError while importing test module '/workspace/storefront/tests/test_cart.py'.
+Hint: make sure your test modules/packages have valid Python names.
+Traceback:
+/usr/lib/python3.11/importlib/__init__.py:126: in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+tests/test_cart.py:3: in <module>
+    from src.cart.cart_service import CartService
+src/cart/cart_service.py:7: in <module>
+    from src.pricing.rules import apply_discount
+E   ModuleNotFoundError: No module named 'src.pricing.rules'
+=========================== short test summary info ============================
+ERROR tests/test_cart.py
+=============================== 1 error in 0.32s ===============================

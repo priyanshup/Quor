@@ -1,0 +1,13 @@
+On branch feature/rename-utils
+Your branch is ahead of 'origin/feature/rename-utils' by 2 commits.
+  (use "git push" to publish your local commits)
+
+Changes to be committed:
+  (use "git restore --staged <file>..." to unstage)
+	renamed:    src/utils/stringHelpers.js -> src/utils/string-helpers.js
+	modified:   src/utils/string-helpers.js
+
+Changes not staged for commit:
+  (use "git add <file>..." to update what will be committed)
+  (use "git restore <file>..." to discard changes in working directory)
+	modified:   src/index.js
