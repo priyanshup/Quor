@@ -1,0 +1,14 @@
+2026-07-15T10:24:00.1234567Z ##[group]Run actions/checkout@v4
+2026-07-15T10:24:00.2234567Z ##[endgroup]
+2026-07-15T10:24:01.1234567Z ##[group]Run npm ci
+2026-07-15T10:24:04.1234567Z added 512 packages, and audited 513 packages in 3s
+2026-07-15T10:24:04.2234567Z ##[endgroup]
+2026-07-15T10:24:05.1234567Z ##[group]Run npm test
+2026-07-15T10:24:05.2234567Z FAIL  src/math.test.js
+2026-07-15T10:24:05.3234567Z   ● adds numbers
+2026-07-15T10:24:05.4234567Z     expect(received).toBe(expected)
+2026-07-15T10:24:05.5234567Z     Expected: 5
+2026-07-15T10:24:05.6234567Z     Received: 4
+2026-07-15T10:24:05.7234567Z Tests:       1 failed, 47 passed, 48 total
+2026-07-15T10:24:05.8234567Z ##[endgroup]
+2026-07-15T10:24:06.1234567Z ##[error]Process completed with exit code 1.

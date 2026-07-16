@@ -10,14 +10,28 @@ on_empty = "mypy: no issues found."
 
 [[filter.stages]]
 type = "group_repeated"
-# exact_match left at its default (false, shape-based): intentional — this
-# collapses the *same error message* recurring at different line numbers in
-# one file (three different strings, same shape), which is the whole point
-# here. Do not set exact_match=true for this filter; it would stop mypy's
-# repeated-error collapsing from working at all, since line numbers make
-# every occurrence byte-different.
+# QB-044: same-message "error:" diagnostics recurring at different
+# file:line locations collapse via the generic location-normalized
+# mechanism proven on pytest, instead of the old shape-based
+# (exact_match=false) grouping this stage used to rely on. That old
+# default treated *any* two lines matching '^.*: error: ' as "the same
+# repetition" regardless of whether the message text actually matched —
+# safe here mostly by corpus luck, the same risk tsc's own group_repeated
+# comment (node.toml) already flagged and avoided by not grouping at all.
+# location_pattern captures the same '.*' span `patterns` already used as
+# the trigger shape — everything before ": error: " — as the location to
+# exclude from comparison; two lines only ever group if the text *after*
+# that span (the real message) is byte-identical. scope="global" lets
+# same-message errors collapse even when they're not adjacent, which is
+# the common case in real mypy runs (unrelated errors interleaved between
+# repeats of the same root cause) — the whole reason run-scope's adjacency
+# restriction was a real gap here (QB-044). min_count stays at 3, unchanged
+# from before this item — this slice only extends *where* repeats are
+# found and *how safely* they're compared, not the threshold.
 patterns = ['^.*: error: ']
+location_pattern = '^(.*): error: '
 min_count = 3
+scope = "global"
 
 [[filter.stages]]
 type = "strip_lines"
@@ -55,10 +69,50 @@ input = "src/a.py:1: error: Missing return\nsrc/b.py:5: error: Argument type"
 must_contain = ["src/a.py:1: error", "src/b.py:5: error"]
 
 [[filter.tests]]
-description = "Repeated identical errors collapse to (xN); duplicates do not reappear; warning/note/single-error lines stay protected"
+description = "QB-044: repeated identical errors at different line numbers (same file) collapse via location-normalized grouping; duplicates do not reappear; warning/note/single-error lines stay protected"
 input = "src/handlers/user.py:12: error: Argument 1 to \"save\" has incompatible type \"int\"; expected \"str\"\nsrc/handlers/user.py:34: error: Argument 1 to \"save\" has incompatible type \"int\"; expected \"str\"\nsrc/handlers/user.py:58: error: Argument 1 to \"save\" has incompatible type \"int\"; expected \"str\"\nsrc/handlers/order.py:5: warning: Unused \"type: ignore\" comment\nsrc/handlers/order.py:6: note: Consider removing the comment\nsrc/other.py:9: error: Standalone singleton error\nFound 4 errors in 2 files (checked 12 source files)"
-must_contain = ["(×3)", "src/other.py:9: error: Standalone singleton error", "warning: Unused", "note: Consider removing"]
-must_not_contain = ["Found 4 error", "user.py:34: error", "user.py:58: error"]
+must_contain = [
+    "src/handlers/user.py:12: error: Argument 1 to \"save\" has incompatible type \"int\"; expected \"str\"",
+    "2 more with the same message at:",
+    "src/handlers/user.py:34",
+    "src/handlers/user.py:58",
+    "src/other.py:9: error: Standalone singleton error",
+    "warning: Unused",
+    "note: Consider removing",
+]
+must_not_contain = [
+    "Found 4 error",
+    "src/handlers/user.py:34: error: Argument 1",
+    "src/handlers/user.py:58: error: Argument 1",
+]
+
+[[filter.tests]]
+description = "QB-044: repeated identical error across different files, non-adjacent (global scope), collapses at min_count=3; the unrelated error in between stays untouched"
+input = "src/a.py:5: error: Incompatible return value type\nsrc/unrelated.py:1: error: Something totally different\nsrc/b.py:20: error: Incompatible return value type\nsrc/c.py:33: error: Incompatible return value type\nFound 4 errors in 4 files"
+must_contain = [
+    "src/a.py:5: error: Incompatible return value type",
+    "2 more with the same message at:",
+    "src/b.py:20",
+    "src/c.py:33",
+    "src/unrelated.py:1: error: Something totally different",
+]
+must_not_contain = [
+    "src/b.py:20: error: Incompatible return value type",
+    "src/c.py:33: error: Incompatible return value type",
+    "Found 4 error",
+]
+
+[[filter.tests]]
+description = "QB-044 safety: distinct error messages sharing the same trigger shape never collapse"
+input = "src/a.py:1: error: Missing return statement\nsrc/b.py:5: error: Argument type mismatch\nFound 2 errors in 2 files"
+must_contain = ["src/a.py:1: error: Missing return statement", "src/b.py:5: error: Argument type mismatch"]
+must_not_contain = ["more with the same message", "(×"]
+
+[[filter.tests]]
+description = "QB-044: a single occurrence of an error message is left completely unchanged"
+input = "src/foo.py:7: error: Unexpected keyword argument\nFound 1 error in 1 file"
+must_contain = ["src/foo.py:7: error: Unexpected keyword argument"]
+must_not_contain = ["more with the same message", "(×"]
 
 [[filter]]
 name = "ruff"

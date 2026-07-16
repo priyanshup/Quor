@@ -1,0 +1,178 @@
+# quor built-in filter: Java stack traces (QB-056)
+#
+# Bare `java` invocations (java -jar app.jar, java -cp ... Main) previously
+# fell through to the generic fallback (z_generic.toml — remove_ansi +
+# framework-frame strip via the site-packages/dist-packages pattern, which
+# never matches Java paths, + dedupe + a blind 1000-token max_tokens clamp).
+# `java` was also not in `_KNOWN_BASE_COMMANDS`, so it was never even
+# rewritten — a `java` process's stdout/stderr passed through Quor entirely
+# untouched. Java stack traces routed through gradle/maven test-failure
+# output (ci.toml) fare no better today: gradle.toml/maven.toml strip build
+# noise but have no frame-aware handling, so a deep Spring Boot startup
+# failure or nested `Caused by:` chain surfaces every single framework
+# frame verbatim, often the majority of the token cost of the whole failure.
+#
+# This filter targets exactly that gap: collapse *repetitive, non-user*
+# stack-frame noise (JDK internals, reflection, and common frameworks —
+# Spring, JUnit, Gradle's test worker, Maven Surefire, Tomcat/Catalina,
+# Hibernate, Netty, Jetty, Reactor, CGLIB proxies) while never touching the
+# actual signal: the exception type, its message, the first frame of any
+# collapsed run, every `Caused by:`/`Suppressed:` header and the exception
+# it introduces, and the JVM's own `... N more` elision marker (the JVM
+# already elides common trailing frames across a `Caused by:` boundary
+# itself — that line represents compression the JVM performed, not noise to
+# remove).
+#
+# Composed entirely from existing stage types (remove_ansi, group_repeated,
+# strip_lines, deduplicate_consecutive, max_tokens) — no new stage, no
+# registry/dispatcher/Pipeline/Engine/ContentMask/StageHandler change.
+# Requires "java" to be a known base command (quor/rewrite/rules.py) for its
+# output to ever be routed through Quor at all.
+#
+# group_repeated's shape-based default (exact_match=false, scope="run") is
+# exactly what's needed here: a run of consecutive `\tat <framework-pkg>...`
+# lines is noise regardless of which specific method each frame names, the
+# same reasoning mypy's error-message collapsing (build.toml) and npm's
+# deprecation-warning collapsing (node.toml) already rely on. The trigger
+# pattern is a single alternation of well-known non-user package prefixes —
+# it can never match `at com.<company>...`-style application frames, so a
+# user's own call chain always survives completely, every frame, in its
+# original order. min_count=3 (not 2, like mypy's own shape-based
+# threshold in build.toml) — collapsing a run of only 2 framework frames
+# saves little and these frames are genuinely never identical text, so a
+# slightly higher bar avoids being overeager on short, still-scannable runs.
+schema_version = 1
+
+[[filter]]
+name = "java"
+match_command = '^java(?=\s|$)'
+abort_unless = ["Exception in thread", "Caused by:", "\tat ", "        at "]
+on_empty = "java: no output."
+
+[[filter.stages]]
+type = "remove_ansi"
+
+[[filter.stages]]
+type = "group_repeated"
+# preserve_patterns here run before run-detection (see the stage's own
+# docstring) so every exception header, Caused-by/Suppressed introduction,
+# and the JVM's own elision marker is PROTECTed before any collapsing pass
+# ever looks at the line stream. None of these ever start with optional
+# whitespace + "at " (frame lines always do), so they could never
+# accidentally satisfy `patterns` below regardless — this list is
+# deliberate defense-in-depth documentation, not a functional necessity
+# against the current pattern.
+preserve_patterns = [
+    '^Exception in thread\b',
+    '^Caused by:',
+    '^\s*Suppressed:',
+    '^\s*\.\.\.\s*\d+\s*more\b',
+]
+patterns = [
+    '^\s*at (java\.base/|javax\.|jdk\.internal\.|sun\.reflect\.|sun\.rmi\.|com\.sun\.proxy\.|org\.springframework\.|org\.junit\.|org\.gradle\.|worker\.org\.gradle\.|org\.apache\.maven\.|org\.apache\.catalina\.|org\.apache\.tomcat\.|org\.hibernate\.|org\.eclipse\.jetty\.|io\.netty\.|reactor\.|net\.sf\.cglib\.|org\.springframework\.cglib\.)',
+]
+min_count = 3
+
+[[filter.stages]]
+type = "strip_lines"
+patterns = [
+    '^\s*$',
+]
+
+[[filter.stages]]
+type = "deduplicate_consecutive"
+
+[[filter.stages]]
+type = "max_tokens"
+limit = 600
+strategy = "tail"
+
+[[filter.tests]]
+description = "Spring Boot Tomcat port-conflict startup failure: framework/JDK frames across both the top-level exception and its two Caused-by levels collapse; both Caused-by headers, both root exception messages, and the JVM's own \"... N more\" markers all survive"
+input = "Exception in thread \"main\" org.springframework.context.ApplicationContextException: Unable to start web server\n\tat org.springframework.boot.web.embedded.tomcat.TomcatWebServer.initialize(TomcatWebServer.java:120)\n\tat org.springframework.boot.web.embedded.tomcat.TomcatServletWebServerFactory.getWebServer(TomcatServletWebServerFactory.java:198)\n\tat org.springframework.boot.web.servlet.context.ServletWebServerApplicationContext.createWebServer(ServletWebServerApplicationContext.java:184)\n\tat org.springframework.boot.SpringApplication.run(SpringApplication.java:315)\n\tat com.example.demo.DemoApplication.main(DemoApplication.java:10)\nCaused by: org.springframework.boot.web.server.WebServerException: Unable to start embedded Tomcat\n\tat org.springframework.boot.web.embedded.tomcat.TomcatWebServer.initialize(TomcatWebServer.java:117)\n\tat org.springframework.boot.web.embedded.tomcat.TomcatWebServer.<init>(TomcatWebServer.java:98)\n\t... 8 more\nCaused by: java.net.BindException: Address already in use\n\tat java.base/sun.nio.ch.Net.bind0(Native Method)\n\tat java.base/sun.nio.ch.Net.bind(Net.java:565)\n\tat java.base/sun.nio.ch.Net.bind(Net.java:554)\n\tat java.base/sun.nio.ch.ServerSocketChannelImpl.bind(ServerSocketChannelImpl.java:227)\n\tat org.apache.catalina.core.StandardServer.await(StandardServer.java:640)\n\t... 15 more\n"
+must_contain = [
+    "Exception in thread \"main\" org.springframework.context.ApplicationContextException: Unable to start web server",
+    "com.example.demo.DemoApplication.main(DemoApplication.java:10)",
+    "Caused by: org.springframework.boot.web.server.WebServerException: Unable to start embedded Tomcat",
+    "... 8 more",
+    "Caused by: java.net.BindException: Address already in use",
+    "... 15 more",
+    "(×",
+]
+must_not_contain = [
+    "at org.springframework.boot.web.embedded.tomcat.TomcatServletWebServerFactory.getWebServer(TomcatServletWebServerFactory.java:198)",
+    "at java.base/sun.nio.ch.Net.bind(Net.java:554)",
+]
+
+[[filter.tests]]
+description = "NullPointerException with only user frames (no framework noise): completely unchanged, nothing collapsed"
+input = "Exception in thread \"main\" java.lang.NullPointerException: Cannot invoke \"String.length()\" because \"s\" is null\n\tat com.example.app.Formatter.render(Formatter.java:22)\n\tat com.example.app.Main.process(Main.java:15)\n\tat com.example.app.Main.main(Main.java:8)\n"
+must_contain = [
+    "java.lang.NullPointerException: Cannot invoke \"String.length()\" because \"s\" is null",
+    "at com.example.app.Formatter.render(Formatter.java:22)",
+    "at com.example.app.Main.process(Main.java:15)",
+    "at com.example.app.Main.main(Main.java:8)",
+]
+must_not_contain = ["(×"]
+
+[[filter.tests]]
+description = "IllegalStateException thrown through a CGLIB/Spring AOP proxy chain: proxy frames collapse, user's service frame and the exception message survive"
+input = "Exception in thread \"main\" java.lang.IllegalStateException: Order already shipped\n\tat com.example.orders.OrderService.ship(OrderService.java:44)\n\tat com.example.orders.OrderService$$EnhancerBySpringCGLIB$$1234.ship(<generated>)\n\tat org.springframework.cglib.proxy.MethodProxy.invoke(MethodProxy.java:218)\n\tat org.springframework.aop.framework.CglibAopProxy$CglibMethodInvocation.invokeJoinpoint(CglibAopProxy.java:793)\n\tat org.springframework.aop.framework.ReflectiveMethodInvocation.proceed(ReflectiveMethodInvocation.java:163)\n\tat com.example.orders.OrderController.shipOrder(OrderController.java:30)\n"
+must_contain = [
+    "java.lang.IllegalStateException: Order already shipped",
+    "at com.example.orders.OrderService.ship(OrderService.java:44)",
+    "at com.example.orders.OrderController.shipOrder(OrderController.java:30)",
+    "at org.springframework.cglib.proxy.MethodProxy.invoke(MethodProxy.java:218) (×3)",
+]
+must_not_contain = [
+    "at org.springframework.aop.framework.CglibAopProxy$CglibMethodInvocation.invokeJoinpoint(CglibAopProxy.java:793)",
+    "at org.springframework.aop.framework.ReflectiveMethodInvocation.proceed(ReflectiveMethodInvocation.java:163)",
+]
+
+[[filter.tests]]
+description = "Deep nested exception via reflection (JUnit invoking a test method through jdk.internal.reflect/java.base): the long reflection run collapses to one line, the exception type/message and the user's own test frame survive"
+input = "java.lang.ArithmeticException: / by zero\n\tat com.example.calc.Calculator.divide(Calculator.java:12)\n\tat com.example.calc.CalculatorTest.testDivideByZero(CalculatorTest.java:19)\n\tat java.base/jdk.internal.reflect.NativeMethodAccessorImpl.invoke0(Native Method)\n\tat java.base/jdk.internal.reflect.NativeMethodAccessorImpl.invoke(NativeMethodAccessorImpl.java:77)\n\tat java.base/jdk.internal.reflect.DelegatingMethodAccessorImpl.invoke(DelegatingMethodAccessorImpl.java:43)\n\tat java.base/java.lang.reflect.Method.invoke(Method.java:568)\n\tat org.junit.platform.commons.util.ReflectionUtils.invokeMethod(ReflectionUtils.java:728)\n\tat org.junit.jupiter.engine.execution.MethodInvocation.proceed(MethodInvocation.java:60)\n\tat org.junit.jupiter.engine.execution.InvocationInterceptorChain$ValidatingInvocation.proceed(InvocationInterceptorChain.java:131)\n\tat org.junit.jupiter.engine.execution.ExecutableInvoker.invoke(ExecutableInvoker.java:115)\n\tat org.junit.platform.engine.support.hierarchical.NodeTestTask.execute(NodeTestTask.java:139)\n\tat org.junit.platform.engine.support.hierarchical.ForkJoinPoolHierarchicalTestExecutorService.invokeAll(ForkJoinPoolHierarchicalTestExecutorService.java:134)\n"
+must_contain = [
+    "java.lang.ArithmeticException: / by zero",
+    "at com.example.calc.Calculator.divide(Calculator.java:12)",
+    "at com.example.calc.CalculatorTest.testDivideByZero(CalculatorTest.java:19)",
+    "at java.base/jdk.internal.reflect.NativeMethodAccessorImpl.invoke0(Native Method) (×10)",
+]
+must_not_contain = [
+    "at org.junit.platform.engine.support.hierarchical.ForkJoinPoolHierarchicalTestExecutorService.invokeAll(ForkJoinPoolHierarchicalTestExecutorService.java:134)",
+]
+
+[[filter.tests]]
+description = "Multi-level (3-deep) Caused-by chain: each level's framework-frame run collapses independently, but every Caused-by header, every exception message, and every \"... N more\" marker survives, in order"
+input = "Exception in thread \"main\" com.example.payments.PaymentProcessingException: Payment failed for order 4471\n\tat com.example.payments.PaymentService.process(PaymentService.java:51)\n\tat com.example.payments.PaymentController.charge(PaymentController.java:28)\nCaused by: org.springframework.web.client.HttpServerErrorException$InternalServerError: 500 Internal Server Error\n\tat org.springframework.web.client.HttpServerErrorException.create(HttpServerErrorException.java:100)\n\tat org.springframework.web.client.DefaultResponseErrorHandler.handleError(DefaultResponseErrorHandler.java:184)\n\tat org.springframework.web.client.RestTemplate.doExecute(RestTemplate.java:791)\n\tat org.springframework.web.client.RestTemplate.execute(RestTemplate.java:730)\n\t... 4 more\nCaused by: java.net.SocketTimeoutException: Read timed out\n\tat java.base/java.net.SocketInputStream.socketRead0(Native Method)\n\tat java.base/java.net.SocketInputStream.socketRead(SocketInputStream.java:115)\n\tat java.base/java.net.SocketInputStream.read(SocketInputStream.java:168)\n\t... 9 more\nCaused by: java.io.IOException: Connection reset by peer\n\tat java.base/sun.nio.ch.FileDispatcherImpl.read0(Native Method)\n\tat java.base/sun.nio.ch.SocketDispatcher.read(SocketDispatcher.java:47)\n\tat java.base/sun.nio.ch.IOUtil.readIntoNativeBuffer(IOUtil.java:327)\n\t... 12 more\n"
+must_contain = [
+    "com.example.payments.PaymentProcessingException: Payment failed for order 4471",
+    "at com.example.payments.PaymentService.process(PaymentService.java:51)",
+    "at com.example.payments.PaymentController.charge(PaymentController.java:28)",
+    "Caused by: org.springframework.web.client.HttpServerErrorException$InternalServerError: 500 Internal Server Error",
+    "... 4 more",
+    "Caused by: java.net.SocketTimeoutException: Read timed out",
+    "... 9 more",
+    "Caused by: java.io.IOException: Connection reset by peer",
+    "... 12 more",
+]
+must_not_contain = [
+    "at org.springframework.web.client.DefaultResponseErrorHandler.handleError(DefaultResponseErrorHandler.java:184)",
+    "at java.base/java.net.SocketInputStream.socketRead(SocketInputStream.java:115)",
+    "at java.base/sun.nio.ch.SocketDispatcher.read(SocketDispatcher.java:47)",
+]
+
+[[filter.tests]]
+description = "abort_unless: clean run with no exception is returned unchanged"
+input = "Starting DemoApplication on host with PID 4821\nStarted DemoApplication in 1.732 seconds\n"
+must_contain = ["Started DemoApplication in 1.732 seconds"]
+
+[[filter.tests]]
+description = "Short run below min_count (2 framework frames) is left uncollapsed — genuinely short runs stay fully readable rather than being folded for a marginal saving"
+input = "Exception in thread \"main\" java.lang.RuntimeException: boom\n\tat org.springframework.util.Assert.state(Assert.java:76)\n\tat org.springframework.util.Assert.notNull(Assert.java:120)\n\tat com.example.app.Main.main(Main.java:5)\n"
+must_contain = [
+    "at org.springframework.util.Assert.state(Assert.java:76)",
+    "at org.springframework.util.Assert.notNull(Assert.java:120)",
+    "at com.example.app.Main.main(Main.java:5)",
+]
+must_not_contain = ["(×"]

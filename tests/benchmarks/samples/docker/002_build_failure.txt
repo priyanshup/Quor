@@ -1,0 +1,36 @@
+#1 [internal] load build definition from Dockerfile
+#1 transferring dockerfile: 612B done
+#1 DONE 0.0s
+
+#2 [internal] load metadata for docker.io/library/node:18-slim
+#2 DONE 0.3s
+
+#3 [1/4] FROM docker.io/library/node:18-slim
+#3 CACHED
+
+#4 [2/4] WORKDIR /app
+#4 CACHED
+
+#5 [3/4] COPY package.json ./
+#5 CACHED
+
+#6 [4/4] RUN npm run build
+#6 0.812 > myapp@1.0.0 build
+#6 0.812 > tsc -p .
+#6 1.203 src/index.ts(10,5): error TS2345: Argument of type 'string' is not assignable to parameter of type 'number'.
+#6 1.204 Found 1 error in 1 file.
+#6 ERROR: process "/bin/sh -c npm run build" did not complete successfully: exit code: 2
+
+------
+ > [4/4] RUN npm run build:
+1.203 src/index.ts(10,5): error TS2345: Argument of type 'string' is not assignable to parameter of type 'number'.
+1.204 Found 1 error in 1 file.
+------
+Dockerfile:8
+--------------------
+   6 |     COPY package.json ./
+   7 |     RUN npm ci
+   8 | >>> RUN npm run build
+   9 |     COPY . .
+--------------------
+ERROR: failed to solve: process "/bin/sh -c npm run build" did not complete successfully: exit code: 2

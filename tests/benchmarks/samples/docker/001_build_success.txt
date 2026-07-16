@@ -1,0 +1,39 @@
+#1 [internal] load build definition from Dockerfile
+#1 transferring dockerfile: 512B done
+#1 DONE 0.0s
+
+#2 [internal] load .dockerignore
+#2 transferring context: 34B done
+#2 DONE 0.0s
+
+#3 [internal] load metadata for docker.io/library/node:18-slim
+#3 DONE 0.4s
+
+#4 [1/5] FROM docker.io/library/node:18-slim@sha256:abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890
+#4 resolve docker.io/library/node:18-slim@sha256:abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890 done
+#4 sha256:1111111111111111111111111111111111111111111111111111111111111111 1.42MB / 28.51MB 0.2s
+#4 sha256:1111111111111111111111111111111111111111111111111111111111111111 8.39MB / 28.51MB 0.4s
+#4 sha256:1111111111111111111111111111111111111111111111111111111111111111 19.66MB / 28.51MB 0.6s
+#4 sha256:1111111111111111111111111111111111111111111111111111111111111111 28.51MB / 28.51MB 0.8s done
+#4 extracting sha256:1111111111111111111111111111111111111111111111111111111111111111 0.1s done
+#4 DONE 1.1s
+
+#5 [2/5] WORKDIR /app
+#5 DONE 0.0s
+
+#6 [3/5] COPY package*.json ./
+#6 DONE 0.0s
+
+#7 [4/5] RUN npm ci --omit=dev
+#7 DONE 6.3s
+
+#8 [5/5] COPY . .
+#8 DONE 0.1s
+
+#9 exporting to image
+#9 exporting layers done
+#9 writing image sha256:9999999999999999999999999999999999999999999999999999999999999999 done
+#9 naming to docker.io/library/myapp:latest done
+
+Successfully built 9999999999999999999999999999999999999999999999999999999999999999
+Successfully tagged myapp:latest

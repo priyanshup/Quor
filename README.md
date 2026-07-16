@@ -48,6 +48,16 @@ quor doctor
 
 Requires Python 3.11+. Installs `quor` and `qr`, wires the Claude Code hook, and verifies the install is healthy.
 
+## Upgrading Quor
+
+```bash
+pip install --upgrade quor
+quor init --claude
+quor doctor
+```
+
+The hook scripts `quor init --claude` writes (and their registration in `~/.claude/settings.json`) live outside the installed Python package, so `pip install --upgrade quor` never touches them — only the package code updates automatically. Re-run `quor init --claude` after upgrading to refresh them, then `quor doctor` to confirm. If you skip this, `quor` will print a one-line reminder the next time you run it, whenever your installed hooks are actually out of date.
+
 ## Features
 
 | | |

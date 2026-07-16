@@ -1,0 +1,17 @@
+2026-07-15T10:23:40.1234567Z ##[group]Run actions/checkout@v4
+2026-07-15T10:23:40.2345678Z with:
+2026-07-15T10:23:40.3456789Z   repository: acme/myapp
+2026-07-15T10:23:40.4567890Z   ref: refs/heads/main
+2026-07-15T10:23:41.1234567Z ##[endgroup]
+2026-07-15T10:23:41.2234567Z Syncing repository: acme/myapp
+2026-07-15T10:23:42.1234567Z ##[endgroup]
+2026-07-15T10:23:43.1234567Z ##[group]Run npm ci
+2026-07-15T10:23:50.1234567Z added 512 packages, and audited 513 packages in 7s
+2026-07-15T10:23:50.2234567Z ##[endgroup]
+2026-07-15T10:23:51.1234567Z ##[group]Run npm test
+2026-07-15T10:23:52.1234567Z ##[warning]jest config "testPathPattern" is deprecated, use "testPathPatterns"
+2026-07-15T10:23:52.2234567Z ##[warning]jest config "testPathPattern" is deprecated, use "testPathPatterns"
+2026-07-15T10:23:55.1234567Z Tests:       48 passed, 48 total
+2026-07-15T10:23:55.2234567Z ##[endgroup]
+2026-07-15T10:23:55.3234567Z ##[group]Post job cleanup.
+2026-07-15T10:23:55.4234567Z ##[endgroup]

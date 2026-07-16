@@ -485,6 +485,213 @@ class TestGroupRepeated:
         assert "×2" in result.lines[3].line  # noqa: RUF001
         assert result.lines[4].decision is Decision.COMPRESS
 
+    # -- location_pattern (QB-044 slice 1): pytest-only, location-normalized --
+
+    def _location_config(self, min_count: int = 2) -> GroupRepeatedConfig:
+        return GroupRepeatedConfig(
+            type="group_repeated",
+            patterns=[r"^FAILED\s+\S+\s+-\s+"],
+            location_pattern=r"^FAILED\s+(\S+)\s+-\s+",
+            min_count=min_count,
+        )
+
+    def test_location_pattern_collapses_same_message_different_location(self) -> None:
+        text = (
+            "FAILED tests/test_math.py::test_add[1] - AssertionError: must be positive\n"
+            "FAILED tests/test_math.py::test_add[2] - AssertionError: must be positive\n"
+        )
+        mask = ContentMask.from_text(text)
+        result = self.stage.apply(mask, self._location_config())
+        # First occurrence kept byte-for-byte unmodified — no suffix appended.
+        assert result.lines[0].line == "FAILED tests/test_math.py::test_add[1] - AssertionError: must be positive"
+        assert result.lines[0].decision is Decision.KEEP
+        # A new summary line referencing the repeated location is inserted.
+        assert result.lines[1].decision is Decision.KEEP
+        assert "1 more with the same message at:" in result.lines[1].line
+        assert "test_add[2]" in result.lines[1].line
+        # The original repeated line is compressed away.
+        assert result.lines[2].decision is Decision.COMPRESS
+        assert result.lines[2].line == "FAILED tests/test_math.py::test_add[2] - AssertionError: must be positive"
+
+    def test_location_pattern_never_merges_different_messages(self) -> None:
+        text = (
+            "FAILED tests/test_a.py::test_x - AssertionError: message one\n"
+            "FAILED tests/test_b.py::test_y - AssertionError: message two\n"
+        )
+        mask = ContentMask.from_text(text)
+        result = self.stage.apply(mask, self._location_config())
+        assert all(lm.decision is Decision.KEEP for lm in result.lines)
+        assert "more with the same message" not in result.render()
+
+    def test_location_pattern_below_min_count_left_untouched(self) -> None:
+        text = "FAILED tests/test_math.py::test_add[1] - AssertionError: must be positive"
+        mask = ContentMask.from_text(text)
+        result = self.stage.apply(mask, self._location_config(min_count=2))
+        assert len(result.lines) == 1
+        assert result.lines[0].decision is Decision.KEEP
+        assert result.lines[0].line == "FAILED tests/test_math.py::test_add[1] - AssertionError: must be positive"
+
+    def test_location_pattern_protect_line_breaks_run(self) -> None:
+        lines = (
+            LineMask(line="FAILED tests/test_math.py::test_add[1] - AssertionError: must be positive"),
+            _protect("FAILED tests/test_math.py::test_add[2] - AssertionError: must be positive"),
+            LineMask(line="FAILED tests/test_math.py::test_add[3] - AssertionError: must be positive"),
+        )
+        mask = ContentMask(lines=lines)
+        result = self.stage.apply(mask, self._location_config())
+        # PROTECT line splits the run into two singleton groups — neither
+        # meets min_count=2, so nothing collapses and PROTECT is untouched.
+        assert result.lines[1].decision is Decision.PROTECT
+        assert all(lm.decision is not Decision.COMPRESS for lm in result.lines)
+
+    def test_location_pattern_does_not_affect_other_filters_default_none(self) -> None:
+        """location_pattern defaults to None — existing shape/exact_match
+        behavior for other filters (mypy, eslint, npm, ...) is untouched."""
+        mask = ContentMask.from_text("WARNING: foo\nWARNING: foo")
+        result = self.stage.apply(mask, self._config(patterns=["^WARNING:"], min_count=2))
+        assert "×2" in result.lines[0].line  # noqa: RUF001
+
+
+# ---------------------------------------------------------------------------
+# group_repeated: scope="global" (QB-044 slice 2)
+# ---------------------------------------------------------------------------
+
+
+class TestGroupRepeatedGlobalScope:
+    stage = GroupRepeatedStage()
+
+    def _global_config(self, min_count: int = 2) -> GroupRepeatedConfig:
+        return GroupRepeatedConfig(
+            type="group_repeated",
+            patterns=[r"^FAILED\s+\S+\s+-\s+"],
+            location_pattern=r"^FAILED\s+(\S+)\s+-\s+",
+            min_count=min_count,
+            scope="global",
+        )
+
+    def test_separated_duplicates_collapse(self) -> None:
+        """The core slice-2 case: two occurrences of the same message,
+        separated by an unrelated failure, still collapse — the whole
+        point of scope='global' over the adjacency-only default."""
+        lines = (
+            LineMask(line="FAILED tests/test_math.py::test_add[1] - AssertionError: must be positive"),
+            LineMask(line="FAILED tests/test_other.py::test_x - AssertionError: unrelated failure"),
+            LineMask(line="FAILED tests/test_math.py::test_add[2] - AssertionError: must be positive"),
+        )
+        mask = ContentMask(lines=lines)
+        result = self.stage.apply(mask, self._global_config())
+
+        assert result.lines[0].line == lines[0].line
+        assert result.lines[0].decision is Decision.KEEP
+        assert result.lines[1].decision is Decision.KEEP
+        assert "1 more with the same message at:" in result.lines[1].line
+        assert "test_add[2]" in result.lines[1].line
+        assert result.lines[2].line == lines[1].line
+        assert result.lines[2].decision is Decision.KEEP
+        assert result.lines[3].line == lines[2].line
+        assert result.lines[3].decision is Decision.COMPRESS
+        assert len(result.lines) == 4
+
+    def test_different_messages_never_merge(self) -> None:
+        lines = (
+            LineMask(line="FAILED tests/test_a.py::test_x - AssertionError: message one"),
+            LineMask(line="FAILED tests/test_b.py::test_y - AssertionError: message two"),
+            LineMask(line="FAILED tests/test_c.py::test_z - AssertionError: message three"),
+        )
+        mask = ContentMask(lines=lines)
+        result = self.stage.apply(mask, self._global_config())
+        assert all(lm.decision is Decision.KEEP for lm in result.lines)
+        assert "more with the same message" not in result.render()
+        assert len(result.lines) == 3
+
+    def test_distinct_normalized_keys_remain_separate_groups(self) -> None:
+        """Two independently-repeating messages must each collapse into
+        their *own* group — never cross-contaminate one summary with the
+        other group's location."""
+        lines = (
+            LineMask(line="FAILED t::a1 - AssertionError: message A"),
+            LineMask(line="FAILED t::b1 - AssertionError: message B"),
+            LineMask(line="FAILED t::a2 - AssertionError: message A"),
+            LineMask(line="FAILED t::b2 - AssertionError: message B"),
+        )
+        mask = ContentMask(lines=lines)
+        result = self.stage.apply(mask, self._global_config())
+
+        summaries = [lm.line for lm in result.lines if "more with the same message at:" in lm.line]
+        assert len(summaries) == 2
+        assert any("t::a2" in s for s in summaries)
+        assert any("t::b2" in s for s in summaries)
+        for s in summaries:
+            assert not ("t::a2" in s and "t::b2" in s)
+
+    def test_protect_line_never_touched_or_counted_as_group_member(self) -> None:
+        """A PROTECT line sharing the same normalized key as a repeating
+        group must never be modified, and must never be pulled into that
+        group's count/summary — PROTECT is invisible to grouping entirely."""
+        lines = (
+            LineMask(line="FAILED t::a1 - AssertionError: same message"),
+            _protect("FAILED t::a2 - AssertionError: same message"),
+            LineMask(line="FAILED t::a3 - AssertionError: same message"),
+        )
+        mask = ContentMask(lines=lines)
+        result = self.stage.apply(mask, self._global_config())
+
+        # The PROTECT line keeps its own position and text exactly, wherever
+        # the summary insertion (right after the first occurrence) lands it.
+        protect_lines = [lm for lm in result.lines if lm.decision is Decision.PROTECT]
+        assert len(protect_lines) == 1
+        assert protect_lines[0].line == "FAILED t::a2 - AssertionError: same message"
+        # The PROTECT line's location must never appear in a summary.
+        summary = next(lm.line for lm in result.lines if "more with the same message at:" in lm.line)
+        assert "t::a2" not in summary
+        assert "t::a3" in summary
+
+    def test_ordering_preserved_across_two_interleaved_groups(self) -> None:
+        """Relative order of every surviving line must match the input's
+        order exactly — grouping only ever removes non-first duplicates
+        and inserts a summary right after each group's first occurrence."""
+        lines = (
+            LineMask(line="FAILED t::a1 - AssertionError: message A"),
+            LineMask(line="FAILED t::b1 - AssertionError: message B"),
+            LineMask(line="FAILED t::a2 - AssertionError: message A"),
+            LineMask(line="FAILED t::b2 - AssertionError: message B"),
+        )
+        mask = ContentMask(lines=lines)
+        result = self.stage.apply(mask, self._global_config())
+
+        assert len(result.lines) == 6
+        assert result.lines[0].line == lines[0].line and result.lines[0].decision is Decision.KEEP
+        assert "t::a2" in result.lines[1].line and result.lines[1].decision is Decision.KEEP
+        assert result.lines[2].line == lines[1].line and result.lines[2].decision is Decision.KEEP
+        assert "t::b2" in result.lines[3].line and result.lines[3].decision is Decision.KEEP
+        assert result.lines[4].line == lines[2].line and result.lines[4].decision is Decision.COMPRESS
+        assert result.lines[5].line == lines[3].line and result.lines[5].decision is Decision.COMPRESS
+
+    def test_default_scope_run_is_backward_compatible(self) -> None:
+        """Without scope='global' (the default, unchanged), the exact same
+        non-adjacent input from test_separated_duplicates_collapse must NOT
+        collapse — proving the new mode is strictly opt-in and every
+        existing filter's behavior is untouched."""
+        lines = (
+            LineMask(line="FAILED tests/test_math.py::test_add[1] - AssertionError: must be positive"),
+            LineMask(line="FAILED tests/test_other.py::test_x - AssertionError: unrelated failure"),
+            LineMask(line="FAILED tests/test_math.py::test_add[2] - AssertionError: must be positive"),
+        )
+        mask = ContentMask(lines=lines)
+        config = GroupRepeatedConfig(
+            type="group_repeated",
+            patterns=[r"^FAILED\s+\S+\s+-\s+"],
+            location_pattern=r"^FAILED\s+(\S+)\s+-\s+",
+            min_count=2,
+            # scope intentionally omitted — defaults to "run"
+        )
+        result = self.stage.apply(mask, config)
+
+        assert len(result.lines) == 3
+        assert all(lm.decision is Decision.KEEP for lm in result.lines)
+        for original, actual in zip(lines, result.lines, strict=True):
+            assert actual.line == original.line
+
 
 # ---------------------------------------------------------------------------
 # collapse_unchanged_context (QB-041)

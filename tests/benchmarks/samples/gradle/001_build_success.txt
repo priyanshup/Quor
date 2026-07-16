@@ -1,0 +1,22 @@
+> Task :app:compileJava
+> Task :app:processResources NO-SOURCE
+> Task :app:classes
+> Task :app:jar
+> Task :app:assemble
+Download https://repo.maven.apache.org/maven2/org/junit/jupiter/junit-jupiter/5.10.0/junit-jupiter-5.10.0.pom
+Download https://repo.maven.apache.org/maven2/org/junit/jupiter/junit-jupiter-api/5.10.0/junit-jupiter-api-5.10.0.pom
+Download https://repo.maven.apache.org/maven2/org/junit/jupiter/junit-jupiter-engine/5.10.0/junit-jupiter-engine-5.10.0.pom
+<-------------> 0% EXECUTING [8s]
+<=========----> 60% EXECUTING [10s]
+<==============> 100% EXECUTING [12s]
+> Task :app:compileTestJava
+> Task :app:processTestResources NO-SOURCE
+> Task :app:testClasses
+> Task :app:test
+
+BUILD SUCCESSFUL in 12s
+7 actionable tasks: 7 executed
+
+Deprecated Gradle features were used in this build, making it incompatible with Gradle 9.0.
+You can use '--warning-mode all' to show the individual deprecation warnings.
+See https://docs.gradle.org/8.5/userguide/command_line_interface.html#sec:command_line_warnings
