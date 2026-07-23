@@ -1,0 +1,20 @@
+{
+  "status": "ok",
+  "page": 1,
+  "per_page": 50,
+  "total": 12,
+  "events": [
+    {"id": "evt_1001", "type": "order.created", "timestamp": "2026-07-01T09:12:04Z", "actor": "svc-orders"},
+    {"id": "evt_1002", "type": "order.paid", "timestamp": "2026-07-01T09:12:11Z", "actor": "svc-payments"},
+    {"id": "evt_1003", "type": "order.shipped", "timestamp": "2026-07-01T14:02:47Z", "actor": "svc-fulfillment"},
+    {"id": "evt_1004", "type": "order.created", "timestamp": "2026-07-01T15:44:19Z", "actor": "svc-orders"},
+    {"id": "evt_1005", "type": "order.cancelled", "timestamp": "2026-07-01T16:03:52Z", "actor": "svc-orders"},
+    {"id": "evt_1006", "type": "order.paid", "timestamp": "2026-07-01T16:04:01Z", "actor": "svc-payments"},
+    {"id": "evt_1007", "type": "order.created", "timestamp": "2026-07-01T18:22:37Z", "actor": "svc-orders"},
+    {"id": "evt_1008", "type": "order.shipped", "timestamp": "2026-07-02T08:11:09Z", "actor": "svc-fulfillment"},
+    {"id": "evt_1009", "type": "order.paid", "timestamp": "2026-07-02T08:11:52Z", "actor": "svc-payments"},
+    {"id": "evt_1010", "type": "order.created", "timestamp": "2026-07-02T10:47:31Z", "actor": "svc-orders"},
+    {"id": "evt_1011", "type": "order.shipped", "timestamp": "2026-07-02T13:19:04Z", "actor": "svc-fulfillment"},
+    {"id": "evt_1012", "type": "order.paid", "timestamp": "2026-07-02T13:19:40Z", "actor": "svc-payments"}
+  ]
+}

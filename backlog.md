@@ -97,6 +97,11 @@ engine** — one component of which happens to be command-output compression tod
 - **Document reading** for Markdown, plain text, DOCX, and PDF — the same `Read`-hook path extracts
   structure (headings, lists, tables, requirements) instead of returning raw document text — see
   QB-007 below.
+- **Config & structured-data file compression** for JSON, YAML, TOML, `.env`, and `.ini` — a long
+  homogeneous array/sequence/array-of-tables (a lockfile's hundreds of near-identical dependency
+  entries) collapses to its first few entries plus an omitted-count placeholder, with every key and
+  every kept value preserved byte-for-byte; `.env`/`.ini` strip only comments/blank lines, never a
+  value — see QB-040 below.
 - **A safety net that's always on:** every compressed command's full original output is cached and
   recoverable via a `[full output: ...]` link (QB-013); a narrow, high-confidence secret-leak
   scanner warns on anything that looks like a real credential (QB-029); nothing is ever silently
@@ -1020,12 +1025,43 @@ well-tested.
 **Effort:** Medium · **Value:** High · **Risk:** Low · **Expected token impact:** Medium ·
 **Category:** Feature
 
-Quor already compresses documents (Markdown, DOCX, PDF — QB-007) and source code (Python/JS/TS —
-QB-005), but a `Read` or `cat` of a config file — `package.json`, a Kubernetes YAML manifest, a
-`.env` file, a large `pyproject.toml` — gets no treatment at all today. These files are extremely
-common in a real coding session and often large (lockfiles, generated configs), with a lot of
-low-value repeated structure (boilerplate keys, generated comments, long dependency lists) that a
-coding assistant rarely needs in full.
+**Status: Shipped.** `Read`/`cat` of a config file — `package.json`, `poetry.lock`/`Cargo.lock`, a
+Kubernetes YAML manifest, a `.env` file — now gets real, deterministic compression instead of no
+treatment (JSON/YAML/TOML) or blunt generic `max_tokens` truncation (everything else, previously
+caught by `cat.toml`'s fallback).
+
+**What shipped, and why the original plan changed:** the original "reuse `strip_lines`/
+`regex_replace`" sketch below undersold what JSON/YAML's array-collapsing actually needed. Line-
+pattern stages can't safely identify "where does array element N end" without risking a
+mid-value truncation or misreading a string containing `[`/`]` — that requires the format's own
+parser. The implementation follows the same architecture as `code_ast_summarize`/
+`python_ast_summarize` (QB-005B) rather than inventing something new: a `structured_data_summarize`
+`StageHandler` (`quor/pipeline/stages/structured_data_summarize.py`) dispatches to a per-format
+analyzer (`quor/pipeline/structured_data/{json,yaml,toml}_fmt.py`) that parses the file with a real
+parser — stdlib `json`/`tomllib`, PyYAML (new optional `quor[yaml]` extra, same pattern as
+`quor[javascript]`/`quor[documents]`) — and returns 1-indexed line ranges to collapse. Every kept
+line stays byte-for-byte identical to the original; only a homogeneous array's extra elements
+(same shape/key-set, count > 6) are replaced by one placeholder line + `COMPRESS`. JSON position
+tracking drives the stdlib decoder's own `raw_decode` one value at a time (no hand-rolled string-
+escaping logic); YAML uses `yaml.compose()`'s node marks directly; TOML (no stdlib position API)
+is scoped to array-of-tables (`[[package]]` blocks) specifically — the shape every real lockfile
+uses — recognized via TOML's own unambiguous header-line grammar, with `poetry.lock`/`Cargo.lock`/
+`Pipfile.lock`/`composer.lock` matched by basename since none carry their format's extension.
+`.env`/`.ini` shipped as originally sketched: `strip_lines` stripping comment/blank lines only,
+never touching a `KEY=VALUE` line, composing correctly with QB-029's secret scanner by construction
+(values are never inspected or modified). New filters: `cat-json`, `cat-yaml`, `cat-toml`,
+`dotenv`, `ini` — all Safe-mode only (per this item's own original risk note), wired into both the
+Bash `cat` path and the `Read` hook. 10 new benchmark cases across all 5 filters (27–67% measured
+reduction on realistic samples); full unit coverage for the position-tracking analyzers and the
+stage. See `docs/final/CLAUDE.md`/git history for the full implementation record.
+
+**Known, accepted limitations:** TOML inline arrays (`deps = ["a", "b", ...]`) are not collapsed —
+only array-of-tables; a mixed-shape array (or one crammed onto a single physical line) is correctly
+left uncollapsed rather than guessed at; JSON/YAML/TOML re-parse malformed input and fail open
+(no compression, original content unchanged) rather than partially compressing something invalid.
+
+<details>
+<summary>Original planning notes (superseded by "What shipped" above)</summary>
 
 **Evidence update (2026-07-15) — demoted from [Now](#now):** this item still cannot be evaluated
 against real measured evidence — there is no benchmark category for it, and its filter name (it
@@ -1036,9 +1072,6 @@ already-terse commands like `ls -la`, not config files), and config files never 
 absent entirely). Moved to Next, not dropped: the underlying idea is still sound, it's just
 unmeasured, and shouldn't compete for a release slot against items with direct evidence behind them
 (QB-041, QB-052) until QB-047 gives it a corpus to be measured against.
-
-<details>
-<summary>Technical details</summary>
 
 **Problem:** No filter or extraction path exists for `.yaml`/`.yml`/`.json`/`.toml`/`.env`/`.ini`
 content, whether read via `cat` (Bash) or Claude Code's native `Read` tool. QB-007's document
@@ -1054,14 +1087,13 @@ must compose correctly with QB-029's secret scanner, not fight it).
 citizen of Quor's own filter-config format, and `regex_replace`/`strip_lines`/`max_tokens` (QB-008,
 QB-009, existing stages) already provide most of the primitives needed for the simpler formats
 (`.env`, `.ini`). JSON/YAML's nested-array-collapsing is the one genuinely new piece of logic,
-closer in spirit to QB-007's structure extraction than to a simple line filter.
+closer in spirit to QB-007's structure extraction than to a simple line filter. **(Superseded: see
+"What shipped" above — this undersold the position-tracking work actually required.)**
 
 **Risk, stated plainly:** config files are exactly the place where "safe, deterministic" matters
 most — a wrong compression here can silently change what a generated config *means* to a build tool,
 not just what it looks like to a human. This item should ship Safe-mode-only initially (see QB-039)
 regardless of when Aggressive mode ships elsewhere.
-
-**Status:** Proposed. Not scoped or implemented.
 
 </details>
 

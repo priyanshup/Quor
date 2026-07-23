@@ -47,7 +47,12 @@ from quor.pipeline.stages.python_ast_summarize import (
 from quor.pipeline.stages.regex_replace import RegexReplaceConfig, RegexReplaceStage
 from quor.pipeline.stages.remove_ansi import RemoveAnsiConfig, RemoveAnsiStage
 from quor.pipeline.stages.strip_lines import StripLinesConfig, StripLinesStage
+from quor.pipeline.stages.structured_data_summarize import (
+    StructuredDataSummarizeConfig,
+    StructuredDataSummarizeStage,
+)
 from quor.pipeline.stages.truncate_lines import TruncateLinesConfig, TruncateLinesStage
+from quor.pipeline.structured_data.registry import is_format_available
 from quor.tracking.db import count_tokens
 
 # Maps stage type string → (handler class, config class)
@@ -66,6 +71,10 @@ _STAGE_HANDLERS: dict[str, tuple[type, type[StageConfig]]] = {
     "match_output": (MatchOutputStage, MatchOutputConfig),
     "python_ast_summarize": (PythonAstSummarizeStage, PythonAstSummarizeConfig),
     "code_ast_summarize": (CodeAstSummarizeStage, CodeAstSummarizeConfig),
+    "structured_data_summarize": (
+        StructuredDataSummarizeStage,
+        StructuredDataSummarizeConfig,
+    ),
 }
 
 _BUILTIN_DIR = Path(__file__).parent / "builtin"
@@ -359,7 +368,10 @@ class FilterRegistry:
         `quor[javascript]` extra installed) is skipped entirely, not run and
         not counted as a failure: its assertions describe behavior that
         provably cannot happen in this environment, so evaluating them would
-        only ever produce a false failure, not a meaningful signal.
+        only ever produce a false failure, not a meaningful signal. A test
+        whose `requires_format` names a structured-data format that isn't
+        available (QB-040 — e.g. "yaml" without `quor[yaml]`/PyYAML
+        installed) is skipped for the identical reason.
         """
         failures: list[str] = []
         skipped: list[str] = []
@@ -372,6 +384,13 @@ class FilterRegistry:
                 skipped.append(
                     f"{label} — skipped: {test.requires_language} AST parser not "
                     "installed (optional quor[javascript] extra)"
+                )
+                continue
+
+            if test.requires_format is not None and not is_format_available(test.requires_format):
+                skipped.append(
+                    f"{label} — skipped: {test.requires_format} format parser not "
+                    f"installed (optional quor[{test.requires_format}] extra)"
                 )
                 continue
 

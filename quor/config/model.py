@@ -34,6 +34,14 @@ class FilterTest(BaseModel):
     treating that as a hard failure would make `quor verify`/`quor doctor`
     report every plain `pip install quor` as unhealthy (QB-038)."""
 
+    requires_format: str | None = None
+    """Same contract as `requires_language`, for the structured-data
+    registry (QB-040) instead of the AST-summarization one — e.g. "yaml" for
+    a test whose assertions only hold when the optional `quor[yaml]` extra
+    (PyYAML) is installed, checked via `quor.pipeline.structured_data.
+    registry.is_format_available`. "json"/"toml" need no extra and are
+    always available, so no test uses this for them."""
+
 
 class FilterConfig(BaseModel):
     """One [[filter]] entry from a TOML filter file."""

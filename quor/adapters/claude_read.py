@@ -50,6 +50,19 @@ Everything else (unsupported extensions, no extension, an extraction
 failure, a missing AST dependency, a parse/filter failure, ...) still passes
 through unchanged, exactly as before QB-005F.
 
+`.json`/`.jsonc`/`.yaml`/`.yml`/`.toml` files (QB-040) take a fourth path,
+structurally identical to the source-code path immediately above (by-name
+lookup via `_STRUCTURED_DATA_FILTER_NAMES_BY_EXTENSION`, straight to
+`_compress_via_named_filter` — no extraction step, `content`/`original`
+both `tool_response`): `cat-json.toml`/`cat-yaml.toml`/`cat-toml.toml`'s
+`match_command` patterns are `cat`/`type`-command-shaped for the same
+reason `cat-python.toml`'s are, so they need the same by-extension
+redirection a bare Read `file_path` could never trigger via
+`FilterRegistry.find()`. `.env`/`.ini` files (also QB-040) do NOT take this
+path — `cat-dotenv.toml`/`cat-ini.toml` match a bare file path directly (see
+those files' own `match_command`), so they only need a
+`_READ_SUPPORTED_FILTER_NAMES` allowlist entry, exactly like `.md`/`.txt`.
+
 Called by __main__._run_hook() (adapter name "claude-read"), which
 guarantees:
 - sys.stdin is a TextIOWrapper over the original stdin bytes
@@ -113,7 +126,21 @@ _UTF8_BOM = "﻿"
 # NOT add to this set; extracted DOCX/PDF text is routed to the existing
 # "markdown" entry by name (see _MARKDOWN_FILTER_NAME), not matched as a
 # file path, so it never needs its own filter-name allowlist entry.
-_READ_SUPPORTED_FILTER_NAMES: frozenset[str] = frozenset({"markdown", "document-text"})
+#
+# "dotenv"/"ini" (QB-040) join this set for the same reason "markdown"/
+# "document-text" are here: quor/filters/builtin/cat-dotenv.toml/cat-ini.toml
+# match a bare Read file_path directly (an alternation that also matches a
+# `cat`/`type` command — see those files' own match_command), so
+# FilterRegistry.find(file_path) already resolves them correctly; they just
+# need to clear this allowlist instead of falling through to "generic".
+# "json"/"yaml"/"toml" are NOT added here — their filters' match_command
+# patterns are shaped like cat-python.toml's (`^cat\s+...` only, never a bare
+# path), so they are looked up by extension instead, exactly like
+# _SOURCE_CODE_FILTER_NAMES_BY_EXTENSION below (see
+# _STRUCTURED_DATA_FILTER_NAMES_BY_EXTENSION).
+_READ_SUPPORTED_FILTER_NAMES: frozenset[str] = frozenset(
+    {"markdown", "document-text", "dotenv", "ini"}
+)
 
 # Extensions routed through quor/pipeline/extract (QB-007E1/E2/E3) before
 # filtering — the mirror of _READ_SUPPORTED_FILTER_NAMES above, but for the
@@ -151,6 +178,38 @@ _SOURCE_CODE_FILTER_NAMES_BY_EXTENSION: dict[str, str] = {
     ".cjs": "cat-javascript",
     ".ts": "cat-typescript",
     ".tsx": "cat-tsx",
+}
+
+# Extension -> builtin filter name, for structured-data Read files (QB-040).
+# Same by-name-lookup reasoning as _SOURCE_CODE_FILTER_NAMES_BY_EXTENSION
+# immediately above (its own docstring explains why: cat-json.toml/
+# cat-yaml.toml/cat-toml.toml's `match_command` patterns are all
+# `^cat\s+...`-shaped, which a bare Read file_path can never match via
+# FilterRegistry.find()) — kept as its own dict rather than folded into that
+# one so each dict's name stays accurate to what it actually contains
+# (source code vs. structured data); both are consulted identically in
+# `_compress_read_output` below via `_compress_via_named_filter`, so there is
+# no duplicated dispatch logic, only the mapping itself is separate.
+_STRUCTURED_DATA_FILTER_NAMES_BY_EXTENSION: dict[str, str] = {
+    ".json": "cat-json",
+    ".jsonc": "cat-json",
+    ".yaml": "cat-yaml",
+    ".yml": "cat-yaml",
+    ".toml": "cat-toml",
+}
+
+# Basename -> builtin filter name, for well-known lockfiles whose format
+# isn't reflected in their extension (`poetry.lock`/`Cargo.lock` are TOML,
+# `Pipfile.lock`/`composer.lock` are JSON — all four use `.lock`, which
+# `_STRUCTURED_DATA_FILTER_NAMES_BY_EXTENSION` above cannot route). Checked
+# by exact basename, not suffix — mirrors `cat-toml.toml`/`cat-json.toml`'s
+# own `match_command` alternation for the Bash `cat` path (see those files'
+# header comments for why these four specifically).
+_STRUCTURED_DATA_FILTER_NAMES_BY_BASENAME: dict[str, str] = {
+    "poetry.lock": "cat-toml",
+    "Cargo.lock": "cat-toml",
+    "Pipfile.lock": "cat-json",
+    "composer.lock": "cat-json",
 }
 
 
@@ -294,12 +353,16 @@ def _compress_read_output(
             command=command,
         )
 
-    source_filter_name = _SOURCE_CODE_FILTER_NAMES_BY_EXTENSION.get(suffix)
-    if source_filter_name is not None:
+    named_filter = (
+        _SOURCE_CODE_FILTER_NAMES_BY_EXTENSION.get(suffix)
+        or _STRUCTURED_DATA_FILTER_NAMES_BY_EXTENSION.get(suffix)
+        or _STRUCTURED_DATA_FILTER_NAMES_BY_BASENAME.get(Path(file_path).name)
+    )
+    if named_filter is not None:
         return _compress_via_named_filter(
             content=tool_response,
             original=tool_response,
-            filter_name=source_filter_name,
+            filter_name=named_filter,
             tracking=tracking,
             t0=t0,
             command=command,

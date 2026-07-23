@@ -1,0 +1,75 @@
+# quor built-in filter: .env files — QB-040
+#
+# Routes both a Read of a .env file (match_command matched against the file
+# path, exactly like markdown.toml/document-text.toml — see their header
+# comments for the whitespace-anchoring rationale) and a `cat`/`type` of one
+# (matched against the shell command, exactly like cat-python.toml).
+#
+# Filed as "cat-dotenv.toml" (not "dotenv.toml") purely for built-in
+# load-order: filters load in sorted filename order (quor/filters/
+# registry.py::_load_builtin), and the generic `cat.toml`'s own
+# `match_command = '^cat\b'` matches every `cat ...` command including
+# `cat .env` — this filter must sort ahead of it ('c','a','t','-' < '.') the
+# same way cat-python.toml/cat-json.toml already do, even though (unlike
+# those) it also handles the unrelated Read/bare-path case below. The
+# `[[filter]] name` stays "dotenv", independent of the file name.
+#
+# Strips comment lines (`#...`) and blank lines — the only two constructs a
+# .env file's grammar assigns zero semantic value to. No other stage is
+# used: no max_tokens (a KEY=VALUE line is never dropped just for being
+# beyond a size budget — every declared variable's existence must survive),
+# no regex_replace, no structured-data parsing. A KEY=VALUE line is matched
+# by neither strip pattern below (it never starts with `#` after leading
+# whitespace) and is therefore left completely untouched — this filter never
+# reads, inspects, or modifies a value, only decides whether an entire
+# comment/blank *line* survives. This composes correctly with QB-029's
+# secret scanner (quor/pipeline/secrets.py): that scanner runs on final
+# output regardless of what filter produced it, and every real value here
+# is passed through byte-for-byte, so nothing about this filter can hide a
+# secret from it or corrupt one.
+#
+# `preserve_patterns` protects comment lines that carry real signal (a
+# TODO/FIXME left by a teammate, or a section divider) — same convention
+# strip_lines uses everywhere else in this codebase.
+schema_version = 1
+
+[[filter]]
+name = "dotenv"
+match_command = '(?i)(^\S*\.env(\.[\w.-]+)?$)|(^(cat|type)\s+(-\S+\s+)*\S*\.env(\.[\w.-]+)?\b)'
+on_empty = "(empty file)"
+
+[[filter.stages]]
+type = "strip_lines"
+patterns = [
+    '^\s*#',
+    '^\s*$',
+]
+preserve_patterns = [
+    'TODO',
+    'FIXME',
+    'HACK',
+    'XXX',
+    'NOTE',
+    'WARN',
+]
+
+[[filter.tests]]
+description = "Comment and blank lines stripped; KEY=VALUE lines untouched"
+input = "# Database configuration\n\nDATABASE_URL=postgres://user:pass@localhost/db\n\n# API keys\nAPI_KEY=sk-abc123xyz\nDEBUG=true\n"
+must_contain = ["DATABASE_URL=postgres://user:pass@localhost/db", "API_KEY=sk-abc123xyz", "DEBUG=true"]
+must_not_contain = ["# Database configuration", "# API keys"]
+
+[[filter.tests]]
+description = "TODO/FIXME comments preserved despite comment pattern"
+input = "# TODO: rotate this key\nSECRET=xyz\n"
+must_contain = ["TODO: rotate this key", "SECRET=xyz"]
+
+[[filter.tests]]
+description = "A value containing '#' is never touched -- only full comment lines are matched"
+input = "PASSWORD=abc#123\n"
+must_contain = ["PASSWORD=abc#123"]
+
+[[filter.tests]]
+description = "Short file with no comments passes through unchanged"
+input = "PORT=8080\nHOST=localhost\n"
+must_contain = ["PORT=8080", "HOST=localhost"]
