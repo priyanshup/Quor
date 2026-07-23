@@ -231,8 +231,16 @@ class TestSourceCodeCompresses:
 
 
 class TestUnsupportedSourceExtensionsPassThrough:
-    @pytest.mark.parametrize("file_path", ["config.json", "main.rs", "Cargo.toml", "style.css"])
+    @pytest.mark.parametrize("file_path", ["main.rs", "style.css"])
     def test_non_mapped_extension_never_compresses(self, file_path: str) -> None:
+        """`config.json`/`Cargo.toml` were this test's examples prior to
+        QB-040; both are now genuinely supported structured-data extensions
+        (routed to `cat-json`/`cat-toml` by name) — see
+        tests/unit/test_read_hook_structured_data.py for their dedicated
+        coverage instead. `main.rs` stays unsupported here deliberately:
+        `cat-rust.toml` exists (QB-046) but is Bash-`cat`-only — it was never
+        added to `_SOURCE_CODE_FILTER_NAMES_BY_EXTENSION`, so a Read of a
+        `.rs` file is still unaffected."""
         large_content = "line of filler text. " * 10_000
         result = _run_hook(_read_payload(file_path, large_content))
         assert "updatedToolOutput" not in result["hookSpecificOutput"]

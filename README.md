@@ -106,6 +106,8 @@ Quor is built to be safe on machines where nothing else is.
 
 **Documents:** Markdown, plain text, DOCX, PDF — via `pip install "quor[documents]"`.
 
+**Config files:** JSON, TOML, `.env`, `.ini` (built in); YAML via `pip install "quor[yaml]"`. Long, homogeneous arrays/sequences/array-of-tables — a lockfile's hundreds of near-identical dependency entries — collapse to their first few entries, keys and kept values untouched; `.env`/`.ini` only ever strip comments/blank lines, never a value.
+
 ## Commands
 
 | | |

@@ -1,0 +1,108 @@
+{
+  "_readme": [
+    "This file locks the dependencies of your project to a known state",
+    "Read more about it at https://getcomposer.org/doc/01-basic-usage.md#installing-dependencies"
+  ],
+  "content-hash": "3f9a2c8b1e7d4f6a9b0c1d2e3f4a5b6c",
+  "packages": [
+    {
+      "name": "monolog/monolog",
+      "version": "3.5.0",
+      "source": {
+        "type": "git",
+        "url": "https://github.com/Seldaek/monolog.git",
+        "reference": "c7659f5305180aaa96f6404109252f5714f1d61"
+      },
+      "type": "library",
+      "license": ["MIT"]
+    },
+    {
+      "name": "psr/log",
+      "version": "3.0.0",
+      "source": {
+        "type": "git",
+        "url": "https://github.com/php-fig/log.git",
+        "reference": "fe5ea303b0887d5caefd3d431c3e61ad47037001"
+      },
+      "type": "library",
+      "license": ["MIT"]
+    },
+    {
+      "name": "symfony/console",
+      "version": "6.4.2",
+      "source": {
+        "type": "git",
+        "url": "https://github.com/symfony/console.git",
+        "reference": "b1c68757927800efd90eaa2ce4e0ce16d926e784"
+      },
+      "type": "library",
+      "license": ["MIT"]
+    },
+    {
+      "name": "symfony/deprecation-contracts",
+      "version": "3.4.0",
+      "source": {
+        "type": "git",
+        "url": "https://github.com/symfony/deprecation-contracts.git",
+        "reference": "7c3aff79d10325257a001f0d0a1394b3ceafdad"
+      },
+      "type": "library",
+      "license": ["MIT"]
+    },
+    {
+      "name": "symfony/polyfill-ctype",
+      "version": "1.29.0",
+      "source": {
+        "type": "git",
+        "url": "https://github.com/symfony/polyfill-ctype.git",
+        "reference": "ef4d7e442ca910c4764bce785146269b30cb5fc"
+      },
+      "type": "library",
+      "license": ["MIT"]
+    },
+    {
+      "name": "symfony/polyfill-mbstring",
+      "version": "1.29.0",
+      "source": {
+        "type": "git",
+        "url": "https://github.com/symfony/polyfill-mbstring.git",
+        "reference": "9773676c8a1bb1f8d4340a62efe641cf76eda7ec"
+      },
+      "type": "library",
+      "license": ["MIT"]
+    },
+    {
+      "name": "symfony/service-contracts",
+      "version": "3.4.1",
+      "source": {
+        "type": "git",
+        "url": "https://github.com/symfony/service-contracts.git",
+        "reference": "fe07cbc8d837f60caf7018068e350cc5163681a"
+      },
+      "type": "library",
+      "license": ["MIT"]
+    },
+    {
+      "name": "symfony/string",
+      "version": "6.4.3",
+      "source": {
+        "type": "git",
+        "url": "https://github.com/symfony/string.git",
+        "reference": "e469f0c7d1e58f8b47f2b0b0cbd0c4d4b0e3a1b1"
+      },
+      "type": "library",
+      "license": ["MIT"]
+    }
+  ],
+  "packages-dev": [],
+  "aliases": [],
+  "minimum-stability": "stable",
+  "stability-flags": [],
+  "prefer-stable": false,
+  "prefer-lowest": false,
+  "platform": {
+    "php": ">=8.1"
+  },
+  "platform-dev": [],
+  "plugin-api-version": "2.6.0"
+}

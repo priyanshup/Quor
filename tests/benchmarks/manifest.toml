@@ -1456,3 +1456,115 @@ must_not_contain = [
     "site-packages\\cleo\\commands\\base_command.py:117 in run",
     "site-packages\\poetry\\console\\commands\\installer_command.py:39 in execute",
 ]
+
+# ---------------------------------------------------------------------------
+# QB-040: config & structured-data file compression (JSON/YAML/TOML/.env/.ini)
+# ---------------------------------------------------------------------------
+
+[[case]]
+id = "cat-json-composer-lock-dependencies"
+category = "cat-json"
+ecosystem = "Config Files"
+command = "cat services/api/composer.lock.json"
+sample_file = "samples/cat-json/001_composer_lock_dependencies.json"
+expected_filter = "cat-json"
+min_reduction_pct = 40.0
+must_contain = ["\"name\": \"monolog/monolog\"", "\"name\": \"psr/log\"", "\"name\": \"symfony/console\"", "more items omitted"]
+must_not_contain = ["\"name\": \"symfony/string\""]
+
+[[case]]
+id = "cat-json-api-response-event-log"
+category = "cat-json"
+ecosystem = "Config Files"
+command = "cat logs/events.json"
+sample_file = "samples/cat-json/002_api_response_event_log.json"
+expected_filter = "cat-json"
+min_reduction_pct = 55.0
+must_contain = ["evt_1001", "evt_1002", "evt_1003", "more items omitted"]
+must_not_contain = ["evt_1004"]
+
+[[case]]
+id = "cat-yaml-k8s-deployment-env-list"
+category = "cat-yaml"
+ecosystem = "Config Files"
+command = "cat k8s/deployment.yaml"
+sample_file = "samples/cat-yaml/001_k8s_deployment_env_list.yaml"
+expected_filter = "cat-yaml"
+min_reduction_pct = 15.0
+must_contain = ["name: storefront-api", "LOG_LEVEL", "FEATURE_NEW_CHECKOUT", "PAYMENT_GATEWAY_TIMEOUT_MS", "more items omitted"]
+must_not_contain = ["INVENTORY_CACHE_TTL_SECONDS"]
+
+[[case]]
+id = "cat-yaml-ci-pipeline-steps"
+category = "cat-yaml"
+ecosystem = "Config Files"
+command = "cat .github/workflows/ci.yaml"
+sample_file = "samples/cat-yaml/002_ci_pipeline_steps.yaml"
+expected_filter = "cat-yaml"
+min_reduction_pct = 40.0
+must_contain = ["Checkout", "Install dependencies", "Lint", "more items omitted"]
+must_not_contain = ["Notify on failure"]
+
+[[case]]
+id = "cat-toml-poetry-lock-packages"
+category = "cat-toml"
+ecosystem = "Config Files"
+command = "cat poetry.lock"
+sample_file = "samples/cat-toml/001_poetry_lock_packages.toml"
+expected_filter = "cat-toml"
+min_reduction_pct = 50.0
+must_contain = ["name = \"certifi\"", "name = \"charset-normalizer\"", "name = \"click\"", "more [[package]] entries omitted"]
+must_not_contain = ["name = \"flask\""]
+
+[[case]]
+id = "cat-toml-cargo-lock-packages"
+category = "cat-toml"
+ecosystem = "Config Files"
+command = "cat Cargo.lock"
+sample_file = "samples/cat-toml/002_cargo_lock_packages.toml"
+expected_filter = "cat-toml"
+min_reduction_pct = 50.0
+must_contain = ["name = \"anyhow\"", "name = \"autocfg\"", "name = \"bytes\"", "more [[package]] entries omitted"]
+must_not_contain = ["name = \"cfg-if\""]
+
+[[case]]
+id = "dotenv-backend-service-env"
+category = "dotenv"
+ecosystem = "Config Files"
+command = "cat .env"
+sample_file = "samples/dotenv/001_backend_service_env.txt"
+expected_filter = "dotenv"
+min_reduction_pct = 25.0
+must_contain = ["DATABASE_URL=postgres://storefront:changeme@localhost:5432/storefront_dev", "JWT_SECRET=dev-only-not-a-real-secret-abc123", "STRIPE_API_KEY=sk_test_51ABCDEFghijklmnop", "PORT=8080"]
+must_not_contain = ["# --- Database ---", "# Backend service environment configuration"]
+
+[[case]]
+id = "dotenv-local-dev-env-minimal"
+category = "dotenv"
+ecosystem = "Config Files"
+command = "cat .env"
+sample_file = "samples/dotenv/002_local_dev_env_minimal.txt"
+expected_filter = "dotenv"
+min_reduction_pct = 0.0
+must_contain = ["PORT=3000", "HOST=127.0.0.1", "DATABASE_URL=sqlite:///dev.db", "DEBUG=true"]
+
+[[case]]
+id = "ini-app-config-with-comments"
+category = "ini"
+ecosystem = "Config Files"
+command = "cat app.ini"
+sample_file = "samples/ini/001_app_config_with_comments.txt"
+expected_filter = "ini"
+min_reduction_pct = 25.0
+must_contain = ["[database]", "host = localhost", "[cache]", "[logging]", "[app]", "secret_key = dev-only-not-real"]
+must_not_contain = ["; Application configuration", "; connection pool tuning"]
+
+[[case]]
+id = "ini-php-ini-minimal"
+category = "ini"
+ecosystem = "Config Files"
+command = "cat php.ini"
+sample_file = "samples/ini/002_php_ini_minimal.txt"
+expected_filter = "ini"
+min_reduction_pct = 0.0
+must_contain = ["[PHP]", "memory_limit = 256M", "max_execution_time = 30", "display_errors = Off"]

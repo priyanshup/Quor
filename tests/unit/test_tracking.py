@@ -1220,19 +1220,21 @@ class TestReadTracking:
         assert row["original_tokens"] == row["final_tokens"]
 
     def test_unsupported_file_type_tracked(self, tmp_path: Path) -> None:
-        """A file type outside both the Read allowlist and the QB-005F
-        source-code extension mapping (here: a .json file, which
-        FilterRegistry still routes to the Bash-oriented `generic` filter)
-        is tracked as a passthrough — no document/source-code filter is
+        """A file type outside both the Read allowlist, the QB-005F
+        source-code extension mapping, and the QB-040 structured-data
+        extension mapping (here: a .xml file, which FilterRegistry still
+        routes to the Bash-oriented `generic` filter) is tracked as a
+        passthrough — no document/source-code/structured-data filter is
         genuinely applied to it, matching how dispatcher tracks a Bash
         command that matched no filter at all. (.py was this test's example
-        prior to QB-005F; it is now a genuinely supported source-code
-        extension — see TestReadSourceCodeTracking below.)"""
+        prior to QB-005F, .json prior to QB-040; both are now genuinely
+        supported extensions — see TestReadSourceCodeTracking below and
+        tests/unit/test_read_hook_structured_data.py.)"""
         from quor.adapters.claude_read import _compress_read_output
 
         db_path = tmp_path / "quor.db"
         tracking = TrackingDB(db_path=db_path)
-        hook_input = self._hook_input("data.json", '{"hello": "world"}\n')
+        hook_input = self._hook_input("data.xml", "<hello>world</hello>\n")
 
         result = _compress_read_output(hook_input, tracking)
         assert result is None
@@ -1244,7 +1246,7 @@ class TestReadTracking:
             conn.row_factory = sqlite3.Row
             row = conn.execute("SELECT * FROM invocations LIMIT 1").fetchone()
         assert row is not None
-        assert row["command"] == "Read: data.json"
+        assert row["command"] == "Read: data.xml"
         assert row["filter_name"] is None
         assert row["was_passthrough"] == 1
 

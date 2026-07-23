@@ -1,0 +1,83 @@
+# quor built-in filter: cat (TOML files) — QB-040 structural extraction
+#
+# Collapses long, homogeneous TOML array-of-tables blocks (a `poetry.lock`/
+# `Cargo.lock`/`pdm.lock`-style lockfile's hundreds of `[[package]]` entries)
+# to their first few blocks plus an omitted-count placeholder. See
+# quor/pipeline/structured_data/toml_fmt.py's module docstring for this
+# filter's one deliberate scope limitation: only array-of-tables collapse
+# (the shape every real lockfile uses for its dependency list) — a long
+# inline array (`deps = ["a", "b", ...]`) is never touched, since TOML's
+# stdlib parser (`tomllib`) has no position-tracking API to locate one
+# safely without a hand-rolled full-grammar tokenizer.
+#
+# Must be loaded before the generic `cat.toml` filter so `.toml` files match
+# here first — "cat-toml.toml" sorts before "cat.toml" lexicographically,
+# the same convention cat-python.toml established.
+#
+# TOML genuinely has `#` comments — strip_lines still does real, needed work
+# here, reusing cat.toml's own comment/blank-line patterns and
+# preserve_patterns verbatim. No deduplicate_consecutive, same reasoning as
+# cat-json.toml/cat-yaml.toml: two different keys can legitimately render
+# identical consecutive lines, which is not repetition.
+#
+# structured_data_summarize runs FIRST, before strip_lines: its own header
+# line scan (`[[name]]`) needs the original line numbers intact — a comment
+# stripped first would shift every subsequent line out of alignment.
+#
+# match_command also matches the literal basenames `poetry.lock`/`Cargo.lock`
+# — real TOML-formatted lockfiles that (unlike pnpm-lock.yaml/package-lock.
+# json) do not carry their format in the extension. These are exactly the
+# "hundreds of near-identical dependency entries" files backlog.md's QB-040
+# entry names as the motivating example, so matching `*.toml` alone would
+# miss the two most valuable real-world targets.
+schema_version = 1
+
+[[filter]]
+name = "cat-toml"
+match_command = '^cat\s+(-\S+\s+)*\S*(\.toml|poetry\.lock|Cargo\.lock)\b'
+on_empty = "(empty document)"
+
+[[filter.stages]]
+type = "structured_data_summarize"
+format = "toml"
+
+[[filter.stages]]
+type = "strip_lines"
+patterns = [
+    '^\s*#[^!]',
+]
+preserve_patterns = [
+    'TODO',
+    'FIXME',
+    'HACK',
+    'XXX',
+    'NOTE',
+    'WARN',
+]
+
+[[filter.stages]]
+type = "max_tokens"
+limit = 2000
+strategy = "both"
+
+[[filter.tests]]
+description = "Short TOML document passes through unchanged"
+input = "[project]\nname = \"quor\"\nversion = \"0.4.1\"\n"
+must_contain = ["name = \"quor\"", "version = \"0.4.1\""]
+
+[[filter.tests]]
+description = "Long homogeneous array-of-tables collapsed; first entries preserved"
+input = "[[package]]\nname = \"a\"\nversion = \"1.0\"\n\n[[package]]\nname = \"b\"\nversion = \"1.0\"\n\n[[package]]\nname = \"c\"\nversion = \"1.0\"\n\n[[package]]\nname = \"d\"\nversion = \"1.0\"\n\n[[package]]\nname = \"e\"\nversion = \"1.0\"\n\n[[package]]\nname = \"f\"\nversion = \"1.0\"\n\n[[package]]\nname = \"g\"\nversion = \"1.0\"\n"
+must_contain = ["name = \"a\"", "name = \"b\"", "name = \"c\"", "more [[package]] entries omitted"]
+must_not_contain = ["name = \"d\""]
+
+[[filter.tests]]
+description = "Regular comments stripped; TODO/NOTE preserved"
+input = "# regular comment\n# TODO: revisit this\nname = \"quor\"\n"
+must_contain = ["TODO: revisit this", "name = \"quor\""]
+must_not_contain = ["# regular comment"]
+
+[[filter.tests]]
+description = "Invalid TOML fails open -- original content returned unchanged"
+input = "name = \n"
+must_contain = ["name ="]

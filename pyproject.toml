@@ -58,6 +58,12 @@ dev = [
     "python-docx>=1.1.0,<2.0.0",
     # pdfplumber (QB-007E3), same reasoning, for tests/unit/test_extract_pdf.py.
     "pdfplumber>=0.11.0,<1.0.0",
+    # PyYAML (QB-040) is listed here too, not just in `yaml` below, so
+    # contributors running the full test suite get real YAML position-
+    # tracking fixture coverage (tests/unit/test_structured_data.py's
+    # TestAnalyzeYaml) without a separate `quor[yaml]` install step — same
+    # reasoning as python-docx/pdfplumber above.
+    "PyYAML>=6.0,<7.0",
     # tree-sitter / tree-sitter-javascript (QB-005C) are listed here too, not
     # just in `javascript` below, so contributors running the full test suite
     # get real JS parsing fixture coverage (tests/unit/test_ast_summarize.py's
@@ -140,6 +146,15 @@ documents = [
     # quor/pipeline/extract/pdf.py's extract_pdf() returns None, warns,
     # never raises, if pdfplumber is absent.
     "pdfplumber>=0.11.0,<1.0.0",
+]
+yaml = [
+    # YAML structural summarization position tracking (QB-040, `yaml.
+    # compose()`'s Node.start_mark/end_mark). Core install keeps working
+    # without this extra — quor/pipeline/structured_data/yaml_fmt.py's
+    # analyze_yaml() fails open (returns an empty list, warns, never raises)
+    # if it's absent; see ADR-014's `quor[ml]`-style extras precedent (the
+    # same template `documents`/`javascript` above follow).
+    "PyYAML>=6.0,<7.0",
 ]
 javascript = [
     # JavaScript AND TypeScript AST summarization (QB-005C, QB-005D — one
@@ -293,6 +308,16 @@ ignore_missing_imports = true
 # pdfplumber (QB-007E3, quor[documents]) is optional at runtime — same
 # reasoning as the docx override above.
 module = ["pdfplumber", "pdfplumber.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# PyYAML (QB-040, quor[yaml]) is optional at runtime — same reasoning as the
+# docx/pdfplumber overrides above. `yaml` is imported lazily inside
+# analyze_yaml()/_node_shape()/_walk_node(), never at module top level, but
+# mypy still needs this so `mypy quor/` succeeds whether or not the extra is
+# installed (and independent of whether the `types-PyYAML` stub package —
+# not a quor dependency — happens to be present).
+module = ["yaml", "yaml.*"]
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]

@@ -1,0 +1,46 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: storefront-api
+  namespace: production
+  labels:
+    app: storefront-api
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: storefront-api
+  template:
+    metadata:
+      labels:
+        app: storefront-api
+    spec:
+      containers:
+        - name: storefront-api
+          image: registry.example.com/storefront-api:2.14.1
+          ports:
+            - containerPort: 8080
+          env:
+            - name: LOG_LEVEL
+              value: "info"
+            - name: FEATURE_NEW_CHECKOUT
+              value: "true"
+            - name: PAYMENT_GATEWAY_TIMEOUT_MS
+              value: "5000"
+            - name: MAX_CART_ITEMS
+              value: "200"
+            - name: SESSION_TTL_SECONDS
+              value: "3600"
+            - name: CORS_ALLOWED_ORIGINS
+              value: "https://storefront.example.com"
+            - name: SEARCH_INDEX_REFRESH_SECONDS
+              value: "60"
+            - name: INVENTORY_CACHE_TTL_SECONDS
+              value: "120"
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "256Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"

@@ -1,0 +1,69 @@
+# quor built-in filter: cat (JSON files) — QB-040 structural extraction
+#
+# Collapses long, homogeneous JSON arrays (a lockfile's hundreds of
+# near-identical dependency entries, a generated config's repeated records)
+# to their first few elements plus an omitted-count placeholder — every
+# object key, every genuinely distinct value, and every kept element's
+# original formatting survive byte-for-byte. See
+# quor/pipeline/stages/structured_data_summarize.py's module docstring for
+# why this needs its own stage rather than reusing strip_lines/group_repeated.
+#
+# Must be loaded before the generic `cat.toml` filter so `.json`/`.jsonc`
+# files match here first — "cat-json.toml" sorts before "cat.toml"
+# lexicographically ('-' is 0x2D, '.' is 0x2E), the same convention
+# cat-python.toml's own header comment established.
+#
+# No strip_lines/deduplicate_consecutive stage here, unlike cat-python.toml/
+# cat-javascript.toml: JSON has no comment syntax (a `#`/`//`-prefixed line
+# is virtually never valid JSON, so strip_lines would be a costly no-op), and
+# deduplicate_consecutive is actively unsafe for structured data — two
+# different keys can legitimately render identical consecutive lines (e.g.
+# `"enabled": true,` under two different objects), which are not repetition
+# and must never be collapsed as if they were. max_tokens remains as a
+# best-effort safety net for pathologically deep/wide non-array structure the
+# array-collapse pass alone doesn't reach.
+#
+# Safe-mode only (per QB-040's own scope note in backlog.md): this filter
+# only ever removes whole, verified-homogeneous array elements — it never
+# rewrites, reorders, or reformats a kept value.
+#
+# match_command also matches the literal basenames `Pipfile.lock`/
+# `composer.lock` — real JSON-formatted lockfiles that don't carry their
+# format in the extension, the same "match the well-known basename too"
+# reasoning cat-toml.toml applies for `poetry.lock`/`Cargo.lock`.
+schema_version = 1
+
+[[filter]]
+name = "cat-json"
+match_command = '^cat\s+(-\S+\s+)*\S*(\.jsonc?|Pipfile\.lock|composer\.lock)\b'
+on_empty = "(empty document)"
+
+[[filter.stages]]
+type = "structured_data_summarize"
+format = "json"
+
+[[filter.stages]]
+type = "max_tokens"
+limit = 2000
+strategy = "both"
+
+[[filter.tests]]
+description = "Short JSON document passes through unchanged"
+input = "{\n  \"name\": \"quor\",\n  \"version\": \"0.4.1\"\n}"
+must_contain = ["\"name\": \"quor\"", "\"version\": \"0.4.1\""]
+
+[[filter.tests]]
+description = "Long homogeneous array collapsed; keys and first entries preserved"
+input = "{\n  \"dependencies\": [\n    {\"name\": \"a\", \"version\": \"1.0.0\"},\n    {\"name\": \"b\", \"version\": \"1.0.1\"},\n    {\"name\": \"c\", \"version\": \"1.0.2\"},\n    {\"name\": \"d\", \"version\": \"1.0.3\"},\n    {\"name\": \"e\", \"version\": \"1.0.4\"},\n    {\"name\": \"f\", \"version\": \"1.0.5\"},\n    {\"name\": \"g\", \"version\": \"1.0.6\"}\n  ]\n}"
+must_contain = ["\"name\": \"a\"", "\"name\": \"b\"", "\"name\": \"c\"", "more items omitted"]
+must_not_contain = ["\"name\": \"d\""]
+
+[[filter.tests]]
+description = "Heterogeneous array never collapsed -- every distinct value survives"
+input = "{\n  \"mixed\": [\"a\", 1, true, null, {\"x\": 1}, [1, 2], \"g\"]\n}"
+must_contain = ["\"a\"", "true", "null"]
+
+[[filter.tests]]
+description = "Invalid JSON fails open -- original content returned unchanged"
+input = "{\"broken\": "
+must_contain = ["{\"broken\": "]

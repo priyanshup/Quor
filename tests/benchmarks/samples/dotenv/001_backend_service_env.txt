@@ -1,0 +1,26 @@
+# Backend service environment configuration
+# Generated from .env.example -- do not commit real secrets
+
+# --- Database ---
+DATABASE_URL=postgres://storefront:changeme@localhost:5432/storefront_dev
+DATABASE_POOL_SIZE=10
+
+# --- Cache ---
+REDIS_URL=redis://localhost:6379/0
+
+# --- Auth ---
+JWT_SECRET=dev-only-not-a-real-secret-abc123
+JWT_EXPIRY_SECONDS=3600
+
+# --- Third-party APIs ---
+STRIPE_API_KEY=sk_test_51ABCDEFghijklmnop
+SENDGRID_API_KEY=SG.abcdefghijklmnopqrstuvwx
+
+# --- Feature flags ---
+FEATURE_NEW_CHECKOUT=true
+FEATURE_LOYALTY_PROGRAM=false
+
+# General settings
+PORT=8080
+LOG_LEVEL=info
+NODE_ENV=development

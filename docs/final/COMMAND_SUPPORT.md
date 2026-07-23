@@ -155,7 +155,12 @@ for the exact patterns.
 | `cat <file>.(js\|jsx\|mjs\|cjs) [-n\|--number\|-b\|--number-nonblank]` | `cat-javascript` ([cat-javascript.toml](../../quor/filters/builtin/cat-javascript.toml)) | Compresses function/method/arrow-function **bodies** to signature (+ leading JSDoc, when present) via `tree-sitter`/`tree-sitter-javascript` parsing (QB-005C, optional `quor[javascript]` extra — fails open, returns the file unmodified, if the extra isn't installed); also applies the same comment-stripping/dedup/cap stack as `cat`/`cat-python` above, via the shared `code_ast_summarize` stage (QB-005B), not a JS-specific stage class | Never touches imports, exports, module-level constants, class/function/method signatures, `extends` clauses, decorators, or JSDoc; a function whose own span overlaps a tree-sitter `ERROR`/`MISSING` node is excluded from compression entirely, even if the rest of the file parses cleanly; on a file tree-sitter cannot parse at all, fails open and returns the file completely unmodified | A 200-line file with 10 short functions and a JSDoc-commented one — bodies collapse to signatures, imports/JSDoc untouched; a file with one malformed function still compresses every other function normally | `tree-sitter`/`tree-sitter-javascript` only — no type inference, no cross-file analysis, no CommonJS (`module.exports = ...`) recognition, no recognition of a function declared inside a conditional block (`if`/`try`), no recognition of a class *expression* (`const X = class {...}`, only the `class X {...}` declaration form); comments inside a compressed function body are also removed, same reasoning as `cat-python` above. **Known, inherited limitation:** the shared `strip_lines` comment pattern (`^\s*#[^!]`) can misfire on a private class field declaration (`#counter = 0;`), which also starts with `#` but is not a comment — this exact pattern already ships unchanged in `cat.toml`/`cat-python.toml` today, so this is a pre-existing risk being reused for consistency, not a new one |
 | `cat <file>.ts [-n\|--number\|-b\|--number-nonblank]` | `cat-typescript` ([cat-typescript.toml](../../quor/filters/builtin/cat-typescript.toml)) | Compresses function/method/arrow-function **bodies** to signature (+ JSDoc, when present) via `tree-sitter`/`tree-sitter-typescript`'s `language_typescript()` grammar (QB-005D, same `quor[javascript]` extra as `cat-javascript`); `interface`/`type` alias/`enum`/`namespace` declarations, overload signatures, and abstract methods are all preserved whole by construction (never entered into the compress-candidate set — see `typescript.py`'s own module docstring); same comment-stripping/dedup/cap stack as `cat-python`/`cat-javascript`, via the shared `code_ast_summarize` stage | Never touches imports, exports, module-level constants, class/interface/function/method signatures, `extends`/`implements` clauses, decorators, `interface`/`type`/`enum` bodies, or JSDoc; ERROR-node-overlap exclusion identical to `cat-javascript`; a namespace's contents are never recursed into (deliberate, documented scope limitation — a function declared inside one is preserved whole, not compressed) | A file with an interface, an overload triple, an abstract class, and a decorated component — interface/overload-signatures/abstract-signature survive untouched, only real method bodies collapse | Same `tree-sitter`-only limitations as `cat-javascript` (no CommonJS, no conditionally-declared functions, no class expressions), plus: no recursion into namespace bodies; generic type parameters (`<T>`) are part of the preserved signature text, never separately analyzed |
 | `cat <file>.tsx [-n\|--number\|-b\|--number-nonblank]` | `cat-tsx` ([cat-typescript.toml](../../quor/filters/builtin/cat-typescript.toml)) | Identical to `cat-typescript` above but via `tree-sitter-typescript`'s `language_tsx()` grammar (JSX support) | Same as `cat-typescript`, plus: JSX element content inside a compressed body is removed with it, same as any other body content | A React-style component with typed props returning JSX — signature preserved, JSX-returning body compressed | Grammar selection is strictly by file extension (`.tsx` here, `.ts` for `cat-typescript`), never inferred from content — empirically confirmed during QB-005D that JSX genuinely fails to parse under the plain `.ts` grammar, and an angle-bracket type assertion (`<T>x`) is genuinely ambiguous with JSX, which is exactly why two separate grammars/filter blocks exist rather than one |
-| `cat <file>` (anything not matched by `cat-python`/`cat-javascript`/`cat-typescript`/`cat-tsx` above) | `cat` ([cat.toml](../../quor/filters/builtin/cat.toml)) | Strips `#`/`//`/`--`/`;`-style comment lines; caps to 800 tokens (`both`) | Never strips shebangs, or lines containing `TODO`/`FIXME`/`HACK`/`XXX`/`NOTE`/`WARN` | A config file with inline comments — comments removed, actual settings kept | Comment-pattern matching is generic across languages; a comment style not covered by `#`/`//`/`--`/`;` (e.g. `/* */` block comments) is not stripped |
+| `cat <file>.json`/`.jsonc`, `cat poetry.lock`\* | `cat-json` ([cat-json.toml](../../quor/filters/builtin/cat-json.toml)) | Collapses a homogeneous JSON array longer than 6 elements (same shape / object key set) to its first 3 elements + `... N more items omitted (M total) ...`, at any nesting depth (QB-040); `max_tokens` safety net (2000, `both`) | Never touches a dict key, a heterogeneous array, or an array whose elements share a line (can't safely collapse without splitting a line ContentMask can't partially edit); no strip_lines (JSON has no comment syntax) | `composer.lock`'s 12-entry `packages` array — first 3 packages kept in full, rest replaced by one placeholder line | Only collapses *arrays*; a long *object* (e.g. `package.json`'s `dependencies` map) always keeps every key, by design (QB-040 never drops a key) — no compression there. \*`Pipfile.lock`/`composer.lock` also route here by basename (JSON-formatted lockfiles without a `.json` extension) |
+| `cat <file>.yaml`/`.yml` | `cat-yaml` ([cat-yaml.toml](../../quor/filters/builtin/cat-yaml.toml)) | Same array-collapsing as `cat-json` (QB-040), driven by `yaml.compose()`'s real node positions (optional `quor[yaml]` extra); strips `#` comments (preserving `TODO`/`FIXME`/`NOTE`/etc., same patterns as `cat`); `max_tokens` safety net | Never touches a mapping key, a heterogeneous sequence, or a sequence sharing a line; without `quor[yaml]` installed, array-collapsing fails open (comment-stripping still runs) | A Kubernetes Deployment's 8-entry `env:` list — first 3 vars kept, rest collapsed to one placeholder | Collapsing runs *before* comment-stripping (comment removal first would shift line numbers the parser's marks depend on) |
+| `cat <file>.toml`, `cat poetry.lock`/`Cargo.lock`\* | `cat-toml` ([cat-toml.toml](../../quor/filters/builtin/cat-toml.toml)) | Collapses a run of >6 consecutive, same-name, same-shape `[[name]]` array-of-tables blocks (QB-040) — the shape every real lockfile's dependency list uses; strips `#` comments; `max_tokens` safety net | Never touches a `[table]`, a heterogeneous `[[name]]` run, or an inline array (`deps = [...]`) — TOML has no stdlib position-tracking API, so this is deliberately scoped to array-of-tables only, not full-grammar-aware | `poetry.lock`'s 11 `[[package]]` blocks — first 3 kept whole, rest collapsed to one `... 8 more [[package]] entries omitted (11 total) ...` line | \*`poetry.lock`/`Cargo.lock` route here by basename (TOML-formatted lockfiles without a `.toml` extension); a header run interrupted by any other table (e.g. per-entry `[package.x]` sub-headers some formats use) is not collapsed — strictly consecutive same-name headers only |
+| `cat <file>.env`, `cat <file>.env.<suffix>` | `dotenv` ([cat-dotenv.toml](../../quor/filters/builtin/cat-dotenv.toml)) | Strips comment (`#...`) and blank lines only (QB-040) | Never touches a `KEY=VALUE` line — no inspection or modification of any value, ever, by construction (composes correctly with the PA-F07 secret scanner without needing to coordinate with it) | A `.env` with section-divider comments — comments and blank lines removed, every variable survives untouched | No `max_tokens` — a variable is never dropped for being "beyond budget"; every declared key must survive |
+| `cat <file>.ini` | `ini` ([cat-ini.toml](../../quor/filters/builtin/cat-ini.toml)) | Strips `;`/`#` comment and blank lines only (QB-040) | Never touches a `key = value` line or a `[section]` header | A config with `;`-prefixed comments — comments removed, sections/keys/values untouched | Same "no max_tokens" reasoning as `dotenv` above |
+| `cat <file>` (anything not matched by `cat-python`/`cat-javascript`/`cat-typescript`/`cat-tsx`/`cat-json`/`cat-yaml`/`cat-toml`/`dotenv`/`ini` above) | `cat` ([cat.toml](../../quor/filters/builtin/cat.toml)) | Strips `#`/`//`/`--`/`;`-style comment lines; caps to 800 tokens (`both`) | Never strips shebangs, or lines containing `TODO`/`FIXME`/`HACK`/`XXX`/`NOTE`/`WARN` | A config file with inline comments — comments removed, actual settings kept | Comment-pattern matching is generic across languages; a comment style not covered by `#`/`//`/`--`/`;` (e.g. `/* */` block comments) is not stripped |
 | Anything else that passed the rewrite check (§1) | `generic` ([z_generic.toml](../../quor/filters/builtin/z_generic.toml)) | Strips ANSI escapes; strips framework-internal traceback frames (same `site-packages`/`dist-packages` pattern as `pytest` above — covers a raw script or dev server crashing outside pytest, e.g. `flask run`); dedupes consecutive lines; caps to 1000 tokens (`tail`) | `Traceback`/`Error`/`Exception` lines are protected; otherwise no command-specific pattern knowledge — nothing else is specially protected beyond what survives dedup/ANSI-strip/budget | A `flask run` crash with an unhandled exception through several Django/Flask internals — the framework `File` lines are removed, the user's own frame and exception survive | This is the widest net and the least intelligent filter — a command that would benefit from a dedicated filter (e.g. `terraform plan`, `tsc`, `docker build`) still only gets generic treatment until someone writes one; see §5 |
 
 **Not currently supported at all** (not in `_KNOWN_BASE_COMMANDS`, so never rewritten, regardless
@@ -264,6 +269,16 @@ and the new `bun` filter (successful install with warnings, lifecycle script fai
 bar for a brand-new filter). Measured compression ranges from 2.0% on the small, dense
 `bun-lifecycle-script-failure` sample up to 18.9% (`pnpm-workspace-failure`) and 22.2%
 (`bun-successful-install-with-warnings`).
+
+QB-040 added 10 cases across 5 new categories (`cat-json`, `cat-yaml`, `cat-toml`, `dotenv`, `ini`
+— 2 each, giving every new filter its ≥2-cases bar), using realistic samples (a `composer.lock`-
+style dependency array, a paginated API event log, a Kubernetes Deployment's `env:` list, a CI
+workflow's `steps:` list, `poetry.lock`- and `Cargo.lock`-style array-of-tables, backend-service and
+minimal `.env` files, and commented/minimal `.ini` configs). Measured compression ranges from 0.0%
+on the two deliberately-minimal no-comment/no-repetition samples (`dotenv-local-dev-env-minimal`,
+`ini-php-ini-minimal` — correctness-only cases, proving nothing is dropped when there's nothing to
+compress) up to 67.3% (`cat-json-api-response-event-log`, a 12-entry homogeneous array collapsing to
+3 kept entries + one placeholder).
 
 ---
 
@@ -453,18 +468,64 @@ file paths.
 
 ---
 
+## 11. Read/file-path routing — Config & structured-data files (QB-040)
+
+Two different routing shapes, matching the two different `match_command` shapes §4's new rows use:
+
+**JSON/YAML/TOML — by-name lookup, same reason as §10.** `cat-json.toml`/`cat-yaml.toml`/
+`cat-toml.toml`'s `match_command` patterns are `^cat\s+...`-shaped (a real command string), which a
+bare Read `file_path` can never match. Looked up by extension
+(`_STRUCTURED_DATA_FILTER_NAMES_BY_EXTENSION`) or, for the four lockfile basenames that don't carry
+their format in the extension, by exact basename (`_STRUCTURED_DATA_FILTER_NAMES_BY_BASENAME`) —
+both in `quor/adapters/claude_read.py`, checked alongside `_SOURCE_CODE_FILTER_NAMES_BY_EXTENSION`
+in the same lookup, dispatched through the same `_compress_via_named_filter()` helper §10 already
+uses (no new adapter branch function).
+
+| Extension / basename | Filter (by name) | Stage doing the compression |
+|---|---|---|
+| `.json`, `.jsonc` | `cat-json` | `structured_data_summarize` (`format = "json"`) |
+| `.yaml`, `.yml` | `cat-yaml` | `structured_data_summarize` (`format = "yaml"`) |
+| `.toml` | `cat-toml` | `structured_data_summarize` (`format = "toml"`) |
+| `poetry.lock`, `Cargo.lock` (basename) | `cat-toml` | `structured_data_summarize` (`format = "toml"`) |
+| `Pipfile.lock`, `composer.lock` (basename) | `cat-json` | `structured_data_summarize` (`format = "json"`) |
+
+**`.env`/`.ini` — bare-path `FilterRegistry.find()` match, same shape as §8's Markdown/plain-text
+routing.** `cat-dotenv.toml`/`cat-ini.toml`'s `match_command` includes a bare-path alternative
+(`^\S*\.env(\.[\w.-]+)?$` / `^\S*\.ini$`), so a Read `file_path` matches directly — no by-name
+lookup needed, just a `_READ_SUPPORTED_FILTER_NAMES` allowlist entry (the same allowlist
+`markdown`/`document-text` use, guarding against the generic `cat.toml` fallback's `match_command =
+'.'` catching every unsupported extension otherwise).
+
+**Fail-open paths:** an unsupported extension never reaches either mapping and passes through
+unchanged, same as §10; malformed JSON/YAML/TOML lets the analyzer's parse exception propagate to
+`Pipeline.execute()`'s per-stage fail-open (compression stage skipped, `strip_lines`/`max_tokens`
+still run on the original content where configured); a missing `quor[yaml]` install falls open for
+YAML exactly like a missing `quor[javascript]` install does for `cat-javascript`/`cat-typescript`.
+
+**Benchmark coverage:** 10 new `[[case]]` entries across all 5 filters (2 each, per §7's minimum) —
+`cat-json-*`, `cat-yaml-*`, `cat-toml-*`, `dotenv-*`, `ini-*` in `tests/benchmarks/manifest.toml`,
+using `command = "cat <file>"` (matched via `FilterRegistry.find()` directly, not the `.docx`/`.pdf`
+by-name special case §7 documents) since every one of these filters' `match_command` already
+matches a real Bash command string.
+
+---
+
 ## Cross-references
 
 - `quor/rewrite/rules.py` — command-detection ground truth.
 - `quor/filters/registry.py` — precedence/lookup implementation (`FilterRegistry.find()`).
 - `quor/filters/builtin/*.toml` — filter behavior ground truth.
-- `quor/adapters/claude_read.py` — Read-hook routing ground truth for §8/§9/§10, including
-  `_SOURCE_CODE_FILTER_NAMES_BY_EXTENSION` (§10) and `_compress_via_named_filter()` (the by-name
-  lookup/apply/track tail shared by §9 and §10).
+- `quor/adapters/claude_read.py` — Read-hook routing ground truth for §8/§9/§10/§11, including
+  `_SOURCE_CODE_FILTER_NAMES_BY_EXTENSION` (§10), `_STRUCTURED_DATA_FILTER_NAMES_BY_EXTENSION`/
+  `_STRUCTURED_DATA_FILTER_NAMES_BY_BASENAME` (§11), and `_compress_via_named_filter()` (the
+  by-name lookup/apply/track tail shared by §9, §10, and §11).
 - `quor/pipeline/ast_summarize/registry.py` — language → analyzer routing (§10).
 - `quor/pipeline/extract/registry.py` — document extraction routing/fail-open contract (§9).
 - `quor/pipeline/extract/docx.py` — DOCX-to-Markdown conversion algorithm (§9).
 - `quor/pipeline/extract/pdf.py` — PDF-to-Markdown conversion algorithm (§9).
+- `quor/pipeline/structured_data/registry.py` — format → analyzer routing (§11).
+- `quor/pipeline/stages/structured_data_summarize.py` — the `StageHandler` §11's filters use;
+  its own module docstring has the full architectural rationale for QB-040.
 - `CONTRIBUTING.md` — "Writing New Filters" for the full authoring workflow and PR checklist.
 - `docs/final/CLAUDE.md` — "The ContentMask Pipeline" for stage semantics, "Filter Configuration
   Format" for the TOML schema.

@@ -1,0 +1,51 @@
+# quor built-in filter: .ini files — QB-040
+#
+# Same rationale, scope, and "cat-ini.toml" load-order naming as
+# cat-dotenv.toml (see its header comment in full): strips comment lines and
+# blank lines only, never touches a `key = value` line or a `[section]`
+# header. INI comments may start with either `;` or `#` depending on the
+# parser/convention in use — both are stripped, neither is assumed
+# exclusively. No max_tokens: every key and section header must survive
+# regardless of file size, exactly like cat-dotenv.toml's own reasoning.
+schema_version = 1
+
+[[filter]]
+name = "ini"
+match_command = '(?i)(^\S*\.ini$)|(^(cat|type)\s+(-\S+\s+)*\S*\.ini\b)'
+on_empty = "(empty file)"
+
+[[filter.stages]]
+type = "strip_lines"
+patterns = [
+    '^\s*[;#]',
+    '^\s*$',
+]
+preserve_patterns = [
+    'TODO',
+    'FIXME',
+    'HACK',
+    'XXX',
+    'NOTE',
+    'WARN',
+]
+
+[[filter.tests]]
+description = "Comment and blank lines stripped; keys, values, and section headers untouched"
+input = "; Database settings\n\n[database]\nhost = localhost\nport = 5432\n\n# Cache settings\n[cache]\nttl = 300\n"
+must_contain = ["[database]", "host = localhost", "port = 5432", "[cache]", "ttl = 300"]
+must_not_contain = ["; Database settings", "# Cache settings"]
+
+[[filter.tests]]
+description = "TODO/FIXME comments preserved despite comment pattern"
+input = "; TODO: split this into per-environment files\n[app]\nname = quor\n"
+must_contain = ["TODO: split this into per-environment files", "name = quor"]
+
+[[filter.tests]]
+description = "A value containing ';' or '#' is never touched -- only full comment lines are matched"
+input = "[app]\nmotd = welcome ; enjoy your stay\ntag = release#42\n"
+must_contain = ["welcome ; enjoy your stay", "release#42"]
+
+[[filter.tests]]
+description = "Short file with no comments passes through unchanged"
+input = "[app]\nname = quor\n"
+must_contain = ["[app]", "name = quor"]
