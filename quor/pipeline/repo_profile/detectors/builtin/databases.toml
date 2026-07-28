@@ -1,0 +1,88 @@
+schema_version = 1
+
+# Database detection: dependency-name mentions in manifest files, or a
+# service image name in a docker-compose file — both bounded, deterministic
+# signals. Never inferred from source-code content.
+
+[[detector]]
+name = "postgresql"
+category = "database"
+match_basename = ["requirements.txt", "pyproject.toml", "Pipfile", "package.json", "go.mod"]
+match_content = ['(?i)psycopg2', '(?i)asyncpg', '(?i)"pg"\s*:', '(?i)lib/pq']
+evidence = "PostgreSQL client dependency declared"
+
+[[detector]]
+name = "postgresql"
+category = "database"
+match_basename = ["docker-compose.yml", "docker-compose.yaml", "compose.yml", "compose.yaml"]
+match_content = ['(?i)image:\s*["\x27]?postgres']
+evidence = "postgres service image in docker-compose"
+
+[[detector]]
+name = "mysql"
+category = "database"
+match_basename = ["requirements.txt", "pyproject.toml", "Pipfile", "package.json"]
+match_content = ['(?i)pymysql', '(?i)mysqlclient', '(?i)"mysql2?"\s*:']
+evidence = "MySQL client dependency declared"
+
+[[detector]]
+name = "mysql"
+category = "database"
+match_basename = ["docker-compose.yml", "docker-compose.yaml", "compose.yml", "compose.yaml"]
+match_content = ['(?i)image:\s*["\x27]?mysql']
+evidence = "mysql service image in docker-compose"
+
+[[detector]]
+name = "mongodb"
+category = "database"
+match_basename = ["requirements.txt", "pyproject.toml", "Pipfile", "package.json"]
+match_content = ['(?i)pymongo', '(?i)"mongoose"\s*:', '(?i)"mongodb"\s*:']
+evidence = "MongoDB client dependency declared"
+
+[[detector]]
+name = "mongodb"
+category = "database"
+match_basename = ["docker-compose.yml", "docker-compose.yaml", "compose.yml", "compose.yaml"]
+match_content = ['(?i)image:\s*["\x27]?mongo']
+evidence = "mongo service image in docker-compose"
+
+[[detector]]
+name = "redis"
+category = "database"
+match_basename = ["requirements.txt", "pyproject.toml", "Pipfile", "package.json"]
+match_content = ['(?mi)^\s*redis\b', '(?i)"redis"\s*:']
+evidence = "Redis client dependency declared"
+
+[[detector]]
+name = "redis"
+category = "database"
+match_basename = ["docker-compose.yml", "docker-compose.yaml", "compose.yml", "compose.yaml"]
+match_content = ['(?i)image:\s*["\x27]?redis']
+evidence = "redis service image in docker-compose"
+
+[[detector]]
+name = "elasticsearch"
+category = "database"
+match_basename = ["requirements.txt", "pyproject.toml", "Pipfile", "package.json"]
+match_content = ['(?i)elasticsearch']
+evidence = "Elasticsearch client dependency declared"
+
+[[detector]]
+name = "sqlalchemy"
+category = "database"
+match_basename = ["requirements.txt", "pyproject.toml", "Pipfile"]
+match_content = ['(?mi)^\s*sqlalchemy\b', '(?i)"sqlalchemy\b']
+evidence = "SQLAlchemy ORM dependency declared (SQL database, engine unspecified)"
+
+[[detector]]
+name = "prisma"
+category = "database"
+match_basename = ["package.json"]
+match_content = ['"prisma"\s*:', '"@prisma/client"\s*:']
+evidence = "Prisma ORM dependency declared in package.json"
+
+[[detector]]
+name = "prisma"
+category = "database"
+match_basename = ["schema.prisma"]
+evidence = "schema.prisma present"

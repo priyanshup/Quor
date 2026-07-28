@@ -1,0 +1,71 @@
+schema_version = 1
+
+# Configuration-file detection: presence-only (no content inspection needed
+# — the file existing under a well-known name is itself the whole signal).
+
+[[detector]]
+name = "editorconfig"
+category = "configuration"
+match_basename = [".editorconfig"]
+evidence = ".editorconfig present"
+
+[[detector]]
+name = "eslint"
+category = "configuration"
+match_basename = [
+  ".eslintrc",
+  ".eslintrc.json",
+  ".eslintrc.js",
+  ".eslintrc.cjs",
+  ".eslintrc.yml",
+  "eslint.config.js",
+]
+evidence = "ESLint config present"
+
+[[detector]]
+name = "prettier"
+category = "configuration"
+match_basename = [".prettierrc", ".prettierrc.json", ".prettierrc.js", "prettier.config.js"]
+evidence = "Prettier config present"
+
+[[detector]]
+name = "typescript"
+category = "configuration"
+match_basename = ["tsconfig.json"]
+evidence = "tsconfig.json present"
+
+[[detector]]
+name = "mypy"
+category = "configuration"
+match_basename = ["mypy.ini"]
+evidence = "mypy.ini present"
+
+[[detector]]
+name = "ruff"
+category = "configuration"
+match_basename = ["ruff.toml", ".ruff.toml"]
+evidence = "ruff.toml present"
+
+[[detector]]
+name = "flake8"
+category = "configuration"
+match_basename = [".flake8"]
+evidence = ".flake8 present"
+
+[[detector]]
+name = "pre-commit"
+category = "configuration"
+match_basename = [".pre-commit-config.yaml"]
+evidence = ".pre-commit-config.yaml present"
+
+[[detector]]
+name = "env-example"
+category = "configuration"
+match_basename = [".env.example", ".env.sample", "env.example"]
+evidence = "environment-variable example file present"
+
+[[detector]]
+name = "dependabot"
+category = "configuration"
+match_path_regex = ['^\.github/dependabot\.ya?ml$']
+evidence = ".github/dependabot.yml present"

@@ -25,7 +25,12 @@ from quor.analytics.filter_history import (
     load_history,
 )
 from quor.analytics.filter_report import render_filter_analytics_report
-from quor.tracking.db import PASSTHROUGH_LABEL, FilterAnalyticsReport, FilterUsage
+from quor.tracking.db import (
+    PASSTHROUGH_LABEL,
+    REPO_PROFILE_FILTER_LABEL,
+    FilterAnalyticsReport,
+    FilterUsage,
+)
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -125,6 +130,15 @@ class TestFlagLowPerformers:
 
     def test_passthrough_bucket_is_excluded(self) -> None:
         filters = (_usage(PASSTHROUGH_LABEL, compression_pct=0.0),)
+        assert flag_low_performers(filters) == []
+
+    def test_repo_profile_label_is_excluded(self) -> None:
+        """QB-061: `quor map`'s synthetic tracking label always reads 0.0%
+        by design (it's synthesis, not compression — see
+        `quor/tracking/db.py::REPO_PROFILE_FILTER_LABEL`'s own docstring),
+        so it must not be flagged alongside a real compression regression
+        like mypy/ruff."""
+        filters = (_usage(REPO_PROFILE_FILTER_LABEL, compression_pct=0.0),)
         assert flag_low_performers(filters) == []
 
     def test_threshold_is_configurable(self) -> None:

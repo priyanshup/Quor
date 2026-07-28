@@ -117,6 +117,7 @@ Quor is built to be safe on machines where nothing else is.
 | `quor gain` | Show cumulative token savings |
 | `quor doctor` | Health check |
 | `quor validate [file]` | Validate a filter config |
+| `quor map` | Deterministic repository profile (languages, frameworks, build system, entry points, ...) — `--json` for machine-readable output |
 
 ## Contributing
 

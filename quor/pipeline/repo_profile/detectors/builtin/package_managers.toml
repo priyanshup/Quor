@@ -1,0 +1,86 @@
+schema_version = 1
+
+# Package-manager detection: primarily lockfile-based (a lockfile is
+# unambiguous proof of which tool actually resolved dependencies), with a
+# manifest-only fallback for ecosystems that don't always commit one.
+# A repo can legitimately show more than one (e.g. a requirements.txt for
+# tooling alongside a poetry.lock for the real project) — not deduplicated
+# away, since that's a real, accurate signal, not a false positive.
+
+[[detector]]
+name = "npm"
+category = "package_manager"
+match_basename = ["package-lock.json"]
+evidence = "package-lock.json present"
+
+[[detector]]
+name = "yarn"
+category = "package_manager"
+match_basename = ["yarn.lock"]
+evidence = "yarn.lock present"
+
+[[detector]]
+name = "pnpm"
+category = "package_manager"
+match_basename = ["pnpm-lock.yaml"]
+evidence = "pnpm-lock.yaml present"
+
+[[detector]]
+name = "bun"
+category = "package_manager"
+match_basename = ["bun.lockb", "bun.lock"]
+evidence = "bun lockfile present"
+
+[[detector]]
+name = "poetry"
+category = "package_manager"
+match_basename = ["poetry.lock"]
+evidence = "poetry.lock present"
+
+[[detector]]
+name = "pipenv"
+category = "package_manager"
+match_basename = ["Pipfile.lock"]
+evidence = "Pipfile.lock present"
+
+[[detector]]
+name = "uv"
+category = "package_manager"
+match_basename = ["uv.lock"]
+evidence = "uv.lock present"
+
+[[detector]]
+name = "pip"
+category = "package_manager"
+match_basename = ["requirements.txt"]
+evidence = "requirements.txt present"
+
+[[detector]]
+name = "cargo"
+category = "package_manager"
+match_basename = ["Cargo.lock"]
+evidence = "Cargo.lock present"
+
+[[detector]]
+name = "go-modules"
+category = "package_manager"
+match_basename = ["go.sum"]
+evidence = "go.sum present"
+
+[[detector]]
+name = "composer"
+category = "package_manager"
+match_basename = ["composer.lock"]
+evidence = "composer.lock present"
+
+[[detector]]
+name = "bundler"
+category = "package_manager"
+match_basename = ["Gemfile.lock"]
+evidence = "Gemfile.lock present"
+
+[[detector]]
+name = "nuget"
+category = "package_manager"
+match_basename = ["packages.lock.json"]
+evidence = "packages.lock.json present"

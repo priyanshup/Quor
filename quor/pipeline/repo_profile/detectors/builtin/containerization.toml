@@ -1,0 +1,32 @@
+schema_version = 1
+
+[[detector]]
+name = "docker"
+category = "containerization"
+match_path_regex = ['(^|/)Dockerfile([.\-][A-Za-z0-9_.\-]+)?$']
+evidence = "Dockerfile present"
+
+[[detector]]
+name = "docker-compose"
+category = "containerization"
+match_basename = ["docker-compose.yml", "docker-compose.yaml", "compose.yml", "compose.yaml"]
+evidence = "docker-compose file present"
+
+[[detector]]
+name = "kubernetes"
+category = "containerization"
+match_path_regex = ['(^|/)(k8s|kubernetes|deploy)/.*\.ya?ml$']
+evidence = "manifest under a k8s/kubernetes/deploy directory"
+
+[[detector]]
+name = "helm"
+category = "containerization"
+match_basename = ["Chart.yaml"]
+evidence = "Helm Chart.yaml present"
+
+[[detector]]
+name = "devcontainer"
+category = "containerization"
+match_path_regex = ['(^|/)\.devcontainer/devcontainer\.json$']
+match_basename = [".devcontainer.json"]
+evidence = "devcontainer.json present"

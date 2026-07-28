@@ -94,6 +94,17 @@
 - `quor doctor` warns if AUDIT mode for >7 days
 - Onboarding mode: first 5 filtered commands print brief stats to stderr
 
+**Repository Context Profile (QB-061):** `quor map` — a new, deterministic capability parallel
+to the ContentMask compression pipeline (not a filter), giving an AI coding assistant a one-shot
+orientation snapshot of an unfamiliar repo (languages, frameworks, build system, package manager,
+entry points, services/modules, CI system, containerization, databases, configuration files,
+lockfiles, repository statistics) instead of the multi-call discovery sequence
+(`ls`/`find`/several `cat`s/`grep`) it would otherwise run. `--json` is a secondary, optional
+output mode; Markdown is the default. Every fact is evidence-cited to a specific file/pattern —
+see `docs/design/QB-061-repo-context-profile.md` for the full design and
+`docs/final/DECISIONS.md` for the ADR. A second exempted utility command alongside `schema` (see
+CLAUDE.md's "Six CLI Commands").
+
 **Plugin ecosystem start:**
 - `quor-docker`: Docker build and run output filtering (separate package)
 - Filter contribution process in CONTRIBUTING.md

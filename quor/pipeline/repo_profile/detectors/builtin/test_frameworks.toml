@@ -1,0 +1,73 @@
+schema_version = 1
+
+[[detector]]
+name = "pytest"
+category = "test_framework"
+match_basename = ["pytest.ini"]
+evidence = "pytest.ini present"
+
+[[detector]]
+name = "pytest"
+category = "test_framework"
+match_basename = ["pyproject.toml", "setup.cfg", "tox.ini"]
+match_content = ['(?m)^\[tool\.pytest\.ini_options\]', '(?m)^\[pytest\]', '(?m)^\[tool:pytest\]']
+evidence = "pytest configuration section present"
+
+[[detector]]
+name = "jest"
+category = "test_framework"
+match_basename = [
+  "package.json",
+  "jest.config.js",
+  "jest.config.ts",
+  "jest.config.cjs",
+  "jest.config.mjs",
+]
+match_content = ['"jest"\s*:']
+evidence = "jest config or dependency present"
+
+[[detector]]
+name = "mocha"
+category = "test_framework"
+match_basename = ["package.json", ".mocharc.json", ".mocharc.yml", ".mocharc.js"]
+match_content = ['"mocha"\s*:']
+evidence = "mocha config or dependency present"
+
+[[detector]]
+name = "vitest"
+category = "test_framework"
+match_basename = ["package.json", "vitest.config.js", "vitest.config.ts"]
+match_content = ['"vitest"\s*:']
+evidence = "vitest config or dependency present"
+
+[[detector]]
+name = "go-test"
+category = "test_framework"
+match_path_regex = ['_test\.go$']
+evidence = "*_test.go files present (go test)"
+
+[[detector]]
+name = "cargo-test"
+category = "test_framework"
+match_basename = ["Cargo.toml"]
+evidence = "Cargo.toml present (cargo test is Rust's built-in test runner)"
+
+[[detector]]
+name = "junit"
+category = "test_framework"
+match_basename = ["pom.xml", "build.gradle", "build.gradle.kts"]
+match_content = ['junit']
+evidence = "junit dependency declared"
+
+[[detector]]
+name = "rspec"
+category = "test_framework"
+match_basename = ["Gemfile"]
+match_content = ['(?m)^\s*gem\s+["\x27]rspec["\x27]']
+evidence = "rspec gem declared in Gemfile"
+
+[[detector]]
+name = "rspec"
+category = "test_framework"
+match_basename = [".rspec"]
+evidence = ".rspec config present"

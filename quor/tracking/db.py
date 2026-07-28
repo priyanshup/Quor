@@ -648,6 +648,18 @@ def query_gain(
 # real filter's `usage_pct`.
 PASSTHROUGH_LABEL = "(no filter matched)"
 
+# QB-061: the synthetic `filter_name` `quor map` tracks its invocations
+# under (see `quor/cli/commands/map.py::_track_map_invocation`). Like
+# `PASSTHROUGH_LABEL`, this is not a real ContentMask filter — `quor map`
+# is synthesis, not compression, so its `original_tokens`/`final_tokens`
+# are deliberately recorded equal (net-zero contribution, by design, not a
+# defect). Analytics that flag "near-zero/negative compression" as a
+# problem (`quor.analytics.filter_divergence.flag_low_performers`) must
+# exclude this label the same way they already exclude PASSTHROUGH_LABEL —
+# otherwise a real compression regression (mypy, ruff) would be reported
+# side-by-side with an expected, by-design zero, diluting the signal.
+REPO_PROFILE_FILTER_LABEL = "repo-profile"
+
 
 @dataclass(frozen=True)
 class FilterUsage:
