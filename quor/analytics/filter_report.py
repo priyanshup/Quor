@@ -66,8 +66,13 @@ def render_low_performers(report: FilterAnalyticsReport) -> list[str]:
     if not flagged:
         lines.append("(none)")
     for f in flagged:
+        # Both numbers shown deliberately (QB-065): they can diverge sharply
+        # (a few large wins can carry a healthy-looking net% while most real
+        # calls are individually negative) — showing only one would hide
+        # exactly the gap this check exists to surface.
         lines.append(
-            f"{f.filter_name:<20} {f.avg_compression_pct:>6.1f}%   ({f.invocation_count} calls)"
+            f"{f.filter_name:<20} net {f.avg_compression_pct:>6.1f}%   "
+            f"avg/call {f.per_invocation_avg_pct:>6.1f}%   ({f.invocation_count} calls)"
         )
     lines.append("")
     return lines

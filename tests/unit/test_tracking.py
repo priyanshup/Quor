@@ -927,6 +927,62 @@ class TestQueryFilterAnalytics:
         # NOT the naive mean of [90.0, 0.0] == 45.0
         assert f.avg_compression_pct != pytest.approx(45.0)
 
+    def test_per_invocation_avg_pct_is_mean_of_rows_not_aggregate_ratio(self, tmp_path: Path) -> None:
+        """QB-065: `per_invocation_avg_pct` is the true arithmetic mean of
+        each row's own pct — the opposite convention from
+        `avg_compression_pct` (aggregate, sum-based ratio) pinned by
+        `test_avg_compression_pct_is_aggregate_ratio_not_mean_of_rows` above.
+        Same fixture as that test, so the two assertions demonstrate the
+        divergence directly."""
+        db_path = tmp_path / "quor.db"
+        self._populate(db_path, [
+            # 90% off a big row, 0% off a tiny row.
+            {"filter_name": "git-diff", "original_tokens": 1000, "final_tokens": 100, "project_path": "/proj"},
+            {"filter_name": "git-diff", "original_tokens": 10, "final_tokens": 10, "project_path": "/proj"},
+        ])
+        report = query_filter_analytics(db_path, Path("/proj"))
+        f = report.filters[0]
+        # Mean of [90.0, 0.0] == 45.0 — NOT the aggregate ratio (~89.1).
+        assert f.per_invocation_avg_pct == pytest.approx(45.0)
+        assert f.per_invocation_avg_pct != pytest.approx(f.avg_compression_pct)
+
+    def test_per_invocation_avg_pct_excludes_zero_original_tokens_rows(self, tmp_path: Path) -> None:
+        """A row with `original_tokens == 0` has no percentage to average —
+        it must be excluded from the mean, not counted as a 0% row (which
+        would silently drag the average toward zero for filters that
+        legitimately see empty-input invocations)."""
+        db_path = tmp_path / "quor.db"
+        self._populate(db_path, [
+            {"filter_name": "git-diff", "original_tokens": 100, "final_tokens": 50, "project_path": "/proj"},
+            {"filter_name": "git-diff", "original_tokens": 0, "final_tokens": 0, "project_path": "/proj"},
+        ])
+        report = query_filter_analytics(db_path, Path("/proj"))
+        f = report.filters[0]
+        assert f.invocation_count == 2
+        # Mean of just the one real row (50.0) — the zero-original row is
+        # excluded, not averaged in as 0.0 (which would give 25.0).
+        assert f.per_invocation_avg_pct == pytest.approx(50.0)
+
+    def test_per_invocation_avg_pct_can_diverge_in_sign_from_aggregate(self, tmp_path: Path) -> None:
+        """QB-065's real, confirmed production shape: a few large positive
+        invocations carry a healthy-looking aggregate ratio while most real
+        invocations are individually net-negative."""
+        db_path = tmp_path / "quor.db"
+        self._populate(db_path, [
+            # One huge win...
+            {"filter_name": "ruff", "original_tokens": 10000, "final_tokens": 1000, "project_path": "/proj"},
+            # ...and several small net-expansions (outnumbering the win).
+            {"filter_name": "ruff", "original_tokens": 50, "final_tokens": 60, "project_path": "/proj"},
+            {"filter_name": "ruff", "original_tokens": 50, "final_tokens": 60, "project_path": "/proj"},
+            {"filter_name": "ruff", "original_tokens": 50, "final_tokens": 60, "project_path": "/proj"},
+            {"filter_name": "ruff", "original_tokens": 50, "final_tokens": 60, "project_path": "/proj"},
+            {"filter_name": "ruff", "original_tokens": 50, "final_tokens": 60, "project_path": "/proj"},
+        ])
+        report = query_filter_analytics(db_path, Path("/proj"))
+        f = report.filters[0]
+        assert f.avg_compression_pct > 0  # aggregate ratio looks healthy
+        assert f.per_invocation_avg_pct < 0  # but most real calls expanded
+
     def test_avg_compression_pct_can_be_negative(self, tmp_path: Path) -> None:
         """A filter that net-expands (QB-052's mypy/npm finding shape) must
         show a negative percentage, not be clamped at zero."""
