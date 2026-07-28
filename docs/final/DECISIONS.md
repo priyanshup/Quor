@@ -1220,3 +1220,120 @@ either file's actual logic.
   rationale, lifecycle model, complete interface signatures, every file eventually needing
   modification, and the phased QB-035B–F backlog breakdown) and `backlog.md`'s `QB-035A` entry for
   the validation record.
+
+## ADR-037: Repository Context Profile — Parallel Package, Not a Stage; `quor map` as a Second Exempted Command (QB-061)
+
+**Status:** Decided and implemented
+**Date:** 2026-07-28
+
+**Context:**
+A 2026-07-28 product-priority review (`docs/design/QB-061-repo-context-profile.md`, itself
+building on `docs/design/repo-summarization-investigation.md`) found that every capability Quor
+had shipped through QB-065 compresses **one already-captured blob** — one command's stdout, or
+one file's content — and that the largest remaining real-usage issue (mypy/ruff/generic
+negative-compression) was a correctness bug already fixed (QB-065), not a missing capability. The
+token cost Quor had never addressed was repository orientation: the multi-call discovery sequence
+(`ls`/`find`/several `cat`/`grep`/`git log`) an AI coding assistant runs to understand an
+unfamiliar repo before it can act. That is a synthesis problem — reading many files and producing
+a document that never existed verbatim anywhere in the repo — not a redundancy-removal problem on
+a single blob, so it does not fit the existing `ContentMask`/`StageHandler` contract at all (see
+Anti-Goal #18: "a stage that receives a string and returns a modified string is architecturally
+wrong" — this reads *many* files and returns a *synthesized* one, a different violation entirely,
+not a smaller version of the same one).
+
+**Options considered:**
+- **Force it into a `StageHandler`** (e.g., a stage that "compresses" a `find .`/`ls` listing down
+  to a summary): rejected. This would mean answering a different question with someone else's
+  output — a bigger meaning-change risk than anything Quor does today, and a direct violation of
+  Anti-Goal #3 ("never silently modify content meaning") and #18.
+- **A new package parallel to the ContentMask pipeline** (`quor/pipeline/repo_profile/`), reusing
+  existing infrastructure *patterns* (not the `ContentMask`/`StageHandler` contract itself) where
+  they generalize: chosen. `ContentMask` re-enters the picture only optionally, at the very end,
+  compressing the profile's own rendered Markdown through the existing `markdown` filter if it's
+  large — never repo source.
+- **A new three-tier detector-rule registry mirroring `FilterRegistry`'s loading pattern, but with
+  first-match-wins semantics** (like `FilterRegistry.find()`) **vs. match-all semantics:**
+  match-all was chosen. A single command maps to exactly one filter (mutually exclusive by
+  construction), but a repository legitimately satisfies many detector rules at once — a repo can
+  be a Flask app *and* Dockerized *and* built on GitHub Actions simultaneously. `DetectorRegistry`
+  reuses `filters/loader.py`'s TOML→Pydantic pattern and `filters/trust.py::is_git_tracked`'s
+  project-tier trust check directly (same three-tier project > user > builtin precedence, same
+  git-tracked gate for project-local rules), but its `detect()` method evaluates every loaded rule
+  and returns every match grouped by category, deduplicated by (category, name) with
+  project > user > builtin precedence on a tie — not `FilterRegistry`'s "first match wins, stop
+  looking" contract.
+- **Framework/database detection scoped to manifest-file dependency mentions only, vs. scanning
+  arbitrary source files for import statements:** manifest-only was chosen. Bounded to a handful of
+  small, well-known files per repo (`pyproject.toml`, `package.json`, `requirements.txt`, ...),
+  every match a real, verifiable dependency declaration — an unbounded whole-tree import scan would
+  be both slow and exactly the kind of unverifiable heuristic the task's "no heuristics that cannot
+  be deterministically verified" constraint rules out.
+- **Full tree-sitter/AST symbol extraction for entry points (Aider-style repo map) vs. manifest
+  fields plus a bounded `if __name__ == "__main__":` content scan:** the lighter mechanism was
+  chosen for this phase. Entry points are detected from structured manifest fields
+  (`pyproject.toml` `[project.scripts]`/`[tool.poetry.scripts]`, `package.json` `bin`/`main`,
+  `Cargo.toml` `[[bin]]`/the `src/main.rs` convention, `go.mod`'s `main.go`/`cmd/*/main.go`
+  convention) plus a scan bounded to root-level `.py` files only — never a recursive, unbounded
+  content scan. Full symbol-level extraction (reusing the parsed trees `code_ast_summarize`'s
+  analyzers already build) remains a real, larger follow-up phase, deliberately not attempted here
+  — see `docs/design/QB-061-repo-context-profile.md` §6/§10's own phasing note.
+- **A silent reroute of an existing exploratory command** (e.g. substituting the profile for the
+  AI's first `find .`) **vs. a new, explicit command:** rejected outright, the same way ADR-030's
+  "omit the key rather than emit a wrong value" discipline and Anti-Goal #3 already rule out
+  changing what a real command's output means. `quor map` is invoked explicitly, exactly like any
+  other Quor CLI command — never substituted transparently for a command the AI actually asked to
+  run.
+- **A seventh CLI command vs. reusing an existing one:** CLAUDE.md's fixed six-command rule already
+  has one precedent exemption, `quor schema` (a non-filtering utility command, JSON Schema dump).
+  `quor map` is granted the same category of exemption — a second, explicitly-approved utility
+  command, not a filtering operation — rather than overloading `quor explain`/`quor doctor` with an
+  unrelated, much larger new output shape.
+
+**Decision:**
+`quor/pipeline/repo_profile/` is a new package, structurally sibling to (not inside) the
+ContentMask pipeline: `walk.py` (`git ls-files` primary, `os.walk` fallback with a hardcoded
+skip-set), `detectors/` (the match-all registry described above, with built-in TOML rule files for
+build systems, package managers, frameworks, test frameworks, CI systems, databases,
+containerization, and configuration files), `languages.py` (extension histogram, computed directly
+from the walk — no detector rules needed), `entry_points.py`, `directories.py` (important
+directories + services/monorepo detection), `statistics.py`, `model.py` (`RepoProfile`, a frozen
+Pydantic model matching `FilterConfig`'s conventions), and `render.py` (fixed-template Markdown by
+default; `--json` is an optional, secondary output mode, not the primary interface).
+`profiler.build_profile(root) -> RepoProfile` is the single public entry point. `quor map` is
+registered as a second exempted utility command in `quor/cli/main.py`, added to `__main__.py`'s
+`_CLI_COMMANDS` routing set (a real bug caught during implementation: without this, `quor map`
+silently fell through to the dispatcher, which tried to execute a literal shell command named
+`map`). The invocation is tracked through the existing `count_tokens()`/`track_invocation()` path
+under a new synthetic label, `REPO_PROFILE_FILTER_LABEL` (`quor/tracking/db.py`, defined alongside
+the existing `PASSTHROUGH_LABEL` for the same reason) — `original_tokens`/`final_tokens` are
+recorded equal by design (there is no "before" blob to compress against; this is synthesis, not
+compression), so the invocation is visible in `quor gain`'s invocation counts without distorting
+its net-tokens-saved headline. `quor.analytics.filter_divergence.flag_low_performers` (QB-065's
+negative-compression health check) excludes `REPO_PROFILE_FILTER_LABEL` the same way it already
+excludes `PASSTHROUGH_LABEL` — both are synthetic, non-ContentMask-filter labels whose 0.0% is
+by-design, not evidence of a broken filter; without this exclusion, a real compression regression
+(mypy, ruff) would have been reported side-by-side with an expected, by-design zero in `quor
+doctor`, diluting the signal (caught and fixed during this same implementation pass).
+
+**Consequences:**
+- No changes to `ContentMask`, `Decision`, `StageHandler` Protocol, `Pipeline.execute`, or any
+  existing filter/stage — this is entirely additive, new-package work. The compression benchmark
+  suite (`python -m tests.benchmarks.run_benchmarks`) shows zero change (127 cases, 35.9% overall,
+  same as pre-QB-061), confirming no regression to the existing pipeline.
+- `quor map`'s output quality is heuristic in the sense that detector rules match markers and
+  patterns (a stale `requirements.txt` from a removed dependency would produce a false positive),
+  but never heuristic in the "cannot be deterministically verified" sense the task ruled out —
+  every fact is evidence-cited (file + pattern) and re-running the scan against unchanged repo
+  state produces byte-identical output (verified by a dedicated determinism test in the fixture-repo
+  benchmark corpus, `tests/unit/test_repo_profile_benchmark.py`).
+- Symbol-level entry-point/framework detail (Aider-style repo map) remains unbuilt — a real,
+  larger follow-up phase, not silently done partially. The current entry-point mechanism is
+  manifest-fields-plus-bounded-scan only, explicitly scoped this way per the options above.
+- `quor map`'s real-session token savings (the number that would actually validate this feature's
+  core hypothesis: does a single profile call measurably reduce the discovery-call sequence an AI
+  otherwise runs) is not yet measured — per Anti-Goal #24/#25, no such figure is published anywhere
+  in this ADR or the shipped documentation; it must be measured against real usage before any
+  claim is made, exactly the discipline already applied to every other Quor savings figure.
+- See `docs/design/QB-061-repo-context-profile.md` for the full design (competitive positioning
+  against Aider's repo map, complete reuse audit, benchmark strategy, and the phased implementation
+  plan) and `backlog.md`'s `QB-061` entry for the implementation record.

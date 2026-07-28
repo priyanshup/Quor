@@ -1,0 +1,101 @@
+schema_version = 1
+
+# Build-system detection: how the project is built/packaged, as distinct
+# from how its dependencies are locked/resolved (see package_managers.toml).
+# Marker-file and manifest-content based only — deterministic, no source
+# scanning.
+
+[[detector]]
+name = "setuptools"
+category = "build_system"
+match_basename = ["pyproject.toml"]
+match_content = ['(?s)\[build-system\].*?requires\s*=\s*\[[^\]]*"setuptools']
+evidence = "pyproject.toml [build-system] requires setuptools"
+
+[[detector]]
+name = "setuptools"
+category = "build_system"
+match_basename = ["setup.py", "setup.cfg"]
+evidence = "legacy setup.py/setup.cfg present"
+
+[[detector]]
+name = "poetry"
+category = "build_system"
+match_basename = ["pyproject.toml"]
+match_content = ['(?m)^\[tool\.poetry\]']
+evidence = "pyproject.toml [tool.poetry] table"
+
+[[detector]]
+name = "hatch"
+category = "build_system"
+match_basename = ["pyproject.toml"]
+match_content = ['(?s)\[build-system\].*?requires\s*=\s*\[[^\]]*"hatchling', '(?m)^\[tool\.hatch\.']
+evidence = "pyproject.toml build-system/[tool.hatch] references hatchling"
+
+[[detector]]
+name = "flit"
+category = "build_system"
+match_basename = ["pyproject.toml"]
+match_content = ['(?s)\[build-system\].*?requires\s*=\s*\[[^\]]*"flit_core']
+evidence = "pyproject.toml [build-system] requires flit_core"
+
+[[detector]]
+name = "pdm"
+category = "build_system"
+match_basename = ["pyproject.toml"]
+match_content = ['(?s)\[build-system\].*?requires\s*=\s*\[[^\]]*"pdm-backend', '(?m)^\[tool\.pdm\]']
+evidence = "pyproject.toml build-system/[tool.pdm] references pdm-backend"
+
+[[detector]]
+name = "cargo"
+category = "build_system"
+match_basename = ["Cargo.toml"]
+evidence = "Cargo.toml present (Rust)"
+
+[[detector]]
+name = "go-modules"
+category = "build_system"
+match_basename = ["go.mod"]
+evidence = "go.mod present (Go modules)"
+
+[[detector]]
+name = "maven"
+category = "build_system"
+match_basename = ["pom.xml"]
+evidence = "pom.xml present (Java/Maven)"
+
+[[detector]]
+name = "gradle"
+category = "build_system"
+match_basename = ["build.gradle", "build.gradle.kts"]
+evidence = "Gradle build script present"
+
+[[detector]]
+name = "make"
+category = "build_system"
+match_basename = ["Makefile", "makefile", "GNUmakefile"]
+evidence = "Makefile present"
+
+[[detector]]
+name = "cmake"
+category = "build_system"
+match_basename = ["CMakeLists.txt"]
+evidence = "CMakeLists.txt present"
+
+[[detector]]
+name = "bazel"
+category = "build_system"
+match_basename = ["WORKSPACE", "WORKSPACE.bazel", "BUILD.bazel", "MODULE.bazel"]
+evidence = "Bazel workspace/build file present"
+
+[[detector]]
+name = "webpack"
+category = "build_system"
+match_basename = ["webpack.config.js", "webpack.config.ts", "webpack.config.cjs"]
+evidence = "webpack config present"
+
+[[detector]]
+name = "vite"
+category = "build_system"
+match_basename = ["vite.config.js", "vite.config.ts"]
+evidence = "vite config present"

@@ -1,0 +1,99 @@
+"""Unit tests for quor/pipeline/repo_profile/walk.py."""
+
+from __future__ import annotations
+
+import subprocess
+from pathlib import Path
+
+from quor.pipeline.repo_profile.walk import walk_repository
+
+
+def _init_git_repo(root: Path) -> None:
+    subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=root, check=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=root, check=True)
+
+
+class TestWalkRepositoryGit:
+    def test_git_ls_files_returns_tracked_and_untracked(self, tmp_path: Path) -> None:
+        _init_git_repo(tmp_path)
+        (tmp_path / "a.py").write_text("print(1)\n", encoding="utf-8")
+        (tmp_path / "b.py").write_text("print(2)\n", encoding="utf-8")
+        subprocess.run(["git", "add", "a.py"], cwd=tmp_path, check=True)
+
+        result = walk_repository(tmp_path)
+
+        assert result.used_git is True
+        assert result.files == ["a.py", "b.py"]
+
+    def test_gitignored_files_are_excluded(self, tmp_path: Path) -> None:
+        _init_git_repo(tmp_path)
+        (tmp_path / ".gitignore").write_text("ignored.txt\n", encoding="utf-8")
+        (tmp_path / "kept.txt").write_text("x\n", encoding="utf-8")
+        (tmp_path / "ignored.txt").write_text("x\n", encoding="utf-8")
+        subprocess.run(["git", "add", ".gitignore", "kept.txt"], cwd=tmp_path, check=True)
+
+        result = walk_repository(tmp_path)
+
+        assert "ignored.txt" not in result.files
+        assert "kept.txt" in result.files
+
+    def test_output_is_sorted(self, tmp_path: Path) -> None:
+        _init_git_repo(tmp_path)
+        for name in ("zeta.py", "alpha.py", "mid.py"):
+            (tmp_path / name).write_text("x\n", encoding="utf-8")
+        subprocess.run(["git", "add", "."], cwd=tmp_path, check=True)
+
+        result = walk_repository(tmp_path)
+
+        assert result.files == sorted(result.files)
+
+    def test_deterministic_across_repeated_calls(self, tmp_path: Path) -> None:
+        _init_git_repo(tmp_path)
+        (tmp_path / "one.py").write_text("x\n", encoding="utf-8")
+        subprocess.run(["git", "add", "."], cwd=tmp_path, check=True)
+
+        first = walk_repository(tmp_path)
+        second = walk_repository(tmp_path)
+
+        assert first.files == second.files
+        assert first.used_git == second.used_git is True
+
+    def test_nested_paths_use_posix_separators(self, tmp_path: Path) -> None:
+        _init_git_repo(tmp_path)
+        (tmp_path / "src").mkdir()
+        (tmp_path / "src" / "app.py").write_text("x\n", encoding="utf-8")
+        subprocess.run(["git", "add", "."], cwd=tmp_path, check=True)
+
+        result = walk_repository(tmp_path)
+
+        assert "src/app.py" in result.files
+        assert "\\" not in "".join(result.files)
+
+
+class TestWalkRepositoryFallback:
+    def test_non_git_directory_uses_fallback(self, tmp_path: Path) -> None:
+        (tmp_path / "a.txt").write_text("x\n", encoding="utf-8")
+        (tmp_path / "b.txt").write_text("x\n", encoding="utf-8")
+
+        result = walk_repository(tmp_path)
+
+        assert result.used_git is False
+        assert result.files == ["a.txt", "b.txt"]
+
+    def test_fallback_skips_hardcoded_ignore_dirs(self, tmp_path: Path) -> None:
+        (tmp_path / "node_modules").mkdir()
+        (tmp_path / "node_modules" / "pkg.js").write_text("x\n", encoding="utf-8")
+        (tmp_path / "__pycache__").mkdir()
+        (tmp_path / "__pycache__" / "mod.pyc").write_text("x\n", encoding="utf-8")
+        (tmp_path / "real.py").write_text("x\n", encoding="utf-8")
+
+        result = walk_repository(tmp_path)
+
+        assert result.files == ["real.py"]
+
+    def test_empty_directory_returns_empty_list(self, tmp_path: Path) -> None:
+        result = walk_repository(tmp_path)
+
+        assert result.files == []
+        assert result.used_git is False

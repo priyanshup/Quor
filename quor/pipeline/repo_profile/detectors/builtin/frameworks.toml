@@ -1,0 +1,111 @@
+schema_version = 1
+
+# Framework detection: scoped to dependency-name mentions inside manifest/
+# requirement files only (never a scan of arbitrary source files for
+# import statements) — bounded to a handful of small, well-known files per
+# repo, and every match is a real, verifiable dependency declaration.
+
+[[detector]]
+name = "flask"
+category = "framework"
+match_basename = ["requirements.txt", "pyproject.toml", "Pipfile", "setup.py"]
+match_content = ['(?mi)^\s*flask\b', '(?i)"flask\b', '(?i)\x27flask\b']
+evidence = "flask dependency declared"
+
+[[detector]]
+name = "django"
+category = "framework"
+match_basename = ["requirements.txt", "pyproject.toml", "Pipfile", "setup.py"]
+match_content = ['(?mi)^\s*django\b', '(?i)"django\b', '(?i)\x27django\b']
+evidence = "django dependency declared"
+
+[[detector]]
+name = "fastapi"
+category = "framework"
+match_basename = ["requirements.txt", "pyproject.toml", "Pipfile", "setup.py"]
+match_content = ['(?mi)^\s*fastapi\b', '(?i)"fastapi\b', '(?i)\x27fastapi\b']
+evidence = "fastapi dependency declared"
+
+[[detector]]
+name = "typer"
+category = "framework"
+match_basename = ["requirements.txt", "pyproject.toml", "Pipfile", "setup.py"]
+match_content = ['(?mi)^\s*typer\b', '(?i)"typer\b', '(?i)\x27typer\b']
+evidence = "typer dependency declared"
+
+[[detector]]
+name = "click"
+category = "framework"
+match_basename = ["requirements.txt", "pyproject.toml", "Pipfile", "setup.py"]
+match_content = ['(?mi)^\s*click\b', '(?i)"click\b', '(?i)\x27click\b']
+evidence = "click dependency declared"
+
+[[detector]]
+name = "express"
+category = "framework"
+match_basename = ["package.json"]
+match_content = ['"express"\s*:']
+evidence = "express dependency declared in package.json"
+
+[[detector]]
+name = "react"
+category = "framework"
+match_basename = ["package.json"]
+match_content = ['"react"\s*:']
+evidence = "react dependency declared in package.json"
+
+[[detector]]
+name = "vue"
+category = "framework"
+match_basename = ["package.json"]
+match_content = ['"vue"\s*:']
+evidence = "vue dependency declared in package.json"
+
+[[detector]]
+name = "angular"
+category = "framework"
+match_basename = ["package.json"]
+match_content = ['"@angular/core"\s*:']
+evidence = "@angular/core dependency declared in package.json"
+
+[[detector]]
+name = "next.js"
+category = "framework"
+match_basename = ["package.json"]
+match_content = ['"next"\s*:']
+evidence = "next dependency declared in package.json"
+
+[[detector]]
+name = "nestjs"
+category = "framework"
+match_basename = ["package.json"]
+match_content = ['"@nestjs/core"\s*:']
+evidence = "@nestjs/core dependency declared in package.json"
+
+[[detector]]
+name = "spring-boot"
+category = "framework"
+match_basename = ["pom.xml", "build.gradle", "build.gradle.kts"]
+match_content = ['spring-boot']
+evidence = "spring-boot dependency declared"
+
+[[detector]]
+name = "gin"
+category = "framework"
+match_basename = ["go.mod"]
+match_content = ['gin-gonic/gin']
+evidence = "gin-gonic/gin dependency declared in go.mod"
+
+[[detector]]
+name = "echo"
+category = "framework"
+match_basename = ["go.mod"]
+match_content = ['labstack/echo']
+evidence = "labstack/echo dependency declared in go.mod"
+
+[[detector]]
+name = "rails"
+category = "framework"
+match_basename = ["Gemfile"]
+match_content = ['(?m)^\s*gem\s+["\x27]rails["\x27]']
+evidence = "rails gem declared in Gemfile"

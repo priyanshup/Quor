@@ -1,0 +1,43 @@
+schema_version = 1
+
+[[detector]]
+name = "github-actions"
+category = "ci_system"
+match_path_regex = ['^\.github/workflows/.*\.ya?ml$']
+evidence = "workflow file under .github/workflows/"
+
+[[detector]]
+name = "gitlab-ci"
+category = "ci_system"
+match_basename = [".gitlab-ci.yml"]
+evidence = ".gitlab-ci.yml present"
+
+[[detector]]
+name = "circleci"
+category = "ci_system"
+match_path_regex = ['^\.circleci/config\.ya?ml$']
+evidence = ".circleci/config.yml present"
+
+[[detector]]
+name = "jenkins"
+category = "ci_system"
+match_basename = ["Jenkinsfile"]
+evidence = "Jenkinsfile present"
+
+[[detector]]
+name = "azure-pipelines"
+category = "ci_system"
+match_basename = ["azure-pipelines.yml", "azure-pipelines.yaml"]
+evidence = "azure-pipelines.yml present"
+
+[[detector]]
+name = "travis-ci"
+category = "ci_system"
+match_basename = [".travis.yml"]
+evidence = ".travis.yml present"
+
+[[detector]]
+name = "appveyor"
+category = "ci_system"
+match_basename = ["appveyor.yml", ".appveyor.yml"]
+evidence = "appveyor.yml present"

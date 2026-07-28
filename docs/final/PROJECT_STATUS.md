@@ -473,6 +473,31 @@ drove the output through the real Claude Code binary.
 
 ---
 
+## Repository Context Profile — QB-061 (2026-07-28)
+
+New capability, not a bug fix or hardening pass: `quor map` (`quor/pipeline/repo_profile/`), a
+deterministic repository orientation profile — see `docs/design/QB-061-repo-context-profile.md`
+for the design and `docs/final/DECISIONS.md` ADR-037 for the architecture decision. Implemented
+on `feature/qb-061-repo-context-profile`, branched from `main` after QB-065 (PR #73) merged.
+
+- New package parallel to the ContentMask pipeline (walk, detector-rule registry, languages,
+  entry points, directories, statistics, model, render) plus a second exempted CLI command
+  alongside `quor schema`.
+- Two real bugs found and fixed during implementation (not just lint/test issues): (1) `quor map`
+  was missing from `__main__.py`'s `_CLI_COMMANDS` routing set, so it silently fell through to the
+  dispatcher and tried to execute a literal shell command named `map` — caught by an end-to-end
+  smoke test against the real CLI, not unit tests alone. (2) QB-065's `flag_low_performers` health
+  check initially flagged the new `repo-profile` tracking label as a "low performer" alongside
+  genuine regressions (mypy, ruff) in `quor doctor` — a false positive, since its 0% is by design
+  (no "before" blob exists for a synthesis command). Fixed by adding `REPO_PROFILE_FILTER_LABEL` to
+  the same exclusion set `PASSTHROUGH_LABEL` already had, with a regression test.
+- 107 new unit/integration tests plus a fixture-repo benchmark corpus (4 synthetic repos,
+  precision/recall + false-positive + determinism + performance-budget checks). Full existing
+  suite (unit, integration, and the 127-case compression benchmark suite) re-run and confirmed
+  zero regressions; `ruff check quor/ tests/` and `mypy quor/` both clean.
+- No version bump yet — CHANGELOG.md is updated at actual release time (see its own history: none
+  of QB-062/063/064/065 have entries yet either), not per merged feature branch.
+
 ## How to Update This Document
 
 At the start of every implementation session:

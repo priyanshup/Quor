@@ -4510,6 +4510,82 @@ before the echoed command regardless of step number width.
 
 ---
 
+#### QB-061 — Repository Context Profile (`quor map`)
+
+**Effort:** Large · **Value:** High · **Risk:** Medium · **Expected token impact:** Unmeasured —
+avoids a multi-call discovery sequence (`ls`/`find`/several `cat`/`grep`), not a compression ratio;
+see own entry's uncertainty note · **Category:** New Capability
+
+A new, deterministic capability — not a filter. Every capability Quor had shipped through QB-065
+compresses one already-captured blob (one command's output, one file's content); this instead
+walks a repository once and synthesizes a one-shot orientation profile (languages, frameworks,
+build system, package manager, entry points, services/modules, CI system, containerization,
+databases, configuration files, lockfiles, repository statistics) that never existed verbatim
+anywhere in the repo — the token cost an AI coding assistant otherwise pays via a multi-call
+discovery sequence when it starts work in an unfamiliar repo.
+
+**Status:** Implemented (2026-07-28) on `feature/qb-061-repo-context-profile`. See
+`docs/design/QB-061-repo-context-profile.md` for the full design (competitive positioning against
+Aider's repo map, reuse audit, benchmark strategy) and `docs/final/DECISIONS.md` ADR-037 for the
+architecture decision record.
+
+<details>
+<summary>Technical details</summary>
+
+**What shipped:** `quor/pipeline/repo_profile/` — a new package parallel to (not inside) the
+ContentMask pipeline: `walk.py` (`git ls-files` primary, `os.walk` fallback), `detectors/` (a new
+three-tier TOML detector-rule registry mirroring `FilterRegistry`'s loading/trust pattern, but
+match-all rather than first-match-wins — a repo can be a Flask app *and* Dockerized *and* built on
+GitHub Actions simultaneously; ~87 built-in rules across build-system/package-manager/framework/
+test-framework/CI-system/database/containerization/configuration categories), `languages.py`
+(extension histogram, computed directly from the walk), `entry_points.py` (manifest-field
+extraction for `pyproject.toml`/`package.json`/`Cargo.toml`/`go.mod`, plus a bounded root-level
+`if __name__ == "__main__":` scan — no tree-sitter/AST symbol extraction; deliberately deferred,
+see below), `directories.py` (important directories + services/monorepo detection),
+`statistics.py` (file/directory counts, git commit count), `model.py` (`RepoProfile`, frozen
+Pydantic), and `render.py` (fixed-template Markdown by default; `--json` is a secondary, optional
+mode). `profiler.build_profile(root) -> RepoProfile` is the single public entry point.
+
+`quor map` is registered as a second exempted utility command (same category as `quor schema` —
+non-filtering, not one of the six V1 commands), wired into `quor/cli/main.py` and
+`__main__.py`'s `_CLI_COMMANDS` routing set. **Real bug caught during implementation:** without
+the latter, `quor map` silently fell through to the dispatcher, which tried to execute a literal
+shell command named `map` (`[WinError 2] The system cannot find the file specified`) — found via
+an end-to-end smoke test against the real CLI, not just unit tests against the library functions
+directly.
+
+**Tracking:** invocations are recorded through the existing `track_invocation()` path under a new
+synthetic label, `REPO_PROFILE_FILTER_LABEL` (`quor/tracking/db.py`, defined alongside
+`PASSTHROUGH_LABEL` for the identical reason) — `original_tokens`/`final_tokens` are recorded
+equal by design (there is no "before" blob; this is synthesis, not compression), so the invocation
+is visible in `quor gain`'s counts without distorting its net-tokens-saved headline. **Second real
+bug caught during implementation:** QB-065's `flag_low_performers` health check (which flags
+filters with negative/near-zero real compression) initially flagged `repo-profile` alongside
+genuine regressions like mypy/ruff in `quor doctor`'s output — a false positive, since 0% is
+`quor map`'s correct, by-design behavior, not a defect. Fixed by adding
+`REPO_PROFILE_FILTER_LABEL` to the same exclusion set `PASSTHROUGH_LABEL` already had, with a
+regression test (`test_repo_profile_label_is_excluded`) pinning it.
+
+**Deliberately out of scope (see ADR-037):** full tree-sitter/AST symbol extraction for
+entry-point/framework detail (Aider-style repo map) — a real, larger follow-up phase, not
+attempted here. Framework/database detection is scoped to manifest-file dependency mentions only
+(bounded, deterministic), never a scan of arbitrary source files for import statements.
+
+**Tests:** 107 new unit/integration tests across 9 test files
+(`test_repo_profile_walk/languages/detectors/entry_points/directories/statistics/model/render/
+profiler.py`, `test_cli_map.py`), plus a fixture-repo benchmark corpus
+(`tests/fixtures/repo_profile/{flask-pip,node-express-pnpm,go-service,polyglot-monorepo}/` +
+`test_repo_profile_benchmark.py`) checking precision/recall against hand-labeled expected facts,
+a false-positive check, a byte-identical determinism check, and a performance budget — the
+parallel benchmark structure `docs/design/QB-061-repo-context-profile.md` §8 calls for, since
+there is no "before" blob to compress against the way `tests/benchmarks/manifest.toml` assumes.
+Full existing suite (unit + integration + compression benchmark suite, 127 cases) re-run and
+confirmed zero regressions; `ruff check quor/ tests/` and `mypy quor/` both clean.
+
+</details>
+
+---
+
 ### Historical (superseded)
 
 *Kept for the record — not resolved work in its own right, but the original request that later,
