@@ -67,6 +67,7 @@ import warnings
 from typing import TYPE_CHECKING
 
 from quor.pipeline.ast_summarize._treesitter_utils import add_candidate, collect_error_ranges
+from quor.pipeline.ast_summarize.symbol_model import ENTRY_POINT_NAMES, Symbol, SymbolKind
 
 if TYPE_CHECKING:
     from tree_sitter import Node
@@ -160,3 +161,111 @@ def _visit_container_body(
     for member in body.children:
         if member.type == "function_item":
             add_candidate(member, error_ranges, lines, block_type=_BLOCK_TYPE)
+
+
+# Top-level item node types (QB-066 symbol extraction) mapped to the Symbol
+# kind each represents. `impl_item` is deliberately absent — it names no
+# new symbol of its own (`impl Widget { ... }` isn't a declaration, it
+# attaches methods to a struct/trait declared elsewhere), only its member
+# `function_item`s are reported, exactly like `_visit_container_body()`'s
+# existing compression-side traversal already treats it.
+_ITEM_KINDS: dict[str, SymbolKind] = {"struct_item": "struct", "enum_item": "enum", "trait_item": "trait"}
+
+# Member node types inside an impl/trait body that count as a "method"
+# symbol — a real function (with a body) and a trait method signature
+# (`fn area(&self) -> f64;`, no body — see module docstring).
+_METHOD_LIKE_SYMBOL_TYPES = frozenset({"function_item", "function_signature_item"})
+
+
+def extract_symbols_rust(source: str) -> list[Symbol]:
+    """Return every top-level struct/enum/trait declaration, every
+    top-level function, and every impl/trait block's direct methods
+    (QB-066), in source order. A `mod`/`impl`/`trait` nested inside another
+    item's body is not itself visited — the same one-level scope boundary
+    `_visit_container_body()` already applies for compression.
+
+    `is_public` reflects the presence of a `pub` visibility modifier
+    (`pub`, `pub(crate)`, `pub(super)`, ... — any variant counts) — Rust's
+    own default for an unmarked item is private, not public, so an
+    unmarked declaration is `is_public=False`.
+
+    Returns an empty list (with an actionable warning) if the optional
+    `tree-sitter`/`tree-sitter-rust` dependency is not installed. Otherwise
+    may raise on a genuine, unrecoverable parser failure — not caught here,
+    same fail-open contract as `analyze_rust()`."""
+    try:
+        import tree_sitter
+        import tree_sitter_rust
+    except ImportError:
+        warnings.warn(
+            "[quor] tree-sitter/tree-sitter-rust is not installed; "
+            "install quor[rust] to enable Rust symbol extraction "
+            "(falling back to no symbols for this file)",
+            stacklevel=2,
+        )
+        return []
+
+    language = tree_sitter.Language(tree_sitter_rust.language())
+    parser = tree_sitter.Parser(language)
+    tree = parser.parse(source.encode("utf-8"))
+
+    symbols: list[Symbol] = []
+    for child in tree.root_node.children:
+        kind = _ITEM_KINDS.get(child.type)
+        if kind is not None:
+            _add_item_symbol(child, symbols, kind=kind)
+            if child.type in _CONTAINER_TYPES:
+                # trait_item is both a named item (its own "trait" symbol,
+                # just added above) *and* a container (its body's default-
+                # or-signature methods) — the two checks below are not
+                # mutually exclusive the way struct/enum vs. impl/trait
+                # otherwise are.
+                _add_container_methods(child, symbols)
+        elif child.type == "function_item":
+            _add_function_symbol(child, symbols, kind="function")
+        elif child.type in _CONTAINER_TYPES:
+            _add_container_methods(child, symbols)
+    return symbols
+
+
+def _decode(node: Node) -> str:
+    text = node.text
+    return text.decode("utf-8") if text is not None else ""
+
+
+def _is_pub(node: Node) -> bool:
+    return any(child.type == "visibility_modifier" for child in node.children)
+
+
+def _add_item_symbol(node: Node, symbols: list[Symbol], *, kind: SymbolKind) -> None:
+    name_node = node.child_by_field_name("name")
+    if name_node is None:
+        return
+    symbols.append(
+        Symbol(name=_decode(name_node), kind=kind, line=node.start_point.row + 1, is_public=_is_pub(node))
+    )
+
+
+def _add_function_symbol(node: Node, symbols: list[Symbol], *, kind: SymbolKind) -> None:
+    name_node = node.child_by_field_name("name")
+    if name_node is None:
+        return
+    name = _decode(name_node)
+    symbols.append(
+        Symbol(
+            name=name,
+            kind=kind,
+            line=node.start_point.row + 1,
+            is_public=_is_pub(node),
+            is_entry_point=name in ENTRY_POINT_NAMES,
+        )
+    )
+
+
+def _add_container_methods(container_node: Node, symbols: list[Symbol]) -> None:
+    body = container_node.child_by_field_name("body")
+    if body is None or body.type != _CONTAINER_BODY_TYPE:
+        return
+    for member in body.children:
+        if member.type in _METHOD_LIKE_SYMBOL_TYPES:
+            _add_function_symbol(member, symbols, kind="method")

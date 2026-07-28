@@ -67,6 +67,7 @@ import warnings
 from typing import TYPE_CHECKING
 
 from quor.pipeline.ast_summarize._treesitter_utils import add_candidate, collect_error_ranges
+from quor.pipeline.ast_summarize.symbol_model import ENTRY_POINT_NAMES, Symbol
 
 if TYPE_CHECKING:
     from tree_sitter import Node
@@ -95,6 +96,19 @@ _FUNCTION_LIKE_TYPES = frozenset(
 # assign a function-like value to a name (`const foo = () => {...}`,
 # `var bar = function () {...}`, `let baz = function* () {...}`).
 _VARIABLE_DECLARATION_TYPES = frozenset({"lexical_declaration", "variable_declaration"})
+
+# Top-level named-function declaration node types (QB-066 symbol
+# extraction) — the subset of _FUNCTION_LIKE_TYPES that can appear directly
+# as a top-level declaration (arrow_function/function_expression/
+# generator_function only ever appear as a *value*, handled instead via
+# _VARIABLE_DECLARATION_TYPES below; method_definition only ever appears
+# inside a class_body).
+_FUNCTION_DECLARATION_TYPES = frozenset({"function_declaration", "generator_function_declaration"})
+
+# Function-like *value* node types a variable_declarator may assign (QB-066)
+# — excludes method_definition/the two _declaration types above, which are
+# never a declarator's value.
+_FUNCTION_VALUE_TYPES = frozenset({"arrow_function", "function_expression", "generator_function"})
 
 
 def analyze_javascript(source: str) -> set[int]:
@@ -209,3 +223,140 @@ def _visit_variable_declaration(
         value = declarator.child_by_field_name("value")
         if value is not None and value.type in _FUNCTION_LIKE_TYPES:
             add_candidate(value, error_ranges, lines)
+
+
+def extract_symbols_javascript(source: str) -> list[Symbol]:
+    """Return every top-level function/class declaration and each class's
+    direct methods (QB-066), in source order.
+
+    A top-level declaration's `is_public` reflects whether it is directly
+    `export`ed (`export function foo() {}`, `export class Foo {}`,
+    `export const bar = () => {}`) — JavaScript's only real module-level
+    visibility mechanism, since a bare top-level `const`/`function` is
+    reachable from every other module in the same file but not importable
+    from outside it. A class method's `is_public` instead reflects ES2022
+    private-field syntax (`#name`) — the language's only real member-level
+    privacy mechanism — independent of whether the enclosing class itself
+    is exported.
+
+    Anonymous declarations (`export default function() {}`, `export
+    default class {}`) and computed method names (`[Symbol.iterator]()
+    {}`) have no deterministic simple name and are silently omitted, not
+    guessed at.
+
+    Returns an empty list (with the same actionable warning
+    `analyze_javascript()` emits) if the optional `tree-sitter`/
+    `tree-sitter-javascript` dependency is not installed. Otherwise may
+    raise on a genuine, unrecoverable parser failure — not caught here,
+    same fail-open contract as `analyze_javascript()` (see module
+    docstring's "Fail-open" section)."""
+    try:
+        import tree_sitter
+        import tree_sitter_javascript
+    except ImportError:
+        warnings.warn(
+            "[quor] tree-sitter/tree-sitter-javascript is not installed; "
+            "install quor[javascript] to enable JavaScript symbol extraction "
+            "(falling back to no symbols for this file)",
+            stacklevel=2,
+        )
+        return []
+
+    language = tree_sitter.Language(tree_sitter_javascript.language())
+    parser = tree_sitter.Parser(language)
+    tree = parser.parse(source.encode("utf-8"))
+
+    symbols: list[Symbol] = []
+    _visit_top_level_symbols(tree.root_node, symbols, is_exported=False)
+    return symbols
+
+
+def _decode(node: Node) -> str:
+    text = node.text
+    return text.decode("utf-8") if text is not None else ""
+
+
+def _visit_top_level_symbols(node: Node, symbols: list[Symbol], *, is_exported: bool) -> None:
+    """Mirrors `_visit_top_level()`'s own child-scanning shape (including
+    the `export_statement` re-dispatch trick), collecting `Symbol` entries
+    instead of compressible line ranges."""
+    for child in node.children:
+        if child.type in _FUNCTION_DECLARATION_TYPES:
+            _add_function_symbol(child, symbols, is_public=is_exported)
+        elif child.type == "class_declaration":
+            _add_class_symbol(child, symbols, is_public=is_exported)
+        elif child.type in _VARIABLE_DECLARATION_TYPES:
+            _add_variable_function_symbols(child, symbols, is_public=is_exported)
+        elif child.type == "export_statement":
+            declaration = child.child_by_field_name("declaration")
+            if declaration is not None:
+                _visit_top_level_symbols(child, symbols, is_exported=True)
+
+
+def _add_function_symbol(node: Node, symbols: list[Symbol], *, is_public: bool) -> None:
+    name_node = node.child_by_field_name("name")
+    if name_node is None:
+        return
+    name = _decode(name_node)
+    symbols.append(
+        Symbol(
+            name=name,
+            kind="function",
+            line=node.start_point.row + 1,
+            is_public=is_public,
+            is_entry_point=name in ENTRY_POINT_NAMES,
+        )
+    )
+
+
+def _add_class_symbol(node: Node, symbols: list[Symbol], *, is_public: bool) -> None:
+    name_node = node.child_by_field_name("name")
+    if name_node is None:
+        return
+    symbols.append(
+        Symbol(name=_decode(name_node), kind="class", line=node.start_point.row + 1, is_public=is_public)
+    )
+    body = node.child_by_field_name("body")
+    if body is None or body.type != "class_body":
+        return
+    for member in body.children:
+        if member.type == "method_definition":
+            _add_method_symbol(member, symbols)
+
+
+def _add_method_symbol(node: Node, symbols: list[Symbol]) -> None:
+    name_node = node.child_by_field_name("name")
+    if name_node is None or name_node.type not in ("property_identifier", "private_property_identifier"):
+        return
+    name = _decode(name_node)
+    symbols.append(
+        Symbol(
+            name=name,
+            kind="method",
+            line=node.start_point.row + 1,
+            is_public=name_node.type != "private_property_identifier",
+            is_entry_point=name in ENTRY_POINT_NAMES,
+        )
+    )
+
+
+def _add_variable_function_symbols(decl_node: Node, symbols: list[Symbol], *, is_public: bool) -> None:
+    for declarator in decl_node.children:
+        if declarator.type != "variable_declarator":
+            continue
+        value = declarator.child_by_field_name("value")
+        if value is None or value.type not in _FUNCTION_VALUE_TYPES:
+            continue
+        name_node = declarator.child_by_field_name("name")
+        if name_node is None or name_node.type != "identifier":
+            continue
+        name = _decode(name_node)
+        symbols.append(
+            Symbol(
+                name=name,
+                kind="function",
+                line=declarator.start_point.row + 1,
+                is_public=is_public,
+                is_entry_point=name in ENTRY_POINT_NAMES,
+            )
+        )

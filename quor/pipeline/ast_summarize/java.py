@@ -56,6 +56,7 @@ import warnings
 from typing import TYPE_CHECKING
 
 from quor.pipeline.ast_summarize._treesitter_utils import add_candidate, collect_error_ranges
+from quor.pipeline.ast_summarize.symbol_model import ENTRY_POINT_NAMES, Symbol, SymbolKind
 
 if TYPE_CHECKING:
     from tree_sitter import Node
@@ -166,3 +167,112 @@ def _visit_field_declaration(
         value = declarator.child_by_field_name("value")
         if value is not None and value.type == "lambda_expression":
             add_candidate(value, error_ranges, lines, block_type="block")
+
+
+# Top-level type-declaration node types (QB-066 symbol extraction) mapped to
+# the Symbol kind each represents, and to the class-like body node type
+# `_visit_type_body()`-equivalent traversal should expect — extends
+# `_CLASS_LIKE_BODY_TYPES` above (class/interface only, for compression
+# purposes) with `enum_declaration`, which the compression side deliberately
+# excludes (see module docstring) but which symbol extraction must report
+# since "Enums" is one of this feature's required categories. Enum members
+# are not themselves visited (no method/field body to compress or report).
+_TYPE_DECLARATION_KINDS: dict[str, SymbolKind] = {
+    "class_declaration": "class",
+    "interface_declaration": "interface",
+    "enum_declaration": "enum",
+}
+
+# Member node types that count as a "method" symbol — a real method
+# (with or without a body: an interface method signature has none) and a
+# constructor, both callable members.
+_METHOD_LIKE_SYMBOL_TYPES = frozenset({"method_declaration", "constructor_declaration"})
+
+
+def extract_symbols_java(source: str) -> list[Symbol]:
+    """Return every top-level class/interface/enum declaration and each
+    class/interface's direct methods/constructors (QB-066), in source
+    order. A member nested inside another type's body (a member class,
+    interface, or enum) is not itself visited — the same one-level scope
+    boundary `_visit_type_body()` already applies for compression.
+
+    `is_public` reflects an explicit `public` modifier — Java's own
+    default for an unmarked top-level type or member is package-private,
+    not public, so an unmarked declaration is `is_public=False`.
+
+    Returns an empty list (with an actionable warning) if the optional
+    `tree-sitter`/`tree-sitter-java` dependency is not installed. Otherwise
+    may raise on a genuine, unrecoverable parser failure — not caught here,
+    same fail-open contract as `analyze_java()`."""
+    try:
+        import tree_sitter
+        import tree_sitter_java
+    except ImportError:
+        warnings.warn(
+            "[quor] tree-sitter/tree-sitter-java is not installed; "
+            "install quor[java] to enable Java symbol extraction "
+            "(falling back to no symbols for this file)",
+            stacklevel=2,
+        )
+        return []
+
+    language = tree_sitter.Language(tree_sitter_java.language())
+    parser = tree_sitter.Parser(language)
+    tree = parser.parse(source.encode("utf-8"))
+
+    symbols: list[Symbol] = []
+    for child in tree.root_node.children:
+        kind = _TYPE_DECLARATION_KINDS.get(child.type)
+        if kind is not None:
+            _add_type_symbol(child, symbols, kind=kind)
+    return symbols
+
+
+def _decode(node: Node) -> str:
+    text = node.text
+    return text.decode("utf-8") if text is not None else ""
+
+
+def _has_public_modifier(node: Node) -> bool:
+    for child in node.children:
+        if child.type == "modifiers":
+            return any(grandchild.type == "public" for grandchild in child.children)
+    return False
+
+
+def _add_type_symbol(node: Node, symbols: list[Symbol], *, kind: SymbolKind) -> None:
+    name_node = node.child_by_field_name("name")
+    if name_node is None:
+        return
+    symbols.append(
+        Symbol(
+            name=_decode(name_node),
+            kind=kind,
+            line=node.start_point.row + 1,
+            is_public=_has_public_modifier(node),
+        )
+    )
+    if kind == "enum":
+        return
+    body = node.child_by_field_name("body")
+    if body is None:
+        return
+    for member in body.children:
+        if member.type in _METHOD_LIKE_SYMBOL_TYPES:
+            _add_method_symbol(member, symbols)
+
+
+def _add_method_symbol(node: Node, symbols: list[Symbol]) -> None:
+    name_node = node.child_by_field_name("name")
+    if name_node is None:
+        return
+    name = _decode(name_node)
+    symbols.append(
+        Symbol(
+            name=name,
+            kind="method",
+            line=node.start_point.row + 1,
+            is_public=_has_public_modifier(node),
+            is_entry_point=name in ENTRY_POINT_NAMES,
+        )
+    )

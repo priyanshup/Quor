@@ -13,13 +13,21 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from quor.analytics.filter_baseline import BenchmarkFilterStats
-from quor.tracking.db import PASSTHROUGH_LABEL, REPO_PROFILE_FILTER_LABEL, FilterUsage
+from quor.tracking.db import (
+    PASSTHROUGH_LABEL,
+    REPO_PROFILE_FILTER_LABEL,
+    REPO_SYMBOLS_FILTER_LABEL,
+    FilterUsage,
+)
 
 # Synthetic, non-ContentMask-filter labels that must never be flagged as
 # "low performing" — each is documented at its own definition (PASSTHROUGH_LABEL
-# in quor/tracking/db.py, REPO_PROFILE_FILTER_LABEL alongside it) as always
-# reading 0.0%/near-zero by design, not as evidence of a broken filter.
-_EXCLUDED_FROM_LOW_PERFORMER_CHECK = frozenset({PASSTHROUGH_LABEL, REPO_PROFILE_FILTER_LABEL})
+# in quor/tracking/db.py, REPO_PROFILE_FILTER_LABEL/REPO_SYMBOLS_FILTER_LABEL
+# alongside it) as always reading 0.0%/near-zero by design, not as evidence
+# of a broken filter.
+_EXCLUDED_FROM_LOW_PERFORMER_CHECK = frozenset(
+    {PASSTHROUGH_LABEL, REPO_PROFILE_FILTER_LABEL, REPO_SYMBOLS_FILTER_LABEL}
+)
 
 # A filter below this real compression_pct (including negative, i.e. net
 # expansion) is flagged — generalizes the QB-052 mypy/npm finding
@@ -42,10 +50,10 @@ def flag_low_performers(
     threshold_pct: float = NEAR_ZERO_COMPRESSION_PCT,
 ) -> list[LowPerformer]:
     """Real filters (synthetic, non-ContentMask-filter labels —
-    `PASSTHROUGH_LABEL` and `REPO_PROFILE_FILTER_LABEL` — are excluded;
-    neither is a real filter, and each has an `avg_compression_pct` that is
-    always exactly 0.0 by construction, which would otherwise always show
-    up here) whose real
+    `PASSTHROUGH_LABEL`, `REPO_PROFILE_FILTER_LABEL`, and
+    `REPO_SYMBOLS_FILTER_LABEL` — are excluded; none is a real filter, and
+    each has an `avg_compression_pct` that is always exactly 0.0 by
+    construction, which would otherwise always show up here) whose real
     `avg_compression_pct` is below `threshold_pct`, OR whose
     `per_invocation_avg_pct` is negative even when the aggregate ratio
     isn't.

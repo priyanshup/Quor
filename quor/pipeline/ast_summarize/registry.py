@@ -69,13 +69,19 @@ from __future__ import annotations
 from collections.abc import Callable
 from importlib import import_module
 
-from quor.pipeline.ast_summarize.csharp import analyze_csharp
-from quor.pipeline.ast_summarize.go import analyze_go
-from quor.pipeline.ast_summarize.java import analyze_java
-from quor.pipeline.ast_summarize.javascript import analyze_javascript
-from quor.pipeline.ast_summarize.python import analyze_python
-from quor.pipeline.ast_summarize.rust import analyze_rust
-from quor.pipeline.ast_summarize.typescript import analyze_tsx, analyze_typescript
+from quor.pipeline.ast_summarize.csharp import analyze_csharp, extract_symbols_csharp
+from quor.pipeline.ast_summarize.go import analyze_go, extract_symbols_go
+from quor.pipeline.ast_summarize.java import analyze_java, extract_symbols_java
+from quor.pipeline.ast_summarize.javascript import analyze_javascript, extract_symbols_javascript
+from quor.pipeline.ast_summarize.python import analyze_python, extract_symbols_python
+from quor.pipeline.ast_summarize.rust import analyze_rust, extract_symbols_rust
+from quor.pipeline.ast_summarize.symbol_model import Symbol
+from quor.pipeline.ast_summarize.typescript import (
+    analyze_tsx,
+    analyze_typescript,
+    extract_symbols_tsx,
+    extract_symbols_typescript,
+)
 
 # Language name -> analyzer callable. "python" (QB-005B), "javascript"
 # (QB-005C), "typescript"/"tsx" (QB-005D), and "go"/"java"/"rust"/"csharp"
@@ -107,6 +113,27 @@ _REQUIRED_PACKAGES: dict[str, tuple[str, ...]] = {
 }
 
 
+# Language name -> symbol-extractor callable (QB-066). A separate dict from
+# `_ANALYZERS`, not a second field per analyzer, because the two return
+# fundamentally different things (compressible line ranges vs. named,
+# located declarations) for two different consumers (`code_ast_summarize`/
+# `python_ast_summarize` vs. `quor symbols`) — see `symbol_model.py`'s own
+# module docstring for why the two families are independently correct
+# rather than derived from one another. Same eight languages as
+# `_ANALYZERS`, same optional-dependency gating via `_REQUIRED_PACKAGES`
+# below (unchanged, shared by both capabilities).
+_SYMBOL_EXTRACTORS: dict[str, Callable[[str], list[Symbol]]] = {
+    "python": extract_symbols_python,
+    "javascript": extract_symbols_javascript,
+    "typescript": extract_symbols_typescript,
+    "tsx": extract_symbols_tsx,
+    "go": extract_symbols_go,
+    "java": extract_symbols_java,
+    "rust": extract_symbols_rust,
+    "csharp": extract_symbols_csharp,
+}
+
+
 def get_analyzer(language: str) -> Callable[[str], set[int]] | None:
     """Return the analyzer callable registered for `language`, or `None` if
     no analyzer is registered for it.
@@ -120,6 +147,17 @@ def get_analyzer(language: str) -> Callable[[str], set[int]] | None:
     extension" branch).
     """
     return _ANALYZERS.get(language)
+
+
+def get_symbol_extractor(language: str) -> Callable[[str], list[Symbol]] | None:
+    """Return the symbol-extractor callable registered for `language`, or
+    `None` if none is registered — same "unsupported language, not an
+    error" contract as `get_analyzer()`, applied to the QB-066 symbol
+    family instead. `is_language_available()`/`extra_for_language()` below
+    already generalize across both families (registration + optional-
+    dependency gating are identical for a language's `analyze_*()` and
+    `extract_symbols_*()`), so this module needs no second copy of either."""
+    return _SYMBOL_EXTRACTORS.get(language)
 
 
 def registered_languages() -> frozenset[str]:

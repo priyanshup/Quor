@@ -12,6 +12,15 @@
 > capability, prior working title) as the numbered backlog recommendation, and explicitly ruled
 > out the sibling investigation, `docs/design/adaptive-multi-level-compression-investigation.md`,
 > as the wrong class of work for this task (see §2).
+>
+> **2026-07-28 addendum:** Phase D (§6/§9/§10 — per-language symbol/entry-point extraction,
+> deferred here as "materially larger scope than the rest combined") has since shipped as its own
+> follow-up, **QB-066 — Repository Symbols (`quor symbols`)**. It did not fold symbol data into
+> `RepoProfile`/`quor map` as this document's own `symbols.py`/`extract_symbols()` sketch implied —
+> see `docs/final/DECISIONS.md` ADR-038 for why a separate command/index was chosen instead, and
+> `backlog.md`'s `QB-066` entry for the implementation record. This document's own §5/§6 reuse
+> analysis held up unchanged in practice (per-language `extract_symbols_*()` functions, additive to
+> the existing `ast_summarize` modules, exactly as sketched here).
 
 ---
 

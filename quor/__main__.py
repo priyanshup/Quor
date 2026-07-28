@@ -16,7 +16,7 @@ import sys
 # CLI subcommands defined by Phase 7. Anything NOT in this set and NOT starting
 # with "-" is treated as a dispatch target (e.g. "quor git status").
 _CLI_COMMANDS: frozenset[str] = frozenset(
-    {"schema", "hook", "init", "validate", "explain", "gain", "verify", "doctor", "map"}
+    {"schema", "hook", "init", "validate", "explain", "gain", "verify", "doctor", "map", "symbols"}
 )
 
 

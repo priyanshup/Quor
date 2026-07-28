@@ -48,6 +48,7 @@ import warnings
 from typing import TYPE_CHECKING
 
 from quor.pipeline.ast_summarize._treesitter_utils import add_candidate, collect_error_ranges
+from quor.pipeline.ast_summarize.symbol_model import ENTRY_POINT_NAMES, Symbol, SymbolKind
 
 if TYPE_CHECKING:
     from tree_sitter import Node
@@ -155,3 +156,88 @@ def _visit_var_spec(spec_node: Node, error_ranges: list[tuple[int, int]], lines:
     for expr in value.children:
         if expr.type == "func_literal":
             add_candidate(expr, error_ranges, lines, block_type=_BLOCK_TYPE)
+
+
+# Go's own grammar names for a struct/interface type-spec's underlying type
+# node — mapped to the Symbol kind each represents (QB-066).
+_TYPE_SPEC_KINDS: dict[str, SymbolKind] = {"struct_type": "struct", "interface_type": "interface"}
+
+
+def extract_symbols_go(source: str) -> list[Symbol]:
+    """Return every top-level struct/interface type declaration and
+    function/method declaration (QB-066), in source order.
+
+    `is_public` uses Go's own exported-identifier rule: a leading-uppercase
+    name is exported (public), a leading-lowercase name is package-private
+    — the language's own visibility mechanism, not a Quor convention.
+
+    Returns an empty list (with an actionable warning) if the optional
+    `tree-sitter`/`tree-sitter-go` dependency is not installed. Otherwise
+    may raise on a genuine, unrecoverable parser failure — not caught here,
+    same fail-open contract as `analyze_go()`."""
+    try:
+        import tree_sitter
+        import tree_sitter_go
+    except ImportError:
+        warnings.warn(
+            "[quor] tree-sitter/tree-sitter-go is not installed; "
+            "install quor[go] to enable Go symbol extraction "
+            "(falling back to no symbols for this file)",
+            stacklevel=2,
+        )
+        return []
+
+    language = tree_sitter.Language(tree_sitter_go.language())
+    parser = tree_sitter.Parser(language)
+    tree = parser.parse(source.encode("utf-8"))
+
+    symbols: list[Symbol] = []
+    for child in tree.root_node.children:
+        if child.type == "type_declaration":
+            _add_type_spec_symbols(child, symbols)
+        elif child.type in _FUNCTION_LIKE_TYPES:
+            _add_function_symbol(child, symbols)
+    return symbols
+
+
+def _decode(node: Node) -> str:
+    text = node.text
+    return text.decode("utf-8") if text is not None else ""
+
+
+def _is_exported(name: str) -> bool:
+    return bool(name) and name[0:1].isupper()
+
+
+def _add_type_spec_symbols(decl_node: Node, symbols: list[Symbol]) -> None:
+    for spec in decl_node.children:
+        if spec.type != "type_spec":
+            continue
+        name_node = spec.child_by_field_name("name")
+        type_node = spec.child_by_field_name("type")
+        if name_node is None or type_node is None:
+            continue
+        kind = _TYPE_SPEC_KINDS.get(type_node.type)
+        if kind is None:
+            continue
+        name = _decode(name_node)
+        symbols.append(
+            Symbol(name=name, kind=kind, line=spec.start_point.row + 1, is_public=_is_exported(name))
+        )
+
+
+def _add_function_symbol(node: Node, symbols: list[Symbol]) -> None:
+    name_node = node.child_by_field_name("name")
+    if name_node is None:
+        return
+    name = _decode(name_node)
+    kind: SymbolKind = "method" if node.type == "method_declaration" else "function"
+    symbols.append(
+        Symbol(
+            name=name,
+            kind=kind,
+            line=node.start_point.row + 1,
+            is_public=_is_exported(name),
+            is_entry_point=name in ENTRY_POINT_NAMES,
+        )
+    )

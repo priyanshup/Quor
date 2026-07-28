@@ -52,7 +52,7 @@ Stages annotate. Final render applies. Stages never mutate line content.
 | `quor/pipeline/engine.py` | Pipeline executor. Orchestrates stages. Enforces PROTECT immutability. |
 | `quor/pipeline/content_type.py` | Heuristic content type detection. |
 | `quor/pipeline/stages/` | One file per stage. Each implements StageHandler Protocol. |
-| `quor/pipeline/repo_profile/` | QB-061's Repository Context Profile (`quor map`) — a new package *parallel to* the ContentMask pipeline, not a stage within it (see its own `__init__.py` docstring for why). Walks the repo once (`walk.py`), runs a three-tier detector-rule registry (`detectors/`, mirrors `filters/registry.py`'s loading pattern) plus language/entry-point/directory/statistics modules, and renders a deterministic `RepoProfile` (`model.py`/`render.py`) via `profiler.build_profile()`. |
+| `quor/pipeline/repo_profile/` | QB-061's Repository Context Profile (`quor map`) — a new package *parallel to* the ContentMask pipeline, not a stage within it (see its own `__init__.py` docstring for why). Walks the repo once (`walk.py`), runs a three-tier detector-rule registry (`detectors/`, mirrors `filters/registry.py`'s loading pattern) plus language/entry-point/directory/statistics modules, and renders a deterministic `RepoProfile` (`model.py`/`render.py`) via `profiler.build_profile()`. Also hosts QB-066's Repository Symbols index (`quor symbols`) — `symbols.py`'s `build_symbol_index()` reuses the same `walk.py` file enumeration and, for every file whose extension has a registered `ast_summarize` parser, calls that language's additive `extract_symbols_*()` function (see `quor/pipeline/ast_summarize/symbol_model.py`) to collect classes/interfaces/structs/traits/enums/functions/methods into a `RepoSymbolIndex` (`symbols_model.py`/`symbols_render.py`) — a separate command/index from `RepoProfile`, not a new field on it (see ADR-038). |
 | `quor/filters/registry.py` | Three-tier lookup (project > user > built-in). |
 | `quor/filters/loader.py` | TOML → FilterConfig (Pydantic v2). |
 | `quor/filters/trust.py` | Git-tracked file verification for project-local filters. |
@@ -111,7 +111,7 @@ These are the ONLY filtering-operation commands that exist in V1. Do not add mor
 5. `quor verify` — run all inline filter tests. Exit code 1 if any test fails.
 6. `quor doctor` — health check: hook responding? Tests passing? Schema current? Mode set?
 
-`quor schema` also exists as a 7th, exempted utility command (JSON Schema dump for the filter TOML format) — it's not a filtering operation, so it doesn't count against the six.
+`quor schema` also exists as a 7th, exempted utility command (JSON Schema dump for the filter TOML format) — it's not a filtering operation, so it doesn't count against the six. `quor map` (QB-061, ADR-037) and `quor symbols` (QB-066, ADR-038) are an 8th and 9th exemption in the same category — deterministic, non-filtering repository-analysis commands, each explicitly approved as its own exemption, not an open door for further ones (see Common Mistake #8 below).
 
 Both `quor` and `qr` are CLI entry points.
 
@@ -431,7 +431,7 @@ Plugin failures (import error, validation error, runtime error) are logged as wa
 5. **Hardcoding `/tmp`.** Use `tempfile.mkdtemp()`.
 6. **Catching bare `except:`.** Always catch specific exception types.
 7. **Writing to real config dirs in tests.** The autouse fixture patches platformdirs.
-8. **Adding another filtering-operation CLI command.** Don't. V1 has exactly 6. `schema` and `map` (QB-061) are the only two exemptions, both non-filtering utility commands with their own explicit approval — see "The Six CLI Commands" above. Don't treat that as an open door for a third.
+8. **Adding another filtering-operation CLI command.** Don't. V1 has exactly 6. `schema`, `map` (QB-061), and `symbols` (QB-066) are the only three exemptions, all non-filtering utility commands with their own explicit approval — see "The Six CLI Commands" above. Don't treat that as an open door for a fourth.
 9. **Returning empty string from pipeline.** `on_empty` handles this — check it's configured.
 10. **Storing backslashes in SQLite paths.** Always `Path.as_posix()`.
 11. **Mutable defaults in Pydantic models.** Use `Field(default_factory=list)`.

@@ -30,6 +30,8 @@ from __future__ import annotations
 
 import ast
 
+from quor.pipeline.ast_summarize.symbol_model import ENTRY_POINT_NAMES, Symbol, SymbolKind
+
 
 def analyze_python(source: str) -> set[int]:
     """Return the 1-indexed line numbers of Python function/method BODY
@@ -116,3 +118,65 @@ def _body_line_range(node: ast.FunctionDef | ast.AsyncFunctionDef) -> set[int]:
     if start > end:
         return set()
     return set(range(start, end + 1))
+
+
+def extract_symbols_python(source: str) -> list[Symbol]:
+    """Return every class/function/method Python declares at module scope
+    (including inside `if`/`try`/`with` wrappers — the same conditional-
+    definition containers `_compressible_body_lines()` above already
+    descends into) or one level inside a class body, in source order.
+
+    Raises SyntaxError/ValueError exactly as `ast.parse()` does on
+    unparseable input, same fail-open contract as `analyze_python()` — see
+    module docstring.
+    """
+    tree = ast.parse(source)
+    symbols: list[Symbol] = []
+    _visit_module_body(tree.body, symbols)
+    return symbols
+
+
+def _visit_module_body(stmts: list[ast.stmt], symbols: list[Symbol]) -> None:
+    for stmt in stmts:
+        if isinstance(stmt, ast.ClassDef):
+            symbols.append(_symbol_for(stmt, "class"))
+            _visit_class_body(stmt.body, symbols)
+        elif isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            symbols.append(_symbol_for(stmt, "function"))
+        elif isinstance(stmt, ast.If):
+            _visit_module_body(stmt.body, symbols)
+            _visit_module_body(stmt.orelse, symbols)
+        elif isinstance(stmt, ast.Try):
+            _visit_module_body(stmt.body, symbols)
+            for handler in stmt.handlers:
+                _visit_module_body(handler.body, symbols)
+            _visit_module_body(stmt.orelse, symbols)
+            _visit_module_body(stmt.finalbody, symbols)
+        elif isinstance(stmt, (ast.With, ast.AsyncWith)):
+            _visit_module_body(stmt.body, symbols)
+
+
+def _visit_class_body(stmts: list[ast.stmt], symbols: list[Symbol]) -> None:
+    """Recurse one level into a class body: direct methods, and nested
+    classes (recorded as their own `"class"` symbol, then recursed into for
+    their own methods) — does not descend into a method's own body, mirroring
+    `_compressible_body_lines()`'s identical "no further recursion" rule."""
+    for stmt in stmts:
+        if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            symbols.append(_symbol_for(stmt, "method"))
+        elif isinstance(stmt, ast.ClassDef):
+            symbols.append(_symbol_for(stmt, "class"))
+            _visit_class_body(stmt.body, symbols)
+
+
+def _symbol_for(
+    node: ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef, kind: SymbolKind
+) -> Symbol:
+    name = node.name
+    return Symbol(
+        name=name,
+        kind=kind,
+        line=node.lineno,
+        is_public=not name.startswith("_"),
+        is_entry_point=kind == "function" and name in ENTRY_POINT_NAMES,
+    )
