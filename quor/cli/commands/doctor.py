@@ -119,6 +119,7 @@ def _run_doctor(
     checks.append(_check_mode(user_config))
     checks.append(_check_tee(user_config))
     checks.append(_check_plugins())
+    checks.append(_check_negative_compression_filters())
 
     all_ok = True
     for name, ok, detail in checks:
@@ -609,6 +610,51 @@ def _check_tee(user_config: QuorUserConfig) -> tuple[str, bool, str]:
         return ("Tee: disabled (disabled in config)", True, "")
 
     return ("Tee: enabled", True, "")
+
+
+def _check_negative_compression_filters() -> tuple[str, bool, str]:
+    """QB-065: surface `flag_low_performers`'s finding directly in `quor
+    doctor`, not only in `quor gain --filters` — the QB-052/QB-065 negative-
+    compression pattern (a filter's aggregate ratio looks healthy while its
+    real per-invocation average is net-negative) was only found by someone
+    going looking for it manually; a health check is where a user who never
+    thinks to run `gain --filters` would actually see it. Reuses
+    `query_filter_analytics`/`flag_low_performers` exactly as `gain --filters`
+    does — no new query, no new threshold, same `NEAR_ZERO_COMPRESSION_PCT`
+    cutoff from `quor.analytics.filter_divergence`.
+
+    Advisory only, like `_check_plugins`/`_check_tee`'s config-disabled case:
+    a bad SQLite read or a degenerate project path (e.g. doctor run from a
+    drive root) must not block the rest of doctor's real install/config
+    checks, so any query failure is reported informationally (True) rather
+    than failing the check.
+    """
+    from quor.analytics.filter_divergence import flag_low_performers
+    from quor.tracking.db import query_filter_analytics
+
+    db_path = Path(platformdirs.user_data_dir("quor")) / "quor.db"
+    label = "Negative or near-zero compression filters"
+    try:
+        report = query_filter_analytics(db_path, Path.cwd().resolve())
+    except Exception as exc:  # noqa: BLE001 — advisory check, must never block doctor
+        return (label, True, f"(could not check: {exc})")
+
+    if report.total_invocations == 0:
+        return (label, True, "no tracked invocations yet")
+
+    flagged = flag_low_performers(report.filters)
+    if not flagged:
+        return (label, True, "")
+
+    names = ", ".join(
+        f"{f.filter_name} (net {f.avg_compression_pct:+.1f}%, avg/call {f.per_invocation_avg_pct:+.1f}%)"
+        for f in flagged
+    )
+    return (
+        label,
+        False,
+        f"{len(flagged)} filter(s): {names} — run `quor gain --filters` for details",
+    )
 
 
 def _check_plugins() -> tuple[str, bool, str]:

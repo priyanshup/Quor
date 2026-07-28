@@ -1068,6 +1068,57 @@ class TestDoctor:
             assert "Tee: enabled" in result.output
             assert get_tee_status().disabled is False
 
+    def test_negative_compression_filter_flagged(self, tmp_path: Path) -> None:
+        """QB-065: a filter whose real per-invocation average is net-
+        negative (even with a healthy-looking aggregate ratio, the ruff/
+        generic production shape) must show up as a doctor failure, not
+        just in `quor gain --filters`."""
+        from quor.tracking.db import FilterAnalyticsReport, FilterUsage
+
+        settings_path = tmp_path / "settings.json"
+        _install_real_hooks(tmp_path, settings_path)
+
+        fake_report = FilterAnalyticsReport(
+            total_invocations=4,
+            days=30,
+            filters=(
+                FilterUsage(
+                    filter_name="ruff",
+                    invocation_count=4,
+                    usage_pct=100.0,
+                    original_tokens=1000,
+                    final_tokens=500,
+                    tokens_saved=500,
+                    avg_compression_pct=20.8,
+                    per_invocation_avg_pct=-12.3,
+                    passthrough_pct=0.0,
+                    avg_duration_ms=5.0,
+                ),
+            ),
+        )
+        with (
+            patch("platformdirs.user_data_dir", return_value=str(tmp_path)),
+            patch("quor.tracking.db.query_filter_analytics", return_value=fake_report),
+        ):
+            result = runner.invoke(app, ["doctor", "--settings-path", str(settings_path)])
+
+        assert "✗ Negative or near-zero compression filters" in result.output
+        assert "ruff" in result.output
+        assert "avg/call -12.3%" in result.output.replace("\n", " ")
+        assert result.exit_code == ExitCode.GENERAL_ERROR
+
+    def test_no_tracked_invocations_is_not_a_failure(self, tmp_path: Path) -> None:
+        """A fresh install with no tracking data yet must not be reported as
+        a negative-compression failure — there's nothing to measure."""
+        settings_path = tmp_path / "settings.json"
+        _install_real_hooks(tmp_path, settings_path)
+
+        with patch("platformdirs.user_data_dir", return_value=str(tmp_path)):
+            result = runner.invoke(app, ["doctor", "--settings-path", str(settings_path)])
+
+        assert "✓ Negative or near-zero compression filters" in result.output
+        assert "no tracked invocations yet" in result.output
+
     def test_plugin_diagnostics_include_version(self, tmp_path: Path) -> None:
         """quor doctor lists discovered plugins with their declared version."""
         from quor.pipeline.plugin_loader import PluginInfo, PluginLoadReport

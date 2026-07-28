@@ -671,6 +671,21 @@ class FilterUsage:
     final_tokens: int
     tokens_saved: int                # original_tokens - final_tokens
     avg_compression_pct: float       # tokens_saved / original_tokens * 100 (aggregate ratio, matches tests/benchmarks/benchmark_runner.py's own per-category convention)
+    per_invocation_avg_pct: float
+    """QB-065: the true arithmetic mean of each invocation's own
+    `(original-final)/original*100`, NOT the same figure as
+    `avg_compression_pct` above — that field is deliberately an aggregate,
+    sum-based ratio (`test_avg_compression_pct_is_aggregate_ratio_not_mean_of_rows`
+    pins this on purpose, matching `benchmark_runner.py`'s own per-category
+    convention), which a handful of very large invocations can dominate
+    while most real invocations are still individually negative. Confirmed
+    in production: `ruff`/`generic` both showed a healthy-looking aggregate
+    ratio (+20.8%/+43.8%) while this field was negative (-12.3%/-2.8%) for
+    the same window — see `quor/analytics/filter_divergence.py`'s module
+    docstring. Rows where `original_tokens` is 0 are excluded from this
+    mean (there is no percentage to average), same guard `avg_compression_pct`
+    already applies implicitly via its own zero-numerator handling.
+    """
     passthrough_pct: float
     avg_duration_ms: float
 
@@ -742,7 +757,12 @@ def query_filter_analytics(
                  COALESCE(SUM(original_tokens), 0)       AS orig_sum,
                  COALESCE(SUM(final_tokens), 0)          AS final_sum,
                  COALESCE(SUM(was_passthrough), 0)       AS passthroughs,
-                 COALESCE(AVG(duration_ms), 0.0)         AS avg_duration
+                 COALESCE(AVG(duration_ms), 0.0)         AS avg_duration,
+                 COALESCE(AVG(
+                     CASE WHEN original_tokens > 0
+                          THEN (original_tokens - final_tokens) * 100.0 / original_tokens
+                     END
+                 ), 0.0)                                 AS avg_pct_per_row
                FROM invocations
                WHERE {project_filter}
                  AND recorded_at >= datetime('now', ?)
@@ -765,6 +785,7 @@ def query_filter_analytics(
                 if r["orig_sum"]
                 else 0.0
             ),
+            per_invocation_avg_pct=float(r["avg_pct_per_row"]),
             passthrough_pct=(int(r["passthroughs"]) / int(r["n"]) * 100) if r["n"] else 0.0,
             avg_duration_ms=float(r["avg_duration"]),
         )

@@ -26,6 +26,7 @@ NEAR_ZERO_COMPRESSION_PCT = 5.0
 class LowPerformer:
     filter_name: str
     avg_compression_pct: float
+    per_invocation_avg_pct: float
     invocation_count: int
 
 
@@ -37,13 +38,31 @@ def flag_low_performers(
     """Real filters (the `PASSTHROUGH_LABEL` bucket is excluded — it isn't a
     filter, and its `avg_compression_pct` is always exactly 0.0 by
     construction, which would otherwise always show up here) whose real
-    `avg_compression_pct` is below `threshold_pct`. Sorted worst first."""
+    `avg_compression_pct` is below `threshold_pct`, OR whose
+    `per_invocation_avg_pct` is negative even when the aggregate ratio
+    isn't.
+
+    QB-065: the aggregate-only version of this check (compare
+    `avg_compression_pct` alone) has a real, confirmed blind spot — a
+    handful of very large invocations can carry a positive aggregate ratio
+    while most real invocations are still individually net-negative. This
+    was found directly in production: after QB-052's tee-footer fix,
+    `ruff`/`generic` still showed this shape *before* the fix (aggregate
+    +20.8%/+43.8%, comfortably above `NEAR_ZERO_COMPRESSION_PCT`, while
+    `per_invocation_avg_pct` was -12.3%/-2.8%) — the original,
+    aggregate-only version of this function would not have flagged either
+    one. Both signals are still reported (not just the worse of the two, to
+    keep the aggregate/mean divergence itself visible to a reader — see
+    `quor/analytics/filter_report.py::render_low_performers`), and sorted by
+    whichever is worse so the clearest problem sorts first.
+    """
     flagged = [
-        LowPerformer(f.filter_name, f.avg_compression_pct, f.invocation_count)
+        LowPerformer(f.filter_name, f.avg_compression_pct, f.per_invocation_avg_pct, f.invocation_count)
         for f in filters
-        if f.filter_name != PASSTHROUGH_LABEL and f.avg_compression_pct < threshold_pct
+        if f.filter_name != PASSTHROUGH_LABEL
+        and (f.avg_compression_pct < threshold_pct or f.per_invocation_avg_pct < 0)
     ]
-    return sorted(flagged, key=lambda f: f.avg_compression_pct)
+    return sorted(flagged, key=lambda f: min(f.avg_compression_pct, f.per_invocation_avg_pct))
 
 
 @dataclass(frozen=True)

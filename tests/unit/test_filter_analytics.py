@@ -40,9 +40,13 @@ def _usage(
     original: int = 1000,
     final: int = 500,
     compression_pct: float = 50.0,
+    per_invocation_pct: float | None = None,
     passthrough_pct: float = 0.0,
     duration_ms: float = 5.0,
 ) -> FilterUsage:
+    # Defaults to compression_pct when not given, so every existing caller
+    # that doesn't care about the QB-065 aggregate/mean distinction gets the
+    # same single-figure behavior it always did.
     return FilterUsage(
         filter_name=name,
         invocation_count=count,
@@ -51,6 +55,9 @@ def _usage(
         final_tokens=final,
         tokens_saved=original - final,
         avg_compression_pct=compression_pct,
+        per_invocation_avg_pct=(
+            per_invocation_pct if per_invocation_pct is not None else compression_pct
+        ),
         passthrough_pct=passthrough_pct,
         avg_duration_ms=duration_ms,
     )
@@ -124,8 +131,24 @@ class TestFlagLowPerformers:
         filters = (_usage("borderline", compression_pct=8.0),)
         assert flag_low_performers(filters, threshold_pct=5.0) == []
         assert flag_low_performers(filters, threshold_pct=10.0) == [
-            LowPerformer("borderline", 8.0, 10)
+            LowPerformer("borderline", 8.0, 8.0, 10)
         ]
+
+    def test_flags_negative_per_invocation_even_with_healthy_aggregate(self) -> None:
+        """QB-065: the real ruff/generic shape — a handful of large
+        invocations carry a positive aggregate ratio while the arithmetic
+        mean per invocation is still negative. The old aggregate-only check
+        would not have flagged either filter."""
+        filters = (
+            _usage("ruff", compression_pct=20.8, per_invocation_pct=-12.3),
+            _usage("generic", compression_pct=43.8, per_invocation_pct=-2.8),
+            _usage("healthy", compression_pct=60.0, per_invocation_pct=55.0),
+        )
+        flagged = flag_low_performers(filters)
+        names = [f.filter_name for f in flagged]
+        assert names == ["ruff", "generic"]  # worst (min of the two figures) first
+        assert flagged[0].avg_compression_pct == pytest.approx(20.8)
+        assert flagged[0].per_invocation_avg_pct == pytest.approx(-12.3)
 
 
 class TestComputeDivergence:
