@@ -68,6 +68,8 @@ from quor.adapters.base import (
     InstallContext,
     InstallResult,
 )
+from quor.atomic_io import write_json_atomic as _write_json_atomic
+from quor.atomic_io import write_text_atomic as _write_text_atomic
 from quor.errors import ConfigError
 from quor.rewrite.classifier import rewrite_command
 
@@ -191,34 +193,6 @@ def _install_hook_entry(settings: dict[str, Any], script_path: Path) -> dict[str
     return new_settings
 
 
-def _write_text_atomic(path: Path, content: str) -> None:
-    import os
-    import tempfile
-
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp_name = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            fh.write(content)
-        os.replace(tmp_name, path)
-    except BaseException:
-        Path(tmp_name).unlink(missing_ok=True)
-        raise
-
-
-def _write_json_atomic(path: Path, data: dict[str, Any]) -> None:
-    import os
-    import tempfile
-
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp_name = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
-    try:
-        with os.fdopen(fd, "wb") as fh:
-            fh.write(orjson.dumps(data, option=orjson.OPT_INDENT_2))
-        os.replace(tmp_name, path)
-    except BaseException:
-        Path(tmp_name).unlink(missing_ok=True)
-        raise
 
 
 class GeminiAdapter:

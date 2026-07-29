@@ -26,11 +26,13 @@ CREATE TABLE IF NOT EXISTS invocations (
     project_key_normalized   TEXT                             -- NULL until backfilled (v2)
 );
 
-CREATE INDEX IF NOT EXISTS idx_invocations_project
-    ON invocations (project_path, recorded_at);
-
-CREATE INDEX IF NOT EXISTS idx_invocations_filter
-    ON invocations (filter_name, recorded_at);
+-- idx_invocations_project (project_path, recorded_at) and
+-- idx_invocations_filter (filter_name, recorded_at) used to be created here
+-- (ADR-008) but are gone as of schema v3 — every real query scopes by
+-- project_key_normalized below, not by bare project_path/filter_name, so
+-- they only cost write-amplification with no read benefit. An existing
+-- database that still has them from before v3 gets them dropped by
+-- quor/tracking/db.py's _drop_obsolete_indexes().
 
 CREATE INDEX IF NOT EXISTS idx_invocations_project_key
     ON invocations (project_key_normalized);

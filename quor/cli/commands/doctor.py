@@ -314,12 +314,9 @@ def _repair_hooks(settings_path: Path | None) -> list[tuple[str, bool, str]]:
     writing settings.json for the hooks that did succeed.
     """
     from quor.adapters.hook_manifest import render_hook_script
-    from quor.cli.commands.init import (
-        _install_hook_entry,
-        _read_settings,
-        _write_json_atomic,
-        _write_text_atomic,
-    )
+    from quor.atomic_io import write_json_atomic as _write_json_atomic
+    from quor.atomic_io import write_text_atomic as _write_text_atomic
+    from quor.cli.commands.init import _install_hook_entry, _read_settings
 
     settings_file = settings_path or (Path.home() / ".claude" / "settings.json")
     results: list[tuple[str, bool, str]] = []
@@ -411,7 +408,8 @@ def should_warn_stale_hooks() -> bool:
     again next time, which is safe. This must never raise, since it runs
     ahead of every CLI command.
     """
-    from quor.cli.commands.init import _read_settings, _write_json_atomic
+    from quor.atomic_io import write_json_atomic as _write_json_atomic
+    from quor.cli.commands.init import _read_settings
 
     state_path = _stale_warn_state_path()
 

@@ -1,4 +1,4 @@
-"""SQLite + JSONL tracking for Quor pipeline invocations.
+"""SQLite tracking for Quor pipeline invocations.
 
 Public API:
     InvocationRecord       — frozen dataclass, one per pipeline run
@@ -10,6 +10,15 @@ Public API:
     normalize_project_path() — canonical project identity (query_gain's matching rule)
     get_tracking_db()      — factory: create TrackingDB in the platformdirs data dir
     count_tokens()         — ceil(len(text)/4) estimate (±20%)
+
+Historical note (QB-070): this used to also mirror every record to a
+`invocations.jsonl` file alongside quor.db ("dual persistence", ADR-008).
+Removed — a repo-wide + installed-usage-directory audit found no reader of
+that file anywhere (not `quor gain`, not any other command, not a test
+except the ones that only existed to assert the JSONL write itself), while
+it grew forever with no retention policy at all (unlike quor.db's 90-day
+cleanup below). SQLite remains the single store; nothing that previously
+read tracking data changes behavior.
 """
 
 from __future__ import annotations
@@ -27,10 +36,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-import orjson
 import platformdirs
 
-_SCHEMA_VERSION = 2
+_SCHEMA_VERSION = 3
 _SCHEMA_SQL = (Path(__file__).parent / "schema.sql").read_text(encoding="utf-8")
 
 # v2: project_key_normalized. CREATE TABLE IF NOT EXISTS in schema.sql only
@@ -39,6 +47,18 @@ _SCHEMA_SQL = (Path(__file__).parent / "schema.sql").read_text(encoding="utf-8")
 # `ALTER TABLE ADD COLUMN IF NOT EXISTS`, so existing databases are migrated
 # idempotently via PRAGMA table_info() + a guarded ADD COLUMN.
 _PROJECT_IDENTITY_COLUMNS = ("project_key_normalized",)
+
+# v3 (QB-070): idx_invocations_project (project_path, recorded_at) and
+# idx_invocations_filter (filter_name, recorded_at) were the schema's
+# original two indexes (ADR-008) — superseded once every real query moved
+# to scoping by project_key_normalized (v2). A repo-wide grep confirms no
+# query anywhere filters by bare project_path or filter_name anymore, so
+# these two just pay write-amplification on every INSERT for no read
+# benefit. schema.sql no longer creates them for a brand-new database;
+# existing databases have them dropped idempotently here, the same
+# `IF EXISTS`-guarded pattern _ensure_project_identity_columns() uses for
+# v2's column addition.
+_OBSOLETE_INDEXES = ("idx_invocations_project", "idx_invocations_filter")
 
 # Sentinel: put this on the queue to stop the worker thread
 _STOP = object()
@@ -156,17 +176,49 @@ def _ensure_project_identity_columns(conn: sqlite3.Connection) -> None:
             conn.execute(f"ALTER TABLE invocations ADD COLUMN {column} TEXT")
 
 
-class TrackingDB:
-    """Non-blocking SQLite + JSONL writer.
+def _drop_obsolete_indexes(conn: sqlite3.Connection) -> None:
+    """v3 (QB-070): drop the two indexes superseded by project_key_normalized.
 
-    `record()` enqueues the record and returns immediately.
-    The background worker thread drains the queue and writes both stores.
-    The main hook path never waits for DB writes (ADR-016).
+    `DROP INDEX IF EXISTS` is already idempotent by itself, so — unlike
+    `_ensure_project_identity_columns()` — this needs no existence check
+    first; it's simply a no-op on a database that never had them (a
+    brand-new one, since schema.sql no longer creates them) or already had
+    them dropped by a previous run."""
+    for index_name in _OBSOLETE_INDEXES:
+        conn.execute(f"DROP INDEX IF EXISTS {index_name}")
+
+
+_BATCH_MAX_SIZE = 25
+"""Commit after this many staged INSERTs, even if the interval below hasn't
+elapsed yet — bounds how much a single commit can amortize."""
+
+_BATCH_MAX_INTERVAL_SECONDS = 0.25
+"""Commit at most this long after the first not-yet-committed INSERT in the
+current batch, even if _BATCH_MAX_SIZE hasn't been reached — so a slow
+trickle of records still lands promptly rather than waiting indefinitely
+for a batch that may never fill up."""
+
+
+class TrackingDB:
+    """Non-blocking SQLite writer.
+
+    `record()` enqueues the record and returns immediately. The background
+    worker thread drains the queue and writes to SQLite, batching commits
+    (up to _BATCH_MAX_SIZE records or _BATCH_MAX_INTERVAL_SECONDS, whichever
+    comes first) instead of committing once per row. `flush()`/`close()`
+    always force a commit of whatever is currently staged before returning,
+    so their durability contract is unchanged by batching — the only thing
+    batching changes is how long a record can sit staged-but-uncommitted
+    while the process keeps running and neither flush() nor close() has
+    been called. A hard kill in that window loses the same staged-but-
+    uncommitted records a hard kill during the old commit-per-row window
+    would already have lost if it landed between record() and the write
+    actually happening — this was never a strict per-row durability
+    guarantee (see ADR-016: "main hook path never waits for DB writes").
     """
 
-    def __init__(self, db_path: Path, jsonl_path: Path | None = None) -> None:
+    def __init__(self, db_path: Path) -> None:
         self._db_path = db_path
-        self._jsonl_path = jsonl_path
         self._queue: queue.SimpleQueue[Any] = queue.SimpleQueue()
         self._thread = threading.Thread(
             target=self._worker, name="quor-tracking", daemon=True
@@ -205,17 +257,38 @@ class TrackingDB:
                 stacklevel=1,
             )
             return
+
+        pending = 0  # staged (executed, not yet committed) INSERTs
+        deadline: float | None = None  # monotonic time the batch must be committed by
         while True:
-            item = self._queue.get()
+            timeout = None if deadline is None else max(0.0, deadline - time.monotonic())
+            try:
+                item = self._queue.get(timeout=timeout)
+            except queue.Empty:
+                # Batch interval elapsed with nothing new arriving — commit
+                # what's staged rather than holding it hostage indefinitely.
+                conn.commit()
+                pending = 0
+                deadline = None
+                continue
+
             if item is _STOP:
+                conn.commit()  # flush any staged batch before stopping
                 break
             if isinstance(item, threading.Event):
+                conn.commit()  # flush() must observe every record enqueued so far
                 item.set()
                 continue
+
             try:
-                self._write_sqlite(conn, item)
-                if self._jsonl_path is not None:
-                    self._write_jsonl(item)
+                self._stage_sqlite_insert(conn, item)
+                pending += 1
+                if deadline is None:
+                    deadline = time.monotonic() + _BATCH_MAX_INTERVAL_SECONDS
+                if pending >= _BATCH_MAX_SIZE:
+                    conn.commit()
+                    pending = 0
+                    deadline = None
             except Exception as exc:  # noqa: BLE001
                 warnings.warn(f"[quor] tracking write error: {exc}", stacklevel=1)
         conn.close()
@@ -291,6 +364,7 @@ class TrackingDB:
         """Create tables if they don't exist and record schema migration."""
         conn.executescript(_SCHEMA_SQL)
         _ensure_project_identity_columns(conn)
+        _drop_obsolete_indexes(conn)
         # Ensure migration row exists for current version
         conn.execute(
             "INSERT OR IGNORE INTO schema_migrations (version) VALUES (?)",
@@ -305,7 +379,14 @@ class TrackingDB:
         )
         conn.commit()
 
-    def _write_sqlite(self, conn: sqlite3.Connection, rec: InvocationRecord) -> None:
+    def _stage_sqlite_insert(self, conn: sqlite3.Connection, rec: InvocationRecord) -> None:
+        """Execute this record's INSERT on `conn` without committing.
+
+        Named _stage_* (not _write_*) since QB-070's batching means the
+        statement is only *staged* here — the caller (_worker) decides when
+        to actually conn.commit(), up to _BATCH_MAX_SIZE records or
+        _BATCH_MAX_INTERVAL_SECONDS later.
+        """
         d = rec.to_dict()
         # project_key_normalized is computed here, at the single point every
         # record passes through on its way to SQLite — not by changing
@@ -326,22 +407,6 @@ class TrackingDB:
             """,
             d,
         )
-        conn.commit()
-
-    # ------------------------------------------------------------------
-    # JSONL helper
-    # ------------------------------------------------------------------
-
-    def _write_jsonl(self, rec: InvocationRecord) -> None:
-        if self._jsonl_path is None:
-            raise RuntimeError(
-                "_write_jsonl() called with no jsonl_path configured — "
-                "callers must guard with `if self._jsonl_path is not None`"
-            )
-        self._jsonl_path.parent.mkdir(parents=True, exist_ok=True)
-        line = orjson.dumps(rec.to_dict()) + b"\n"
-        with open(self._jsonl_path, "ab") as fh:
-            fh.write(line)
 
 
 # ---------------------------------------------------------------------------
@@ -833,7 +898,4 @@ def get_tracking_db() -> TrackingDB:
     """Create a TrackingDB backed by the platformdirs user data directory."""
     data_dir = Path(platformdirs.user_data_dir("quor"))
     data_dir.mkdir(parents=True, exist_ok=True)
-    return TrackingDB(
-        db_path=data_dir / "quor.db",
-        jsonl_path=data_dir / "invocations.jsonl",
-    )
+    return TrackingDB(db_path=data_dir / "quor.db")

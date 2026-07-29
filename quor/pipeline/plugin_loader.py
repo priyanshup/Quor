@@ -32,6 +32,7 @@ from typing import Any
 import orjson
 import platformdirs
 
+from quor.atomic_io import write_json_atomic
 from quor.errors import CacheError, PluginError
 from quor.pipeline.stages.base import StageConfig, StageHandler
 from quor.plugins.base import QUOR_PLUGIN_API_VERSION, Plugin
@@ -135,16 +136,13 @@ def _write_cache(
 ) -> None:
     path = _cache_path()
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(
-            orjson.dumps(
-                {
-                    "package_set_hash": pkg_hash,
-                    "stage_entries": stage_specs,
-                    "plugin_entries": plugin_specs,
-                },
-                option=orjson.OPT_INDENT_2,
-            )
+        write_json_atomic(
+            path,
+            {
+                "package_set_hash": pkg_hash,
+                "stage_entries": stage_specs,
+                "plugin_entries": plugin_specs,
+            },
         )
     except Exception as exc:  # noqa: BLE001
         warnings.warn(f"[quor] could not write plugin cache: {exc}", stacklevel=3)

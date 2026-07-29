@@ -9,13 +9,14 @@ so trying Quor across several projects on day one should still only show
 the tip 5 times total, not 5 times per project.
 
 Storage is a single small text file holding one integer counter, written
-atomically (tempfile + os.replace, the same pattern used by
-quor/cli/commands/init.py's _write_text_atomic) rather than a SQLite state
-file like tee's: the stakes of a lost race here are a cosmetic double-print
-of the same tip at most once, not data corruption, so the lighter-weight
-atomic-file-replace approach is proportionate (unlike tee_state.db, which
-needs SQLite's WAL mode specifically to make a read-then-conditionally-write
-throttle check safe under concurrent access).
+atomically (tempfile + os.replace, via quor.atomic_io.write_text_atomic —
+shared with quor/cli/commands/init.py and quor/adapters/gemini_adapter.py,
+QB-070) rather than a SQLite state file like tee's: the stakes of a lost
+race here are a cosmetic double-print of the same tip at most once, not
+data corruption, so the lighter-weight atomic-file-replace approach is
+proportionate (unlike tee_state.db, which needs SQLite's WAL mode
+specifically to make a read-then-conditionally-write throttle check safe
+under concurrent access).
 
 All functions here may raise (OSError, ValueError) — callers are
 responsible for fail-open handling, matching the pattern already used by
@@ -24,11 +25,11 @@ quor/adapters/dispatcher.py's _track() and quor/pipeline/tee.py's functions.
 
 from __future__ import annotations
 
-import os
-import tempfile
 from pathlib import Path
 
 import platformdirs
+
+from quor.atomic_io import write_text_atomic
 
 MAX_ONBOARDING_COMMANDS = 5
 _STATE_FILENAME = "onboarding_count.txt"
@@ -52,15 +53,7 @@ def _read_count(path: Path) -> int:
 
 
 def _write_count_atomic(path: Path, count: int) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp_name = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            fh.write(str(count))
-        os.replace(tmp_name, path)
-    except BaseException:
-        Path(tmp_name).unlink(missing_ok=True)
-        raise
+    write_text_atomic(path, str(count))
 
 
 def record_filtered_command() -> int | None:

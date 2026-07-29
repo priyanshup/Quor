@@ -28,6 +28,7 @@ from pathlib import Path
 import orjson
 import platformdirs
 
+from quor.atomic_io import write_json_atomic
 from quor.tracking.db import PASSTHROUGH_LABEL, FilterAnalyticsReport
 
 
@@ -125,10 +126,7 @@ def append_snapshot(
     path = path if path is not None else default_history_path()
     entries = load_history(path)
     entries.append(entry)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(
-        orjson.dumps({"entries": [asdict(e) for e in entries]}, option=orjson.OPT_INDENT_2)
-    )
+    write_json_atomic(path, {"entries": [asdict(e) for e in entries]})
     return entries
 
 

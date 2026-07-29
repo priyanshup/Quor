@@ -1241,8 +1241,8 @@ class TestDoctorFix:
 
         with (
             patch("platformdirs.user_data_dir", return_value=str(tmp_path)),
-            patch("quor.cli.commands.init._write_text_atomic") as mock_write_text,
-            patch("quor.cli.commands.init._write_json_atomic") as mock_write_json,
+            patch("quor.atomic_io.write_text_atomic") as mock_write_text,
+            patch("quor.atomic_io.write_json_atomic") as mock_write_json,
         ):
             result = runner.invoke(app, ["doctor", "--fix", "--settings-path", str(settings_path)])
 
@@ -1254,7 +1254,7 @@ class TestDoctorFix:
     def test_one_repair_failing_does_not_stop_the_rest(self, tmp_path: Path) -> None:
         """The Bash hook's write fails; the Read hook must still be repaired
         and settings.json must still be updated for it."""
-        from quor.cli.commands.init import _write_text_atomic as real_write_text_atomic
+        from quor.atomic_io import write_text_atomic as real_write_text_atomic
 
         settings_path = tmp_path / "settings.json"
         _install_real_hooks(tmp_path, settings_path)
@@ -1268,7 +1268,7 @@ class TestDoctorFix:
 
         with (
             patch("platformdirs.user_data_dir", return_value=str(tmp_path)),
-            patch("quor.cli.commands.init._write_text_atomic", side_effect=_flaky_write),
+            patch("quor.atomic_io.write_text_atomic", side_effect=_flaky_write),
         ):
             result = runner.invoke(app, ["doctor", "--fix", "--settings-path", str(settings_path)])
 
@@ -1291,8 +1291,8 @@ class TestDoctorFix:
             assert "✓ All checks passed" in first.output
 
             with (
-                patch("quor.cli.commands.init._write_text_atomic") as mock_write_text,
-                patch("quor.cli.commands.init._write_json_atomic") as mock_write_json,
+                patch("quor.atomic_io.write_text_atomic") as mock_write_text,
+                patch("quor.atomic_io.write_json_atomic") as mock_write_json,
             ):
                 second = runner.invoke(
                     app, ["doctor", "--fix", "--settings-path", str(settings_path)]
