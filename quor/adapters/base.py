@@ -2,9 +2,21 @@
 
 from __future__ import annotations
 
-from typing import Any, Protocol, runtime_checkable
+from dataclasses import dataclass
+from enum import StrEnum
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, ClassVar, Protocol, runtime_checkable
 
 from pydantic import BaseModel, ConfigDict
+
+if TYPE_CHECKING:
+    from quor.tracking.db import TrackingDB
+
+
+QUOR_ADAPTER_API_VERSION: int = 1
+"""Current `AgentAdapter` API version — mirrors
+`quor.plugins.base.QUOR_PLUGIN_API_VERSION`'s contract exactly. An adapter
+declaring a newer major version than this is rejected at discovery time."""
 
 
 class ToolInput(BaseModel):
@@ -44,12 +56,133 @@ class HookOutput(BaseModel):
     hookSpecificOutput: HookSpecificOutput
 
 
-@runtime_checkable
-class HookAdapter(Protocol):
-    """Protocol for hook adapters. Each adapter handles one AI tool's hook format."""
+# ---------------------------------------------------------------------------
+# Multi-agent adapter architecture (QB-035B, implementing ADR-036 / the
+# design in docs/design/QB-035A-multi-agent-adapter-design.md).
+#
+# Supersedes the HookAdapter Protocol that used to live here
+# (`run_hook(self) -> None`, direct sys.stdin/sys.stdout I/O) — that Protocol
+# had zero implementers and zero references anywhere else in the codebase;
+# see ADR-036 for why bytes-in/bytes-out replaces it rather than extending
+# it: it makes every adapter trivially unit-testable, and moves stream I/O
+# to exactly one place (`__main__._run_hook()`), which already owns it today.
+# ---------------------------------------------------------------------------
 
-    def run_hook(self) -> None:
-        """Read JSON from sys.stdin, write (possibly modified) JSON to sys.stdout."""
+
+class AgentEvent(StrEnum):
+    """An abstract hook-event kind, decoupled from any one agent's own event
+    names. Deliberately a closed, minimal set of two — see ADR-036 for why
+    an open/free-text event system was rejected."""
+
+    COMMAND_INTERCEPT = "command_intercept"
+    """Before a shell command runs, the adapter may rewrite it.
+    Maps to Claude Code's PreToolUse/Bash today."""
+
+    CONTENT_INTERCEPT = "content_intercept"
+    """After a tool already produced content (e.g. a file read), the
+    adapter may replace it before the agent's model sees it.
+    Maps to Claude Code's PostToolUse/Read today."""
+
+
+DoctorCheck = tuple[str, bool, str]
+"""(name, ok, detail) — the exact shape `quor/cli/commands/doctor.py`'s
+`_check_*` functions already return today, named for reuse at the new
+`AgentAdapter.doctor_checks()` call sites."""
+
+
+@dataclass(frozen=True, kw_only=True)
+class InstallContext:
+    """Context passed to `AgentAdapter.install()`. Mirrors `PluginContext`'s
+    documented rationale: intentionally lean, not coupled to Quor's internal
+    implementation. Always construct with keyword arguments."""
+
+    settings_override: Path | None = None
+    """Override the agent's own config-file path — a test hook, mirrors
+    `init.py`'s existing `--settings-path`."""
+
+    yes: bool = False
+    """Skip any interactive confirmation prompt — mirrors `init.py`'s
+    existing `--yes`/`-y`."""
+
+
+@dataclass(frozen=True, kw_only=True)
+class InstallResult:
+    """What `AgentAdapter.install()` returns."""
+
+    installed_paths: tuple[Path, ...] = ()
+    warnings: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, kw_only=True)
+class DoctorContext:
+    """Context passed to `AgentAdapter.doctor_checks()`."""
+
+    settings_override: Path | None = None
+    """Override the agent's own config-file path — mirrors `doctor.py`'s
+    existing `--settings-path`."""
+
+
+@runtime_checkable
+class AgentAdapter(Protocol):
+    """One AI coding agent's integration with Quor. Implemented once per
+    agent (Claude Code, Codex CLI, Gemini CLI, ...).
+
+    Lifecycle — three distinct timeframes (see the design doc's §4 for the
+    full rationale):
+      1. Install-time (`quor init --agent X`) — one-shot, interactive,
+         side-effecting.
+      2. Event-time (`quor hook X <event>`) — the hot path. Every real
+         invocation is a brand-new OS process spawned by the agent itself,
+         so `handle_event()` must be a pure, stateless, single-shot call.
+      3. Diagnostic-time (`quor doctor`) — synchronous, read-only, in the
+         CLI's own process.
+
+    Every method must not raise for *expected* failure modes (malformed
+    payload, missing optional dependency, an unsupported event, ...) — an
+    adapter's own fail-open responsibility. An unexpected exception from
+    `handle_event()` is still caught by `__main__._run_hook()`'s existing
+    outer guard, which writes back the original bytes unchanged.
+    """
+
+    agent_id: ClassVar[str]
+    """Stable identifier: "claude", "codex", "gemini", ... Used in
+    `quor hook <agent_id> <event>` routing and `quor init --agent
+    <agent_id>`."""
+
+    display_name: ClassVar[str]
+    """Human-readable name shown in `quor doctor`/`quor init` output."""
+
+    api_version: ClassVar[int]
+    """Mirrors `QUOR_PLUGIN_API_VERSION`'s contract: adapters declaring a
+    newer major version than Quor's own are rejected at discovery time."""
+
+    @property
+    def supported_events(self) -> frozenset[AgentEvent]:
+        """Which `AgentEvent` kinds this agent's hook model actually,
+        verifiably exposes. Drives both `quor init` (which hooks to install)
+        and `quor doctor` (which roundtrip checks are meaningful to run).
+        An adapter must not claim an event it cannot verifiably honor —
+        see each built-in adapter's own module docstring for what's
+        verified and what's deliberately left out pending confirmation."""
+        ...
+
+    def handle_event(
+        self, event: AgentEvent, raw_stdin: bytes, tracking: TrackingDB | None
+    ) -> bytes | None:
+        """Process one hook invocation for `event`. `raw_stdin` is the
+        untouched original payload bytes (BOM and all — stripping is each
+        adapter's own concern). Returns the raw response bytes to write to
+        stdout, or `None` if `event` is not in `supported_events` (treated
+        as "not handled")."""
+        ...
+
+    def install(self, ctx: InstallContext) -> InstallResult:
+        """Write this agent's hook script(s) and register them with the
+        agent's own config mechanism."""
+        ...
+
+    def doctor_checks(self, ctx: DoctorContext) -> list[DoctorCheck]:
+        """Return this adapter's own health checks."""
         ...
 
 

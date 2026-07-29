@@ -95,6 +95,18 @@ This does not prohibit ML as an optional plugin. It prohibits ML in the default 
 
 Cursor, Copilot CLI, Gemini Code Assist, and other AI assistant adapters are V2. V1 supports only Claude Code's PreToolUse hook.
 
+**Superseded by QB-068/QB-069** (multi-agent adapter architecture
+implementation, building on the QB-035A design/ADR-036): the product owner
+explicitly directed this work to begin ahead of the original V1/V2 split,
+the same way QB-035A's design-only phase was explicitly authorized ahead of
+it. Claude Code, Gemini CLI, Codex CLI, Cursor, VS Code (Copilot agent
+mode), Windsurf, Aider, and Continue.dev now each have an `AgentAdapter`
+(`quor/adapters/`) — see `docs/final/ADAPTERS.md`. This anti-goal is
+retained for historical context (it explains why the codebase was
+single-agent for as long as it was) but is no longer accurate as a
+current-state description. Standalone Copilot CLI remains unimplemented —
+see `docs/final/ROADMAP.md`.
+
 ### 13. No session-level deduplication in V1
 
 The hook does not read the AI's context window to check if content was already seen. This requires parsing the Claude Code session context format, which is an additional dependency and a significant implementation risk. V2.

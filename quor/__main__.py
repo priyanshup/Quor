@@ -5,9 +5,12 @@ Version check runs at module level before any Quor import so we fail fast on
 old Python without importing anything that might not exist.
 
 Routing:
-  quor hook claude       →  hook path (no rich, stdout must stay valid JSON)
-  quor git status        →  dispatcher (run command, apply filter, print output)
-  quor schema / init / … →  CLI path via typer
+  quor hook <agent> <event> →  hook path (no rich, stdout must stay valid JSON)
+                               resolved through quor.adapters.registry.AdapterRegistry;
+                               "claude"/"claude-read" remain permanent argv aliases
+                               for pre-QB-035C installed hook scripts (ADR-036).
+  quor git status            →  dispatcher (run command, apply filter, print output)
+  quor schema / init / …     →  CLI path via typer
 """
 
 import contextlib
@@ -37,37 +40,64 @@ def _check_python_version() -> None:
 _check_python_version()
 
 
-_HOOK_ADAPTERS: frozenset[str] = frozenset({"claude", "claude-read"})
+# Back-compat argv aliases (QB-035C): every hook script written to disk by a
+# `quor init --claude` from before this release invokes `quor hook claude` /
+# `quor hook claude-read` — the two-argv-token shape. These map permanently
+# to (agent_id, event) pairs under the new, more general `quor hook
+# <agent_id> <event>` shape (ADR-036 §9 step 2, option (a) — the recommended
+# default) so an already-installed hook keeps working forever with zero user
+# action, never silently breaking on upgrade.
+_HOOK_ARGV_ALIASES: dict[str, tuple[str, str]] = {
+    "claude": ("claude", "command_intercept"),
+    "claude-read": ("claude", "content_intercept"),
+}
 
 
 def _run_hook() -> None:
     # Read stdin immediately so it is available in the except branch.
     original_bytes = sys.stdin.buffer.read()
     try:
-        adapter = sys.argv[2] if len(sys.argv) > 2 else ""
-        if adapter not in _HOOK_ADAPTERS:
+        argv_adapter = sys.argv[2] if len(sys.argv) > 2 else ""
+        argv_event = sys.argv[3] if len(sys.argv) > 3 else ""
+
+        agent_id, event_value = _HOOK_ARGV_ALIASES.get(argv_adapter, (argv_adapter, argv_event))
+
+        from quor.adapters.base import AgentEvent
+        from quor.adapters.registry import AdapterRegistry
+
+        try:
+            event: AgentEvent | None = AgentEvent(event_value)
+        except ValueError:
+            event = None
+
+        registry = AdapterRegistry()
+        adapter = registry.find(agent_id) if agent_id else None
+
+        if adapter is None or event is None or event not in adapter.supported_events:
             sys.stdout.buffer.write(original_bytes)
-            print(f"[quor] Unknown hook adapter: {adapter!r}", file=sys.stderr)
+            print(f"[quor] Unknown hook adapter: {argv_adapter!r}", file=sys.stderr)
             return
-        import io
 
-        sys.stdin = io.TextIOWrapper(io.BytesIO(original_bytes), encoding="utf-8")
-
-        if adapter == "claude":
-            from quor.adapters.claude import run_hook as run_claude_hook
-
-            run_claude_hook()
-        else:
-            # "claude-read" — PostToolUse/Read (QB-007A/C), tracked (QB-007D)
-            # exactly like _run_dispatch() below tracks Bash invocations.
-            from quor.adapters.claude_read import run_hook as run_claude_read_hook
+        # Only CONTENT_INTERCEPT-shaped events (content already produced by
+        # the agent, replaced in-process) need a TrackingDB — a
+        # COMMAND_INTERCEPT rewrite just edits text; the *rewritten* command
+        # is what actually gets tracked, later, when the agent runs it
+        # through the dispatcher (`quor <cmd>`). Opening a TrackingDB
+        # unconditionally here would add real per-invocation overhead to the
+        # hot COMMAND_INTERCEPT path that today's `claude` hook never pays.
+        tracking = None
+        if event is AgentEvent.CONTENT_INTERCEPT:
             from quor.tracking.db import get_tracking_db
 
             tracking = get_tracking_db()
-            try:
-                run_claude_read_hook(tracking=tracking)
-            finally:
+
+        try:
+            result = adapter.handle_event(event, original_bytes, tracking)
+        finally:
+            if tracking is not None:
                 tracking.close()
+
+        sys.stdout.buffer.write(result if result is not None else original_bytes)
     except Exception as exc:  # noqa: BLE001 — hook must never raise
         sys.stdout.buffer.write(original_bytes)
         print(f"[quor] Hook error — returning original: {exc}", file=sys.stderr)

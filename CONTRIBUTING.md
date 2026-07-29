@@ -23,14 +23,17 @@ git clone https://github.com/priyanshup/Quor.git
 cd Quor
 pip install -e ".[dev]"
 pip install -e ./tests/fixtures/test_plugin
+pip install -e ./tests/fixtures/test_adapter
 ```
 
-The second install step is required for the plugin-discovery test suite: the
-`quor.compression_stage` entry-point fixture (`quor-test-stage`) is
-intentionally *not* listed as a `file:` dependency in `pyproject.toml`'s
-`dev` extra, because a relative `file://` URL would otherwise be baked into
-published package metadata and break for anyone installing `quor[dev]`
-from PyPI rather than from this repository.
+These last two install steps are required for the plugin-discovery and
+adapter-discovery test suites respectively: the `quor.compression_stage`
+entry-point fixture (`quor-test-stage`) and the `quor.hook_adapter`
+entry-point fixture (`quor-test-adapter`) are both intentionally *not*
+listed as `file:` dependencies in `pyproject.toml`'s `dev` extra, because a
+relative `file://` URL would otherwise be baked into published package
+metadata and break for anyone installing `quor[dev]` from PyPI rather than
+from this repository.
 
 Dev extras (in `pyproject.toml`'s `dev` extra, installed by the command above):
 - `pytest`, `pytest-cov` — testing
@@ -200,7 +203,8 @@ tests/
 └── fixtures/
     ├── commands/        — 100+ command classifier fixtures
     ├── outputs/         — sample command outputs for filter tests
-    └── test_plugin/     — installable quor-test-stage fixture package
+    ├── test_plugin/     — installable quor-test-stage fixture package
+    └── test_adapter/    — installable quor-test-adapter fixture package
 ```
 
 ### Test isolation

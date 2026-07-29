@@ -47,6 +47,9 @@ jobs:
       - name: Install test plugin fixture
         run: pip install -e ./tests/fixtures/test_plugin
 
+      - name: Install test adapter fixture
+        run: pip install -e ./tests/fixtures/test_adapter
+
       - name: Verify hook responds to current Claude Code PreToolUse format
         # Send the JSON format Claude Code actually sends via PreToolUse hook,
         # verify the response is valid JSON with the expected command rewrite

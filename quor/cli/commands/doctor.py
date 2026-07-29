@@ -101,14 +101,7 @@ def _run_doctor(
 
     checks.append(_check_python_version())
     checks.extend(_check_dependencies())
-    for spec in HOOK_SPECS:
-        checks.append(_check_hook_script(spec))
-        checks.append(_check_hook_registered(spec, settings_path))
-        checks.append(_check_hook_up_to_date(spec))
-        roundtrip_result = _run_roundtrip_check(spec.hook_id)
-        if roundtrip_result is not None:
-            checks.append(roundtrip_result)
-    checks.append(_check_hook_collision(settings_path))
+    checks.extend(_check_adapters(settings_path))
     checks.append(_check_sqlite())
     checks.append(_check_filters())
     # Loaded once and shared: _check_mode()/_check_tee() each need
@@ -249,6 +242,48 @@ def _check_hook_up_to_date(spec: ClaudeHookSpec) -> tuple[str, bool, str]:
         f"installed hook schema is {from_schema}, current schema is {current_schema} — "
         "run `quor init --claude` to refresh",
     )
+
+
+def _check_adapters(settings_path: Path | None) -> list[tuple[str, bool, str]]:
+    """QB-035D: one section per registered `AgentAdapter`
+    (`quor/adapters/registry.py`), replacing the hardcoded Claude-only
+    `HOOK_SPECS`/collision-check sequence this function used to inline
+    directly. `ClaudeAdapter.doctor_checks()` reproduces that exact sequence
+    (same check names, same order, same detail strings) — see
+    `quor/adapters/claude_adapter.py` — so this migration changes *where*
+    those checks are produced, not what they say for existing users.
+
+    Fail-open per adapter (ADR-036 §7): one adapter's `doctor_checks()`
+    raising is reported as a single failing line for that adapter and does
+    not prevent any other adapter's — or the rest of `quor doctor`'s own —
+    checks from running. A `quor.hook_adapter` entry-point that failed to
+    load at all (never got the chance to run `doctor_checks()`) is reported
+    the same way `_check_plugins()` reports a stage/plugin load failure.
+    """
+    from quor.adapters.base import DoctorContext
+    from quor.adapters.registry import AdapterRegistry
+
+    registry = AdapterRegistry()
+    ctx = DoctorContext(settings_override=settings_path)
+
+    checks: list[tuple[str, bool, str]] = []
+    for adapter in registry.all_adapters():
+        try:
+            checks.extend(adapter.doctor_checks(ctx))
+        except Exception as exc:  # noqa: BLE001 — one adapter's failure must not abort doctor
+            checks.append((f"{adapter.display_name} checks", False, str(exc)))
+
+    if registry.failures:
+        names = ", ".join(f.entry_point_name for f in registry.failures)
+        checks.append(
+            (
+                "Adapter discovery",
+                False,
+                f"{len(registry.failures)} load failure(s): {names}",
+            )
+        )
+
+    return checks
 
 
 def _repair_hooks(settings_path: Path | None) -> list[tuple[str, bool, str]]:

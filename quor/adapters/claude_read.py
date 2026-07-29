@@ -236,7 +236,23 @@ def run_hook(*, tracking: TrackingDB | None = None) -> None:
     untouched, exactly as before.
     """
     raw = sys.stdin.read()
+    sys.stdout.buffer.write(_handle_text(raw, tracking))
+    sys.stdout.buffer.flush()
 
+
+def handle_bytes(raw_stdin: bytes, *, tracking: TrackingDB | None = None) -> bytes:
+    """Bytes-in/bytes-out equivalent of `run_hook()` — the entry point
+    `ClaudeAdapter.handle_event()` (QB-035B) calls. See
+    `quor.adapters.claude.handle_bytes` for the identical rationale (ADR-036)
+    and the same UTF-8-strict decoding equivalence to `sys.stdin.read()`."""
+    return _handle_text(raw_stdin.decode("utf-8"), tracking)
+
+
+def _handle_text(raw: str, tracking: TrackingDB | None) -> bytes:
+    """Shared core of `run_hook()`/`handle_bytes()`: parse a PostToolUse/Read
+    payload, compress if applicable, and return the serialized
+    `hookSpecificOutput` response bytes. Raises on parse/validation errors —
+    both callers rely on their own outer fail-open guard."""
     # Strip UTF-8 BOM (single or doubled — Cursor sends doubled BOM on Windows),
     # same as quor/adapters/claude.py.
     raw = raw.lstrip(_UTF8_BOM)
@@ -254,8 +270,7 @@ def run_hook(*, tracking: TrackingDB | None = None) -> None:
             compressed = CONCISE_INSTRUCTION + compressed
         hook_specific["updatedToolOutput"] = compressed
 
-    sys.stdout.buffer.write(orjson.dumps({"hookSpecificOutput": hook_specific}))
-    sys.stdout.buffer.flush()
+    return orjson.dumps({"hookSpecificOutput": hook_specific})
 
 
 def _compress_read_output(

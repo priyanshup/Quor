@@ -128,12 +128,13 @@ dev = [
     # controlled font sizes/names/layout, the same way python-docx doubles
     # as both quor's read dependency and its own fixture generator above.
     "reportlab>=4.0.0,<6.0.0",
-    # The quor-test-stage fixture (tests/fixtures/test_plugin) is deliberately
-    # NOT listed here as a `file:` dependency: a relative file:// URL is baked
+    # The quor-test-stage fixture (tests/fixtures/test_plugin) and the
+    # quor-test-adapter fixture (tests/fixtures/test_adapter) are deliberately
+    # NOT listed here as `file:` dependencies: a relative file:// URL is baked
     # verbatim into published package metadata, and breaks for anyone who
     # installs quor[dev] from PyPI rather than from a source checkout (the
-    # path doesn't exist outside the repo). It's installed as a separate step
-    # in CI and in local dev setup instead — see CONTRIBUTING.md.
+    # path doesn't exist outside the repo). Both are installed as a separate
+    # step in CI and in local dev setup instead — see CONTRIBUTING.md.
 ]
 documents = [
     # DOCX structure extraction (QB-007E2). Core install keeps working
