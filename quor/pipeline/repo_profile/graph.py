@@ -53,6 +53,28 @@ stay `None`) rather than guessed. `target_raw` is always present regardless,
 so the underlying fact is never lost even when unresolved (QB-067's own
 "do not infer, do not use heuristics" constraint, applied the same way
 `quor map`/`quor symbols` already apply it to their own detections).
+
+**Memory (QB-071).** The one-loop-per-repo-walk shape above is unchanged —
+still exactly one read and one parse-pair per file, never a second repo
+walk. What changed is what's *retained* between the walk and resolution:
+a file's full `Symbol` list used to be kept in `per_file` for the whole
+scan and then re-derived into two more structures (`symbol_names`,
+`symbol_counts`) inside `_resolve_all()` — three copies of the same names.
+Now each file's symbols are reduced to a single `Counter[str]`
+(`symbol_counts`, name -> occurrence count) the instant they're extracted,
+and the full `Symbol` objects are never retained past that point (see
+`_FileData`'s docstring). `_resolve_all()` also drains `per_file` via
+`.pop()` as it resolves each file, releasing that file's `relationships`
+list as soon as its edges are appended rather than only once the whole
+resolution loop finishes. `Symbol`/`Relationship`/`Edge` are all
+`slots=True` dataclasses for the same reason — see each model's own
+docstring. None of this changes `RepoDependencyGraph`'s contents,
+ordering, or the resolution rules above; it changes only how much of the
+walk's intermediate data is alive at once. A genuine second repository
+pass (re-walk + re-read + re-parse purely to defer relationship storage
+further) was considered and rejected — see the QB-071 session notes for
+the measured peak-memory breakdown that made it not worth the added
+walk/parse cost and the two-pass restructuring of this module.
 """
 
 from __future__ import annotations
@@ -71,7 +93,6 @@ from quor.pipeline.ast_summarize.registry import (
     is_language_available,
 )
 from quor.pipeline.ast_summarize.relationship_model import Relationship
-from quor.pipeline.ast_summarize.symbol_model import Symbol
 from quor.pipeline.repo_profile.graph_model import Edge, RepoDependencyGraph
 from quor.pipeline.repo_profile.walk import walk_repository
 
@@ -90,10 +111,17 @@ _SAME_FILE_CALL_QUALIFIERS = frozenset({"self", "this", "super", "base"})
 _JS_EXTENSIONS = (".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs")
 
 
-@dataclass
+@dataclass(slots=True)
 class _FileData:
+    """Per-file state retained only until that file's own edges are
+    resolved (QB-071) — see `_resolve_all()`, which pops each entry as it
+    goes. No `symbols` field: a file's `Symbol` list is reduced to a
+    `Counter[str]` of names (`symbol_counts`, below) the instant it's
+    extracted and never otherwise retained — nothing downstream of
+    `_resolve_all()` needs a symbol's kind/line/visibility, only whether a
+    name exists in a file and how many times."""
+
     language: str
-    symbols: list[Symbol]
     relationships: list[Relationship]
 
 
@@ -108,6 +136,7 @@ def build_dependency_graph(root: Path) -> RepoDependencyGraph:
     walk_result = walk_repository(root)
 
     per_file: dict[str, _FileData] = {}
+    symbol_counts: dict[str, Counter[str]] = {}
     languages_covered: set[str] = set()
     languages_skipped: set[str] = set()
     large_file_count = 0
@@ -162,9 +191,16 @@ def build_dependency_graph(root: Path) -> RepoDependencyGraph:
             parse_failure_count += 1
             continue
 
-        per_file[rel_path] = _FileData(language=language, symbols=symbols, relationships=relationships)
+        # QB-071: reduce to a name -> count aggregate immediately — nothing
+        # downstream needs a symbol's kind/line/visibility, only whether a
+        # name exists in a file and how many times (see _FileData's own
+        # docstring). `symbols` (the full Symbol list) is never retained
+        # past this point; it falls out of scope at the next loop
+        # iteration exactly like `source` already does.
+        symbol_counts[rel_path] = Counter(s.name for s in symbols)
+        per_file[rel_path] = _FileData(language=language, relationships=relationships)
 
-    edges = _resolve_all(per_file)
+    edges = _resolve_all(per_file, symbol_counts)
 
     notes: list[str] = []
     if not walk_result.used_git:
@@ -207,17 +243,32 @@ def build_dependency_graph(root: Path) -> RepoDependencyGraph:
     )
 
 
-def _resolve_all(per_file: dict[str, _FileData]) -> list[Edge]:
+def _resolve_all(per_file: dict[str, _FileData], symbol_counts: dict[str, Counter[str]]) -> list[Edge]:
+    """Resolve every file's raw relationships into `Edge`s.
+
+    QB-071: `per_file` is drained via `.pop()` as each file is processed —
+    not merely iterated — so a file's `relationships` list (and the
+    `_FileData` wrapping it) is released for GC the moment its edges are
+    appended, rather than staying alive until this whole function returns.
+    `list(per_file.keys())` is snapshotted first purely so the loop can
+    mutate `per_file` while iterating; it preserves the exact same order
+    `per_file.items()` would have (both reflect insertion order), and the
+    final `edges.sort()` in `build_dependency_graph()` makes output order
+    independent of processing order regardless.
+
+    `symbol_counts` (name -> occurrence count per file) does the job the
+    old `symbol_names`/`symbol_counts` pair together used to: `name in
+    symbol_counts.get(file, Counter())` is an identical membership check to
+    the old `name in symbol_names.get(file, ())` (a `Counter` is a `dict`,
+    and `in` tests keys either way), so `symbol_names` was a redundant
+    second copy of the same names `symbol_counts` already had — dropped
+    rather than kept as a separate structure.
+    """
     all_files = frozenset(per_file)
-    symbol_names: dict[str, set[str]] = {
-        path: {s.name for s in data.symbols} for path, data in per_file.items()
-    }
-    symbol_counts: dict[str, Counter[str]] = {
-        path: Counter(s.name for s in data.symbols) for path, data in per_file.items()
-    }
 
     edges: list[Edge] = []
-    for path, data in per_file.items():
+    for path in list(per_file.keys()):
+        data = per_file.pop(path)
         bindings: dict[str, str] = {}
         for rel in data.relationships:
             if rel.kind != "import":
@@ -255,9 +306,7 @@ def _resolve_all(per_file: dict[str, _FileData]) -> list[Edge]:
                 )
                 continue
 
-            target_file, target_symbol = _resolve_relationship(
-                rel, path, symbol_names, symbol_counts, bindings
-            )
+            target_file, target_symbol = _resolve_relationship(rel, path, symbol_counts, bindings)
             edges.append(
                 Edge(
                     kind=rel.kind,
@@ -275,26 +324,31 @@ def _resolve_all(per_file: dict[str, _FileData]) -> list[Edge]:
 
 
 def _resolve_type_reference(
-    target: str, file: str, symbol_names: dict[str, set[str]], bindings: dict[str, str]
+    target: str, file: str, symbol_counts: dict[str, Counter[str]], bindings: dict[str, str]
 ) -> tuple[str | None, str | None]:
     """Resolve a raw, possibly-dotted base-type/interface/trait reference
     (`"Base"`, `"ns.Base"`) to `(file, symbol)` — same-file first, then via
     the file's own single-segment import bindings. Never guessed: a dotted
     reference whose first segment isn't a known import binding, or whose
     resolved file doesn't actually declare the named symbol, stays
-    unresolved."""
+    unresolved.
+
+    Membership is checked directly against `symbol_counts` (a `Counter`,
+    i.e. a `dict`) rather than a separate `symbol_names` set — `name in
+    a_dict` and `name in a_set` are the same O(1) key-presence test, so a
+    second, set-shaped copy of the same names added nothing (QB-071)."""
     if "." in target:
         first_segment, _, _rest = target.partition(".")
         name = target.rsplit(".", 1)[-1]
         resolved_file = bindings.get(first_segment)
-        if resolved_file is not None and name in symbol_names.get(resolved_file, ()):
+        if resolved_file is not None and name in symbol_counts.get(resolved_file, Counter()):
             return resolved_file, name
         return None, None
 
-    if target in symbol_names.get(file, ()):
+    if target in symbol_counts.get(file, Counter()):
         return file, target
     resolved_file = bindings.get(target)
-    if resolved_file is not None and target in symbol_names.get(resolved_file, ()):
+    if resolved_file is not None and target in symbol_counts.get(resolved_file, Counter()):
         return resolved_file, target
     return None, None
 
@@ -302,18 +356,17 @@ def _resolve_type_reference(
 def _resolve_relationship(
     rel: Relationship,
     file: str,
-    symbol_names: dict[str, set[str]],
     symbol_counts: dict[str, Counter[str]],
     bindings: dict[str, str],
 ) -> tuple[str | None, str | None]:
     if rel.kind in ("inherits", "implements_interface", "implements_trait"):
-        return _resolve_type_reference(rel.target, file, symbol_names, bindings)
+        return _resolve_type_reference(rel.target, file, symbol_counts, bindings)
 
     if rel.kind == "overrides":
         if rel.qualifier is None:
             return None, None
-        superclass_file, _ = _resolve_type_reference(rel.qualifier, file, symbol_names, bindings)
-        if superclass_file is not None and rel.target in symbol_names.get(superclass_file, ()):
+        superclass_file, _ = _resolve_type_reference(rel.qualifier, file, symbol_counts, bindings)
+        if superclass_file is not None and rel.target in symbol_counts.get(superclass_file, Counter()):
             return superclass_file, rel.target
         return None, None
 
@@ -322,7 +375,7 @@ def _resolve_relationship(
             if symbol_counts.get(file, Counter())[rel.target] == 1:
                 return file, rel.target
             resolved_file = bindings.get(rel.target)
-            if resolved_file is not None and rel.target in symbol_names.get(resolved_file, ()):
+            if resolved_file is not None and rel.target in symbol_counts.get(resolved_file, Counter()):
                 return resolved_file, rel.target
             return None, None
         if rel.qualifier in _SAME_FILE_CALL_QUALIFIERS:
@@ -330,7 +383,7 @@ def _resolve_relationship(
                 return file, rel.target
             return None, None
         resolved_file = bindings.get(rel.qualifier)
-        if resolved_file is not None and rel.target in symbol_names.get(resolved_file, ()):
+        if resolved_file is not None and rel.target in symbol_counts.get(resolved_file, Counter()):
             return resolved_file, rel.target
         return None, None
 

@@ -49,10 +49,18 @@ RelationshipKind = Literal[
 ]
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class Relationship:
     """One raw, file-local relationship fact, exactly as written in the
     source — never resolved against any other file (see module docstring).
+
+    `slots=True` (QB-071): same reasoning as `symbol_model.Symbol` — a
+    repo-wide `quor graph` scan holds every file's raw `Relationship` list
+    in memory until that file's edges are resolved (`repo_profile/
+    graph.py`), so per-instance overhead multiplies across the whole repo.
+    No behavior change: frozen already forbids post-construction attribute
+    assignment, and `dataclasses.asdict()`/equality/hashing use field
+    introspection, not `__dict__`.
 
     Field meaning varies deliberately by `kind`, the same way a single
     `Symbol.kind` already carries different implications for `is_public`

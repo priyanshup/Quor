@@ -24,7 +24,7 @@ from quor.pipeline.ast_summarize.relationship_model import RelationshipKind
 __all__ = ["Edge", "RepoDependencyGraph"]
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class Edge:
     """One relationship fact, with as much cross-file resolution as could
     be established deterministically and unambiguously (QB-067) — never
@@ -36,6 +36,14 @@ class Edge:
     conservative-resolution mandate rules out) — `target_raw` is always
     present regardless, so the fact itself is never lost even when
     unresolved.
+
+    `slots=True` (QB-071): `edges` is the one collection `quor graph`
+    genuinely must retain in full for the whole repo (it's the actual
+    output, unlike the transient per-file symbol/relationship data
+    upstream of it) — so its per-instance memory is the part of this
+    command's footprint that scales with repo size *and* survives to the
+    end. No behavior change (see `symbol_model.Symbol`'s identical note on
+    `asdict()`/equality/hashing).
     """
 
     kind: RelationshipKind
