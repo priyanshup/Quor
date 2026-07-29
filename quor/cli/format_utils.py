@@ -39,3 +39,26 @@ def format_percentage(fraction: float) -> str:
     if 0 < percent < 1:
         return "<1%"
     return f"{round(percent)}%"
+
+
+def format_duration(seconds: float) -> str:
+    """Format a non-negative duration in seconds as a compact "N unit(s)"
+    string (e.g. "3 minutes", "2 days") — the largest whole unit that fits,
+    never combined with a smaller one. Purely cosmetic, like
+    `format_count`/`format_percentage` — never used in any calculation.
+    """
+    seconds = max(0.0, seconds)
+    if seconds < 60:
+        n = round(seconds)
+        return f"{n} second{'s' if n != 1 else ''}"
+    minutes = seconds / 60
+    if minutes < 60:
+        n = round(minutes)
+        return f"{n} minute{'s' if n != 1 else ''}"
+    hours = minutes / 60
+    if hours < 24:
+        n = round(hours)
+        return f"{n} hour{'s' if n != 1 else ''}"
+    days = hours / 24
+    n = round(days)
+    return f"{n} day{'s' if n != 1 else ''}"

@@ -742,6 +742,16 @@ REPO_SYMBOLS_FILTER_LABEL = "repo-symbols"
 # `flag_low_performers` must exclude this label too.
 REPO_GRAPH_FILTER_LABEL = "repo-graph"
 
+# QB-076: the synthetic `filter_name` `quor repo` tracks its invocations
+# under (see `quor/cli/commands/repo.py::_track_repo_invocation`). Same
+# reasoning as `REPO_PROFILE_FILTER_LABEL`/`REPO_SYMBOLS_FILTER_LABEL`/
+# `REPO_GRAPH_FILTER_LABEL` above, applied to the fourth synthesis-not-
+# compression command: the dashboard only presents already-cached
+# repository intelligence, so it has no "before" blob either —
+# `original_tokens`/`final_tokens` are recorded equal by design, and
+# `flag_low_performers` must exclude this label too.
+REPO_DASHBOARD_FILTER_LABEL = "repo-dashboard"
+
 
 @dataclass(frozen=True)
 class FilterUsage:

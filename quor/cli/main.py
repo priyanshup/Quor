@@ -1,11 +1,12 @@
 """Typer application and command registration.
 
-The six V1 commands (do not add more without approval) plus five exempt
+The six V1 commands (do not add more without approval) plus six exempt
 utility commands — `schema` (JSON Schema dump), `map` (QB-061's
 deterministic Repository Context Profile), `symbols` (QB-066's
 deterministic Repository Symbols index), `graph` (QB-067's deterministic
-Repository Dependency Graph), and `version` (QB-073) — none is a filtering
-operation, so none counts against the six:
+Repository Dependency Graph), `version` (QB-073), and `repo` (QB-076's
+Repository Intelligence Dashboard) — none is a filtering operation, so none
+counts against the six:
   quor init --claude
   quor validate [file]
   quor explain <command>
@@ -16,6 +17,7 @@ operation, so none counts against the six:
   quor map
   quor symbols
   quor graph
+  quor repo
   quor version
 
 Commands are grouped into three `rich_help_panel`s for `--help` (QB-073):
@@ -34,6 +36,7 @@ from quor.cli.commands.gain import gain
 from quor.cli.commands.graph import graph_command
 from quor.cli.commands.init import init
 from quor.cli.commands.map import map_command
+from quor.cli.commands.repo import repo_command
 from quor.cli.commands.symbols import symbols_command
 from quor.cli.commands.validate import validate
 from quor.cli.commands.verify import verify
@@ -56,6 +59,7 @@ app.command(rich_help_panel=_PANEL_INSTALLATION)(doctor)
 app.command(name="map", rich_help_panel=_PANEL_ANALYSIS)(map_command)
 app.command(name="symbols", rich_help_panel=_PANEL_ANALYSIS)(symbols_command)
 app.command(name="graph", rich_help_panel=_PANEL_ANALYSIS)(graph_command)
+app.command(name="repo", rich_help_panel=_PANEL_ANALYSIS)(repo_command)
 app.command(rich_help_panel=_PANEL_UTILITIES)(explain)
 app.command(rich_help_panel=_PANEL_UTILITIES)(validate)
 app.command(rich_help_panel=_PANEL_UTILITIES)(verify)
