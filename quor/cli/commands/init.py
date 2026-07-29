@@ -14,10 +14,8 @@ Claude's Bash-hook-collision-detection concept.
 
 from __future__ import annotations
 
-import os
 import subprocess
 import sys
-import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -33,6 +31,8 @@ from quor.adapters.hook_manifest import (
     ClaudeHookSpec,
     render_hook_script,
 )
+from quor.atomic_io import write_json_atomic as _write_json_atomic
+from quor.atomic_io import write_text_atomic as _write_text_atomic
 from quor.errors import ConfigError, ExitCode
 
 console = Console()
@@ -271,30 +271,6 @@ def _install_hook_entry(
     hooks[spec.event] = entries
     new_settings["hooks"] = hooks
     return new_settings
-
-
-def _write_text_atomic(path: Path, content: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp_name = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            fh.write(content)
-        os.replace(tmp_name, path)
-    except BaseException:
-        Path(tmp_name).unlink(missing_ok=True)
-        raise
-
-
-def _write_json_atomic(path: Path, data: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp_name = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
-    try:
-        with os.fdopen(fd, "wb") as fh:
-            fh.write(orjson.dumps(data, option=orjson.OPT_INDENT_2))
-        os.replace(tmp_name, path)
-    except BaseException:
-        Path(tmp_name).unlink(missing_ok=True)
-        raise
 
 
 def _warn_if_execution_policy_restricted() -> None:

@@ -1,4 +1,4 @@
-"""Unit tests for quor/tracking/db.py — SQLite + JSONL persistence."""
+"""Unit tests for quor/tracking/db.py — SQLite persistence."""
 
 from __future__ import annotations
 
@@ -14,7 +14,6 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
 
-import orjson
 import pytest
 
 from quor.tracking.db import (
@@ -33,11 +32,10 @@ from quor.tracking.db import (
 # ---------------------------------------------------------------------------
 
 
-def _db_and_jsonl(tmp_path: Path) -> tuple[TrackingDB, Path, Path]:
+def _make_db(tmp_path: Path) -> tuple[TrackingDB, Path]:
     db_path = tmp_path / "quor.db"
-    jsonl_path = tmp_path / "invocations.jsonl"
-    db = TrackingDB(db_path=db_path, jsonl_path=jsonl_path)
-    return db, db_path, jsonl_path
+    db = TrackingDB(db_path=db_path)
+    return db, db_path
 
 
 def _sample_record(**kwargs) -> InvocationRecord:
@@ -94,7 +92,7 @@ class TestInvocationRecord:
         assert d["filter_name"] == "git-status"
         assert d["was_passthrough"] == 0  # bool → int
         assert d["duration_ms"] == 12.5
-        assert d["schema_version"] == 2  # bumped for project_key_normalized (v2)
+        assert d["schema_version"] == 3  # bumped for obsolete index removal (v3, QB-070)
 
     def test_was_passthrough_int_encoding(self) -> None:
         rec = _sample_record(was_passthrough=True, filter_name=None)
@@ -119,7 +117,7 @@ class TestInvocationRecord:
 
 class TestTrackingDbSqlite:
     def test_schema_created(self, tmp_path: Path) -> None:
-        db, db_path, _ = _db_and_jsonl(tmp_path)
+        db, db_path = _make_db(tmp_path)
         db.flush()
         db.close()
         with sqlite3.connect(str(db_path)) as conn:
@@ -130,7 +128,7 @@ class TestTrackingDbSqlite:
         assert "schema_migrations" in tables
 
     def test_wal_mode(self, tmp_path: Path) -> None:
-        db, db_path, _ = _db_and_jsonl(tmp_path)
+        db, db_path = _make_db(tmp_path)
         db.flush()
         db.close()
         with sqlite3.connect(str(db_path)) as conn:
@@ -208,17 +206,17 @@ class TestTrackingDbSqlite:
             conn.close()
 
     def test_migration_row_inserted(self, tmp_path: Path) -> None:
-        db, db_path, _ = _db_and_jsonl(tmp_path)
+        db, db_path = _make_db(tmp_path)
         db.flush()
         db.close()
         with sqlite3.connect(str(db_path)) as conn:
             versions = [r[0] for r in conn.execute(
                 "SELECT version FROM schema_migrations"
             ).fetchall()]
-        assert 2 in versions  # bumped for project_key_normalized (v2)
+        assert 3 in versions  # bumped for obsolete index removal (v3, QB-070)
 
     def test_record_written_to_sqlite(self, tmp_path: Path) -> None:
-        db, db_path, _ = _db_and_jsonl(tmp_path)
+        db, db_path = _make_db(tmp_path)
         rec = _sample_record()
         db.record(rec)
         db.flush()
@@ -236,7 +234,7 @@ class TestTrackingDbSqlite:
         assert row["was_passthrough"] == 0
 
     def test_path_no_backslash_on_windows(self, tmp_path: Path) -> None:
-        db, db_path, _ = _db_and_jsonl(tmp_path)
+        db, db_path = _make_db(tmp_path)
         db.record(_sample_record(project_path="C:/Users/user/project"))
         db.flush()
         db.close()
@@ -250,7 +248,7 @@ class TestTrackingDbSqlite:
         assert stored == "C:/Users/user/project"
 
     def test_multiple_records(self, tmp_path: Path) -> None:
-        db, db_path, _ = _db_and_jsonl(tmp_path)
+        db, db_path = _make_db(tmp_path)
         for i in range(5):
             db.record(_sample_record(command=f"cmd {i}"))
         db.flush()
@@ -261,7 +259,7 @@ class TestTrackingDbSqlite:
         assert count == 5
 
     def test_passthrough_record(self, tmp_path: Path) -> None:
-        db, db_path, _ = _db_and_jsonl(tmp_path)
+        db, db_path = _make_db(tmp_path)
         db.record(_sample_record(was_passthrough=True, filter_name=None))
         db.flush()
         db.close()
@@ -273,7 +271,7 @@ class TestTrackingDbSqlite:
 
     def test_nonblocking_record(self, tmp_path: Path) -> None:
         """record() must return quickly even under load."""
-        db, _, _ = _db_and_jsonl(tmp_path)
+        db, _ = _make_db(tmp_path)
         start = time.monotonic()
         for _ in range(50):
             db.record(_sample_record())
@@ -284,68 +282,141 @@ class TestTrackingDbSqlite:
 
 
 # ---------------------------------------------------------------------------
-# TrackingDB — JSONL writes
+# TrackingDB — batched commits (QB-070)
 # ---------------------------------------------------------------------------
 
 
-class TestTrackingDbJsonl:
-    def test_record_written_to_jsonl(self, tmp_path: Path) -> None:
-        db, _, jsonl_path = _db_and_jsonl(tmp_path)
-        rec = _sample_record()
-        db.record(rec)
-        db.flush()
-        db.close()
+class TestTrackingDbBatching:
+    def test_batch_commits_at_max_size(self, tmp_path: Path) -> None:
+        """Once _BATCH_MAX_SIZE records are staged, the worker commits on
+        its own — a caller doesn't have to call flush()/close() or wait for
+        the time-based deadline to see a full batch land."""
+        from quor.tracking.db import _BATCH_MAX_SIZE
 
-        lines = jsonl_path.read_bytes().splitlines()
-        assert len(lines) == 1
-        parsed = orjson.loads(lines[0])
-        assert parsed["command"] == "git status"
-        assert parsed["filter_name"] == "git-status"
-
-    def test_multiple_records_multiple_lines(self, tmp_path: Path) -> None:
-        db, _, jsonl_path = _db_and_jsonl(tmp_path)
-        for i in range(3):
+        db, db_path = _make_db(tmp_path)
+        for i in range(_BATCH_MAX_SIZE):
             db.record(_sample_record(command=f"cmd {i}"))
-        db.flush()
+
+        deadline = time.monotonic() + 2.0
+        count = 0
+        while time.monotonic() < deadline:
+            try:
+                with sqlite3.connect(str(db_path)) as conn:
+                    count = conn.execute("SELECT COUNT(*) FROM invocations").fetchone()[0]
+            except sqlite3.OperationalError:
+                count = 0  # worker hasn't created the table yet — keep polling
+            if count >= _BATCH_MAX_SIZE:
+                break
+            time.sleep(0.02)
         db.close()
+        assert count == _BATCH_MAX_SIZE
 
-        lines = jsonl_path.read_bytes().splitlines()
-        assert len(lines) == 3
+    def test_batch_commits_after_interval_below_max_size(self, tmp_path: Path) -> None:
+        """A single record, well under _BATCH_MAX_SIZE, still gets committed
+        on its own after _BATCH_MAX_INTERVAL_SECONDS — a slow trickle of
+        records isn't held hostage waiting for a batch that never fills."""
+        from quor.tracking.db import _BATCH_MAX_INTERVAL_SECONDS
 
-    def test_jsonl_fields_match_sqlite_schema(self, tmp_path: Path) -> None:
-        db, _db_path, jsonl_path = _db_and_jsonl(tmp_path)
+        db, db_path = _make_db(tmp_path)
         db.record(_sample_record())
-        db.flush()
+        time.sleep(_BATCH_MAX_INTERVAL_SECONDS + 0.3)
+        with sqlite3.connect(str(db_path)) as conn:
+            count = conn.execute("SELECT COUNT(*) FROM invocations").fetchone()[0]
         db.close()
+        assert count == 1
 
-        parsed = orjson.loads(jsonl_path.read_bytes().splitlines()[0])
-        expected_keys = {
-            "command", "project_path", "original_tokens", "final_tokens",
-            "filter_name", "was_passthrough", "duration_ms", "recorded_at",
-            "schema_version",
-        }
-        assert expected_keys == set(parsed.keys())
-
-    def test_no_jsonl_path_skips_jsonl(self, tmp_path: Path) -> None:
-        db_path = tmp_path / "quor.db"
-        db = TrackingDB(db_path=db_path, jsonl_path=None)
+    def test_flush_forces_commit_regardless_of_batch_thresholds(self, tmp_path: Path) -> None:
+        """flush()'s existing contract (block until the queue is drained)
+        must still guarantee every enqueued record is actually committed,
+        not merely staged — batching must not weaken this."""
+        db, db_path = _make_db(tmp_path)
         db.record(_sample_record())
+        db.record(_sample_record(command="second"))
+        db.flush()  # no sleep: must not depend on the time-based deadline
+        with sqlite3.connect(str(db_path)) as conn:
+            count = conn.execute("SELECT COUNT(*) FROM invocations").fetchone()[0]
+        db.close()
+        assert count == 2
+
+    def test_close_forces_commit_of_pending_batch(self, tmp_path: Path) -> None:
+        """close()'s existing contract must also still force a commit of
+        whatever is staged, with no flush() call and no sleep."""
+        db, db_path = _make_db(tmp_path)
+        db.record(_sample_record())
+        db.close()
+        with sqlite3.connect(str(db_path)) as conn:
+            count = conn.execute("SELECT COUNT(*) FROM invocations").fetchone()[0]
+        assert count == 1
+
+
+# ---------------------------------------------------------------------------
+# Schema v3 — obsolete indexes dropped (QB-070)
+# ---------------------------------------------------------------------------
+
+
+class TestObsoleteIndexMigration:
+    def test_fresh_database_never_creates_obsolete_indexes(self, tmp_path: Path) -> None:
+        db, db_path = _make_db(tmp_path)
         db.flush()
         db.close()
-        # Should not raise and no jsonl file created
-        assert not (tmp_path / "invocations.jsonl").exists()
+        with sqlite3.connect(str(db_path)) as conn:
+            names = {
+                r[0]
+                for r in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='index'"
+                ).fetchall()
+            }
+        assert "idx_invocations_project" not in names
+        assert "idx_invocations_filter" not in names
+        # The index real queries actually use must still be present.
+        assert "idx_invocations_project_key_recorded_at" in names
 
-    def test_write_jsonl_raises_if_called_without_path(self, tmp_path: Path) -> None:
-        """TD-002: this was an `assert`, which `python -O` strips silently.
-        Calling `_write_jsonl` directly (bypassing `_worker`'s `is not None`
-        guard) must raise a real, non-optimizable error."""
+    def test_existing_v2_database_has_obsolete_indexes_dropped(self, tmp_path: Path) -> None:
+        """A database created under schema v2 (with the two now-obsolete
+        indexes already on disk, per ADR-008) must have them dropped the
+        next time a TrackingDB connects to it — not left behind forever."""
         db_path = tmp_path / "quor.db"
-        db = TrackingDB(db_path=db_path, jsonl_path=None)
-        try:
-            with pytest.raises(RuntimeError, match="jsonl_path"):
-                db._write_jsonl(_sample_record())
-        finally:
-            db.close()
+        conn = sqlite3.connect(str(db_path))
+        conn.executescript(
+            """
+            CREATE TABLE invocations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                command TEXT NOT NULL,
+                project_path TEXT NOT NULL,
+                original_tokens INTEGER NOT NULL DEFAULT 0,
+                final_tokens INTEGER NOT NULL DEFAULT 0,
+                filter_name TEXT,
+                was_passthrough INTEGER NOT NULL DEFAULT 0,
+                duration_ms REAL NOT NULL DEFAULT 0,
+                recorded_at TEXT NOT NULL DEFAULT (datetime('now')),
+                schema_version INTEGER NOT NULL DEFAULT 1,
+                project_key_normalized TEXT
+            );
+            CREATE INDEX idx_invocations_project ON invocations (project_path, recorded_at);
+            CREATE INDEX idx_invocations_filter ON invocations (filter_name, recorded_at);
+            CREATE TABLE schema_migrations (
+                version INTEGER PRIMARY KEY,
+                applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            INSERT INTO schema_migrations (version) VALUES (2);
+            """
+        )
+        conn.commit()
+        conn.close()
+
+        db = TrackingDB(db_path=db_path)
+        db.flush()
+        db.close()
+
+        with sqlite3.connect(str(db_path)) as conn:
+            names = {
+                r[0]
+                for r in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='index'"
+                ).fetchall()
+            }
+        assert "idx_invocations_project" not in names
+        assert "idx_invocations_filter" not in names
 
 
 # ---------------------------------------------------------------------------
@@ -1120,7 +1191,7 @@ class TestGetTrackingDb:
         """A write failure in the background worker must not propagate to the caller."""
         db = TrackingDB(db_path=tmp_path / "quor.db")
         with (
-            patch.object(db, "_write_sqlite", side_effect=RuntimeError("disk full")),
+            patch.object(db, "_stage_sqlite_insert", side_effect=RuntimeError("disk full")),
             pytest.warns(UserWarning, match="tracking write error"),
         ):
             db.record(_sample_record(command="should not crash"))
@@ -1136,8 +1207,7 @@ class TestGetTrackingDb:
 class TestDispatcherTracking:
     def test_record_written_on_filtered_dispatch(self, tmp_path: Path) -> None:
         db_path = tmp_path / "quor.db"
-        jsonl_path = tmp_path / "invocations.jsonl"
-        tracking = TrackingDB(db_path=db_path, jsonl_path=jsonl_path)
+        tracking = TrackingDB(db_path=db_path)
 
         proc = MagicMock(spec=subprocess.CompletedProcess)
         proc.stdout = (
@@ -1202,8 +1272,8 @@ class TestDispatcherTracking:
 # TestDispatcherTracking above exercises through run_dispatch(). These tests
 # call quor.adapters.claude_read._compress_read_output() directly, the same
 # way TestDispatcherTracking calls run_dispatch() directly, and then read
-# the result back out of the real SQLite/JSONL stores — no Read-specific
-# storage or aggregation exists anywhere in this path.
+# the result back out of the real SQLite store — no Read-specific storage
+# or aggregation exists anywhere in this path.
 # ---------------------------------------------------------------------------
 
 
@@ -1348,24 +1418,6 @@ class TestReadTracking:
         tracking.close()
         assert result is not None
         assert len(result) < len(large_content)
-
-    def test_jsonl_fallback_for_read(self, tmp_path: Path) -> None:
-        from quor.adapters.claude_read import _compress_read_output
-
-        db_path = tmp_path / "quor.db"
-        jsonl_path = tmp_path / "invocations.jsonl"
-        tracking = TrackingDB(db_path=db_path, jsonl_path=jsonl_path)
-        hook_input = self._hook_input("notes.md", "# Heading\n\nBody text.\n")
-
-        _compress_read_output(hook_input, tracking)
-        tracking.flush()
-        tracking.close()
-
-        lines = jsonl_path.read_bytes().splitlines()
-        assert len(lines) == 1
-        parsed = orjson.loads(lines[0])
-        assert parsed["command"] == "Read: notes.md"
-        assert parsed["filter_name"] == "markdown"
 
     def test_project_identity_matches_bash_rows(self, tmp_path: Path) -> None:
         """A Read row and a Bash row recorded for the same project must
