@@ -31,6 +31,7 @@ _CLI_COMMANDS: frozenset[str] = frozenset(
         "map",
         "symbols",
         "graph",
+        "repo",
         "version",
     }
 )

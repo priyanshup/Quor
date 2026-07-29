@@ -5122,6 +5122,252 @@ tests/` and `mypy quor/` both clean.
 
 ---
 
+#### QB-075 — Repository Intelligence Consumption (audited, no action)
+
+**Effort:** N/A (research only) · **Value:** N/A · **Risk:** N/A · **Category:** Research/Audit
+
+Investigated whether the compression pipeline could consume the repository intelligence QB-072
+already builds and caches (`RepoProfile`/`RepoSymbolIndex`/`RepoDependencyGraph`) to improve
+compression quality — deterministically, rule-based, no heuristics/AI, O(1) lookups, no hook-path
+slowdown. Per this repo's Rule 4 (research/benchmark first, present a recommendation, get sign-off,
+only then implement), no code was written; the audit's own conclusion was that no qualifying
+opportunity exists today, confirmed with the user, who chose to close this item with no
+implementation rather than force a speculative feature.
+
+**Status:** Closed — audited, no action taken.
+
+<details>
+<summary>Technical details</summary>
+
+**Why no stage can consume repo intelligence today.** `StageHandler.apply(mask, config)`/
+`can_handle(content, content_type)` (`quor/pipeline/stages/base.py`) is the complete interface every
+built-in and third-party stage implements, documented as a stable, frozen plugin API — no stage
+receives a file path or repo root, so none can key a lookup into a per-file structure like
+`RepoSymbolIndex`/`RepoDependencyGraph` even in principle. The two places that do have a file path —
+`quor/adapters/claude_read.py` (Read hook) and `quor/adapters/dispatcher.py` (Bash command string) —
+are not stages, and both already resolve everything they need (extension → filter name) without any
+repo-wide knowledge.
+
+**Why the hot path can't call `ensure_repo_intelligence()`.** Traced `intel.py` end to end: even its
+cache-hit branch (`_refresh_from_cache`) performs a full `walk_repository()` (git ls-files or
+filesystem walk) plus `diff_repository()` (a stat call per file) before concluding nothing changed —
+QB-072 deliberately excluded this from `quor hook`'s dispatch path for exactly this reason, and the
+documented hook budget (`docs/final/CLAUDE.md`: <10ms parse+rewrite, <200ms/10k-line full pipeline)
+is unchanged. Calling it from `dispatcher.py`/`claude_read.py` on every invocation would violate
+"no noticeable slowdown" outright.
+
+**Why cached intel is unsafe for live-content compression decisions even where a lookup would be
+cheap.** Repo intelligence only refreshes on an explicit `quor map`/`symbols`/`graph` call; the
+compression pipeline processes live Read/Bash output that can reflect an edit from seconds ago the
+cache never saw. `python_ast_summarize`/`code_ast_summarize` already re-parse the *current* content
+on every call rather than trusting any cache, which is correct — reusing stale cached facts for a
+line-level decision on the very file being compressed risks a wrong compression, violating the
+architecture's existing "meaning preservation — when uncertain, keep it" principle and this item's
+own "never invent information" constraint.
+
+**Checked the milestone's own example opportunities against what the data model actually contains:**
+resolving import locations (data exists — `Edge.target_file`/`target_symbol` — but no stage acts on
+imports at all, nothing to attach it to); canonical module names (no such field exists anywhere in
+`Symbol`/`FileSymbols`); package boundaries (`RepoProfile.important_directories`/`services` is a
+presence-only allowlist of well-known directory names, not a boundary model); symbol ownership (only
+sound as "which file defines symbol X," and unsafe to use on the file being compressed per the
+staleness point above); duplicate symbol references / repeated dependency chains / cross-call
+context collapsing (inherently session-level — needs memory of what the assistant already saw; Quor's
+pipeline is stateless per invocation, and building that memory would be a new, large, stateful
+subsystem — explicitly the kind of speculative build-out this item was told not to do); command-output
+compression via directory classification (no vendor/generated/build classification exists in
+`RepoProfile` — `important_directories` is curated toward *interesting* directories, the opposite of a
+noise filter).
+
+**One adjacent, unrelated gap noted but explicitly not fixed here:** `claude_read.py`'s
+`_SOURCE_CODE_FILTER_NAMES_BY_EXTENSION` only routes `.py`/`.js`/`.ts`/`.tsx` through
+`code_ast_summarize`-backed filters even though `quor/pipeline/ast_summarize/registry.py` also has
+working Go/Java/Rust/C# analyzers (QB-046) — but closing that gap only needs a per-extension
+`is_language_available()` check, zero repo intelligence involved, so it's a separate, future item, not
+a QB-075 finding.
+
+**No code changed, no benchmark run** — the audit's own conclusion made implementation and
+before/after measurement inapplicable. If a future item wants to revisit this, the two directions
+identified as narrow enough to reconsider on their own are: (1) reporting-only surfacing of cached
+`languages_covered`/symbol counts in `quor explain`/`quor gain` (zero pipeline risk, doesn't reduce
+tokens, both commands already call `ensure_repo_intelligence()` off the hot path); or (2) a
+deliberately scoped relaxation of the hot-path boundary — a read-only, no-rebuild, memoized load of
+whatever intel is already on disk, never triggering a walk/rebuild — which would need its own design
+pass before any code, given the staleness risk documented above.
+
+</details>
+
+---
+
+#### QB-076 — Repository Intelligence Dashboard (`quor repo`)
+
+**Effort:** Medium · **Value:** Medium · **Risk:** Low · **Category:** New Capability
+(Reporting)
+
+`quor map`/`quor symbols`/`quor graph` (QB-061/066/067) each already produce a full,
+deterministic repository-intelligence artifact, automatically cached and kept up to date
+by QB-072 — but each requires its own command and a full Markdown/JSON document to read
+just to answer a quick "what does this repo look like" question. `quor repo` is a fourth,
+purely presentational command: a compact, Rich-formatted terminal dashboard (plus `--json`)
+built entirely from the same on-disk cache the other three already maintain — it never
+walks the repository, parses a source file, or triggers a rebuild of any kind.
+
+**Status:** Implemented (not committed, per session instruction).
+
+<details>
+<summary>Technical details</summary>
+
+**Research first (per this repo's Rule 4).** Audited every field on `RepoIntelState`
+(`intel_model.py`), `RepoProfile` (`model.py`), the cached per-file `FileSymbols`/`FileFacts`
+(`symbols_model.py`/`graph.py`), and confirmed `intel_store.py`'s four on-disk cache files
+(`state.json`/`profile.json`/`symbol_facts.json`/`graph_facts.json`) are read-only,
+fail-open-on-corruption, and require no filesystem walk to load. The one genuine gap: the
+cache stores each file's raw, *unresolved* graph facts (`FileFacts.relationships`), not
+resolved `Edge`s with `target_file`/`target_symbol` — resolving those is real logic
+(`graph._resolve_all()`), not a trivial aggregate. Rather than re-implementing that a second
+time, `dashboard.py` calls the exact same, already-tested `graph.assemble_graph()` `quor
+graph` itself uses, fed directly from the cached facts. Reading `assemble_graph()`'s own
+source confirmed its `walk_result` argument is used for exactly one thing — a `used_git`
+advisory note this dashboard doesn't surface — so a placeholder `WalkResult(files=[], ...)`
+triggers zero filesystem walk of any kind; a dedicated test
+(`TestRepoCommandDashboard::test_never_walks_the_repository`) patches `walk_repository` in
+both `walk.py` and `graph.py` to raise and confirms the dashboard still renders correctly.
+Every other field (symbol counts, language shares, largest modules, most-connected files) is
+a direct copy or a cheap sum/count/sort/top-N over already-cached data — see
+`dashboard_model.py`'s own docstring for field-by-field provenance. Two items the task's own
+example section suggested — "ignored files" and "generated files" — were checked against the
+actual data model and found genuinely unavailable anywhere in cached repository intelligence
+(confirmed during the QB-075 audit immediately preceding this item); rather than inventing a
+new walk/heuristic to produce them, they were **omitted entirely** from the dashboard, per
+"never invent metrics."
+
+**What shipped:** `quor/pipeline/repo_profile/dashboard_model.py` (the frozen `RepoDashboard`
+data contract, plain dataclasses throughout — mirrors `symbols_model.py`/`graph_model.py`'s
+"no Pydantic needed" convention so the whole tree is `dataclasses.asdict()`-serializable),
+`dashboard.py` (`build_dashboard(root) -> RepoDashboard | None` — the cache-only aggregator),
+`dashboard_render.py` (Rich `Console`/`Table` terminal layout, following `quor gain`'s
+existing style rather than the plain-Markdown template `map`/`symbols`/`graph` use — this
+command's own spec calls for a dashboard meant to be read directly by a person; plus
+`render_json()`, identical information via `dataclasses.asdict()` + orjson), and
+`quor/cli/commands/repo.py` (the `repo_command` entry point — resolves `--path` via the
+existing `resolve_repo_root`, calls `build_dashboard()` directly, **never**
+`ensure_repo_intelligence()`). `format_duration()` was added to `cli/format_utils.py`
+(mirrors `format_count`/`format_percentage`'s "presentation only" convention) for the
+"N minutes/hours/days ago" cache-age display. `REPO_DASHBOARD_FILTER_LABEL` was added to
+`tracking/db.py` and excluded from `analytics/filter_divergence.py`'s low-performer check,
+mirroring `REPO_PROFILE_FILTER_LABEL`/`REPO_SYMBOLS_FILTER_LABEL`/`REPO_GRAPH_FILTER_LABEL`
+exactly (a presentation command has no "before" blob to compress against, so
+`original`/`filtered` are recorded equal by design). Registered as a fifth exempt utility
+command in `cli/main.py` (Analysis panel, alongside `map`/`symbols`/`graph`) and added to
+`__main__.py`'s `_CLI_COMMANDS` routing set (without this, `quor repo` would have been
+misrouted as an attempt to run a subprocess named `repo`).
+
+**No-cache path:** when any of the four cache files is missing or unreadable,
+`build_dashboard()` returns `None` (never generated and corrupted are treated identically —
+the caller doesn't need to distinguish them) and `repo_command` prints a short, actionable
+message pointing at `quor map`, exit code 0 (this is expected first-run state, not an error).
+
+**Tests:** `tests/unit/test_repo_dashboard.py` (15 cases total across both new files) —
+`build_dashboard()` aggregation exercised entirely via fixtures written straight into
+`intel_store`'s cache files (no real source parsing needed, and it doubles as proof there's
+no source file on disk for the function to read even if it tried): missing/partial/corrupted
+cache all return `None`; verbatim reuse of `RepoIntelState`/`RepoProfile` fields; symbol
+totals and per-language breakdown; graph edge resolution and relationship-kind counts;
+most-connected-files ranking (including a tie-break case); largest-modules ranking;
+cache-age computation. `tests/unit/test_cli_repo.py` — no-cache friendly message (plain and
+`--json`), full dashboard render against a real `quor map`/`symbols`/`graph`-built cache,
+`--json` field shape, the "never walks the repository" proof described above, `--path`
+error handling (reused `resolve_repo_root`), and invocation tracking. Full existing
+`tests/unit/` suite (all 73 files) re-run and confirmed zero regressions (exit code 0);
+`ruff check quor/ tests/` and `mypy quor/` both clean.
+
+**Validation — sample output** (this repo, 455 files, cache already warm from earlier
+`quor map`/`symbols`/`graph` runs):
+
+```
+Quor Repository Dashboard
+
+Repository: Quor
+Root:       C:/Users/.../Quor
+Indexed:    29 minutes ago (commit 0d2b2c47a8da)
+
+Languages
+Python      221 files  (90%)
+TypeScript    8 files   (3%)
+...
+
+Symbols
+Total symbols  3.7k
+  python       3.5k
+  ...
+
+Dependency Graph
+Nodes            228
+Edges          13.6k
+Resolved  5.8k (43%)
+
+Largest modules
+path                              language  symbols
+tests/unit/test_stages.py           python      221
+...
+
+Most connected files
+path                     out   in  total
+tests/unit/test_cli.py   762   57    819
+...
+
+Repository Health
+  - 43% of dependency edges resolved (7.7k unresolved — external/dynamic/ambiguous, by design).
+```
+
+`--json` produces the identical data as a flat, `dataclasses.asdict()`-shaped object (verified
+in `test_json_flag_produces_valid_json_with_expected_fields`).
+
+**Runtime — honest results, including a real limitation found.** Isolated `build_dashboard()`
+timing (in-process, `time.perf_counter()`, 5 iterations):
+- Small synthetic repo (40 files, 120 resolved edges): **5–10ms warm** — comfortably inside
+  the <100ms target.
+- This repo itself (228 nodes, **13.6k edges** — an unusually dense graph, driven almost
+  entirely by test files' heavy `self.method()`-shaped `calls` relationships): **130–160ms**,
+  confirmed via `cProfile` to be dominated (~166ms of ~244ms cumulative) by
+  `graph._resolve_all()`/`_resolve_import_target()` — the pre-existing, unmodified edge-
+  resolution algorithm `quor graph` itself already pays this exact cost for, not anything new
+  this item adds (the dashboard's own sorting/counting/formatting on top is <10ms).
+  **This exceeds the task's literal <100ms target on this specific, edge-dense repo** — an
+  honest limitation, not hidden: any repo whose dependency graph is this dense will see the
+  same cost, inherited directly from already-shipped code. Optimizing `_resolve_all()`
+  further was investigated and explicitly declined during QB-072's own perf follow-up
+  (documented above in that entry) for real correctness-risk-vs-benefit reasons, and
+  redoing that analysis was out of scope for a reporting-only feature.
+- Full-process wall time (`python -m quor repo`, real subprocess): 1.3–2.1s on this machine
+  — but so is `python -m quor --version` (1.2–1.7s) and `quor map`'s own cache-hit path
+  (1.6–2.4s): this machine's Python interpreter/import startup cost dominates *every*
+  `quor` CLI invocation equally (a pre-existing, environment-specific characteristic —
+  `PROJECT_STATUS.md`'s never-fully-closed-out "measure Python startup time on target
+  Windows machine with corporate AV" pre-flight note), not something this item introduces.
+  `quor repo`'s own marginal cost is consistently *lower* than `quor map`/`quor
+  symbols`/`quor graph`'s cache-hit path on the same repo, since it skips their
+  `walk_repository()` + `diff_repository()` confirmation step entirely.
+
+**Memory:** `tracemalloc` around a single `build_dashboard()` call on this repo (13.6k
+edges): **~48MB peak** during the call (loading `graph_facts.json`'s relationships and
+building the resolved `Edge` list — proportional to graph size, matching `quor graph`'s own
+footprint for the same data), but only **~440KB retained** after the call returns (the
+compact `RepoDashboard` object itself; every intermediate structure is released once
+`build_dashboard()` returns). No QB-071 regression: `quor repo` introduces no new cache and
+retains nothing beyond one call's transient peak — each invocation is a fresh, short-lived
+CLI process, so nothing accumulates across calls the way QB-071's optimization work was
+scoped to prevent.
+
+**Backward compatibility:** fully additive — no existing command, filter, stage, or cache
+file's shape or behavior changed. `main.py`'s command-table docstring was updated to list
+`repo` alongside `map`/`symbols`/`graph`/`version` as a sixth exempt utility command, per the
+same running documentation convention QB-061/066/067/073 each followed.
+
+</details>
+
+---
+
 ### Historical (superseded)
 
 *Kept for the record — not resolved work in its own right, but the original request that later,
