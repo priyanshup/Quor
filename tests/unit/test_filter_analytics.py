@@ -27,6 +27,7 @@ from quor.analytics.filter_history import (
 from quor.analytics.filter_report import render_filter_analytics_report
 from quor.tracking.db import (
     PASSTHROUGH_LABEL,
+    REPO_GRAPH_FILTER_LABEL,
     REPO_PROFILE_FILTER_LABEL,
     FilterAnalyticsReport,
     FilterUsage,
@@ -139,6 +140,13 @@ class TestFlagLowPerformers:
         so it must not be flagged alongside a real compression regression
         like mypy/ruff."""
         filters = (_usage(REPO_PROFILE_FILTER_LABEL, compression_pct=0.0),)
+        assert flag_low_performers(filters) == []
+
+    def test_repo_graph_label_is_excluded(self) -> None:
+        """QB-067: `quor graph`'s synthetic tracking label always reads
+        0.0% by design (synthesis, not compression), same reasoning as
+        `test_repo_profile_label_is_excluded` above."""
+        filters = (_usage(REPO_GRAPH_FILTER_LABEL, compression_pct=0.0),)
         assert flag_low_performers(filters) == []
 
     def test_threshold_is_configurable(self) -> None:

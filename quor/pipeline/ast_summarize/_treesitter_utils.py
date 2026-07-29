@@ -30,6 +30,8 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator
+
     from tree_sitter import Node
 
 
@@ -104,6 +106,21 @@ def has_error_overlap(node: Node, error_ranges: list[tuple[int, int]]) -> bool:
     node_start = node.start_point.row
     node_end = node.end_point.row
     return any(err_start <= node_end and err_end >= node_start for err_start, err_end in error_ranges)
+
+
+def iter_descendants(node: Node) -> Iterator[Node]:
+    """Yield every descendant of `node` (not including `node` itself),
+    depth-first — the tree-sitter equivalent of stdlib `ast.walk()`'s full
+    subtree traversal (QB-067). Used by every language's
+    `extract_relationships_*()` to find every call expression anywhere
+    inside a function/method's body, including inside a nested closure —
+    mirroring `python.py`'s own "a call inside a nested def is attributed to
+    its nearest enclosing top-level/class-method Symbol" rule, generalized
+    to the tree-sitter grammars.
+    """
+    for child in node.children:
+        yield child
+        yield from iter_descendants(child)
 
 
 def add_candidate(

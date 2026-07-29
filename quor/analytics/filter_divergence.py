@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from quor.analytics.filter_baseline import BenchmarkFilterStats
 from quor.tracking.db import (
     PASSTHROUGH_LABEL,
+    REPO_GRAPH_FILTER_LABEL,
     REPO_PROFILE_FILTER_LABEL,
     REPO_SYMBOLS_FILTER_LABEL,
     FilterUsage,
@@ -22,11 +23,11 @@ from quor.tracking.db import (
 
 # Synthetic, non-ContentMask-filter labels that must never be flagged as
 # "low performing" — each is documented at its own definition (PASSTHROUGH_LABEL
-# in quor/tracking/db.py, REPO_PROFILE_FILTER_LABEL/REPO_SYMBOLS_FILTER_LABEL
-# alongside it) as always reading 0.0%/near-zero by design, not as evidence
-# of a broken filter.
+# in quor/tracking/db.py, REPO_PROFILE_FILTER_LABEL/REPO_SYMBOLS_FILTER_LABEL/
+# REPO_GRAPH_FILTER_LABEL alongside it) as always reading 0.0%/near-zero by
+# design, not as evidence of a broken filter.
 _EXCLUDED_FROM_LOW_PERFORMER_CHECK = frozenset(
-    {PASSTHROUGH_LABEL, REPO_PROFILE_FILTER_LABEL, REPO_SYMBOLS_FILTER_LABEL}
+    {PASSTHROUGH_LABEL, REPO_PROFILE_FILTER_LABEL, REPO_SYMBOLS_FILTER_LABEL, REPO_GRAPH_FILTER_LABEL}
 )
 
 # A filter below this real compression_pct (including negative, i.e. net

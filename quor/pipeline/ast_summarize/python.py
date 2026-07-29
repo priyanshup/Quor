@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import ast
 
+from quor.pipeline.ast_summarize.relationship_model import Relationship
 from quor.pipeline.ast_summarize.symbol_model import ENTRY_POINT_NAMES, Symbol, SymbolKind
 
 
@@ -180,3 +181,190 @@ def _symbol_for(
         is_public=not name.startswith("_"),
         is_entry_point=kind == "function" and name in ENTRY_POINT_NAMES,
     )
+
+
+def extract_relationships_python(source: str) -> list[Relationship]:
+    """Return every deterministic import/inherits/export/calls relationship
+    Python's AST makes explicit (QB-067). File-local and unresolved — see
+    `relationship_model.py`'s module docstring for why resolution against
+    other files is not this function's job.
+
+    - **imports**: every `import`/`from ... import ...` anywhere in the
+      file (not just module scope — a local/conditional import is still a
+      real dependency fact). A relative `from . import x` / `from ..pkg
+      import y` is encoded as leading dots in `target` (`"."`, `"..pkg"`)
+      exactly mirroring Python's own relative-import syntax, so the
+      orchestrator can count them without re-deriving the grammar. A
+      wildcard `from x import *` is skipped entirely — QB-067's own
+      "conservative, unambiguous only" resolution mandate rules out a
+      binding that could shadow an unknown number of names.
+    - **inherits**: every `class Foo(Base, ...):` base that is a plain
+      name or dotted-attribute reference (`Base`, `pkg.Base`) — a
+      keyword arg (`metaclass=...`), call (`Generic[T]` handled via
+      `ast.Subscript`), or other dynamic expression is skipped, not
+      guessed. Python has no separate interface/trait syntax, so every
+      resolvable base is reported as `inherits`, never
+      `implements_interface`/`implements_trait` (a real, documented
+      language limitation, not an oversight).
+    - **export**: only from a module-level `__all__ = [...]`/`(...)`
+      assignment of string constants — Python's one real, syntactic
+      export mechanism (PEP 8's "public API" list every tool from
+      `pydoc` to `from x import *` already honors). A file with no
+      `__all__` reports no exports here; that does not mean nothing is
+      importable from it — see `symbol_model.py`'s `Symbol.is_public`
+      for the (separate, always-available) leading-underscore signal.
+    - **overrides**: not emitted — Python has no syntactic override
+      marker (unlike Java's `@Override`/C#'s `override` keyword), and
+      guessing from same-name-as-a-base-class-method would require the
+      exact cross-file method resolution this module deliberately leaves
+      to the orchestrator, applied to every method unconditionally,
+      which is precisely the "heuristic that cannot be deterministically
+      verified from this file alone" QB-067 rules out.
+    - **calls**: only from within a function/method already reported as
+      a `Symbol` by `extract_symbols_python()` above (top-level, or one
+      level inside a class) — `source` is that function/method's own
+      name, matching every emitted call to a real, indexable node. A
+      call's callee is recorded only when it is a bare name
+      (`target=name`, `qualifier=None`) or a single-level attribute
+      access on a bare name (`qualifier.target(...)`, e.g. `self.foo()`/
+      `np.array()`) — a deeper chain (`a.b.c()`), a subscript, or a call
+      result being called (`f()()`) is skipped, not guessed. A call
+      found inside a nested `def`/lambda is still attributed to its
+      nearest enclosing top-level/class-method `Symbol`, mirroring
+      `_compressible_body_lines()`'s own "nested def is implementation
+      detail of the outer one" rule.
+
+    Raises SyntaxError/ValueError exactly as `ast.parse()` does on
+    unparseable input, same fail-open contract as `analyze_python()`/
+    `extract_symbols_python()` — see module docstring.
+    """
+    tree = ast.parse(source)
+    relationships: list[Relationship] = []
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            _add_import_relationships(node, relationships)
+        elif isinstance(node, ast.ImportFrom):
+            _add_import_from_relationships(node, relationships)
+        elif isinstance(node, ast.ClassDef):
+            _add_inherits_relationships(node, relationships)
+
+    for stmt in tree.body:
+        if isinstance(stmt, ast.Assign) and _is_dunder_all_target(stmt.targets):
+            _add_export_relationships(stmt, relationships)
+
+    _visit_module_body_calls(tree.body, relationships)
+
+    return relationships
+
+
+def _dotted_name(node: ast.expr) -> str | None:
+    """Return `"a.b.c"` for a plain `Name`/`Attribute` chain, or `None` for
+    any other expression shape (subscript, call, ...) — never guessed."""
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        base = _dotted_name(node.value)
+        return f"{base}.{node.attr}" if base is not None else None
+    return None
+
+
+def _add_import_relationships(node: ast.Import, relationships: list[Relationship]) -> None:
+    for alias in node.names:
+        local_name = alias.asname or alias.name.split(".")[0]
+        relationships.append(
+            Relationship(kind="import", source="", target=alias.name, line=node.lineno, qualifier=local_name)
+        )
+
+
+def _add_import_from_relationships(node: ast.ImportFrom, relationships: list[Relationship]) -> None:
+    target = "." * node.level + (node.module or "")
+    for alias in node.names:
+        if alias.name == "*":
+            continue
+        local_name = alias.asname or alias.name
+        relationships.append(
+            Relationship(
+                kind="import",
+                source="",
+                target=target,
+                line=node.lineno,
+                qualifier=local_name,
+                origin=alias.name,
+            )
+        )
+
+
+def _add_inherits_relationships(node: ast.ClassDef, relationships: list[Relationship]) -> None:
+    for base in node.bases:
+        base_name = _dotted_name(base)
+        if base_name is not None:
+            relationships.append(
+                Relationship(kind="inherits", source=node.name, target=base_name, line=base.lineno)
+            )
+
+
+def _is_dunder_all_target(targets: list[ast.expr]) -> bool:
+    return len(targets) == 1 and isinstance(targets[0], ast.Name) and targets[0].id == "__all__"
+
+
+def _add_export_relationships(stmt: ast.Assign, relationships: list[Relationship]) -> None:
+    if not isinstance(stmt.value, (ast.List, ast.Tuple)):
+        return
+    for element in stmt.value.elts:
+        if isinstance(element, ast.Constant) and isinstance(element.value, str):
+            relationships.append(
+                Relationship(kind="export", source=element.value, target="", line=stmt.lineno)
+            )
+
+
+def _visit_module_body_calls(stmts: list[ast.stmt], relationships: list[Relationship]) -> None:
+    """Mirrors `_visit_module_body()`'s exact dispatch shape (module scope,
+    including conditional-definition wrappers), collecting a `calls`
+    relationship for each top-level function/method `Symbol` instead of a
+    compressible line range."""
+    for stmt in stmts:
+        if isinstance(stmt, ast.ClassDef):
+            _visit_class_body_calls(stmt.body, relationships)
+        elif isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            _collect_calls(stmt, stmt.name, relationships)
+        elif isinstance(stmt, ast.If):
+            _visit_module_body_calls(stmt.body, relationships)
+            _visit_module_body_calls(stmt.orelse, relationships)
+        elif isinstance(stmt, ast.Try):
+            _visit_module_body_calls(stmt.body, relationships)
+            for handler in stmt.handlers:
+                _visit_module_body_calls(handler.body, relationships)
+            _visit_module_body_calls(stmt.orelse, relationships)
+            _visit_module_body_calls(stmt.finalbody, relationships)
+        elif isinstance(stmt, (ast.With, ast.AsyncWith)):
+            _visit_module_body_calls(stmt.body, relationships)
+
+
+def _visit_class_body_calls(stmts: list[ast.stmt], relationships: list[Relationship]) -> None:
+    for stmt in stmts:
+        if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            _collect_calls(stmt, stmt.name, relationships)
+        elif isinstance(stmt, ast.ClassDef):
+            _visit_class_body_calls(stmt.body, relationships)
+
+
+def _collect_calls(node: ast.AST, source_name: str, relationships: list[Relationship]) -> None:
+    for call in ast.walk(node):
+        if not isinstance(call, ast.Call):
+            continue
+        func = call.func
+        if isinstance(func, ast.Name):
+            relationships.append(
+                Relationship(kind="calls", source=source_name, target=func.id, line=call.lineno)
+            )
+        elif isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name):
+            relationships.append(
+                Relationship(
+                    kind="calls",
+                    source=source_name,
+                    target=func.attr,
+                    line=call.lineno,
+                    qualifier=func.value.id,
+                )
+            )

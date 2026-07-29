@@ -55,7 +55,12 @@ from __future__ import annotations
 import warnings
 from typing import TYPE_CHECKING
 
-from quor.pipeline.ast_summarize._treesitter_utils import add_candidate, collect_error_ranges
+from quor.pipeline.ast_summarize._treesitter_utils import (
+    add_candidate,
+    collect_error_ranges,
+    iter_descendants,
+)
+from quor.pipeline.ast_summarize.relationship_model import Relationship
 from quor.pipeline.ast_summarize.symbol_model import ENTRY_POINT_NAMES, Symbol, SymbolKind
 
 if TYPE_CHECKING:
@@ -276,3 +281,214 @@ def _add_method_symbol(node: Node, symbols: list[Symbol]) -> None:
             is_entry_point=name in ENTRY_POINT_NAMES,
         )
     )
+
+
+def _flatten_scoped_identifier(node: Node) -> str | None:
+    """Flatten a `scoped_identifier` (or plain `identifier`) chain into a
+    dotted string (`"java.util.List"`) — `None` for any other node shape."""
+    if node.type == "identifier":
+        return _decode(node)
+    if node.type == "scoped_identifier":
+        scope = node.child_by_field_name("scope")
+        name = node.child_by_field_name("name")
+        if scope is not None and name is not None:
+            base = _flatten_scoped_identifier(scope)
+            return f"{base}.{_decode(name)}" if base is not None else None
+    return None
+
+
+def extract_relationships_java(source: str) -> list[Relationship]:
+    """Return every deterministic import/inherits/implements_interface/
+    overrides/calls relationship Java's grammar makes explicit (QB-067) —
+    file-local and unresolved, see `relationship_model.py`'s module
+    docstring.
+
+    - **imports**: every `import_declaration` (including `import
+      static ...`, treated identically — its final segment is still the
+      name it binds locally, e.g. `Math.max` bound as `max`). `target` is
+      the full dotted path; `qualifier` is its last segment, Java's own
+      rule for what name an import makes available unqualified. A
+      wildcard import (`import java.util.*;`/`import static
+      java.lang.Math.*;`) is skipped entirely — same "ambiguous binding"
+      exclusion as Python's `from x import *`.
+    - **inherits**: a class's `extends` clause (`class Foo extends Base`
+      — Java classes have at most one).
+    - **implements_interface**: a class's `implements` clause (`implements
+      A, B`) — syntactically distinct from `extends` in this grammar, so
+      no ambiguity the way C#'s single colon-list has (see `csharp.py`).
+    - **implements_trait**: never emitted — Java has no trait construct.
+    - **overrides**: a method carrying an `@Override` annotation
+      (`marker_annotation`/`annotation` named `Override`) — `qualifier`
+      is the enclosing class's own raw `extends` target name (the
+      superclass the override is claimed against); a method with no
+      `@Override` annotation is not reported, even if it happens to
+      share a name with a superclass method — no guessing beyond the
+      explicit annotation.
+    - **calls**: only from within a method/constructor already reported
+      as a `Symbol` by `extract_symbols_java()` — `source` is that
+      `Symbol`'s own name. A bare call (`helper()`), an explicit
+      `this.other()`/`super.method()` call, and a qualified call
+      (`Utils.staticCall()`) are each recorded (`qualifier=None`/`"this"`/
+      `"super"`/`<name>` respectively) — a deeper chain is skipped.
+
+    Returns an empty list (with the same actionable warning
+    `analyze_java()` emits) if the optional dependency is missing.
+    Otherwise may raise on a genuine, unrecoverable parser failure — same
+    fail-open contract as `analyze_java()`."""
+    try:
+        import tree_sitter
+        import tree_sitter_java
+    except ImportError:
+        warnings.warn(
+            "[quor] tree-sitter/tree-sitter-java is not installed; "
+            "install quor[java] to enable Java relationship extraction "
+            "(falling back to no relationships for this file)",
+            stacklevel=2,
+        )
+        return []
+
+    language = tree_sitter.Language(tree_sitter_java.language())
+    parser = tree_sitter.Parser(language)
+    tree = parser.parse(source.encode("utf-8"))
+
+    relationships: list[Relationship] = []
+    for child in tree.root_node.children:
+        if child.type == "import_declaration":
+            _add_import_relationship(child, relationships)
+        elif child.type in _CLASS_LIKE_BODY_TYPES:
+            _add_type_relationships(child, relationships)
+    return relationships
+
+
+def _add_import_relationship(node: Node, relationships: list[Relationship]) -> None:
+    if any(c.type == "asterisk" for c in node.children):
+        return
+    scoped = next((c for c in node.children if c.type in ("scoped_identifier", "identifier")), None)
+    if scoped is None:
+        return
+    target = _flatten_scoped_identifier(scoped)
+    if target is None:
+        return
+    qualifier = target.rsplit(".", 1)[-1]
+    # `origin=qualifier` (not None) signals a direct symbol binding — a Java
+    # import always names one specific class/member, never a whole package
+    # the way Python's `import x`/Go's `import "pkg"` do — see `graph.py`'s
+    # resolution notes for why this distinction matters.
+    relationships.append(
+        Relationship(
+            kind="import",
+            source="",
+            target=target,
+            line=node.start_point.row + 1,
+            qualifier=qualifier,
+            origin=qualifier,
+        )
+    )
+
+
+def _add_type_relationships(node: Node, relationships: list[Relationship]) -> None:
+    name_node = node.child_by_field_name("name")
+    if name_node is None:
+        return
+    type_name = _decode(name_node)
+
+    superclass_name: str | None = None
+    superclass = node.child_by_field_name("superclass")
+    if superclass is not None:
+        base_node = next((c for c in superclass.children if c.type == "type_identifier"), None)
+        if base_node is not None:
+            superclass_name = _decode(base_node)
+            relationships.append(
+                Relationship(
+                    kind="inherits", source=type_name, target=superclass_name, line=base_node.start_point.row + 1
+                )
+            )
+
+    interfaces = node.child_by_field_name("interfaces")
+    if interfaces is not None:
+        type_list = next((c for c in interfaces.children if c.type == "type_list"), None)
+        if type_list is not None:
+            for type_node in type_list.children:
+                if type_node.type == "type_identifier":
+                    relationships.append(
+                        Relationship(
+                            kind="implements_interface",
+                            source=type_name,
+                            target=_decode(type_node),
+                            line=type_node.start_point.row + 1,
+                        )
+                    )
+
+    body = node.child_by_field_name("body")
+    if body is None:
+        return
+    for member in body.children:
+        if member.type in _METHOD_LIKE_SYMBOL_TYPES:
+            _add_method_relationships(member, superclass_name, relationships)
+
+
+def _has_override_annotation(node: Node) -> bool:
+    for child in node.children:
+        if child.type != "modifiers":
+            continue
+        for grandchild in child.children:
+            if grandchild.type in ("marker_annotation", "annotation"):
+                name_node = grandchild.child_by_field_name("name")
+                if name_node is not None and _decode(name_node) == "Override":
+                    return True
+    return False
+
+
+def _add_method_relationships(
+    node: Node, superclass_name: str | None, relationships: list[Relationship]
+) -> None:
+    name_node = node.child_by_field_name("name")
+    if name_node is None:
+        return
+    method_name = _decode(name_node)
+    _collect_calls(node, method_name, relationships)
+    if superclass_name is not None and _has_override_annotation(node):
+        relationships.append(
+            Relationship(
+                kind="overrides",
+                source=method_name,
+                target=method_name,
+                line=node.start_point.row + 1,
+                qualifier=superclass_name,
+            )
+        )
+
+
+def _collect_calls(node: Node, source_name: str, relationships: list[Relationship]) -> None:
+    for descendant in iter_descendants(node):
+        if descendant.type != "method_invocation":
+            continue
+        name_node = descendant.child_by_field_name("name")
+        if name_node is None:
+            continue
+        line = descendant.start_point.row + 1
+        object_node = descendant.child_by_field_name("object")
+        if object_node is None:
+            relationships.append(
+                Relationship(kind="calls", source=source_name, target=_decode(name_node), line=line)
+            )
+        elif object_node.type in ("this", "super"):
+            relationships.append(
+                Relationship(
+                    kind="calls",
+                    source=source_name,
+                    target=_decode(name_node),
+                    line=line,
+                    qualifier=object_node.type,
+                )
+            )
+        elif object_node.type == "identifier":
+            relationships.append(
+                Relationship(
+                    kind="calls",
+                    source=source_name,
+                    target=_decode(name_node),
+                    line=line,
+                    qualifier=_decode(object_node),
+                )
+            )

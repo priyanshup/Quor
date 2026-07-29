@@ -66,7 +66,12 @@ from __future__ import annotations
 import warnings
 from typing import TYPE_CHECKING
 
-from quor.pipeline.ast_summarize._treesitter_utils import add_candidate, collect_error_ranges
+from quor.pipeline.ast_summarize._treesitter_utils import (
+    add_candidate,
+    collect_error_ranges,
+    iter_descendants,
+)
+from quor.pipeline.ast_summarize.relationship_model import Relationship
 from quor.pipeline.ast_summarize.symbol_model import ENTRY_POINT_NAMES, Symbol, SymbolKind
 
 if TYPE_CHECKING:
@@ -269,3 +274,217 @@ def _add_container_methods(container_node: Node, symbols: list[Symbol]) -> None:
     for member in body.children:
         if member.type in _METHOD_LIKE_SYMBOL_TYPES:
             _add_function_symbol(member, symbols, kind="method")
+
+
+def extract_relationships_rust(source: str) -> list[Relationship]:
+    """Return every deterministic import/implements_trait/calls
+    relationship Rust's grammar makes explicit (QB-067) — file-local and
+    unresolved, see `relationship_model.py`'s module docstring.
+
+    - **imports**: every `use` path, including grouped (`use std::{fmt,
+      collections::HashMap}`) and aliased (`use crate::foo::Bar as Baz`)
+      forms, each flattened to its own `Relationship` (`target` is the
+      full `::`-joined path, `qualifier` is the local name it binds). A
+      `use path::*` wildcard is skipped entirely — same "ambiguous
+      binding" exclusion every other language's wildcard import gets.
+    - **inherits / implements_interface**: never emitted — Rust has no
+      class inheritance and no separate `interface` construct.
+    - **implements_trait**: an `impl Trait for Type { ... }` block —
+      `source` is `Type`'s own name, `target` is `Trait`'s own name (both
+      taken from the base name of a possibly-generic type, e.g.
+      `MyTrait<T>` -> `"MyTrait"` — type arguments are dropped, not
+      reported, since they add no resolution-relevant information and
+      would otherwise prevent an exact-name match against the trait's own
+      declared `Symbol`). A plain `impl Type { ... }` (no `trait` field)
+      is inherent-method attachment, not a trait implementation, and
+      reports no `implements_trait` relationship — only its methods'
+      `calls` are still collected.
+    - **overrides**: never emitted — Rust has no override keyword; a
+      trait method's default implementation being replaced by an `impl`
+      block would require resolving the trait's own default-body
+      presence, cross-file information this per-file extractor
+      deliberately does not have (see `relationship_model.py`'s
+      "resolution lives in the orchestrator" note — even the
+      orchestrator does not attempt this, a documented, real scope
+      limitation, not an oversight).
+    - **calls**: only from within a function/method already reported as
+      a `Symbol` by `extract_symbols_rust()` (top-level functions and
+      impl/trait block methods) — `source` is that `Symbol`'s own name.
+      `self.method()` (`qualifier="self"`), a bare call
+      (`qualifier=None`), and a path-qualified call
+      (`module::func()`/`Type::assoc_fn()`, `qualifier=<path>`) are each
+      recorded — a deeper field-access chain is skipped.
+
+    Returns an empty list (with the same actionable warning
+    `analyze_rust()` emits) if the optional dependency is missing.
+    Otherwise may raise on a genuine, unrecoverable parser failure — same
+    fail-open contract as `analyze_rust()`."""
+    try:
+        import tree_sitter
+        import tree_sitter_rust
+    except ImportError:
+        warnings.warn(
+            "[quor] tree-sitter/tree-sitter-rust is not installed; "
+            "install quor[rust] to enable Rust relationship extraction "
+            "(falling back to no relationships for this file)",
+            stacklevel=2,
+        )
+        return []
+
+    language = tree_sitter.Language(tree_sitter_rust.language())
+    parser = tree_sitter.Parser(language)
+    tree = parser.parse(source.encode("utf-8"))
+
+    relationships: list[Relationship] = []
+    for child in tree.root_node.children:
+        if child.type == "use_declaration":
+            argument = child.child_by_field_name("argument")
+            if argument is not None:
+                _add_use_relationships(argument, relationships, child.start_point.row + 1)
+        elif child.type == "impl_item":
+            _add_impl_relationships(child, relationships)
+    return relationships
+
+
+def _path_text(node: Node) -> str | None:
+    if node.type == "identifier":
+        return _decode(node)
+    if node.type in ("self", "super", "crate"):
+        return node.type
+    if node.type == "scoped_identifier":
+        path = node.child_by_field_name("path")
+        name = node.child_by_field_name("name")
+        if path is not None and name is not None:
+            base = _path_text(path)
+            return f"{base}::{_decode(name)}" if base is not None else None
+    return None
+
+
+def _add_use_relationships(
+    node: Node, relationships: list[Relationship], line: int, prefix: str | None = None
+) -> None:
+    if node.type == "use_wildcard":
+        return
+    if node.type == "use_as_clause":
+        path = node.child_by_field_name("path")
+        alias = node.child_by_field_name("alias")
+        if path is None or alias is None:
+            return
+        target = _path_text(path)
+        if target is None:
+            return
+        full = f"{prefix}::{target}" if prefix else target
+        # `origin` (the item's own, un-aliased name) signals a direct
+        # symbol binding — see the plain-leaf branch below and `graph.py`'s
+        # resolution notes for why this distinction matters.
+        relationships.append(
+            Relationship(
+                kind="import",
+                source="",
+                target=full,
+                line=line,
+                qualifier=_decode(alias),
+                origin=full.rsplit("::", 1)[-1],
+            )
+        )
+        return
+    if node.type == "scoped_use_list":
+        path = node.child_by_field_name("path")
+        list_node = node.child_by_field_name("list")
+        base = _path_text(path) if path is not None else None
+        full_prefix = f"{prefix}::{base}" if prefix and base else (base or prefix)
+        if list_node is not None:
+            for item in list_node.children:
+                if item.is_named:
+                    _add_use_relationships(item, relationships, line, prefix=full_prefix)
+        return
+    if node.type == "use_list":
+        for item in node.children:
+            if item.is_named:
+                _add_use_relationships(item, relationships, line, prefix=prefix)
+        return
+    target = _path_text(node)
+    if target is None:
+        return
+    full = f"{prefix}::{target}" if prefix else target
+    local_name = full.rsplit("::", 1)[-1]
+    relationships.append(
+        Relationship(kind="import", source="", target=full, line=line, qualifier=local_name, origin=local_name)
+    )
+
+
+def _rust_type_name(node: Node) -> str | None:
+    """The base name of a (possibly generic) type reference — see module
+    docstring's `implements_trait` note for why type arguments are
+    dropped."""
+    if node.type == "type_identifier":
+        return _decode(node)
+    if node.type == "generic_type":
+        name_node = node.child_by_field_name("name")
+        return _rust_type_name(name_node) if name_node is not None else None
+    return None
+
+
+def _add_impl_relationships(node: Node, relationships: list[Relationship]) -> None:
+    type_node = node.child_by_field_name("type")
+    type_name = _rust_type_name(type_node) if type_node is not None else None
+
+    trait_node = node.child_by_field_name("trait")
+    if trait_node is not None and type_name is not None:
+        trait_name = _rust_type_name(trait_node)
+        if trait_name is not None:
+            relationships.append(
+                Relationship(
+                    kind="implements_trait",
+                    source=type_name,
+                    target=trait_name,
+                    line=trait_node.start_point.row + 1,
+                )
+            )
+
+    body = node.child_by_field_name("body")
+    if body is None or body.type != _CONTAINER_BODY_TYPE:
+        return
+    for member in body.children:
+        if member.type == "function_item":
+            name_node = member.child_by_field_name("name")
+            if name_node is not None:
+                _collect_calls(member, _decode(name_node), relationships)
+
+
+def _collect_calls(node: Node, source_name: str, relationships: list[Relationship]) -> None:
+    for descendant in iter_descendants(node):
+        if descendant.type != "call_expression":
+            continue
+        func = descendant.child_by_field_name("function")
+        if func is None:
+            continue
+        line = descendant.start_point.row + 1
+        if func.type == "identifier":
+            relationships.append(
+                Relationship(kind="calls", source=source_name, target=_decode(func), line=line)
+            )
+        elif func.type == "field_expression":
+            value = func.child_by_field_name("value")
+            field = func.child_by_field_name("field")
+            if value is not None and value.type == "self" and field is not None:
+                relationships.append(
+                    Relationship(
+                        kind="calls", source=source_name, target=_decode(field), line=line, qualifier="self"
+                    )
+                )
+        elif func.type == "scoped_identifier":
+            path = func.child_by_field_name("path")
+            name = func.child_by_field_name("name")
+            if path is not None and name is not None:
+                path_text = _path_text(path)
+                if path_text is not None:
+                    relationships.append(
+                        Relationship(
+                            kind="calls",
+                            source=source_name,
+                            target=_decode(name),
+                            line=line,
+                            qualifier=path_text,
+                        )
+                    )

@@ -1479,3 +1479,168 @@ db.py`, defined alongside `REPO_PROFILE_FILTER_LABEL` for the identical reason �
   real usage before any claim is made, exactly the discipline ADR-037 already applied to `quor map`.
 - See `backlog.md`'s `QB-066` entry for the implementation record (test counts, benchmark corpus,
   files touched).
+
+## ADR-039: Repository Dependency Graph — Raw Facts Per-Language, One Orchestrator Resolves Them, `quor graph` as a Fourth Exempted Command (QB-067)
+
+**Status:** Decided and implemented
+**Date:** 2026-07-29
+
+**Context:**
+QB-066/ADR-038 built a deterministic, repository-wide *symbol* index — what does each file
+declare. This task is the natural follow-up: a deterministic, repository-wide *relationship* graph
+— imports, exports, inheritance, interface/trait implementation, method overrides, module/package
+dependencies, and (where a language's grammar allows unambiguous resolution) call relationships —
+the token cost an AI coding assistant otherwise pays re-discovering "what calls this" / "what does
+this depend on" via repeated `grep`/`Read` calls. The task's own instructions required reusing
+QB-066 wherever possible and explicitly ruled out inference/heuristics/an LLM.
+
+**Options considered:**
+- **A single combined pass per file (symbols + relationships in one parser call) vs. two
+  independent additive functions per language, mirroring `analyze_*()`/`extract_symbols_*()`'s
+  existing split:** two independent functions was chosen — `extract_relationships_*()` was added to
+  each of the eight `ast_summarize` language modules alongside its existing `extract_symbols_*()`
+  (QB-066) and `analyze_*()` (QB-005B/C/D/QB-046), reusing that module's own parser setup and
+  lazy-import/fail-open discipline unchanged. This mirrors ADR-038's own "two independently correct
+  sibling questions, not one derived from the other" reasoning (`_SYMBOL_EXTRACTORS`/
+  `_RELATIONSHIP_EXTRACTORS` are two parallel dicts in `registry.py`, not a richer return type on
+  one). `quor graph`'s orchestrator calls both extractors per file (two parses), the same
+  already-accepted cost the codebase already pays whenever a caller needs both an `analyze_*()` and
+  an `extract_symbols_*()` result for one file — see `registry.py`'s own module docstring. A single
+  combined-pass function per language was rejected: it would require a third, richer return shape
+  invented specifically for this task, coupling two independently-useful questions (what does this
+  declare vs. what does it relate to) into one call for every future consumer, exactly what ADR-038
+  already ruled out doing for symbols vs. compression.
+- **Per-language extractors resolve their own cross-file references vs. a single orchestrator-level
+  resolution engine:** orchestrator-level was chosen, unanimously across every language. Each
+  `extract_relationships_*()` function is file-local and returns raw, unresolved facts (a raw import
+  path, a raw base-class name, a raw callee name) — see `relationship_model.py`'s `Relationship`
+  docstring. `quor/pipeline/repo_profile/graph.py`'s `build_dependency_graph()` is the only place
+  that resolves a raw fact against the whole repo's symbol table. Writing the (genuinely complex,
+  per-language-different) resolution algorithm once, in one file, with one shared test suite, avoids
+  eight chances for it to drift — the same reasoning ADR-038 already applied to keeping
+  visibility/entry-point logic per-language but simple, extended here to a harder problem
+  (cross-file resolution) by centralizing it instead.
+- **Resolution scope — best-effort/heuristic name matching vs. conservative, unambiguous-only
+  resolution:** conservative was chosen, confirmed with the user before implementation began (this
+  task's own "no heuristics" constraint, and the task's own call-graph caveat "where language
+  support naturally allows"). An edge's `target_file`/`target_symbol` are populated only when a
+  reference resolves to *exactly one* candidate — same-file, or through the file's own unambiguous,
+  non-wildcard import bindings — for both type references (inherits/implements/overrides) and calls
+  (`graph.py::_resolve_relationship`). A wildcard import (`from x import *`, `use path::*`, Java's
+  `import pkg.*`, Go's dot-import) never creates a binding at all, at the *extraction* layer (every
+  language's own `extract_relationships_*()` skips it at the source, not filtered out later) — the
+  same "ambiguous binding" exclusion applied identically across all eight languages. An ambiguous
+  same-file name collision (two classes in one file both declaring a same-named method) also stays
+  unresolved rather than guessed. `target_raw` is always present regardless of resolution outcome —
+  the underlying deterministic fact is never lost, only the *pointer* to a specific file/symbol is
+  sometimes absent.
+- **Import/module-path resolution — a general package-manager/build-system resolution algorithm vs.
+  a bounded, spec-or-convention-grounded rule per language:** bounded rules were chosen, each scoped
+  and documented in `graph.py::_resolve_import_target()`'s per-language helpers: Python's own
+  relative-import level semantics plus a bounded absolute-import check against the repo root (no
+  `sys.path`/venv/site-packages resolution); JS/TS/TSX's relative-path-plus-extension-probing
+  convention (no `node_modules`/`tsconfig` `paths`); Java's package-to-directory convention (a
+  fully-qualified name must live at a path ending in that name's slash-joined form, regardless of
+  which source root precedes it — no build-tool-specific source-root list); Rust's `crate::`-rooted
+  single-crate `src/` convention (no `Cargo.toml`-driven workspace/multi-crate resolution, and never
+  `self::`/`super::`, which need the importing file's own position in the `mod` tree — separate,
+  out-of-scope information). Go and C# get no import-path resolution rule at all — Go's import paths
+  are `go.mod`-module-relative (a real build-system resolution algorithm, explicitly out of scope)
+  and C#'s `using` opens a namespace with no required directory convention the way Java's package
+  system has; both stay `target_raw`-only, a real, documented, per-language limitation, not an
+  oversight. Every rule here is grounded in the language's own spec or a near-universal, real
+  convention (the same "real, verifiable rule over broad inference" discipline QB-061's entry-point
+  detection and QB-066's Go package-naming-convention default already established) — never a general
+  algorithm that would need to model an entire build/package-manager ecosystem.
+- **Call relationships — same-file only vs. resolving through a file's own import bindings too:**
+  both, via one unified mechanism. A bare call (`helper()`) resolves same-file first (if exactly one
+  matching symbol exists in that file), then via the file's own import bindings (an imported name
+  called directly). A qualified call (`self.method()`/`this.method()`/`super.method()`/`base.method()`
+  — the same-file-scoped sentinel qualifiers each language's own `extract_relationships_*()`
+  documents — or `alias.method()`/`pkg.Func()`/`module::func()`) resolves the qualifier against the
+  file's own import-alias bindings, then checks the resolved file's own symbol table for the target
+  name. `self.method()` resolving to a method declared only on a *different-file* superclass is a
+  documented, real limitation (the same-file qualifier sentinels intentionally do not chase an
+  inheritance chain across files) — expanding this was considered and rejected as disproportionate
+  scope growth for this phase; a real, possible follow-up, not silently done partially.
+- **A decorator/attribute expression's own call (Python `@app.route(...)`) — special-cased out vs.
+  reported as an ordinary call attributed to the function it decorates:** reported as an ordinary
+  call was chosen — `ast.walk()` over a `FunctionDef` node naturally includes its `decorator_list`,
+  and excluding it would require new, undocumented special-casing this task's own "no heuristics"
+  discipline argues against adding without a specific reason to. It is still a real, deterministic
+  fact (that call expression genuinely exists at that source location, evaluated at definition time)
+  — documented explicitly in `python.py`'s `extract_relationships_python()` docstring and covered by
+  a dedicated regression test once the flask-pip fixture surfaced it during benchmark-corpus testing.
+- **A fourth exempted CLI command (`quor graph`) vs. an option on `quor symbols` (e.g. `quor symbols
+  --graph`):** a fourth exempted command was chosen, following the exact process ADR-037/ADR-038
+  already established (CLAUDE.md's "V1 has exactly 6 commands... don't add more without explicit
+  approval" gate, `schema`/`map`/`symbols` as the three precedents) — explicit user sign-off was
+  obtained before any CLI code was written, not assumed granted by this ADR or the originating task
+  instructions alone, mirroring both prior ADRs' identical discipline. A flag on `quor symbols` was
+  rejected for the same performance-surface reason ADR-038 already gave for keeping `quor symbols`
+  itself separate from `quor map`: a flag would make `quor symbols` carry relationship-extraction
+  cost by proximity even when unused by default, whereas a separate command keeps `quor symbols`'s
+  existing performance characteristics completely unchanged (verified: every existing `repo_profile`/
+  `quor symbols`/`quor map` test and the compression benchmark suite pass unmodified).
+- **Call-graph scope for this phase — ship it now (conservative/unambiguous) vs. defer entirely to a
+  named follow-up:** shipping it now (conservative) was chosen, confirmed with the user before
+  implementation began — the task's own wording ("where language support naturally allows, also
+  extract deterministic call relationships") treats this as an easier bar than the mandatory
+  relationship types, and the conservative same-file/unambiguous-import-binding resolution rule
+  above keeps it bounded rather than open-ended.
+
+**Decision:**
+Each of the eight `ast_summarize` language modules gained one additive `extract_relationships_*()`
+function returning `list[Relationship]` (`quor/pipeline/ast_summarize/relationship_model.py`) — raw,
+file-local, unresolved facts, exactly as written in the source. `registry.py` gained a third,
+parallel dict/getter (`_RELATIONSHIP_EXTRACTORS`/`get_relationship_extractor()`) alongside the
+existing `_ANALYZERS`/`_SYMBOL_EXTRACTORS`, plus a promoted, single source of truth for
+extension-to-language routing (`EXTENSION_TO_LANGUAGE`, moved here from `repo_profile/symbols.py`'s
+originally-private table so `quor symbols` and `quor graph` share it rather than risking two drifting
+copies). `quor/pipeline/repo_profile/graph.py`'s `build_dependency_graph(root) -> RepoDependencyGraph`
+is the orchestrator — walks the repo once via the existing `walk.py`, and per file calls both
+`get_symbol_extractor()` and `get_relationship_extractor()` (not `symbols.py`'s `build_symbol_index()`
+as an opaque black box, which would re-walk and re-read every file a second time — see `graph.py`'s
+own module docstring), then resolves every raw relationship into an `Edge`
+(`quor/pipeline/repo_profile/graph_model.py`) using the conservative, unambiguous-only rules above.
+Same 2 MB per-file size cap and same per-file fail-open discipline as `symbols.py` (QB-066),
+unchanged reasoning. `graph_render.py` renders fixed-template Markdown by default, JSON via `--json`,
+mirroring `quor map`/`quor symbols`'s identical convention — grouped by source file, each edge
+rendered as one line naming its kind, target, and (when resolved) `file::symbol` pointer. `quor
+graph` is registered as a fourth exempted utility command (`quor/cli/main.py`, `__main__.py`'s
+`_CLI_COMMANDS`) — explicit user sign-off obtained before any CLI code was written, following the
+exact process ADR-037/ADR-038 already established, guarded against the same real
+`_CLI_COMMANDS`-omission bug both prior ADRs caught via a dedicated regression test. Invocations are
+tracked under a new `REPO_GRAPH_FILTER_LABEL` (`quor/tracking/db.py`), excluded from
+`filter_divergence.flag_low_performers()`'s low-performer check the same way
+`REPO_PROFILE_FILTER_LABEL`/`REPO_SYMBOLS_FILTER_LABEL` already are.
+
+**Consequences:**
+- No changes to `ContentMask`, `Decision`, `StageHandler` Protocol, `Pipeline.execute`, any existing
+  filter/stage, or any existing `analyze_*()`/`extract_symbols_*()` function's behavior — every
+  `extract_relationships_*()` function and `graph.py`/`graph_model.py`/`graph_render.py` are purely
+  additive. The compression benchmark suite (`python -m tests.benchmarks.run_benchmarks`) and every
+  existing `repo_profile`/`ast_summarize` test pass unmodified, confirming no regression.
+- `quor graph`'s output is heuristic in the same bounded sense `quor map`/`quor symbols`'s is: a
+  spec-or-convention-grounded import-path resolution rule per language, a same-file-or-unambiguous-
+  import-binding resolution rule for type references and calls — never heuristic in the "cannot be
+  deterministically verified" sense the task ruled out, and re-running the scan against unchanged
+  repo state produces byte-identical output (verified by a dedicated determinism test, mirroring
+  `quor map`/`quor symbols`'s identical check).
+- Real, documented, per-language resolution limitations, not silently-partial work: Go/C# import
+  paths are never resolved to a file (no in-scope directory convention); `self`/`this`/`super`/`base`
+  qualified calls resolve same-file only, never chasing a cross-file inheritance chain; C#'s
+  `inherits` relationship cannot syntactically distinguish a base class from an implemented interface
+  (its grammar's single colon-delimited base list has no such marker) so `implements_interface` is
+  never emitted for C#; Go's structural interface satisfaction has no syntactic `implements`-style
+  marker at all, so Go emits no `inherits`/`implements_interface`/`implements_trait`/`overrides`
+  relationships whatsoever; cross-file call resolution beyond a file's own direct, unambiguous import
+  bindings (deeper attribute chains, dynamic dispatch, overload-specific resolution) is not
+  attempted. Each is documented at its own `extract_relationships_*()`/`_resolve_import_target()`
+  docstring, not merely implied by absence.
+- `quor graph`'s real-session token savings are not yet measured — per Anti-Goal #24/#25, no such
+  figure is published anywhere in this ADR or the shipped documentation; it must be measured against
+  real usage before any claim is made, exactly the discipline ADR-037/ADR-038 already applied to
+  `quor map`/`quor symbols`.
+- See `backlog.md`'s `QB-067` entry for the implementation record (test counts, benchmark corpus,
+  files touched).

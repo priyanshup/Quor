@@ -27,6 +27,7 @@ import warnings
 from pathlib import Path, PurePosixPath
 
 from quor.pipeline.ast_summarize.registry import (
+    EXTENSION_TO_LANGUAGE,
     extra_for_language,
     get_symbol_extractor,
     is_language_available,
@@ -34,28 +35,11 @@ from quor.pipeline.ast_summarize.registry import (
 from quor.pipeline.repo_profile.symbols_model import FileSymbols, RepoSymbolIndex
 from quor.pipeline.repo_profile.walk import walk_repository
 
-# Extension -> ast_summarize registry language key. Deliberately a fresh,
-# purpose-built table scoped to exactly the languages a symbol extractor is
-# registered for — not `languages.py`'s display-name census table (a
-# different question: "what language is this file" vs. "can this file be
-# symbol-parsed") and not `claude_read.py`'s private, filter-routing table
-# (see `languages.py`'s own docstring for why importing a private,
-# differently-scoped table from a different module would be the wrong
-# reuse here — the same reasoning applies a second time).
-_EXTENSION_TO_AST_LANGUAGE: dict[str, str] = {
-    ".py": "python",
-    ".pyi": "python",
-    ".js": "javascript",
-    ".jsx": "javascript",
-    ".mjs": "javascript",
-    ".cjs": "javascript",
-    ".ts": "typescript",
-    ".tsx": "tsx",
-    ".go": "go",
-    ".java": "java",
-    ".rs": "rust",
-    ".cs": "csharp",
-}
+# QB-067 promoted this table to `ast_summarize/registry.py::EXTENSION_TO_LANGUAGE`
+# so `quor graph`'s orchestrator (`repo_profile/graph.py`) shares exactly
+# one source of truth with this module rather than a second, drifting
+# copy — kept as a local alias so every reference below is unchanged.
+_EXTENSION_TO_AST_LANGUAGE = EXTENSION_TO_LANGUAGE
 
 # Files larger than this are skipped, not parsed — a generated/minified/
 # vendored file this size is far more likely to be pathological parse input

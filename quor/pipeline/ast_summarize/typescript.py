@@ -62,7 +62,12 @@ from __future__ import annotations
 import warnings
 from typing import TYPE_CHECKING
 
-from quor.pipeline.ast_summarize._treesitter_utils import add_candidate, collect_error_ranges
+from quor.pipeline.ast_summarize._treesitter_utils import (
+    add_candidate,
+    collect_error_ranges,
+    iter_descendants,
+)
+from quor.pipeline.ast_summarize.relationship_model import Relationship
 from quor.pipeline.ast_summarize.symbol_model import ENTRY_POINT_NAMES, Symbol, SymbolKind
 
 if TYPE_CHECKING:
@@ -433,3 +438,375 @@ def _add_variable_function_symbols(decl_node: Node, symbols: list[Symbol], *, is
                 is_entry_point=name in ENTRY_POINT_NAMES,
             )
         )
+
+
+def extract_relationships_typescript(source: str) -> list[Relationship]:
+    """Return every deterministic import/export/inherits/
+    implements_interface/overrides/calls relationship in a `.ts` file
+    (QB-067), using the plain `language_typescript()` grammar. See
+    `extract_relationships_tsx()` for `.tsx`; both share
+    `_extract_relationships_with_grammar()`."""
+    return _extract_relationships_with_grammar(source, tsx=False)
+
+
+def extract_relationships_tsx(source: str) -> list[Relationship]:
+    """Return every deterministic import/export/inherits/
+    implements_interface/overrides/calls relationship in a `.tsx` file
+    (QB-067), using the `language_tsx()` (JSX-aware) grammar. See
+    `extract_relationships_typescript()` for `.ts`."""
+    return _extract_relationships_with_grammar(source, tsx=True)
+
+
+def _extract_relationships_with_grammar(source: str, *, tsx: bool) -> list[Relationship]:
+    """File-local and unresolved — see `relationship_model.py`'s module
+    docstring for why cross-file resolution is not this function's job.
+
+    - **imports/export**: identical grammar shape and semantics to
+      `extract_relationships_javascript()` (`import_statement`/
+      `export_statement`/`export_clause`) — TypeScript adds no new import/
+      export syntax this function needs to special-case.
+    - **inherits**: a class's `extends` clause (`class Foo extends Base`),
+      recorded the same way as JavaScript's.
+    - **implements_interface**: a class's `implements` clause (`class Foo
+      implements A, B<T>`) — TypeScript's one syntactically unambiguous
+      addition over JavaScript (see module docstring's own "extends vs.
+      implements" distinction). `interface Foo extends Bar, Baz` is also
+      reported as `implements_interface` (not `inherits`) — an interface
+      extending another interface is structurally a supertype
+      *requirement*, the same relationship `implements` expresses for a
+      class, not a class-inheritance chain the way JS's `extends` is
+      (Python's own "no separate interface concept" note in `python.py`
+      does not apply here — TypeScript's interface/class distinction is
+      real and syntactic).
+    - **overrides**: a class method carrying TypeScript 4.3+'s `override`
+      modifier (`override method() {}}`, its own distinct grammar node,
+      empirically confirmed present/absent per method) — `qualifier` is
+      the class's own raw `extends` target name (the type the override is
+      claimed against); a method with no `override` modifier is not
+      reported, even if a same-named method exists on a base class — no
+      guessing beyond the explicit keyword.
+    - **calls**: identical scope and shape to
+      `extract_relationships_javascript()`'s (only from within a `Symbol`-
+      reported function/method, bare/`.this`/single-level-object calls
+      only).
+
+    Returns an empty list (with an actionable warning) if the optional
+    dependency is missing. Otherwise may raise on a genuine, unrecoverable
+    parser failure — same fail-open contract as `_analyze_with_grammar()`.
+    """
+    try:
+        import tree_sitter
+        import tree_sitter_typescript
+    except ImportError:
+        warnings.warn(
+            "[quor] tree-sitter/tree-sitter-typescript is not installed; "
+            "install quor[javascript] to enable TypeScript relationship extraction "
+            "(falling back to no relationships for this file)",
+            stacklevel=2,
+        )
+        return []
+
+    grammar = (
+        tree_sitter_typescript.language_tsx() if tsx else tree_sitter_typescript.language_typescript()
+    )
+    language = tree_sitter.Language(grammar)
+    parser = tree_sitter.Parser(language)
+    tree = parser.parse(source.encode("utf-8"))
+
+    relationships: list[Relationship] = []
+    _visit_top_level_relationships(tree.root_node, relationships)
+    return relationships
+
+
+def _string_source_text(node: Node) -> str:
+    for child in node.children:
+        if child.type == "string_fragment":
+            return _decode(child)
+    return ""
+
+
+def _type_name(node: Node) -> str | None:
+    """A plain identifier/type name, a single-level-or-deeper dotted
+    reference, or a generic instantiation's own base name (`Comparable<T>`
+    -> `"Comparable"`) — `None` for any other expression shape, never
+    guessed."""
+    if node.type in ("identifier", "type_identifier"):
+        return _decode(node)
+    if node.type == "member_expression":
+        obj = node.child_by_field_name("object")
+        prop = node.child_by_field_name("property")
+        if obj is not None and prop is not None:
+            base = _type_name(obj)
+            return f"{base}.{_decode(prop)}" if base is not None else None
+        return None
+    if node.type == "nested_type_identifier":
+        module = node.child_by_field_name("module")
+        name = node.child_by_field_name("name")
+        if module is not None and name is not None:
+            base = _type_name(module)
+            return f"{base}.{_decode(name)}" if base is not None else None
+        return None
+    if node.type == "generic_type":
+        name_node = node.child_by_field_name("name")
+        return _type_name(name_node) if name_node is not None else None
+    return None
+
+
+def _class_heritage_bases(heritage: Node) -> tuple[Node | None, list[Node]]:
+    """Return `(extends_value_node, implements_type_nodes)` for a
+    `class_heritage` node under `typescript.py`'s grammar — `extends_clause`
+    (field `value`) and/or `implements_clause` (named children only) are
+    each optional, explicit, and syntactically distinct (see module
+    docstring's "extends vs. implements" note); unlike `javascript.py`'s
+    plain-JS grammar, which has no `implements_clause` at all."""
+    extends_node: Node | None = None
+    implements_nodes: list[Node] = []
+    for child in heritage.children:
+        if child.type == "extends_clause":
+            extends_node = child.child_by_field_name("value")
+        elif child.type == "implements_clause":
+            implements_nodes = [c for c in child.children if c.is_named]
+    return extends_node, implements_nodes
+
+
+def _visit_top_level_relationships(node: Node, relationships: list[Relationship]) -> None:
+    for child in node.children:
+        if child.type == "import_statement":
+            _add_import_relationships(child, relationships)
+        elif child.type in _FUNCTION_DECLARATION_TYPES:
+            _add_calls_for_function(child, relationships)
+        elif child.type in _CLASS_LIKE_TYPES:
+            _add_class_relationships(child, relationships)
+        elif child.type == "interface_declaration":
+            _add_interface_relationships(child, relationships)
+        elif child.type in _VARIABLE_DECLARATION_TYPES:
+            _add_variable_function_relationships(child, relationships)
+        elif child.type == "export_statement":
+            _add_export_statement_relationships(child, relationships)
+
+
+def _add_import_relationships(node: Node, relationships: list[Relationship]) -> None:
+    source_node = node.child_by_field_name("source")
+    if source_node is None:
+        return
+    target = _string_source_text(source_node)
+    line = node.start_point.row + 1
+
+    clause = next((c for c in node.children if c.type == "import_clause"), None)
+    if clause is None:
+        relationships.append(Relationship(kind="import", source="", target=target, line=line))
+        return
+
+    for child in clause.children:
+        if child.type == "identifier":
+            relationships.append(
+                Relationship(kind="import", source="", target=target, line=line, qualifier=_decode(child))
+            )
+        elif child.type == "namespace_import":
+            name_node = next((c for c in child.children if c.type == "identifier"), None)
+            if name_node is not None:
+                relationships.append(
+                    Relationship(
+                        kind="import", source="", target=target, line=line, qualifier=_decode(name_node)
+                    )
+                )
+        elif child.type == "named_imports":
+            for specifier in child.children:
+                if specifier.type != "import_specifier":
+                    continue
+                name_node = specifier.child_by_field_name("name")
+                if name_node is None:
+                    continue
+                alias_node = specifier.child_by_field_name("alias")
+                local_name = _decode(alias_node) if alias_node is not None else _decode(name_node)
+                relationships.append(
+                    Relationship(
+                        kind="import",
+                        source="",
+                        target=target,
+                        line=line,
+                        qualifier=local_name,
+                        origin=_decode(name_node),
+                    )
+                )
+
+
+def _exported_name_for_declaration(declaration: Node) -> str | None:
+    if declaration.type in _FUNCTION_DECLARATION_TYPES or declaration.type in _CLASS_LIKE_TYPES:
+        name_node = declaration.child_by_field_name("name")
+        return _decode(name_node) if name_node is not None else None
+    if declaration.type == "interface_declaration" or declaration.type == "enum_declaration":
+        name_node = declaration.child_by_field_name("name")
+        return _decode(name_node) if name_node is not None else None
+    if declaration.type in _VARIABLE_DECLARATION_TYPES:
+        name_nodes = [
+            d.child_by_field_name("name") for d in declaration.children if d.type == "variable_declarator"
+        ]
+        names = [_decode(n) for n in name_nodes if n is not None]
+        return names[0] if len(names) == 1 else None
+    return None
+
+
+def _add_export_statement_relationships(node: Node, relationships: list[Relationship]) -> None:
+    line = node.start_point.row + 1
+    source_node = node.child_by_field_name("source")
+    re_export_target = _string_source_text(source_node) if source_node is not None else ""
+
+    export_clause = next((c for c in node.children if c.type == "export_clause"), None)
+    if export_clause is not None:
+        for specifier in export_clause.children:
+            if specifier.type != "export_specifier":
+                continue
+            name_node = specifier.child_by_field_name("name")
+            if name_node is None:
+                continue
+            alias_node = specifier.child_by_field_name("alias")
+            public_name = _decode(alias_node) if alias_node is not None else _decode(name_node)
+            relationships.append(
+                Relationship(kind="export", source=public_name, target=re_export_target, line=line)
+            )
+        return
+
+    declaration = node.child_by_field_name("declaration")
+    if declaration is not None:
+        name = _exported_name_for_declaration(declaration)
+        if name is not None:
+            relationships.append(Relationship(kind="export", source=name, target="", line=line))
+        # Re-dispatch so the declaration's own inherits/implements/calls are still found.
+        _visit_top_level_relationships(node, relationships)
+
+
+def _add_class_relationships(node: Node, relationships: list[Relationship]) -> None:
+    name_node = node.child_by_field_name("name")
+    class_name = _decode(name_node) if name_node is not None else None
+
+    superclass_name: str | None = None
+    heritage = next((c for c in node.children if c.type == "class_heritage"), None)
+    if heritage is not None and class_name is not None:
+        extends_node, implements_nodes = _class_heritage_bases(heritage)
+        if extends_node is not None:
+            base_name = _type_name(extends_node)
+            if base_name is not None:
+                superclass_name = base_name
+                relationships.append(
+                    Relationship(
+                        kind="inherits",
+                        source=class_name,
+                        target=base_name,
+                        line=extends_node.start_point.row + 1,
+                    )
+                )
+        for type_node in implements_nodes:
+            interface_name = _type_name(type_node)
+            if interface_name is not None:
+                relationships.append(
+                    Relationship(
+                        kind="implements_interface",
+                        source=class_name,
+                        target=interface_name,
+                        line=type_node.start_point.row + 1,
+                    )
+                )
+
+    body = node.child_by_field_name("body")
+    if body is None or body.type != "class_body":
+        return
+    for member in body.children:
+        if member.type != "method_definition":
+            continue
+        member_name_node = member.child_by_field_name("name")
+        if member_name_node is None or member_name_node.type not in (
+            "property_identifier",
+            "private_property_identifier",
+        ):
+            continue
+        method_name = _decode(member_name_node)
+        _collect_calls(member, method_name, relationships)
+        if superclass_name is not None and any(c.type == "override_modifier" for c in member.children):
+            relationships.append(
+                Relationship(
+                    kind="overrides",
+                    source=method_name,
+                    target=method_name,
+                    line=member.start_point.row + 1,
+                    qualifier=superclass_name,
+                )
+            )
+
+
+def _add_interface_relationships(node: Node, relationships: list[Relationship]) -> None:
+    name_node = node.child_by_field_name("name")
+    if name_node is None:
+        return
+    interface_name = _decode(name_node)
+    for child in node.children:
+        if child.type != "extends_type_clause":
+            continue
+        for type_node in child.children:
+            if not type_node.is_named:
+                continue
+            base_name = _type_name(type_node)
+            if base_name is not None:
+                relationships.append(
+                    Relationship(
+                        kind="implements_interface",
+                        source=interface_name,
+                        target=base_name,
+                        line=type_node.start_point.row + 1,
+                    )
+                )
+
+
+def _add_variable_function_relationships(node: Node, relationships: list[Relationship]) -> None:
+    for declarator in node.children:
+        if declarator.type != "variable_declarator":
+            continue
+        value = declarator.child_by_field_name("value")
+        if value is None or value.type not in _FUNCTION_VALUE_TYPES:
+            continue
+        name_node = declarator.child_by_field_name("name")
+        if name_node is None or name_node.type != "identifier":
+            continue
+        _collect_calls(value, _decode(name_node), relationships)
+
+
+def _add_calls_for_function(node: Node, relationships: list[Relationship]) -> None:
+    name_node = node.child_by_field_name("name")
+    if name_node is None:
+        return
+    _collect_calls(node, _decode(name_node), relationships)
+
+
+def _collect_calls(node: Node, source_name: str, relationships: list[Relationship]) -> None:
+    for descendant in iter_descendants(node):
+        if descendant.type != "call_expression":
+            continue
+        func = descendant.child_by_field_name("function")
+        if func is None:
+            continue
+        line = descendant.start_point.row + 1
+        if func.type == "identifier":
+            relationships.append(
+                Relationship(kind="calls", source=source_name, target=_decode(func), line=line)
+            )
+        elif func.type == "member_expression":
+            obj = func.child_by_field_name("object")
+            prop = func.child_by_field_name("property")
+            if prop is None or prop.type != "property_identifier":
+                continue
+            if obj is not None and obj.type == "this":
+                relationships.append(
+                    Relationship(
+                        kind="calls", source=source_name, target=_decode(prop), line=line, qualifier="this"
+                    )
+                )
+            elif obj is not None and obj.type == "identifier":
+                relationships.append(
+                    Relationship(
+                        kind="calls",
+                        source=source_name,
+                        target=_decode(prop),
+                        line=line,
+                        qualifier=_decode(obj),
+                    )
+                )

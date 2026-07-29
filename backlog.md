@@ -4673,6 +4673,92 @@ re-run and confirmed zero regressions; `ruff check quor/ tests/` and `mypy quor/
 
 ---
 
+#### QB-067 — Repository Dependency Graph (`quor graph`)
+
+**Effort:** Large · **Value:** High · **Risk:** Medium · **Expected token impact:** Unmeasured —
+avoids re-`grep`/`Read`-ing files to trace imports/inheritance/call relationships across a repo, not
+a compression ratio; see own entry's uncertainty note · **Category:** New Capability
+
+Deterministic, repository-wide relationship extraction on top of QB-066's symbol index: imports,
+exports, inheritance, interface/trait implementation, method overrides, module/package dependencies,
+and (where a language's grammar allows unambiguous resolution) call relationships — the token cost
+an AI coding assistant otherwise pays re-discovering "what calls this" / "what does this depend on"
+via repeated `grep`/`Read` calls.
+
+**Status:** Implemented (2026-07-29) on `feature/qb-067-repository-dependency-graph`. See
+`docs/final/DECISIONS.md` ADR-039 for the full architecture decision record.
+
+<details>
+<summary>Technical details</summary>
+
+**What shipped:** Each of the eight languages `quor/pipeline/ast_summarize/` already registers
+gained one additive `extract_relationships_*()` function in its existing module — reusing that
+module's own parser setup and lazy-import/fail-open discipline unchanged, zero double-parsing beyond
+the same already-accepted per-file-two-parses cost `analyze_*()`/`extract_symbols_*()` already share,
+zero risk to the existing compression analyzers or QB-066's symbol extractors (verified: the
+compression benchmark suite and every existing `repo_profile`/`ast_summarize` test pass unmodified).
+`quor/pipeline/ast_summarize/relationship_model.py` defines the shared `Relationship` frozen
+dataclass (kind, source, target, line, qualifier, origin) — raw, file-local, unresolved facts, never
+reaching into another file. `registry.py` gained a third, parallel `_RELATIONSHIP_EXTRACTORS`/
+`get_relationship_extractor()` alongside `_ANALYZERS`/`_SYMBOL_EXTRACTORS`, plus a promoted
+`EXTENSION_TO_LANGUAGE` table (moved from `repo_profile/symbols.py`'s originally-private copy) so
+`quor symbols` and `quor graph` share one source of truth.
+
+`quor/pipeline/repo_profile/graph.py`'s `build_dependency_graph(root) -> RepoDependencyGraph` is the
+orchestrator — walks the repo once (reusing `walk.py` unchanged), and per file calls both
+`get_symbol_extractor()` and `get_relationship_extractor()` directly (not `symbols.py`'s
+`build_symbol_index()` as an opaque black box, which would double the walk/read cost), then resolves
+every raw relationship against the whole repo's symbol table into an `Edge`
+(`quor/pipeline/repo_profile/graph_model.py`). Resolution is conservative and unambiguous-only by
+design (confirmed with the user before implementation began): an edge's `target_file`/`target_symbol`
+are populated only when a reference resolves to exactly one candidate (same-file, or through a file's
+own unambiguous, non-wildcard import bindings); `target_raw` is always present regardless, so the
+underlying fact is never lost even unresolved. Import/module-path resolution uses a bounded,
+spec-or-convention-grounded rule per language (Python's relative-import semantics, JS/TS's
+relative-path-plus-extension-probing, Java's package-to-directory convention, Rust's `crate::`-rooted
+`src/` convention) — never a general package-manager/build-system algorithm (no `node_modules`,
+`go.mod`, Java classpath, Cargo workspace, or C# project references). Same 2 MB per-file size cap and
+per-file fail-open discipline as `symbols.py` (QB-066), unchanged reasoning.
+`graph_render.py` renders fixed-template Markdown by default, JSON via `--json`, mirroring `quor
+map`/`quor symbols`'s identical convention — grouped by source file, each edge naming its kind,
+target, and (when resolved) a `file::symbol` pointer.
+
+`quor graph` is a fourth exempted utility command (`quor/cli/main.py`, `__main__.py`'s
+`_CLI_COMMANDS`) — explicit user sign-off obtained before any CLI code was written, following the
+exact process ADR-037/ADR-038 already established, guarded against the same real
+`_CLI_COMMANDS`-omission bug both prior ADRs caught via a dedicated regression test. Invocations are
+tracked under a new `REPO_GRAPH_FILTER_LABEL` (`quor/tracking/db.py`), excluded from
+`filter_divergence.flag_low_performers()`'s low-performer check the same way
+`REPO_PROFILE_FILTER_LABEL`/`REPO_SYMBOLS_FILTER_LABEL` already are.
+
+**Deliberately out of scope / documented limitations (see ADR-039):** Go/C# import paths are never
+resolved to a file; `self`/`this`/`super`/`base`-qualified calls resolve same-file only, never
+chasing a cross-file inheritance chain; C#'s single colon-delimited base list cannot syntactically
+distinguish a base class from an interface, so `implements_interface` is never emitted for C#; Go's
+structural interface satisfaction has no syntactic marker at all, so Go emits no
+`inherits`/`implements_interface`/`implements_trait`/`overrides`; cross-file call resolution beyond a
+file's own direct, unambiguous import bindings is not attempted. Real-session token-savings
+measurement is also not yet done (per Anti-Goal #24/#25, not published until measured against real
+usage).
+
+**Tests:** 62 new unit tests for the eight `extract_relationships_*()` functions
+(`test_ast_summarize_relationships.py`, including a missing-optional-dependency fail-open test per
+tree-sitter-backed language, mirroring `test_ast_summarize_symbols.py`'s existing pattern) plus 21
+for the orchestrator (`test_repo_profile_graph.py` — polyglot repos, cross-file import/inherits/call
+resolution across Python/JS/Java/Rust, ambiguous-name non-resolution, wildcard-import non-binding,
+the size cap, missing-dependency skip, per-file parse-failure fail-open, determinism) plus 12 for
+rendering (`test_repo_profile_graph_render.py`) plus 5 CLI integration tests (`test_cli_graph.py`,
+mirroring `test_cli_symbols.py`) plus a fixture-repo benchmark corpus reusing QB-061/QB-066's
+existing four fixture repos (`test_repo_profile_graph_benchmark.py` — real relationship checks,
+determinism, a synthetic 500-file/5,000-call cross-module resolution scaling test, a whole-corpus
+performance budget) plus 1 new `filter_divergence` low-performer-exclusion test. Full existing suite
+and the compression benchmark suite re-run and confirmed zero regressions; `ruff check quor/ tests/`
+and `mypy quor/` both clean.
+
+</details>
+
+---
+
 ### Historical (superseded)
 
 *Kept for the record — not resolved work in its own right, but the original request that later,
