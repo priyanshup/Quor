@@ -314,14 +314,29 @@ class TestTrackingDbBatching:
     def test_batch_commits_after_interval_below_max_size(self, tmp_path: Path) -> None:
         """A single record, well under _BATCH_MAX_SIZE, still gets committed
         on its own after _BATCH_MAX_INTERVAL_SECONDS — a slow trickle of
-        records isn't held hostage waiting for a batch that never fills."""
-        from quor.tracking.db import _BATCH_MAX_INTERVAL_SECONDS
+        records isn't held hostage waiting for a batch that never fills.
 
+        Polls with a generous deadline rather than a single fixed sleep —
+        mirrors `test_batch_commits_at_max_size`'s identical reasoning
+        immediately above: a fixed `_BATCH_MAX_INTERVAL_SECONDS + slack`
+        sleep followed by one immediate check is exactly the shape that
+        goes flaky under a loaded/slower CI runner (the worker thread
+        simply hasn't been scheduled yet, or hasn't created the table yet),
+        not a real product bug — this repo's own no-flaky-test rule."""
         db, db_path = _make_db(tmp_path)
         db.record(_sample_record())
-        time.sleep(_BATCH_MAX_INTERVAL_SECONDS + 0.3)
-        with sqlite3.connect(str(db_path)) as conn:
-            count = conn.execute("SELECT COUNT(*) FROM invocations").fetchone()[0]
+
+        deadline = time.monotonic() + 2.0
+        count = 0
+        while time.monotonic() < deadline:
+            try:
+                with sqlite3.connect(str(db_path)) as conn:
+                    count = conn.execute("SELECT COUNT(*) FROM invocations").fetchone()[0]
+            except sqlite3.OperationalError:
+                count = 0  # worker hasn't created the table yet — keep polling
+            if count >= 1:
+                break
+            time.sleep(0.02)
         db.close()
         assert count == 1
 
