@@ -4864,6 +4864,264 @@ and `mypy quor/` both clean.
 
 ---
 
+#### QB-072 — Automatic Repository Intelligence
+
+**Effort:** Large · **Value:** High · **Risk:** Medium · **Expected token impact:** Unmeasured —
+removes the need to know `quor map`/`quor symbols`/`quor graph` exist at all, not a compression
+ratio · **Category:** New Capability
+
+`quor map` (QB-061), `quor symbols` (QB-066), and `quor graph` (QB-067) were manual, always-full-scan
+commands: a user or AI assistant had to know each one existed and re-paid a full-repository walk +
+AST parse every single invocation, even when nothing in the repo had changed since the last call.
+This item makes all three self-maintaining: first use of any of them against a repository triggers a
+one-time onboarding message and a full build of all three (never `quor schema`, which stays generated
+on demand — unrelated to this cache); every later call detects added/modified/deleted/renamed files
+since the last scan and rebuilds only what's affected, or reuses the cached result immediately when
+nothing changed.
+
+**Status:** Implemented on `feature/qb-072-automatic-repo-intelligence`.
+
+<details>
+<summary>Technical details</summary>
+
+**What shipped:** A new `quor/pipeline/repo_profile/intel*.py` subsystem sitting in front of the
+existing `profiler.build_profile()`/`symbols.build_symbol_index()`/`graph.build_dependency_graph()`
+orchestrators, not replacing them: `intel_model.py` defines the frozen data contracts
+(`FileFingerprint`, `RepoDiff`, `RepoIntelState`, `RepoIntelligence`, `BuildAction`); `intel_diff.py`
+fingerprints every file (size + `mtime_ns` fast-path, SHA-256 content hash only when that fast path
+can't rule out a change) and turns two fingerprint tables into a `RepoDiff` — added/modified/deleted,
+plus rename detection via matching content hashes between a deleted and an added path (a rename *and*
+edit is correctly reported as plain delete+add, since it needs the same re-extraction a modified file
+would); `intel_store.py` persists state and per-file facts under
+`platformdirs.user_data_dir("quor") / "repo_intel" / <sha256-of-resolved-root>[:16]` (the same
+`user_data_dir("quor")` root every other Quor cache already uses — `tracking/db.py`, `pipeline/tee.py`,
+`pipeline/onboarding.py` — not a new `user_cache_dir` nothing else in the codebase uses), treating any
+read/parse failure on any of its four JSON files as a cache miss rather than propagating a corrupt
+on-disk file into a wrong result; `intel.py`'s `ensure_repo_intelligence()` is the single new public
+entry point `quor map`/`quor symbols`/`quor graph` now call instead of the raw orchestrators directly.
+
+**Incremental rebuild is genuinely per-file for `quor symbols`/`quor graph`, not just diffed-and-full-
+rebuilt.** `symbols.py` and `graph.py` were each split into a reusable single-file extractor
+(`extract_file_symbols()`/`extract_file_facts()`) and a shared assembly/resolution tail
+(`assemble_symbol_index()`/`assemble_graph()`), with the original `build_symbol_index()`/
+`build_dependency_graph()` becoming thin wrappers over their own new `..._with_facts()` variants — a
+behavior-preserving refactor verified against the full pre-existing `test_repo_profile_symbols*`/
+`test_repo_profile_graph*` suites before anything new was added. On a change, only the added/modified/
+renamed files are re-parsed; deleted and unaffected files' cached per-file facts are reused as-is.
+`quor graph`'s cross-file resolution (`assemble_graph()`) still runs over the *whole* merged fact set
+on any change (resolving one file's imports/calls needs the whole repo's symbol table, not just the
+changed file's), but that resolution step is pure in-memory computation with no file I/O or parsing,
+so re-running it whenever anything changed is cheap relative to what re-parsing every file would cost
+— the same reasoning QB-071 already established for why `graph.py`'s memory optimization didn't need
+a second repository pass. Persisting per-file graph facts to disk (needed for this incremental path)
+does mean the *first* build of `quor graph` for a repository retains every file's raw facts a little
+longer than QB-071's plain `build_dependency_graph()` does (until they're serialized), a deliberate,
+documented, one-time trade-off scoped to the new caching entry point only — QB-071's own memory
+profile for direct callers of `build_dependency_graph()` is unchanged and re-verified.
+
+**`quor map`'s `RepoProfile` deliberately does not get the same per-file treatment.** Its fields
+(language percentages, detected frameworks/build systems, entry points, ...) are whole-repository
+aggregates with no sound per-file partition — instead, a true cache-hit (empty diff) reuses the cached
+`RepoProfile` verbatim, and any non-empty diff triggers a full `build_profile()` re-run, which is cheap
+relative to `quor symbols`/`quor graph`'s AST parsing since `build_profile()` never reads arbitrary
+source, only bounded manifest/config files plus filenames/sizes (see `profiler.py`'s own module
+docstring).
+
+**Deliberately does not touch the hook dispatch path.** Detection/onboarding/rebuild logic lives
+entirely inside `quor map`/`quor symbols`/`quor graph`'s own CLI entry points — never in
+`quor hook`/`__main__.py`'s hot path, which keeps its existing <10ms budget and zero-heavy-import
+discipline completely unchanged. This was an explicit, confirmed-with-the-user architectural choice
+(not assumed) given the hard performance/no-daemon/no-watcher/no-polling constraints already
+documented in `docs/final/CLAUDE.md`; "automatic" here means "the first time any of these three
+commands runs against a repository," not "on every Quor invocation of any kind."
+
+Each of the three commands gained a `--rebuild` flag (bypasses the cache entirely, forcing a full
+rebuild) and now prints onboarding/progress messages ("Scanning repository...", "Building repository
+intelligence...", "Building symbols...", "Building dependency graph...", "Finished in X seconds.") to
+stderr, never stdout — so a true cache-hit is silent, and `--json` output is never corrupted by a
+progress line landing in the same stream.
+
+**Tests:** 12 new unit tests for the diff/fingerprint engine (`test_repo_intel_diff.py` — first scan,
+unchanged/modified/deleted/renamed detection, the fast-path-skips-rehashing guarantee, rename-vs-
+edit-and-rename disambiguation), 17 for the cache store (`test_repo_intel_store.py` — repo-key
+stability, roundtrip and corruption-as-miss behavior for all four cache files), and 21 for the
+orchestrator (`test_repo_intel.py` — first repository/onboarding, unchanged repository/cache-hit,
+file modified, file deleted, file renamed, rebuild after a Quor version change, a corrupted state
+file, a corrupted sibling artifact, deterministic repeated runs, full-rebuild-vs-incremental
+equivalence, the `--rebuild`-equivalent forced path, and two performance-regression guards asserted
+via parse-call-count spies rather than wall-clock timing, per this repo's own flaky-test rules) — one
+of which (`TestFileRenamed::test_pure_rename_is_not_reparsed`) caught a real bug during development:
+an earlier version of `RepoDiff` folded a rename's new path into "needs re-extraction," silently
+defeating the whole point of rename detection until the test was written against `intel.py`'s actual
+call site rather than `symbols.py`'s source module. Plus new `--rebuild`/cache-reuse CLI tests added
+to the existing `test_cli_map.py`/`test_cli_symbols.py`/`test_cli_graph.py`. Full existing suite
+(every `tests/unit/` file run, `tests/integration/` with `-m integration`) re-run and confirmed zero
+regressions; `ruff check quor/ tests/` and `mypy quor/` both clean. The compression benchmark suite
+was not re-run — this item touches no `StageHandler`/filter/pipeline compression logic.
+
+**Performance follow-up (same item, immediately after the above shipped).** Investigated whether
+graph/symbol/map rebuilds could be made cheaper still — reduce CPU, peak memory, and rebuild latency
+beyond the per-file incremental extraction already delivered — before writing any more code, per this
+repo's Rule 4 (research/benchmark first, present a recommendation, get sign-off, only then implement).
+
+*What was measured:* a new `tests/benchmarks/repo_intel_benchmark.py` (a synthetic, git-committed,
+nested (`src/pkg/`) nested repo — deliberately not flat at the root, see that module's own docstring
+for why an earlier flat-root version gave a misleading picture — with a configurable file count)
+measures CPU time (`time.process_time()`), peak Python-heap memory (`tracemalloc`), wall-clock elapsed
+time, and cache hit ratio across six scenarios: cold build, warm build, one file modified, ten files
+modified, one file renamed, one file deleted. `RepoIntelligence` gained `files_scanned`/
+`files_reextracted` fields and a `cache_hit_ratio` property so this is a real, queryable metric, not
+just an ad-hoc benchmark-script computation. No committed baseline (there is no equivalent "correct"
+percentage the way a filter's compression ratio has) — regression protection instead comes from
+`tests/unit/test_repo_intel_benchmark.py`'s deterministic, count-based assertions (exact
+`files_reextracted` per scenario, exact `cache_hit_ratio`, plus one generously-bounded comparative
+timing smoke check per this repo's no-flaky-test rule) — `python -m
+tests.benchmarks.repo_intel_benchmark` prints/writes the full human-readable report.
+
+*What the numbers showed, via `cProfile` against an 800-file synthetic repo:*
+- `graph.assemble_graph()` (pure cross-file edge resolution, no I/O) — **~0.012s**, negligible. Building
+  the "invalidate only affected edges" mechanism this item's own investigation checklist named (persist
+  resolved edges, track per-edge dependencies on target files/symbols, re-resolve only affected
+  subgraphs) was analyzed in detail — genuinely implementable and correctness-preservable given how
+  `_resolve_all()`'s dependencies decompose — but would save at most ~1% of an incremental rebuild's
+  time, for real correctness risk against ADR-039's deliberately conservative, unambiguous-only
+  cross-file resolution logic. **Recommended against building it, confirmed with the user before
+  moving on** — the evidence didn't support the complexity/risk.
+- `symbols.assemble_symbol_index()` — **~0.003s**, likewise negligible.
+- `profiler.build_profile()`'s `DetectorRegistry.detect()` — **the actual dominant cost**: an
+  O(rules × files) matching loop (87 built-in rules × 800 files = 69,600 `_file_matches` calls), each
+  constructing a `PurePosixPath` just to read `.name` — ~0.35-0.48s at 800 files, on every full-rebuild-
+  shaped call including every incremental rebuild (`quor map` had no per-file incrementality at all).
+  A pre-existing QB-061 characteristic, not something this item introduced — it only became the
+  dominant cost because per-file symbol/graph incrementality made everything else fast enough to expose
+  it. Confirmed with the user before fixing.
+
+*What shipped from this follow-up:*
+1. `profiler.build_profile()`/`symbols.build_symbol_index_with_facts()`/
+   `graph.build_dependency_graph_with_facts()` each gained an optional `walk_result` parameter so
+   `intel.py` walks the repo once per call and shares it, instead of each of the three (plus `intel.py`
+   itself) independently re-walking — a full rebuild dropped from 4 `git ls-files` subprocess calls to 1.
+   Every existing caller that omits the parameter is unaffected (default: walk internally, exactly as
+   before).
+2. `DetectorRegistry.detect()` now computes each file's basename once (`{f: PurePosixPath(f).name for f
+   in files}`) and passes it to every rule, instead of every rule re-deriving it — turning ~69,600
+   `PurePosixPath` constructions into 800, with the exact same matching order/results (verified: the
+   full existing `test_repo_profile_detectors.py` suite, plus every other `repo_profile` test file,
+   passes unmodified).
+3. `RepoIntelligence.files_scanned`/`files_reextracted`/`cache_hit_ratio` (new, see above).
+
+*Measured effect* (800-file synthetic repo, before → after): cold build 5.4s → 4.9s; one file modified
+0.98s → 0.54s (a ~45% reduction); ten files modified 1.11s → 0.83s; renamed/deleted ~1.0s → ~0.7s.
+Compression benchmark suite re-run this time (the detector-registry change, while outside
+`quor/pipeline/filters`/`rewrite`, still touches `quor/pipeline/`) and confirmed unchanged: 127 cases,
+35.9% overall, identical to the committed baseline. Full existing suite (`tests/unit/`,
+`tests/integration/` with `-m integration`, `quor verify`) re-run and confirmed zero regressions;
+`ruff check quor/ tests/` and `mypy quor/` both clean. No daemon, background service, filesystem
+watcher, or persistent in-memory process was introduced or considered necessary — every optimization
+here is either a one-time-per-call computation (walk sharing, basename precomputation) or a per-file
+cache lookup, entirely within the existing synchronous, per-invocation model.
+
+</details>
+
+---
+
+#### QB-073 — CLI Help, Command Grouping & Version Command
+
+**Effort:** Small · **Value:** Medium · **Risk:** Low · **Category:** Polish
+
+`python -m quor --help` listed all ten commands in one flat panel, in registration order, with no
+grouping by purpose. `--version` didn't exist at all (`No such option: --version`, exit 2), and
+`quor version` fell through to `__main__.py`'s shell dispatcher and failed with a raw `WinError 2` —
+the exact dispatcher-fallthrough bug class ADR-037 first caught for `quor map`, just not yet fixed
+for a command that didn't exist yet when ADR-037 was written.
+
+**Status:** Implemented on `feature/qb-072-automatic-repo-intelligence` (bundled with QB-072/QB-074 in
+the same session, per explicit user instruction to fix all three together and record them as
+separate backlog entries).
+
+<details>
+<summary>Technical details</summary>
+
+**What shipped:** `quor/cli/main.py`'s ten commands are now grouped into three `rich_help_panel`s —
+Typer's own built-in mechanism, not a new abstraction — Installation (`init`, `doctor`), Analysis
+(`map`, `symbols`, `graph`), and Utilities (`explain`, `validate`, `verify`, `gain`, `version`,
+`schema`). Purely a `--help` presentation grouping; it changes nothing about how any command is
+invoked, routed, or tested. A new `quor/cli/commands/version.py::version_command()` is registered as
+a real `version` subcommand, and `__main__.py::_CLI_COMMANDS` gained `"version"` so it's routed to the
+CLI instead of the shell dispatcher. `cli/main.py`'s root callback gained an eager `--version` option
+(`is_eager=True`, the same convention `git --version`/`node --version` follow) that wins even if
+garbage follows it on the command line. All three surfaces — `quor version`, `quor --version`, and the
+pre-existing bare-invocation banner — read `quor.__version__` and can never disagree.
+
+**Tests:** `tests/unit/test_cli_root.py` — `quor version` and `--version` both print the right string
+and agree with each other and the bare-invocation banner, the dispatcher-fallthrough regression guard
+for `"version"`, `--version`'s eager-ness ignoring trailing garbage, and the `--help` panel grouping
+(each of the three panels contains exactly the commands it should, with concise one-line descriptions
+visible). Full existing `tests/unit/test_cli.py` suite re-run and confirmed zero regressions; `ruff
+check quor/ tests/` and `mypy quor/` both clean.
+
+</details>
+
+---
+
+#### QB-074 — Long-Running Command Progress, Summaries, Error Messages & Doctor Formatting
+
+**Effort:** Medium · **Value:** Medium · **Risk:** Low · **Category:** Polish
+
+`quor map`/`quor symbols`/`quor graph` printed QB-072's onboarding/progress messages in plain,
+uncolored text, and a true cache-hit printed nothing at all — no elapsed time, no counts, no
+indication the command had even run correctly. Separately, a nonexistent `--path` (or one pointing at
+a file instead of a directory) silently produced a fully-formed but empty profile/index/graph at exit
+code 0 — no error, no clue what went wrong. `quor doctor` printed its check list with no header and,
+outside `--fix` mode, no closing summary at all.
+
+**Status:** Implemented on `feature/qb-072-automatic-repo-intelligence` (bundled with QB-072/QB-073 in
+the same session, per explicit user instruction to fix all three together and record them as
+separate backlog entries).
+
+<details>
+<summary>Technical details</summary>
+
+**What shipped:**
+1. `quor/cli/repo_path.py::resolve_repo_root()` — a shared `--path` validator now called by
+   `map`/`symbols`/`graph` before any repository-intelligence work begins: a nonexistent path or a
+   file passed where a directory was expected now exits non-zero with a message that states what
+   failed (the exact path), why (doesn't exist / isn't a directory), and how to fix it (check
+   `--path`, or point it at the repo root itself) — instead of silently continuing.
+2. `quor/cli/repo_progress.py` — presentation-only, mirroring `format_utils.py`'s "never influences
+   what gets computed" split: `progress_echo()` colors (cyan) whatever plain-string message
+   `intel.ensure_repo_intelligence()` already produces, without `intel.py` itself knowing about color
+   (every existing `test_repo_intel.py` assertion on raw message strings is unaffected — verified,
+   re-run unmodified). `print_build_summary()` is new: a single, always-shown, green, counts-bearing
+   closing line — `✓ Done in 0.3s — 150 files cached, 42 symbols` (or `built`/`rebuilt`/`updated (N
+   files re-parsed)` depending on `RepoIntelligence.action`) — that a true cache-hit previously never
+   printed at all. `map` reports a language count, `symbols` a symbol count, `graph` an edge count
+   (with how many resolved) — using `RepoIntelligence.files_scanned`/`files_reextracted`/
+   `cache_hit_ratio` (QB-072's own perf-follow-up metrics) as the shared prefix.
+3. `quor doctor` gained an always-shown `Quor Doctor` header and an always-shown, elapsed-time-bearing
+   closing summary (`✓ N of N checks passed in 0.3s` / `✗ M of N checks failed in 0.3s — see above for
+   details`) — previously only present, and only a bare pass/fail line with no elapsed time, inside
+   `--fix` mode. Every existing check function, its `(name, ok, detail)` tuple, and its print order are
+   completely unchanged — verified by the fact every pre-existing `TestDoctor`/`TestDoctorFix`
+   assertion (which greps for a specific check line, never the whole output) still passes unmodified.
+
+**Tests:** New `TestMapCommandErrors`/`TestSymbolsCommandErrors`/`TestGraphCommandErrors` (nonexistent
+path, path-is-a-file) and `TestMapCommandSummary`/`TestSymbolsCommandSummary`/`TestGraphCommandSummary`
+(cache-hit summary line present with the right counts, and confirmed absent from `stdout` — the
+summary is stderr-only, so `--json` output is never touched) across `test_cli_map.py`/
+`test_cli_symbols.py`/`test_cli_graph.py`. New `TestDoctorFormatting` in `test_cli.py` — header
+present, summary present on both success and failure, and a narrow-terminal (`COLUMNS=40`) smoke test
+confirming rich's rendering doesn't crash under an unusually narrow width (a real Windows Terminal/
+cmd.exe condition, not a hypothetical one). Full existing suite (`tests/unit/`, `tests/integration/`
+with `-m integration`, `quor verify`) re-run and confirmed zero regressions; compression benchmark
+suite re-run and confirmed unchanged (127 cases, 35.9% overall, identical to baseline — this item
+touches no filter/compression logic, checked anyway since it touches `quor/cli/`); `ruff check quor/
+tests/` and `mypy quor/` both clean.
+
+</details>
+
+---
+
 ### Historical (superseded)
 
 *Kept for the record — not resolved work in its own right, but the original request that later,

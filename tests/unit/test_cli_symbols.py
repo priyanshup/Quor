@@ -71,6 +71,77 @@ class TestSymbolsCommandJson:
         assert "total_symbols" in parsed
 
 
+class TestSymbolsCommandRebuild:
+    def test_second_invocation_reuses_the_cache(self, tmp_path: Path, monkeypatch) -> None:
+        # A subdirectory of tmp_path, not tmp_path itself — see the
+        # identical note in test_cli_map.py's TestMapCommandRebuild.
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        _init_git_repo(repo)
+        (repo / "app.py").write_text("def main():\n    pass\n", encoding="utf-8")
+        subprocess.run(["git", "add", "."], cwd=repo, check=True)
+        monkeypatch.chdir(repo)
+
+        first = runner.invoke(app, ["symbols"])
+        assert first.exit_code == 0
+
+        second = runner.invoke(app, ["symbols"])
+        assert second.exit_code == 0
+        assert second.stdout == first.stdout
+
+    def test_rebuild_flag_forces_a_full_rebuild(self, tmp_path: Path, monkeypatch) -> None:
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        _init_git_repo(repo)
+        (repo / "app.py").write_text("def main():\n    pass\n", encoding="utf-8")
+        subprocess.run(["git", "add", "."], cwd=repo, check=True)
+        monkeypatch.chdir(repo)
+
+        runner.invoke(app, ["symbols"])
+        result = runner.invoke(app, ["symbols", "--rebuild"])
+
+        assert result.exit_code == 0
+        assert "main" in result.stdout
+
+
+class TestSymbolsCommandErrors:
+    def test_nonexistent_path_gives_a_clear_error(self, tmp_path: Path) -> None:
+        missing = tmp_path / "does-not-exist"
+
+        result = runner.invoke(app, ["symbols", "--path", str(missing)])
+
+        assert result.exit_code != 0
+        assert "does not exist" in result.output
+
+    def test_path_pointing_at_a_file_gives_a_clear_error(self, tmp_path: Path) -> None:
+        a_file = tmp_path / "not_a_directory.txt"
+        a_file.write_text("x", encoding="utf-8")
+
+        result = runner.invoke(app, ["symbols", "--path", str(a_file)])
+
+        assert result.exit_code != 0
+        assert "must be a directory" in result.output
+
+
+class TestSymbolsCommandSummary:
+    def test_cache_hit_shows_a_colored_summary_with_counts(self, tmp_path: Path, monkeypatch) -> None:
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        _init_git_repo(repo)
+        (repo / "app.py").write_text("def main():\n    pass\n", encoding="utf-8")
+        subprocess.run(["git", "add", "."], cwd=repo, check=True)
+        monkeypatch.chdir(repo)
+
+        runner.invoke(app, ["symbols"])
+        result = runner.invoke(app, ["symbols"])
+
+        assert result.exit_code == 0
+        assert "Done in" in result.output
+        assert "cached" in result.output
+        assert "1 symbol" in result.output
+        assert "Done in" not in result.stdout
+
+
 class TestSymbolsCommandTracking:
     def test_invocation_is_tracked(self, tmp_path: Path, monkeypatch) -> None:
         _init_git_repo(tmp_path)

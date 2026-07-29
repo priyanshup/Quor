@@ -84,6 +84,7 @@ import warnings
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
+from typing import Literal
 
 from quor.pipeline.ast_summarize.registry import (
     EXTENSION_TO_LANGUAGE,
@@ -94,7 +95,9 @@ from quor.pipeline.ast_summarize.registry import (
 )
 from quor.pipeline.ast_summarize.relationship_model import Relationship
 from quor.pipeline.repo_profile.graph_model import Edge, RepoDependencyGraph
-from quor.pipeline.repo_profile.walk import walk_repository
+from quor.pipeline.repo_profile.walk import WalkResult, walk_repository
+
+SkipReason = Literal["too_large", "parse_failure"]
 
 # Mirrors `symbols.py`'s identical cap and identical reasoning — a
 # generated/minified/vendored file this size is far more likely to be
@@ -125,81 +128,105 @@ class _FileData:
     relationships: list[Relationship]
 
 
-def build_dependency_graph(root: Path) -> RepoDependencyGraph:
-    """Scan `root` and return its deterministic RepoDependencyGraph.
+@dataclass(frozen=True, slots=True)
+class FileFacts:
+    """One file's raw, pre-resolution facts (QB-072) — everything
+    `assemble_graph()` needs to resolve that file's edges, without
+    re-parsing it. This is the unit the incremental repository-intelligence
+    cache (`intel.py`) persists to disk and reuses across runs for every
+    file that hasn't changed, re-deriving it via `extract_file_facts()`
+    only for files that were added, modified, or renamed."""
 
-    Calling this twice against unchanged repo state returns an identical
-    RepoDependencyGraph (field-for-field) — the same core promise
-    `quor map`/`quor symbols` already make, verified the same way (a
-    dedicated determinism test).
+    language: str
+    symbol_counts: Counter[str]
+    relationships: list[Relationship]
+
+
+def extract_file_facts(root: Path, rel_path: str, language: str) -> tuple[FileFacts | None, SkipReason | None]:
+    """Parse exactly one file and return its raw `FileFacts`, factored out
+    of `build_dependency_graph()`'s own loop body (QB-072) so the
+    incremental cache can re-parse a single changed file without
+    re-walking or re-parsing the rest of the repo.
+
+    Assumes the caller already confirmed `language` is available and has
+    registered both a symbol and a relationship extractor
+    (`is_language_available()`) — mirrors `build_dependency_graph()`'s own
+    precondition for reaching this point. Unlike `symbols.extract_file_symbols`,
+    a file that parses successfully but declares zero symbols/relationships
+    still returns real `FileFacts` (never `(None, None)`) — it may still be
+    a resolution *target* for another file's import/call even if it has no
+    outgoing relationships of its own, mirroring `build_dependency_graph()`'s
+    existing behavior of always retaining every successfully-parsed file.
     """
-    walk_result = walk_repository(root)
+    abs_path = root / rel_path
+    try:
+        if abs_path.stat().st_size > _MAX_FILE_SIZE_BYTES:
+            return None, "too_large"
+        source = abs_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None, "parse_failure"
 
-    per_file: dict[str, _FileData] = {}
-    symbol_counts: dict[str, Counter[str]] = {}
-    languages_covered: set[str] = set()
-    languages_skipped: set[str] = set()
-    large_file_count = 0
-    parse_failure_count = 0
+    symbol_extractor = get_symbol_extractor(language)
+    relationship_extractor = get_relationship_extractor(language)
+    if symbol_extractor is None or relationship_extractor is None:
+        # Unreachable in practice: is_language_available() already
+        # confirmed `language` is registered for both extractor families
+        # (registry.py registers them together). No `assert` here (banned
+        # project-wide for validation-shaped checks) — an explicit,
+        # skip-not-raise guard instead, mirroring `symbols.py`'s identical
+        # "this file just doesn't contribute" branch.
+        return None, "parse_failure"
 
-    for rel_path in walk_result.files:
-        language = EXTENSION_TO_LANGUAGE.get(PurePosixPath(rel_path).suffix.lower())
-        if language is None:
-            continue
+    try:
+        with warnings.catch_warnings():
+            # A missing optional dependency is already reported once via
+            # languages_skipped, not per-file — see `symbols.py`'s
+            # identical reasoning.
+            warnings.simplefilter("ignore")
+            symbols = symbol_extractor(source)
+            relationships = relationship_extractor(source)
+    except Exception:  # noqa: BLE001 — per-file fail-open, see module docstring
+        # Mirrors `symbols.py`'s identical per-file fail-open boundary:
+        # a repo-wide scan spans arbitrarily many, only partially-trusted
+        # source files, with no engine above this loop the way a
+        # single-file compression call has (ADR-018). One malformed file
+        # must not abort the whole graph.
+        return None, "parse_failure"
 
-        if not is_language_available(language):
-            languages_skipped.add(language)
-            continue
+    # QB-071: reduce to a name -> count aggregate immediately — nothing
+    # downstream needs a symbol's kind/line/visibility, only whether a name
+    # exists in a file and how many times. `symbols` (the full Symbol list)
+    # is never retained past this point.
+    return FileFacts(
+        language=language,
+        symbol_counts=Counter(s.name for s in symbols),
+        relationships=relationships,
+    ), None
 
-        abs_path = root / rel_path
-        try:
-            if abs_path.stat().st_size > _MAX_FILE_SIZE_BYTES:
-                large_file_count += 1
-                continue
-            source = abs_path.read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError):
-            parse_failure_count += 1
-            continue
 
-        symbol_extractor = get_symbol_extractor(language)
-        relationship_extractor = get_relationship_extractor(language)
-        if symbol_extractor is None or relationship_extractor is None:
-            # Unreachable in practice: is_language_available() already
-            # confirmed `language` is registered for both extractor
-            # families (registry.py registers them together). No `assert`
-            # here (banned project-wide for validation-shaped checks) — an
-            # explicit, skip-not-raise guard instead, mirroring
-            # `symbols.py`'s identical "this file just doesn't contribute"
-            # branch.
-            continue
-        languages_covered.add(language)
+def assemble_graph(
+    root: Path,
+    walk_result: WalkResult,
+    facts: dict[str, FileFacts],
+    *,
+    languages_covered: set[str],
+    languages_skipped: set[str],
+    large_file_count: int,
+    parse_failure_count: int,
+) -> RepoDependencyGraph:
+    """Resolve an already-assembled `facts` map into the final
+    `RepoDependencyGraph` — the shared tail both `build_dependency_graph()`
+    (a fresh full scan) and the incremental cache's merge path (QB-072,
+    `intel.py`) use, so the resolution-and-notes logic exists exactly once.
 
-        try:
-            with warnings.catch_warnings():
-                # A missing optional dependency is already reported once
-                # via languages_skipped above, not per-file — see
-                # `symbols.py`'s identical reasoning.
-                warnings.simplefilter("ignore")
-                symbols = symbol_extractor(source)
-                relationships = relationship_extractor(source)
-        except Exception:  # noqa: BLE001 — per-file fail-open, see module docstring
-            # Mirrors `symbols.py`'s identical per-file fail-open boundary:
-            # a repo-wide scan spans arbitrarily many, only partially-
-            # trusted source files, with no engine above this loop the way
-            # a single-file compression call has (ADR-018). One malformed
-            # file must not abort the whole graph.
-            parse_failure_count += 1
-            continue
-
-        # QB-071: reduce to a name -> count aggregate immediately — nothing
-        # downstream needs a symbol's kind/line/visibility, only whether a
-        # name exists in a file and how many times (see _FileData's own
-        # docstring). `symbols` (the full Symbol list) is never retained
-        # past this point; it falls out of scope at the next loop
-        # iteration exactly like `source` already does.
-        symbol_counts[rel_path] = Counter(s.name for s in symbols)
-        per_file[rel_path] = _FileData(language=language, relationships=relationships)
-
+    `facts` itself is never mutated or drained — internally, a *separate*
+    `per_file`/`symbol_counts` view is built from it, and that view (not
+    `facts`) is what `_resolve_all()` pops from as it resolves each file
+    (QB-071's memory discipline, unchanged). `facts` remains valid and
+    intact for the caller after this function returns.
+    """
+    per_file = {path: _FileData(language=f.language, relationships=f.relationships) for path, f in facts.items()}
+    symbol_counts = {path: f.symbol_counts for path, f in facts.items()}
     edges = _resolve_all(per_file, symbol_counts)
 
     notes: list[str] = []
@@ -241,6 +268,88 @@ def build_dependency_graph(root: Path) -> RepoDependencyGraph:
         resolved_edges=sum(1 for e in edges if e.target_file is not None),
         notes=notes,
     )
+
+
+def build_dependency_graph_with_facts(
+    root: Path, *, walk_result: WalkResult | None = None
+) -> tuple[RepoDependencyGraph, dict[str, FileFacts], set[str]]:
+    """Like `build_dependency_graph()`, but also returns every successfully-
+    parsed file's raw `FileFacts` and the set of paths that failed to parse
+    (QB-072) — the incremental repository-intelligence cache persists both
+    so a later run can re-resolve the graph after re-parsing only the
+    files that actually changed, without re-walking or re-parsing the rest
+    of the repo.
+
+    This is a deliberate, bounded trade-off specific to this entry point:
+    `facts` keeps every file's `relationships` list reachable until this
+    function returns (so it can be serialized to disk), a little past the
+    point `assemble_graph()`'s own `_resolve_all()` call would otherwise
+    let each entry be released (QB-071's per-file-drain-during-resolution
+    discipline, which still applies — see `assemble_graph()`'s docstring).
+    Every other caller — including `build_dependency_graph()` below — never
+    retains this dict, so their memory profile is unaffected.
+
+    `walk_result` (QB-072 perf follow-up): pass an already-computed
+    `WalkResult` to skip a redundant `walk_repository()` call — see
+    `profiler.build_profile()`'s identical parameter for the full
+    rationale. Every existing caller that omits it is unaffected.
+    """
+    walk_result = walk_result if walk_result is not None else walk_repository(root)
+
+    facts: dict[str, FileFacts] = {}
+    parse_failures: set[str] = set()
+    languages_covered: set[str] = set()
+    languages_skipped: set[str] = set()
+    large_file_count = 0
+    parse_failure_count = 0
+
+    for rel_path in walk_result.files:
+        language = EXTENSION_TO_LANGUAGE.get(PurePosixPath(rel_path).suffix.lower())
+        if language is None:
+            continue
+
+        if not is_language_available(language):
+            languages_skipped.add(language)
+            continue
+
+        if get_symbol_extractor(language) is None or get_relationship_extractor(language) is None:
+            # Unreachable in practice — see extract_file_facts()'s identical guard.
+            continue
+        languages_covered.add(language)
+
+        file_facts, reason = extract_file_facts(root, rel_path, language)
+        if reason == "too_large":
+            large_file_count += 1
+            continue
+        if reason == "parse_failure":
+            parse_failure_count += 1
+            parse_failures.add(rel_path)
+            continue
+        if file_facts is not None:
+            facts[rel_path] = file_facts
+
+    graph = assemble_graph(
+        root,
+        walk_result,
+        facts,
+        languages_covered=languages_covered,
+        languages_skipped=languages_skipped,
+        large_file_count=large_file_count,
+        parse_failure_count=parse_failure_count,
+    )
+    return graph, facts, parse_failures
+
+
+def build_dependency_graph(root: Path) -> RepoDependencyGraph:
+    """Scan `root` and return its deterministic RepoDependencyGraph.
+
+    Calling this twice against unchanged repo state returns an identical
+    RepoDependencyGraph (field-for-field) — the same core promise
+    `quor map`/`quor symbols` already make, verified the same way (a
+    dedicated determinism test).
+    """
+    graph, _facts, _parse_failures = build_dependency_graph_with_facts(root)
+    return graph
 
 
 def _resolve_all(per_file: dict[str, _FileData], symbol_counts: dict[str, Counter[str]]) -> list[Edge]:

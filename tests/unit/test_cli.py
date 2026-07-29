@@ -1147,6 +1147,51 @@ class TestDoctor:
 
 
 # ---------------------------------------------------------------------------
+# quor doctor formatting (QB-074)
+# ---------------------------------------------------------------------------
+
+
+class TestDoctorFormatting:
+    """Header banner + always-shown elapsed-time/pass-fail summary — added
+    without touching any existing check's (name, ok, detail) tuple or
+    order, so every pre-existing TestDoctor/TestDoctorFix assertion above
+    (which greps for a specific check line, not the whole output) is
+    unaffected; verified by the fact those tests still pass unmodified."""
+
+    def test_header_banner_shown(self) -> None:
+        result = runner.invoke(app, ["doctor"])
+        assert "Quor Doctor" in result.output
+
+    def test_summary_footer_shown_on_failure(self) -> None:
+        # A clean checkout with no hooks installed always fails at least
+        # one check (test_clean_install_hook_missing_exits_1's own premise).
+        result = runner.invoke(app, ["doctor"])
+        assert result.exit_code == ExitCode.GENERAL_ERROR
+        assert "checks failed" in result.output
+        assert "see above for details" in result.output
+
+    def test_summary_footer_shown_on_success(self, tmp_path: Path) -> None:
+        settings_path = tmp_path / "settings.json"
+        _install_real_hooks(tmp_path, settings_path)
+        with patch("platformdirs.user_data_dir", return_value=str(tmp_path)):
+            result = runner.invoke(app, ["doctor", "--settings-path", str(settings_path)])
+        assert result.exit_code == 0
+        assert "checks passed" in result.output
+
+    def test_narrow_terminal_width_does_not_crash(self, tmp_path: Path, monkeypatch) -> None:
+        """QB-074 testing requirement: doctor's rich-rendered output must
+        not error out under an unusually narrow terminal — Windows Terminal/
+        cmd.exe can report widths well below rich's ~80-column default."""
+        monkeypatch.setenv("COLUMNS", "40")
+        settings_path = tmp_path / "settings.json"
+        _install_real_hooks(tmp_path, settings_path)
+        with patch("platformdirs.user_data_dir", return_value=str(tmp_path)):
+            result = runner.invoke(app, ["doctor", "--settings-path", str(settings_path)])
+        assert result.exit_code == 0
+        assert result.exception is None
+
+
+# ---------------------------------------------------------------------------
 # quor doctor --fix
 # ---------------------------------------------------------------------------
 

@@ -8,6 +8,19 @@ architectural rationale for why this lives outside the ContentMask
 pipeline and is exposed as its own command, the same category of
 exception `quor schema` already established (a non-filtering utility
 command, not one of the six V1 filtering-operation commands).
+
+As of QB-072 (Automatic Repository Intelligence), this command no longer
+calls `profiler.build_profile()` directly — it goes through
+`intel.ensure_repo_intelligence()`, which transparently handles first-time
+onboarding, cache reuse, and incremental rebuilds; see that module's own
+docstring for the full design. `--rebuild` forces a full rebuild,
+bypassing the cache entirely.
+
+As of QB-074, `--path` is validated up front (`repo_path.resolve_repo_root`)
+— a nonexistent path or a file passed where a directory was expected now
+exits with a clear, actionable message instead of silently producing an
+empty profile — and a colorized progress/summary presentation
+(`repo_progress.py`) reports elapsed time and a language count on stderr.
 """
 
 from __future__ import annotations
@@ -17,7 +30,9 @@ from pathlib import Path
 
 import typer
 
-from quor.pipeline.repo_profile.profiler import build_profile
+from quor.cli.repo_path import resolve_repo_root
+from quor.cli.repo_progress import print_build_summary, progress_echo
+from quor.pipeline.repo_profile.intel import ensure_repo_intelligence
 from quor.pipeline.repo_profile.render import render_json, render_markdown
 from quor.tracking.db import REPO_PROFILE_FILTER_LABEL, get_tracking_db, track_invocation
 
@@ -29,13 +44,21 @@ def map_command(
     json_output: bool = typer.Option(
         False, "--json", help="Output the profile as JSON instead of Markdown."
     ),
+    rebuild: bool = typer.Option(
+        False, "--rebuild", help="Force a full rebuild of repository intelligence, bypassing the cache."
+    ),
 ) -> None:
     """Generate a deterministic repository context profile."""
-    root = (path or Path.cwd()).resolve()
+    root = resolve_repo_root(path)
     t0 = time.monotonic()
 
-    profile = build_profile(root)
+    intel = ensure_repo_intelligence(root, rebuild=rebuild, echo=progress_echo)
+    profile = intel.profile
     output = render_json(profile) if json_output else render_markdown(profile)
+
+    language_count = len(profile.languages)
+    detail = f"{language_count} language{'s' if language_count != 1 else ''}"
+    print_build_summary(intel, detail, elapsed_seconds=time.monotonic() - t0)
 
     typer.echo(output)
     _track_map_invocation(root, output, t0)

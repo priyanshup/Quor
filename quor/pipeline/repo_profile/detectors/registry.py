@@ -130,13 +130,30 @@ class DetectorRegistry:
         tier's match wins, mirroring `FilterRegistry`'s project > user >
         built-in precedence (`all_rules()` already yields tiers in that
         order, so "first seen wins" is sufficient).
+
+        **Performance (QB-072 perf follow-up).** Each file's basename is
+        computed exactly once here and passed to every rule, rather than
+        every rule re-deriving it via its own `PurePosixPath(file_path).name`
+        call — this loop runs once per (rule, file) pair, so at real repo
+        scale (hundreds of files x dozens of built-in rules) the repeated
+        `PurePosixPath` construction was, empirically, the single largest
+        cost in a full `quor map` build (profiled via `cProfile` against an
+        800-file synthetic repo — see `tests/benchmarks/repo_intel_benchmark.py`).
+        Precomputing it once turns that cost from O(rules x files) `PurePosixPath`
+        constructions into O(files), with no change to which files match or
+        in what order (`file_basenames` is built via one pass over `files`
+        in the same order `_match_rule`'s own list comprehension already
+        iterated them, so `candidates[0]`/first-content-match tie-breaking
+        is bit-for-bit unchanged).
         """
+        file_basenames = {f: PurePosixPath(f).name for f in files}
+
         seen: dict[tuple[str, str], DetectedItem] = {}
         for _tier, rule in self.all_rules():
             key = (rule.category, rule.name)
             if key in seen:
                 continue
-            item = self._match_rule(rule, files, root)
+            item = self._match_rule(rule, files, root, file_basenames)
             if item is not None:
                 seen[key] = item
 
@@ -148,9 +165,9 @@ class DetectorRegistry:
         return grouped
 
     def _match_rule(
-        self, rule: DetectorRule, files: list[str], root: Path
+        self, rule: DetectorRule, files: list[str], root: Path, file_basenames: dict[str, str]
     ) -> DetectedItem | None:
-        candidates = [f for f in files if self._file_matches(f, rule)]
+        candidates = [f for f in files if self._file_matches(f, rule, file_basenames[f])]
         if not candidates:
             return None
 
@@ -178,8 +195,8 @@ class DetectorRegistry:
         return None
 
     @staticmethod
-    def _file_matches(file_path: str, rule: DetectorRule) -> bool:
-        if rule.match_basename and PurePosixPath(file_path).name in rule.match_basename:
+    def _file_matches(file_path: str, rule: DetectorRule, basename: str) -> bool:
+        if rule.match_basename and basename in rule.match_basename:
             return True
         for pattern in rule.match_path_regex:
             try:

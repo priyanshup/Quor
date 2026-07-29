@@ -11,6 +11,19 @@ is a separate command, and ADR-038 for the full architecture decision
 record). Same exemption category as `quor schema`/`quor map`: a
 non-filtering utility command, not one of the six V1 filtering-operation
 commands.
+
+As of QB-072 (Automatic Repository Intelligence), this command no longer
+calls `symbols.build_symbol_index()` directly — it goes through
+`intel.ensure_repo_intelligence()`, which transparently handles first-time
+onboarding, cache reuse, and incremental rebuilds; see that module's own
+docstring for the full design. `--rebuild` forces a full rebuild,
+bypassing the cache entirely.
+
+As of QB-074, `--path` is validated up front (`repo_path.resolve_repo_root`)
+— a nonexistent path or a file passed where a directory was expected now
+exits with a clear, actionable message instead of silently producing an
+empty index — and a colorized progress/summary presentation
+(`repo_progress.py`) reports elapsed time and a symbol count on stderr.
 """
 
 from __future__ import annotations
@@ -20,7 +33,9 @@ from pathlib import Path
 
 import typer
 
-from quor.pipeline.repo_profile.symbols import build_symbol_index
+from quor.cli.repo_path import resolve_repo_root
+from quor.cli.repo_progress import print_build_summary, progress_echo
+from quor.pipeline.repo_profile.intel import ensure_repo_intelligence
 from quor.pipeline.repo_profile.symbols_render import render_json, render_markdown
 from quor.tracking.db import REPO_SYMBOLS_FILTER_LABEL, get_tracking_db, track_invocation
 
@@ -32,13 +47,20 @@ def symbols_command(
     json_output: bool = typer.Option(
         False, "--json", help="Output the symbol index as JSON instead of Markdown."
     ),
+    rebuild: bool = typer.Option(
+        False, "--rebuild", help="Force a full rebuild of repository intelligence, bypassing the cache."
+    ),
 ) -> None:
     """Generate a deterministic repository-wide symbol index."""
-    root = (path or Path.cwd()).resolve()
+    root = resolve_repo_root(path)
     t0 = time.monotonic()
 
-    index = build_symbol_index(root)
+    intel = ensure_repo_intelligence(root, rebuild=rebuild, echo=progress_echo)
+    index = intel.symbols
     output = render_json(index) if json_output else render_markdown(index)
+
+    detail = f"{index.total_symbols} symbol{'s' if index.total_symbols != 1 else ''}"
+    print_build_summary(intel, detail, elapsed_seconds=time.monotonic() - t0)
 
     typer.echo(output)
     _track_symbols_invocation(root, output, t0)
