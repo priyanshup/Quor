@@ -1,9 +1,10 @@
 """Typer application and command registration.
 
-The six V1 commands (do not add more without approval) plus two exempt
-utility commands — `schema` (JSON Schema dump) and `map` (QB-061's
-deterministic Repository Context Profile) — neither is a filtering
-operation, so neither counts against the six:
+The six V1 commands (do not add more without approval) plus three exempt
+utility commands — `schema` (JSON Schema dump), `map` (QB-061's
+deterministic Repository Context Profile), and `symbols` (QB-066's
+deterministic Repository Symbols index) — none is a filtering operation, so
+none counts against the six:
   quor init --claude
   quor validate [file]
   quor explain <command>
@@ -12,6 +13,7 @@ operation, so neither counts against the six:
   quor doctor
   quor schema
   quor map
+  quor symbols
 """
 
 import typer
@@ -22,6 +24,7 @@ from quor.cli.commands.explain import explain
 from quor.cli.commands.gain import gain
 from quor.cli.commands.init import init
 from quor.cli.commands.map import map_command
+from quor.cli.commands.symbols import symbols_command
 from quor.cli.commands.validate import validate
 from quor.cli.commands.verify import verify
 
@@ -40,6 +43,7 @@ app.command()(gain)
 app.command()(verify)
 app.command()(doctor)
 app.command(name="map")(map_command)
+app.command(name="symbols")(symbols_command)
 
 
 @app.callback(invoke_without_command=True)

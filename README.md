@@ -118,6 +118,7 @@ Quor is built to be safe on machines where nothing else is.
 | `quor doctor` | Health check |
 | `quor validate [file]` | Validate a filter config |
 | `quor map` | Deterministic repository profile (languages, frameworks, build system, entry points, ...) — `--json` for machine-readable output |
+| `quor symbols` | Deterministic repository-wide symbol index (classes, interfaces, structs, traits, enums, functions, methods, per-file locations) — `--json` for machine-readable output |
 
 ## Contributing
 

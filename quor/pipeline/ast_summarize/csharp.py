@@ -51,6 +51,7 @@ import warnings
 from typing import TYPE_CHECKING
 
 from quor.pipeline.ast_summarize._treesitter_utils import add_candidate, collect_error_ranges
+from quor.pipeline.ast_summarize.symbol_model import ENTRY_POINT_NAMES, Symbol, SymbolKind
 
 if TYPE_CHECKING:
     from tree_sitter import Node
@@ -186,3 +187,114 @@ def _visit_field_declaration(
             for value in declarator.children:
                 if value.type == "lambda_expression":
                     add_candidate(value, error_ranges, lines, block_type=_BLOCK_TYPE)
+
+
+# Type-declaration node types (QB-066 symbol extraction) mapped to the
+# Symbol kind each represents — extends `_TYPE_DECLARATION_TYPES` above
+# (class/interface/struct only, for compression purposes) with
+# `enum_declaration`, which the compression side deliberately excludes (see
+# module docstring) but which symbol extraction must report since "Enums"
+# is one of this feature's required categories. Enum members are not
+# themselves visited (no method/field body to compress or report).
+_TYPE_DECLARATION_KINDS: dict[str, SymbolKind] = {
+    "class_declaration": "class",
+    "interface_declaration": "interface",
+    "struct_declaration": "struct",
+    "enum_declaration": "enum",
+}
+
+
+def extract_symbols_csharp(source: str) -> list[Symbol]:
+    """Return every (optionally namespace-nested) class/interface/struct/
+    enum declaration and each class/interface/struct's direct methods/
+    constructors (QB-066), in source order. A member nested inside another
+    type's body is not itself visited — the same one-level scope boundary
+    `_visit_type_body()` already applies for compression.
+
+    `is_public` reflects an explicit `public` modifier — C#'s own default
+    for an unmarked top-level type is internal and for an unmarked member
+    is private, neither public, so an unmarked declaration is
+    `is_public=False`.
+
+    Returns an empty list (with an actionable warning) if the optional
+    `tree-sitter`/`tree-sitter-c-sharp` dependency is not installed.
+    Otherwise may raise on a genuine, unrecoverable parser failure — not
+    caught here, same fail-open contract as `analyze_csharp()`."""
+    try:
+        import tree_sitter
+        import tree_sitter_c_sharp
+    except ImportError:
+        warnings.warn(
+            "[quor] tree-sitter/tree-sitter-c-sharp is not installed; "
+            "install quor[csharp] to enable C# symbol extraction "
+            "(falling back to no symbols for this file)",
+            stacklevel=2,
+        )
+        return []
+
+    language = tree_sitter.Language(tree_sitter_c_sharp.language())
+    parser = tree_sitter.Parser(language)
+    tree = parser.parse(source.encode("utf-8"))
+
+    symbols: list[Symbol] = []
+    _visit_top_level_symbols(tree.root_node, symbols)
+    return symbols
+
+
+def _decode(node: Node) -> str:
+    text = node.text
+    return text.decode("utf-8") if text is not None else ""
+
+
+def _has_public_modifier(node: Node) -> bool:
+    return any(child.type == "modifier" and _decode(child) == "public" for child in node.children)
+
+
+def _visit_top_level_symbols(node: Node, symbols: list[Symbol]) -> None:
+    for child in node.children:
+        if child.type == _NAMESPACE_TYPE:
+            body = child.child_by_field_name("body")
+            if body is not None and body.type == _TYPE_BODY:
+                _visit_top_level_symbols(body, symbols)
+        else:
+            kind = _TYPE_DECLARATION_KINDS.get(child.type)
+            if kind is not None:
+                _add_type_symbol(child, symbols, kind=kind)
+
+
+def _add_type_symbol(node: Node, symbols: list[Symbol], *, kind: SymbolKind) -> None:
+    name_node = node.child_by_field_name("name")
+    if name_node is None:
+        return
+    symbols.append(
+        Symbol(
+            name=_decode(name_node),
+            kind=kind,
+            line=node.start_point.row + 1,
+            is_public=_has_public_modifier(node),
+        )
+    )
+    if kind == "enum":
+        return
+    body = node.child_by_field_name("body")
+    if body is None:
+        return
+    for member in body.children:
+        if member.type in _METHOD_LIKE_TYPES:
+            _add_method_symbol(member, symbols)
+
+
+def _add_method_symbol(node: Node, symbols: list[Symbol]) -> None:
+    name_node = node.child_by_field_name("name")
+    if name_node is None:
+        return
+    name = _decode(name_node)
+    symbols.append(
+        Symbol(
+            name=name,
+            kind="method",
+            line=node.start_point.row + 1,
+            is_public=_has_public_modifier(node),
+            is_entry_point=name in ENTRY_POINT_NAMES,
+        )
+    )

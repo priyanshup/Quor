@@ -63,6 +63,7 @@ import warnings
 from typing import TYPE_CHECKING
 
 from quor.pipeline.ast_summarize._treesitter_utils import add_candidate, collect_error_ranges
+from quor.pipeline.ast_summarize.symbol_model import ENTRY_POINT_NAMES, Symbol, SymbolKind
 
 if TYPE_CHECKING:
     from tree_sitter import Node
@@ -105,6 +106,15 @@ _CLASS_LIKE_TYPES = frozenset({"class_declaration", "abstract_class_declaration"
 # Declaration node types whose individual `variable_declarator` children may
 # assign a function-like value to a name — identical to javascript.py.
 _VARIABLE_DECLARATION_TYPES = frozenset({"lexical_declaration", "variable_declaration"})
+
+# QB-066 symbol extraction — same split as javascript.py's own
+# _FUNCTION_DECLARATION_TYPES/_FUNCTION_VALUE_TYPES, extended with the
+# signature-only node types the compression side already tracks in
+# _FUNCTION_LIKE_TYPES above (harmless here too: a signature has no `name`
+# field of its own to report distinctly from its enclosing declaration, so
+# it's naturally never reached as a top-level declaration node).
+_FUNCTION_DECLARATION_TYPES = frozenset({"function_declaration", "generator_function_declaration"})
+_FUNCTION_VALUE_TYPES = frozenset({"arrow_function", "function_expression", "generator_function"})
 
 # TypeScript-specific declarations that are preserved **whole** by
 # deliberate omission from the dispatch table below, not by any special
@@ -262,3 +272,164 @@ def _visit_variable_declaration(
         value = declarator.child_by_field_name("value")
         if value is not None and value.type in _FUNCTION_LIKE_TYPES:
             add_candidate(value, error_ranges, lines)
+
+
+def extract_symbols_typescript(source: str) -> list[Symbol]:
+    """Return every top-level class/interface/enum/function declaration and
+    each class's direct methods, parsed with the plain `.ts` grammar
+    (QB-066). See `extract_symbols_tsx()` for `.tsx`; both share
+    `_extract_symbols_with_grammar()`."""
+    return _extract_symbols_with_grammar(source, tsx=False)
+
+
+def extract_symbols_tsx(source: str) -> list[Symbol]:
+    """Return every top-level class/interface/enum/function declaration and
+    each class's direct methods, parsed with the `.tsx` (JSX-aware) grammar
+    (QB-066). See `extract_symbols_typescript()` for `.ts`."""
+    return _extract_symbols_with_grammar(source, tsx=True)
+
+
+def _extract_symbols_with_grammar(source: str, *, tsx: bool) -> list[Symbol]:
+    """`is_public` conventions (QB-066): a top-level declaration's
+    `is_public` reflects `export` — identical to `javascript.py`'s own
+    reasoning. A class member's `is_public` reflects TypeScript's explicit
+    `accessibility_modifier` (`public`/`private`/`protected`) when present;
+    TypeScript's own default for an unmarked member is public, so a member
+    with no modifier at all is `is_public=True` — unlike JavaScript's
+    `#name`-only privacy mechanism, which `javascript.py` still applies
+    here too (a `#name` member is private regardless of any modifier, since
+    the two mechanisms are orthogonal in real TypeScript).
+
+    Returns an empty list (with an actionable warning) if the optional
+    `tree-sitter`/`tree-sitter-typescript` dependency is not installed.
+    Otherwise may raise on a genuine, unrecoverable parser failure — not
+    caught here, same fail-open contract as `_analyze_with_grammar()`.
+    """
+    try:
+        import tree_sitter
+        import tree_sitter_typescript
+    except ImportError:
+        warnings.warn(
+            "[quor] tree-sitter/tree-sitter-typescript is not installed; "
+            "install quor[javascript] to enable TypeScript symbol extraction "
+            "(falling back to no symbols for this file)",
+            stacklevel=2,
+        )
+        return []
+
+    grammar = (
+        tree_sitter_typescript.language_tsx() if tsx else tree_sitter_typescript.language_typescript()
+    )
+    language = tree_sitter.Language(grammar)
+    parser = tree_sitter.Parser(language)
+    tree = parser.parse(source.encode("utf-8"))
+
+    symbols: list[Symbol] = []
+    _visit_top_level_symbols(tree.root_node, symbols, is_exported=False)
+    return symbols
+
+
+def _decode(node: Node) -> str:
+    text = node.text
+    return text.decode("utf-8") if text is not None else ""
+
+
+def _visit_top_level_symbols(node: Node, symbols: list[Symbol], *, is_exported: bool) -> None:
+    for child in node.children:
+        if child.type in _FUNCTION_DECLARATION_TYPES:
+            _add_function_symbol(child, symbols, is_public=is_exported)
+        elif child.type in _CLASS_LIKE_TYPES:
+            _add_class_symbol(child, symbols, is_public=is_exported)
+        elif child.type == "interface_declaration":
+            _add_named_symbol(child, symbols, kind="interface", is_public=is_exported)
+        elif child.type == "enum_declaration":
+            _add_named_symbol(child, symbols, kind="enum", is_public=is_exported)
+        elif child.type in _VARIABLE_DECLARATION_TYPES:
+            _add_variable_function_symbols(child, symbols, is_public=is_exported)
+        elif child.type == "export_statement":
+            declaration = child.child_by_field_name("declaration")
+            if declaration is not None:
+                _visit_top_level_symbols(child, symbols, is_exported=True)
+
+
+def _add_named_symbol(node: Node, symbols: list[Symbol], *, kind: SymbolKind, is_public: bool) -> None:
+    name_node = node.child_by_field_name("name")
+    if name_node is None:
+        return
+    symbols.append(
+        Symbol(name=_decode(name_node), kind=kind, line=node.start_point.row + 1, is_public=is_public)
+    )
+
+
+def _add_function_symbol(node: Node, symbols: list[Symbol], *, is_public: bool) -> None:
+    name_node = node.child_by_field_name("name")
+    if name_node is None:
+        return
+    name = _decode(name_node)
+    symbols.append(
+        Symbol(
+            name=name,
+            kind="function",
+            line=node.start_point.row + 1,
+            is_public=is_public,
+            is_entry_point=name in ENTRY_POINT_NAMES,
+        )
+    )
+
+
+def _add_class_symbol(node: Node, symbols: list[Symbol], *, is_public: bool) -> None:
+    name_node = node.child_by_field_name("name")
+    if name_node is None:
+        return
+    symbols.append(
+        Symbol(name=_decode(name_node), kind="class", line=node.start_point.row + 1, is_public=is_public)
+    )
+    body = node.child_by_field_name("body")
+    if body is None or body.type != "class_body":
+        return
+    for member in body.children:
+        if member.type == "method_definition":
+            _add_method_symbol(member, symbols)
+
+
+def _add_method_symbol(node: Node, symbols: list[Symbol]) -> None:
+    name_node = node.child_by_field_name("name")
+    if name_node is None or name_node.type not in ("property_identifier", "private_property_identifier"):
+        return
+    name = _decode(name_node)
+    is_private_field = name_node.type == "private_property_identifier"
+    has_non_public_modifier = any(
+        child.type == "accessibility_modifier" and _decode(child) in ("private", "protected")
+        for child in node.children
+    )
+    symbols.append(
+        Symbol(
+            name=name,
+            kind="method",
+            line=node.start_point.row + 1,
+            is_public=not is_private_field and not has_non_public_modifier,
+            is_entry_point=name in ENTRY_POINT_NAMES,
+        )
+    )
+
+
+def _add_variable_function_symbols(decl_node: Node, symbols: list[Symbol], *, is_public: bool) -> None:
+    for declarator in decl_node.children:
+        if declarator.type != "variable_declarator":
+            continue
+        value = declarator.child_by_field_name("value")
+        if value is None or value.type not in _FUNCTION_VALUE_TYPES:
+            continue
+        name_node = declarator.child_by_field_name("name")
+        if name_node is None or name_node.type != "identifier":
+            continue
+        name = _decode(name_node)
+        symbols.append(
+            Symbol(
+                name=name,
+                kind="function",
+                line=declarator.start_point.row + 1,
+                is_public=is_public,
+                is_entry_point=name in ENTRY_POINT_NAMES,
+            )
+        )

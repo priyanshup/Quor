@@ -4586,6 +4586,93 @@ confirmed zero regressions; `ruff check quor/ tests/` and `mypy quor/` both clea
 
 ---
 
+#### QB-066 — Repository Symbols (`quor symbols`)
+
+**Effort:** Large · **Value:** High · **Risk:** Medium · **Expected token impact:** Unmeasured —
+avoids re-`grep`/`Read`-ing files to locate a class/function's definition and file, not a
+compression ratio; see own entry's uncertainty note · **Category:** New Capability
+
+The Phase D follow-up QB-061/ADR-037 deliberately deferred: a deterministic, repository-wide symbol
+index (classes, interfaces, structs, traits, enums, functions, methods, public/private visibility,
+entry-point functions, file locations) — the token cost an AI coding assistant otherwise pays
+re-discovering a symbol's location and shape via repeated `grep`/`Read` calls.
+
+**Status:** Implemented (2026-07-28) on `feature/qb-066-repository-symbols`. See
+`docs/final/DECISIONS.md` ADR-038 for the full architecture decision record. **Numbering note:**
+this task was originally referred to as "QB-062"; `backlog.md` already had a completed, unrelated
+QB-062 entry (per-invocation config-read deduplication, above) and the highest ID in use was
+QB-065, so this shipped as QB-066 instead — confirmed with the user before implementation began,
+not silently renumbered.
+
+<details>
+<summary>Technical details</summary>
+
+**What shipped:** Each of the eight languages `quor/pipeline/ast_summarize/` already registers
+(`python`/`javascript`/`typescript`/`tsx`/`go`/`java`/`rust`/`csharp`) gained one additive
+`extract_symbols_*()` function in its existing module — reusing that module's own parser setup
+(stdlib `ast` for Python, the same `tree-sitter`/grammar-package combination for the rest) and
+lazy-import/fail-open discipline unchanged, zero double-parsing, zero risk to the existing
+`analyze_*()` compression analyzers (verified: the compression benchmark suite is unchanged, 127
+cases, 35.9% overall). `quor/pipeline/ast_summarize/symbol_model.py` defines the shared `Symbol`
+frozen dataclass (name, kind, line, `is_public`, `is_entry_point`) and `registry.py` gained a
+parallel `_SYMBOL_EXTRACTORS`/`get_symbol_extractor()` alongside its existing `_ANALYZERS`/
+`get_analyzer()`. Every visibility bit is grounded in each language's own real mechanism (Go's
+leading-capital exported-identifier rule, Rust's `pub` keyword, Java/C#'s explicit `public`
+modifier — package-private/internal by default — TypeScript's `accessibility_modifier` — public by
+default — JavaScript's ES2022 `#name` private-field syntax, Python's leading-underscore
+convention), empirically verified against the installed tree-sitter grammars during implementation,
+never guessed. Entry-point detection is a bounded name match (`main`/C#'s `Main`) — every
+mainstream convention across all eight languages names it one of those two ways.
+
+`quor/pipeline/repo_profile/symbols.py`'s `build_symbol_index(root) -> RepoSymbolIndex` is the
+orchestrator — reuses `walk.py`'s existing file enumeration unchanged, applies a 2 MB per-file size
+cap (files over the cap are counted and named in a summary note, not silently dropped — QB-061's
+own design doc §7 risk 4 flagged large-repo AST parsing as this follow-up's unresolved scaling
+risk), and fails open per file (a narrow, explicitly-commented exception to the project's normal
+"every `except` clause is specific" rule, justified the same way the hook's own top-level guard is —
+one malformed file must not deny a symbol index for the rest of a large repo). A file that declares
+zero symbols is omitted from the index entirely, matching `render.py`'s existing "omit rather than
+print emptiness" convention for `quor map`. `symbols_model.py`/`symbols_render.py` are frozen
+dataclasses (not Pydantic, matching `walk.py`'s `WalkResult` rather than `model.py`'s
+`RepoProfile` — no external validation boundary exists for this internally-computed data) rendered
+as fixed-template Markdown by default, `--json` as a secondary mode — the same convention `quor
+map` already established.
+
+`quor symbols` is a third exempted utility command (`quor/cli/main.py`, `__main__.py`'s
+`_CLI_COMMANDS`) — explicit user sign-off obtained before any CLI code was written, following the
+exact process ADR-037 already established for `quor map`, not assumed granted by the originating
+task instructions alone. The exact real bug ADR-037 caught for `quor map` (a command name missing
+from `_CLI_COMMANDS` silently falls through to the shell dispatcher) is guarded against here by a
+dedicated regression test, not just re-checked by hand. Invocations are tracked under a new
+`REPO_SYMBOLS_FILTER_LABEL` (`quor/tracking/db.py`), excluded from
+`filter_divergence.flag_low_performers()`'s low-performer check the same way
+`REPO_PROFILE_FILTER_LABEL` already is.
+
+**Deliberately out of scope (see ADR-038):** search/`--focus` filtering (explicitly excluded by the
+originating task unless the architecture naturally supported it — it doesn't yet, cleanly, without
+its own design pass) and real-session token-savings measurement (per Anti-Goal #24/#25, not
+published until measured against real usage).
+
+**Tests:** 47 new unit tests for the eight `extract_symbols_*()` functions
+(`test_ast_summarize_symbols.py`, including a missing-optional-dependency fail-open test per
+tree-sitter-backed language, mirroring `test_ast_summarize.py`'s existing pattern) plus 11 for the
+orchestrator (`test_repo_profile_symbols.py` — polyglot repos, empty-symbol-file omission, the
+size cap, missing-dependency skip, per-file parse-failure fail-open, determinism) plus 10 for
+rendering (`test_repo_profile_symbols_render.py`) plus 5 CLI integration tests
+(`test_cli_symbols.py`, mirroring `test_cli_map.py` — Markdown/JSON output, `--path`, tracking, the
+dispatcher-fallthrough regression guard) plus a fixture-repo benchmark corpus reusing QB-061's
+existing four fixture repos with a second, symbol-shaped set of hand-labeled expectations
+(`test_repo_profile_symbols_benchmark.py` — precision/recall, a false-positive check, a
+byte-identical determinism check, a whole-corpus performance budget, and a synthetic 500-file/5,000-
+function scaling test standing in for QB-061's own "5,000-file repo" scaling example at a size that
+keeps the default test suite fast). Full existing suite (all `tests/unit/` files verified
+individually plus `tests/integration/` with `-m integration`) and the compression benchmark suite
+re-run and confirmed zero regressions; `ruff check quor/ tests/` and `mypy quor/` both clean.
+
+</details>
+
+---
+
 ### Historical (superseded)
 
 *Kept for the record — not resolved work in its own right, but the original request that later,

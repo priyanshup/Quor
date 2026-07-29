@@ -660,6 +660,14 @@ PASSTHROUGH_LABEL = "(no filter matched)"
 # side-by-side with an expected, by-design zero, diluting the signal.
 REPO_PROFILE_FILTER_LABEL = "repo-profile"
 
+# QB-066: the synthetic `filter_name` `quor symbols` tracks its invocations
+# under (see `quor/cli/commands/symbols.py::_track_symbols_invocation`).
+# Same reasoning as `REPO_PROFILE_FILTER_LABEL` above, applied to the
+# second synthesis-not-compression command: a repository symbol index has
+# no "before" blob either, so `original_tokens`/`final_tokens` are recorded
+# equal by design, and `flag_low_performers` must exclude this label too.
+REPO_SYMBOLS_FILTER_LABEL = "repo-symbols"
+
 
 @dataclass(frozen=True)
 class FilterUsage:

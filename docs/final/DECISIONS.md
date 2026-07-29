@@ -1337,3 +1337,145 @@ doctor`, diluting the signal (caught and fixed during this same implementation p
 - See `docs/design/QB-061-repo-context-profile.md` for the full design (competitive positioning
   against Aider's repo map, complete reuse audit, benchmark strategy, and the phased implementation
   plan) and `backlog.md`'s `QB-061` entry for the implementation record.
+
+## ADR-038: Repository Symbols — Separate Command/Index from `RepoProfile`, Symbol Extraction as an Additive Function per `ast_summarize` Language Module, `quor symbols` as a Third Exempted Command (QB-066)
+
+**Status:** Decided and implemented
+**Date:** 2026-07-28
+
+**Context:**
+ADR-037/QB-061 deliberately deferred "full tree-sitter/AST symbol extraction for entry-point/
+framework detail (Aider-style repo map)" as a named, larger follow-up phase (its own "Deliberately
+out of scope" note, and QB-061's design doc §6/§10 Phase D). This task is that follow-up:
+deterministic, repository-wide symbol indexing — classes, interfaces, structs, traits, enums,
+functions, methods, public/private visibility, entry-point functions, and file locations — reusing
+`quor/pipeline/ast_summarize/`'s existing per-language parsers (the same tree-sitter/`ast`
+infrastructure `code_ast_summarize`/`python_ast_summarize` already build) rather than reparsing with
+a second parser per language.
+
+**Options considered:**
+- **Fold symbol data into `RepoProfile`/`quor map`'s existing output vs. a new, separate command and
+  index:** separate was chosen. A symbol index scales with source line count (parse cost per file),
+  not repo metadata size the way every existing `RepoProfile` field does (manifest fields, marker
+  files, a bounded root-level scan) — folding it in would make every `quor map` call, including the
+  common "just tell me what this repo is" case, pay a much larger, language-parse cost it doesn't
+  need. Two commands with two focused jobs (orientation vs. symbol lookup) is a smaller trust and
+  performance surface than one command whose cost is unpredictable depending on repo size. This
+  mirrors QB-061's own §2 competitive positioning note: Aider's repo map answers "what are all the
+  symbols in this codebase" continuously; `quor map` answers "what *is* this codebase" once — QB-066
+  is the former question, finally built, but kept a distinct command rather than merged into the
+  latter's existing shape.
+- **A second, wholly independent parsing/registry stack for symbol extraction vs. additive
+  `extract_symbols_*()` functions on the existing `ast_summarize` language modules:** additive was
+  chosen, per the task's own "reuse existing AST parsers and language registries... do not reparse
+  languages if existing infrastructure can be extended" constraint. Each of the eight already-
+  registered languages (`python`/`javascript`/`typescript`/`tsx`/`go`/`java`/`rust`/`csharp`) gained
+  one new function in its existing module, sharing that module's own lazy-import/fail-open
+  discipline for its optional tree-sitter dependency (unchanged) rather than a parallel dependency-
+  gating mechanism. `quor/pipeline/ast_summarize/registry.py` gained a second, parallel dict
+  (`_SYMBOL_EXTRACTORS`/`get_symbol_extractor()`) alongside its existing `_ANALYZERS`/
+  `get_analyzer()` — a separate dict, not a richer per-analyzer return type, because the two
+  questions ("which lines compress" vs. "what symbols exist, named and located") are independently
+  correct and serve two different consumers (`code_ast_summarize` vs. `quor symbols`) that must
+  never be coupled to one shared, larger call.
+- **`Symbol` as a Pydantic model (matching `RepoProfile`'s own convention) vs. a plain frozen
+  dataclass:** dataclass was chosen, matching `walk.py`'s `WalkResult` rather than `model.py`'s
+  `RepoProfile`. Every `Symbol`/`FileSymbols`/`RepoSymbolIndex` field is computed internally from a
+  parse tree or a file walk, never user input — no external validation boundary exists for this
+  data the way `FilterConfig`'s TOML-sourced fields have one. `orjson.dumps()` serializes dataclass
+  instances natively (via `dataclasses.asdict()`), so `--json` needed no extra conversion layer
+  either way.
+- **Per-language visibility (`is_public`) semantics — one uniform rule vs. each language's own
+  mechanism:** each language's own real visibility mechanism was chosen, not a single cross-language
+  heuristic (e.g. "no leading underscore"), because a uniform rule would be wrong for at least half
+  the languages: Go's exported-identifier capitalization, Rust's `pub` keyword, Java/C#'s explicit
+  `public` modifier (package-private/internal by default), and TypeScript's `accessibility_modifier`
+  (public by default) are all genuinely different conventions, not stylistic variance on one
+  concept. Getting this wrong per-language would be exactly the kind of undocumented,
+  non-deterministically-verifiable heuristic the task's "no heuristics that cannot be
+  deterministically verified" constraint rules out — every visibility bit here is grounded in a
+  real, present-or-absent grammar token, empirically verified against the installed tree-sitter
+  grammar during implementation (methodology matches `javascript.py`/`go.py`/etc.'s own "empirically
+  verified" precedent), never inferred.
+- **Entry-point detection — a bounded name match (`main`/`Main`) vs. a broader heuristic (e.g.
+  scanning for `if __name__ == "__main__":`, `public static void main`, framework-specific
+  decorators):** the bounded name match was chosen. Every mainstream entry-point convention across
+  the eight supported languages names the entry function `main` (Python/JavaScript/TypeScript/Go/
+  Java/Rust) or `Main` (C#) — a plain, deterministic name comparison, not a per-language pattern
+  library, and the same "small, verifiable rule over broad inference" discipline QB-061's own entry-
+  point detection already applies (manifest fields plus a bounded root-level scan, never an
+  unbounded content scan).
+- **A hard per-file size cap vs. unbounded parsing:** a fixed 2 MB cap was chosen (skipped files are
+  counted and named in a summary note, not silently dropped) — QB-061's own design doc (§7 risk 4)
+  named large-repo, per-file AST parsing as this future phase's own explicit, unresolved scaling
+  risk; a fixed cap is the simplest deterministic answer available (unlike a time-based budget,
+  which would make output depend on machine speed, violating the determinism guarantee) and a
+  generated/minified/vendored file this size is far more likely to be pathological parse input than
+  source worth indexing.
+- **Per-file fail-open (catching `Exception` at the orchestrator's file-processing boundary) vs.
+  letting a parse failure propagate and abort the whole scan:** per-file fail-open was chosen, and is
+  a deliberate, narrow exception to the project's normal "every `except` clause is specific" rule
+  (Coding Conventions, above) — justified the same way the hook's own top-level `except Exception`
+  guard is: `quor symbols` walks arbitrarily many, only partially-trusted source files in one
+  invocation, with no `Pipeline.execute()`-style per-stage fail-open sitting above this loop the way
+  a single-file `code_ast_summarize` call has (ADR-018). One malformed file must not deny a symbol
+  index for the other 4,999 files in the same repo. The per-language `extract_symbols_*()` functions
+  themselves keep the existing, narrower fail-open contract unchanged (a missing optional dependency
+  is caught and warns; a genuine parse failure propagates) — the broader catch lives only at
+  `symbols.py`'s own repo-wide orchestration layer, one level up, not inside any analyzer.
+- **A third exempted CLI command (`quor symbols`) vs. an option on `quor map` (e.g. `quor map
+  --symbols`):** a third exempted command was chosen, following the exact process ADR-037 already
+  established for `quor map` itself (CLAUDE.md's "V1 has exactly 6 commands... don't add more
+  without explicit approval" gate, with `schema` and `map` as the only precedents) — explicit user
+  sign-off was obtained before any CLI code was written, not assumed granted by this ADR or the
+  originating task instructions alone, mirroring ADR-037's own "not assumed granted by this
+  document" discipline. Folding it into `quor map` as a flag was rejected for the same performance-
+  surface reason the "separate command/index" option above was chosen: a flag would make `quor map`
+  itself carry symbol-scan cost by proximity even when unused by default, whereas a separate command
+  keeps `quor map`'s existing performance characteristics completely unchanged (verified: the
+  compression benchmark suite and every existing `repo_profile`/`quor map` test pass unmodified).
+
+**Decision:**
+`quor/pipeline/repo_profile/symbols.py` (`build_symbol_index(root) -> RepoSymbolIndex`, the single
+public entry point, mirroring `profiler.build_profile()`'s own shape) walks the repo once via the
+existing `walk.py`, and for each file whose extension maps to a registered `ast_summarize` language
+(a small, purpose-built extension table scoped to exactly the eight symbol-capable languages — see
+that module's own docstring for why this isn't `languages.py`'s or `claude_read.py`'s existing
+extension tables, both scoped to different questions), calls
+`ast_summarize.registry.get_symbol_extractor()` and that language's `extract_symbols_*()` function.
+`quor/pipeline/repo_profile/symbols_model.py` defines `FileSymbols`/`RepoSymbolIndex` (frozen
+dataclasses, reusing `ast_summarize.symbol_model.Symbol` directly rather than redefining it) and
+`symbols_render.py` renders fixed-template Markdown by default, JSON via `--json` (mirroring
+`render.py`'s identical `quor map` convention). `quor symbols` is registered as a third exempted
+utility command in `quor/cli/main.py`/`__main__.py`'s `_CLI_COMMANDS` routing set (the exact real
+bug ADR-037 caught for `quor map` — a command name missing from `_CLI_COMMANDS` silently falls
+through to the shell dispatcher — is guarded against here by a dedicated regression test,
+`test_reachable_without_dispatcher_fallthrough`, rather than only informally re-checked by hand).
+Invocations are tracked under a new synthetic label, `REPO_SYMBOLS_FILTER_LABEL` (`quor/tracking/
+db.py`, defined alongside `REPO_PROFILE_FILTER_LABEL` for the identical reason — no "before" blob,
+`original_tokens`/`final_tokens` recorded equal by design) and excluded from
+`flag_low_performers()`'s low-performer check the same way `REPO_PROFILE_FILTER_LABEL` already is.
+
+**Consequences:**
+- No changes to `ContentMask`, `Decision`, `StageHandler` Protocol, `Pipeline.execute`, any existing
+  filter/stage, or any existing `analyze_*()` compression analyzer's behavior — every
+  `extract_symbols_*()` function is purely additive to its language module. The compression
+  benchmark suite (`python -m tests.benchmarks.run_benchmarks`) shows zero change (127 cases, 35.9%
+  overall, identical to pre-QB-066), confirming no regression to the existing pipeline.
+- `quor symbols`'s output is heuristic in the same bounded sense `quor map`'s is: a name match for
+  entry points, a per-language grammar-token check for visibility — never heuristic in the "cannot be
+  deterministically verified" sense the task ruled out, and re-running the scan against unchanged
+  repo state produces byte-identical output (verified by a dedicated determinism test in the
+  fixture-repo benchmark corpus, mirroring `test_repo_profile_benchmark.py`'s identical check for
+  `quor map`).
+- A file that declares zero symbols is omitted from `RepoSymbolIndex.files` entirely (not listed with
+  an empty `symbols` list) — the same token-lean, "omit rather than print emptiness" convention
+  `render.py` already applies to `RepoProfile`'s own empty sections.
+- Search/`--focus` filtering was explicitly out of scope for this task ("do not implement search or
+  `--focus` in this QB unless the architecture naturally supports it") and remains unbuilt — a real,
+  possible follow-up, not silently done partially.
+- `quor symbols`'s real-session token savings are not yet measured — per Anti-Goal #24/#25, no such
+  figure is published anywhere in this ADR or the shipped documentation; it must be measured against
+  real usage before any claim is made, exactly the discipline ADR-037 already applied to `quor map`.
+- See `backlog.md`'s `QB-066` entry for the implementation record (test counts, benchmark corpus,
+  files touched).
