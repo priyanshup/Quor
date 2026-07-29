@@ -7,6 +7,7 @@ import importlib
 import io
 import re
 import sys
+import time
 from pathlib import Path
 
 import platformdirs
@@ -78,6 +79,8 @@ def _run_doctor(
     adaptive-disable state cleared." even when `--reset-tee` was never
     passed.
     """
+    t0 = time.monotonic()
+
     if reset_tee:
         from quor.pipeline.tee import reset_tee_state
 
@@ -86,6 +89,13 @@ def _run_doctor(
             console.print("[green]Tee adaptive-disable state cleared.[/green]")
         except Exception as exc:  # noqa: BLE001
             console.print(f"[red]Could not reset tee state: {exc}[/red]")
+
+    # QB-074: a single, always-shown header, whether or not --fix was
+    # passed — the pre-existing "Checking Quor..."/"Re-running checks..."
+    # lines below are --fix's own sub-phase headers within this same run,
+    # not a replacement for a top-level one (a plain, no-flag `quor doctor`
+    # previously printed no header at all before its check list).
+    console.print("[bold]Quor Doctor[/bold]\n")
 
     if fix:
         console.print("[bold]Checking Quor...[/bold]\n")
@@ -126,6 +136,17 @@ def _run_doctor(
             remaining = sum(1 for _, ok, _ in checks if not ok)
             noun = "action" if remaining == 1 else "actions"
             console.print(f"\nDoctor completed with {remaining} manual {noun} remaining.")
+
+    # QB-074: an always-shown, elapsed-time-bearing summary line — every
+    # existing check above is unchanged (same functions, same order, same
+    # (name, ok, detail) tuples), this only adds a closing line after them.
+    elapsed = time.monotonic() - t0
+    total = len(checks)
+    if all_ok:
+        console.print(f"\n[green]✓ {total} of {total} checks passed[/green] in {elapsed:.1f}s")
+    else:
+        failed = sum(1 for _, ok, _ in checks if not ok)
+        console.print(f"\n[red]✗ {failed} of {total} checks failed[/red] in {elapsed:.1f}s — see above for details")
 
     if not all_ok:
         raise typer.Exit(code=ExitCode.GENERAL_ERROR)

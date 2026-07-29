@@ -1,0 +1,199 @@
+"""Repository Intelligence performance benchmark (QB-072 perf follow-up).
+
+Measures CPU time, peak memory, elapsed wall-clock time, and cache hit
+ratio across six scenarios: cold build, warm build (unchanged), one
+modified file, ten modified files, one renamed file, and one deleted file
+— exactly the scenario list the QB-072 performance follow-up asked for.
+
+Unlike `tests/benchmarks/run_benchmarks.py` (compression ratio vs. a
+committed `baseline.json`), this benchmark has no historical baseline to
+regress against — repository-intelligence build time has no equivalent
+"correct" percentage the way a filter's compression ratio does. It exists
+to make the incremental-rebuild optimization's actual cost/benefit
+observable (run `python -m tests.benchmarks.repo_intel_benchmark` for the
+full human-readable report) and to back the deterministic, count-based
+regression assertions in `tests/unit/test_repo_intel_benchmark.py` — this
+module only measures and reports, it never asserts pass/fail itself,
+mirroring `report.py`'s "presentation only" split from
+`benchmark_runner.py`'s computation.
+"""
+
+from __future__ import annotations
+
+import shutil
+import subprocess
+import tempfile
+import time
+import tracemalloc
+from dataclasses import dataclass
+from pathlib import Path
+
+from quor.pipeline.repo_profile.intel import ensure_repo_intelligence
+
+DEFAULT_FILE_COUNT = 150
+
+
+@dataclass(frozen=True)
+class ScenarioResult:
+    """One scenario's measured cost — every field here is either a direct
+    measurement (elapsed/CPU/peak memory) or read straight off the
+    `RepoIntelligence` the scenario produced (action/cache_hit_ratio/
+    files_scanned/files_reextracted), never derived/estimated."""
+
+    name: str
+    action: str
+    elapsed_seconds: float
+    cpu_seconds: float
+    peak_memory_bytes: int
+    cache_hit_ratio: float
+    files_scanned: int
+    files_reextracted: int
+
+
+def _init_git_repo(root: Path) -> None:
+    subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+    subprocess.run(["git", "config", "user.email", "bench@example.com"], cwd=root, check=True)
+    subprocess.run(["git", "config", "user.name", "Bench"], cwd=root, check=True)
+
+
+def _git_add_all(root: Path) -> None:
+    subprocess.run(["git", "add", "-A"], cwd=root, check=True)
+
+
+def build_synthetic_repo(root: Path, file_count: int = DEFAULT_FILE_COUNT) -> None:
+    """A deterministic, git-committed synthetic repo of `file_count` Python
+    modules under `src/pkg/`, each (after the first) importing its
+    predecessor and calling one of its functions — enough real symbols/
+    relationships to exercise both `quor symbols`' and `quor graph`'s
+    parsing and cross-file resolution paths, not just a pile of empty
+    files.
+
+    Deliberately nested under a subdirectory, not flat at the repo root:
+    an earlier version of this benchmark put all `file_count` modules
+    directly at the repo root, which — for large `file_count` — is not a
+    realistic repo shape and pathologically maximized the cost of
+    `entry_points.py`'s deliberately root-scoped `__main__`-guard content
+    scan (bounded to root-level `.py` files specifically so it never
+    becomes a whole-tree scan — see that module's own docstring), making
+    `quor map`'s full-rebuild-on-any-change look far more expensive than
+    it is for any real, normally-structured repository. Nesting under
+    `src/pkg/` keeps root-level file count at effectively zero, matching
+    what the vast majority of real repos actually look like.
+    """
+    package_dir = root / "src" / "pkg"
+    package_dir.mkdir(parents=True, exist_ok=True)
+    for i in range(file_count):
+        if i == 0:
+            source = f"def func_{i}():\n    return {i}\n"
+        else:
+            source = (
+                f"from mod_{i - 1} import func_{i - 1}\n\n\n"
+                f"def func_{i}():\n    return {i}\n\n\n"
+                f"def caller_{i}():\n    return func_{i - 1}()\n"
+            )
+        (package_dir / f"mod_{i}.py").write_text(source, encoding="utf-8")
+    _init_git_repo(root)
+    _git_add_all(root)
+    subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=root, check=True)
+
+
+def measure(root: Path, name: str, *, rebuild: bool = False) -> ScenarioResult:
+    """Run `ensure_repo_intelligence()` once against `root`, measuring its
+    cost. `tracemalloc` (stdlib, no extra dependency) gives peak Python
+    heap allocation, the aspect of "memory" this pure-Python pipeline
+    actually controls; `time.process_time()` gives CPU time (user+system,
+    excludes time spent blocked e.g. on git subprocess I/O wait);
+    `time.monotonic()` gives wall-clock elapsed time."""
+    tracemalloc.start()
+    try:
+        cpu_start = time.process_time()
+        wall_start = time.monotonic()
+        result = ensure_repo_intelligence(root, rebuild=rebuild)
+        elapsed = time.monotonic() - wall_start
+        cpu = time.process_time() - cpu_start
+        _current, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+
+    return ScenarioResult(
+        name=name,
+        action=result.action,
+        elapsed_seconds=elapsed,
+        cpu_seconds=cpu,
+        peak_memory_bytes=peak,
+        cache_hit_ratio=result.cache_hit_ratio,
+        files_scanned=result.files_scanned,
+        files_reextracted=result.files_reextracted,
+    )
+
+
+def run_all_scenarios(file_count: int = DEFAULT_FILE_COUNT) -> list[ScenarioResult]:
+    """Run all six scenarios in sequence against one synthetic repo (each
+    scenario builds on the previous one's on-disk state, the same way a
+    real developer's session-over-session usage would) and return their
+    measurements in order."""
+    tmp_root = Path(tempfile.mkdtemp(prefix="quor_repo_intel_bench_"))
+    try:
+        repo = tmp_root / "repo"
+        build_synthetic_repo(repo, file_count)
+        package_dir = repo / "src" / "pkg"
+
+        results = [
+            measure(repo, "cold build"),
+            measure(repo, "warm build (unchanged)"),
+        ]
+
+        (package_dir / "mod_1.py").write_text("def func_1():\n    return 999\n", encoding="utf-8")
+        results.append(measure(repo, "one file modified"))
+
+        for i in range(2, 12):
+            (package_dir / f"mod_{i}.py").write_text(f"def func_{i}():\n    return {i * 100}\n", encoding="utf-8")
+        results.append(measure(repo, "ten files modified"))
+
+        (package_dir / f"mod_{file_count - 1}.py").rename(package_dir / "mod_renamed.py")
+        _git_add_all(repo)
+        results.append(measure(repo, "one file renamed"))
+
+        (package_dir / f"mod_{file_count - 2}.py").unlink()
+        _git_add_all(repo)
+        results.append(measure(repo, "one file deleted"))
+
+        return results
+    finally:
+        shutil.rmtree(tmp_root, ignore_errors=True)
+
+
+def render_report(results: list[ScenarioResult]) -> str:
+    lines = [
+        "# Repository Intelligence Performance Benchmark (QB-072)",
+        "",
+        "No committed baseline — see this module's own docstring for why. "
+        "Regression protection instead comes from the deterministic, "
+        "count-based assertions in `tests/unit/test_repo_intel_benchmark.py`.",
+        "",
+        "| Scenario | Action | Elapsed (s) | CPU (s) | Peak Memory (MB) | "
+        "Cache Hit Ratio | Files Scanned | Files Re-extracted |",
+        "|---|---|---|---|---|---|---|---|",
+    ]
+    for r in results:
+        lines.append(
+            f"| {r.name} | {r.action} | {r.elapsed_seconds:.4f} | {r.cpu_seconds:.4f} | "
+            f"{r.peak_memory_bytes / 1_000_000:.2f} | {r.cache_hit_ratio:.2f} | "
+            f"{r.files_scanned} | {r.files_reextracted} |"
+        )
+    lines.append("")
+    return "\n".join(lines)
+
+
+def main() -> None:
+    results = run_all_scenarios()
+    report = render_report(results)
+    print(report)
+
+    output_path = Path(__file__).parent / "results" / "repo-intel-benchmark-report.md"
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(report, encoding="utf-8")
+
+
+if __name__ == "__main__":
+    main()

@@ -17,7 +17,7 @@ from quor.pipeline.repo_profile.entry_points import detect_entry_points
 from quor.pipeline.repo_profile.languages import compute_language_stats
 from quor.pipeline.repo_profile.model import RepoProfile
 from quor.pipeline.repo_profile.statistics import compute_statistics
-from quor.pipeline.repo_profile.walk import walk_repository
+from quor.pipeline.repo_profile.walk import WalkResult, walk_repository
 
 # Well-known lockfile basenames — surfaced verbatim in RepoProfile.lockfiles
 # (paths), independent of (but consistent with) package_managers.toml's
@@ -43,13 +43,21 @@ _LOCKFILE_BASENAMES = frozenset(
 )
 
 
-def build_profile(root: Path) -> RepoProfile:
+def build_profile(root: Path, *, walk_result: WalkResult | None = None) -> RepoProfile:
     """Scan `root` and return its deterministic RepoProfile.
 
     Calling this twice against unchanged repo state returns an identical
     RepoProfile (field-for-field) — the feature's core promise.
+
+    `walk_result` (QB-072 perf follow-up): pass an already-computed
+    `WalkResult` to skip a redundant `walk_repository()` call (a `git
+    ls-files` subprocess) when the caller already walked the same repo for
+    another purpose in the same invocation — `intel.py`'s orchestrator does
+    exactly this so a full rebuild walks the repo once, not once per
+    artifact. Every existing caller that omits it gets the exact same
+    behavior as before (a fresh walk), so this is purely additive.
     """
-    walk_result = walk_repository(root)
+    walk_result = walk_result if walk_result is not None else walk_repository(root)
     files = walk_result.files
 
     languages = compute_language_stats(files)
