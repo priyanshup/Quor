@@ -44,9 +44,21 @@ SymbolKind = Literal[
 ]
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class Symbol:
-    """One named, locatable construct declared in a single source file."""
+    """One named, locatable construct declared in a single source file.
+
+    `slots=True` (QB-071): a repo-wide scan can produce one `Symbol` per
+    declared class/function/method in every walked file — `quor graph`'s
+    `build_dependency_graph()` in particular constructs and discards a full
+    `list[Symbol]` per file just to aggregate name counts (see
+    `repo_profile/graph.py`). Slots removes each instance's `__dict__`,
+    cutting per-instance memory with no behavior change: frozen dataclasses
+    already forbid attribute assignment after construction, so nothing
+    relied on `__dict__` existing. `dataclasses.asdict()` (used by
+    `symbols_render.py`/`graph_render.py`) and equality/hashing are
+    unaffected — both use `dataclasses.fields()` introspection, not
+    `__dict__`."""
 
     name: str
     kind: SymbolKind
