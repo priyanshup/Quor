@@ -113,13 +113,19 @@ engine** — one component of which happens to be command-output compression tod
   (QB-001); CI covers Python 3.11–3.14 on Windows and Linux (QB-025); Dependabot and CodeQL run on
   a schedule (QB-026).
 
-**What's designed but not built:** a multi-agent adapter architecture (QB-035A) that would let
-Quor's existing, already-agent-agnostic compression core plug into a second AI coding tool (Cursor
-is the best-evidenced candidate) without duplicating logic. No second adapter has been implemented.
+**Multi-agent adapter architecture (QB-035A design, QB-068/QB-069 implementation) has shipped:**
+Quor's already-agent-agnostic compression core now plugs into more than Claude Code via an
+`AgentAdapter` Protocol + registry (`docs/final/ADAPTERS.md`, ADR-036/ADR-040/ADR-041). Gemini CLI
+has command-rewriting compression (`COMMAND_INTERCEPT`, matching Claude's own Bash-hook mechanism).
+Codex CLI, Cursor, VS Code (Copilot agent mode), Windsurf (Cascade), Aider, and Continue.dev are all
+detection/readiness-only, sharing one `DetectionOnlyAdapter` base — each independently researched
+and found to lack a confirmed way to rewrite a command or replace tool output today. Standalone
+Copilot CLI remains unimplemented.
 
-**What's explicitly out of scope today:** any AI coding assistant other than Claude Code; any
-programming language for AST-aware summarization beyond Python/JavaScript/TypeScript/TSX; any
-non-Windows-first platform assumption.
+**What's explicitly out of scope today:** standalone Copilot CLI, or any AI coding assistant beyond
+the eight adapters above (Claude Code, Gemini CLI full; Codex CLI/Cursor/VS Code/Windsurf/Aider/
+Continue.dev detection-only); any programming language for AST-aware summarization beyond
+Python/JavaScript/TypeScript/TSX; any non-Windows-first platform assumption.
 
 **The honest gap that isn't a backlog item:** QB-028's release-readiness audit found Internal Alpha
 fully passes, but Public Alpha does not — not because of missing code, but because several gates
@@ -1385,6 +1391,105 @@ confirm the design phase introduced no regression, not because any test-affectin
 benchmark-suite trigger in `docs/final/CLAUDE.md` does not apply to this phase.
 
 **Status:** Design complete and merged to `main` — the design document (`docs/design/QB-035A-multi-agent-adapter-design.md`) shipped in Quor **v0.4.0** (2026-07-11). *(Correction: this entry originally read "not committed"; verified against `CHANGELOG.md` and `git log` while restructuring this document.)* No architectural conflict was found that blocked this design; the one real duplication found (adapter BOM-stripping/stdio boilerplate) was surfaced and explained, not fixed, per the task's own instruction. **No implementation code was added** — `AgentEvent`/`AgentAdapter`/`AdapterRegistry` (QB-035B onward) remain unbuilt; see the open QB-035 entry.
+
+</details>
+
+<details>
+<summary>QB-068 technical details — Multi-Agent Adapter Architecture Implementation</summary>
+
+**Update (QB-068):** implements QB-035A's design (QB-035B through E, one phase). Directed by the
+product owner ahead of `ANTI_GOALS.md` #12's original V1/V2 split — that anti-goal is updated in
+place to record this, not silently superseded. See **ADR-040** (`docs/final/DECISIONS.md`) for the
+full decision record and `docs/final/ADAPTERS.md` for the canonical architecture reference this
+implementation is now documented under.
+
+**What shipped:** `AgentEvent`/`AgentAdapter`/`AdapterRegistry` (`quor/adapters/base.py`,
+`registry.py`); `ClaudeAdapter` wrapping the pre-existing `claude.py`/`claude_read.py` behind a new
+`handle_bytes()` bytes-in/bytes-out core, proven byte-for-byte identical to the unchanged
+`run_hook()` path (`tests/unit/test_claude_adapter_equivalence.py`); `__main__.py` hook routing
+migrated to the registry with permanent `claude`/`claude-read` argv aliases (every already-installed
+hook script keeps working, zero user action); `quor doctor` migrated to a per-adapter
+`doctor_checks()` loop; `quor init` gained a generic `--agent <id>` option (`--claude` is now sugar
+for `--agent claude`); two new built-in adapters, each scoped to what its target tool's own live
+documentation actually confirms rather than assumed from Claude Code's shape — `GeminiAdapter`
+(`COMMAND_INTERCEPT` only: Gemini CLI's `BeforeTool` hook confirmed capable of rewriting a
+`run_shell_command` call's arguments) and `CodexAdapter` (detection-only: Codex CLI's `PreToolUse`
+hook has no confirmed way to rewrite a command, and hook support is experimental with unconfirmed
+Windows compatibility — shipping a hook Quor cannot verify does anything was rejected as
+inconsistent with "deterministic only, no heuristics"). A shared Protocol-conformance test suite
+(`test_agent_adapter_protocol.py`) runs common contract checks once across all three built-in
+adapters rather than duplicating them per adapter, plus adapter-specific test files and an
+installable `quor-test-adapter` fixture package (`tests/fixtures/test_adapter`) proving third-party
+`quor.hook_adapter` entry-point discovery against a real installed package.
+
+**Validation:** `ruff check quor/ tests/` clean; `mypy quor/` clean; full `pytest` unit suite (56
+files) green; `pytest -m integration` (7/7) green; `tests/benchmarks/test_benchmarks.py` (396+
+cases) green — compression behavior byte-identical; `quor verify` 204/204; `quor doctor` reports
+every adapter-related check healthy on this repo's own dev machine (one unrelated, pre-existing
+`quor doctor` finding — QB-052/QB-065's negative-compression flag — is this machine's own
+accumulated real-usage tracking data, not something this task touched). Two pre-existing tests
+needed a one-line patch-target update (`test_fail_open.py::TestHookTimeout` — the function it
+patched moved off the hot path, same assertions/intent).
+
+**Explicitly not done:** Cursor and Copilot CLI adapters (no research attempted); Gemini's
+`CONTENT_INTERCEPT` (blocked on upstream confirmation of a replace-capable `AfterTool` output
+field); Codex's compression hook entirely (blocked on upstream confirmation of a modify-capable
+event and Windows support); `quor explain`'s pre-existing `CONTENT_INTERCEPT` gap.
+
+</details>
+
+<details>
+<summary>QB-069 technical details — Universal AI Tool Support (Phase 2)</summary>
+
+**Update (QB-069):** extends QB-068's adapter framework to five more tools — Cursor, VS Code,
+Windsurf, Aider, Continue.dev — reusing the shared architecture per the task's own explicit rules
+(no duplicated logic, no copy-paste adapters). See **ADR-041** (`docs/final/DECISIONS.md`) for the
+full decision record.
+
+**Headline research finding:** live research against each tool's own current documentation (not
+assumed from Claude Code's or a sibling tool's shape) found the same answer five times in a row that
+`CodexAdapter` (QB-068) already established for Codex CLI: none of Cursor, VS Code (Copilot agent
+mode), Windsurf (Cascade), Aider, or Continue.dev has a confirmed way to rewrite a command before it
+runs, or replace a tool's output before the model sees it. Cursor's `beforeShellExecution`/
+`beforeMCPExecution` and VS Code's `PreToolUse`/`PostToolUse` are both documented allow/deny/
+ask-or-prompt only; Windsurf's Cascade hooks are the richest event set found (pre+post for both
+read and run-command) but pre-hooks are block-only and post-hooks are explicitly documented as
+observational-only (confirmed via a second, targeted fetch specifically on that question); Aider and
+Continue.dev have no tool-call hook system at all.
+
+**What shipped:** `quor/adapters/_detection_only.py` — a `DetectionOnlyAdapter` base class six
+adapters now share (`CodexAdapter`, refactored onto it as a pure move with zero behavior change,
+plus five new: `CursorAdapter`, `VSCodeAdapter`, `WindsurfAdapter`, `AiderAdapter`,
+`ContinueAdapter`). Each concrete adapter supplies only `agent_id`/`display_name`/
+`limitation_reason` (its own specific finding, not a generic placeholder) and a `_detect()` method
+(a deterministic filesystem/`PATH` check); every `AgentAdapter` method is implemented once, in the
+shared base. Registered in `AdapterRegistry._builtin_adapters()` — `__main__.py`'s routing,
+`doctor.py`'s `_check_adapters()` loop, and `init.py`'s `_init_generic_agent()` all absorbed five
+more adapters with zero code changes, the concrete proof the QB-068 framework actually generalizes.
+`VSCodeAdapter` is explicitly scoped to VS Code's bundled GitHub Copilot agent mode (vanilla VS Code
+has no AI agent of its own), recorded in its own docstring and enforced by a regression test.
+
+**Testing:** the shared conformance suite (`test_agent_adapter_protocol.py`) gained a second
+parametrized class, `TestDetectionOnlyAdapterSharedContract`, covering all six
+`DetectionOnlyAdapter` subclasses' shared behavior once; a new `test_detection_only_adapter.py`
+covers the base class itself in isolation; five new small test files
+(`test_cursor_adapter.py`/`test_vscode_adapter.py`/`test_windsurf_adapter.py`/
+`test_aider_adapter.py`/`test_continue_adapter.py`) cover only each adapter's own `_detect()` logic
+— the "new adapter conformance tests" this task asked for, without six near-duplicate full test
+suites.
+
+**Validation:** `ruff check quor/ tests/` clean; `mypy quor/` clean (122 source files); full `pytest`
+unit suite (62 files) green; `pytest -m integration` (7/7) green; `tests/benchmarks/test_benchmarks.py`
+(396+ cases) green — compression behavior byte-identical; `quor verify` 204/204; `quor doctor`
+reports all twelve new/refactored detection-only check lines healthy (same one pre-existing,
+unrelated QB-052/QB-065 negative-compression finding as QB-068, untouched by this work).
+
+**Explicitly not done:** any of the six detection-only adapters gaining real `COMMAND_INTERCEPT`/
+`CONTENT_INTERCEPT` support (all blocked on upstream confirmation, not effort — re-verify against
+each tool's own current docs before ever extending `supported_events`, since hook systems here are
+actively evolving); a standalone Copilot CLI adapter (distinct from VS Code's bundled Copilot agent
+mode — real overlap is suggested by the research but not confirmed or acted on); `quor explain`'s
+pre-existing `CONTENT_INTERCEPT` gap.
 
 </details>
 

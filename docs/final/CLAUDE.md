@@ -22,15 +22,25 @@ Read PROJECT_BIBLE.md for the full product context. Read DECISIONS.md for the re
 ## Architecture at a Glance
 
 ```
-Claude Code PreToolUse hook
-    → JSON rewrite: "git status" → "<python> -m quor git status"
+<agent> hook (Claude Code PreToolUse, Gemini CLI BeforeTool, ...)
+    → quor hook <agent_id> <event>  (AdapterRegistry resolves agent_id -> AgentAdapter)
+    → AgentAdapter.handle_event(): parse this agent's payload, call the
+      agent-agnostic core below, serialize this agent's response shape
+      e.g. "git status" → "<python> -m quor git status"
       (interpreter invocation via get_quor_invocation(), not the quor/qr
       launcher — see DECISIONS.md ADR-029)
     → Quor subprocess runs real command, captures stdout
     → ContentMask pipeline (stages annotate lines, final render applies)
-    → Compressed output returned to AI context
+    → Compressed output returned to AI context, in that agent's own shape
     → SQLite + JSONL tracking (background thread)
 ```
+
+The core pipeline (`quor/rewrite/`, `quor/filters/`, `quor/pipeline/`,
+`quor/tracking/`) is 100% agent-agnostic — it takes/returns plain strings
+and has never had, and must never gain, a branch on which agent called it.
+Everything agent-specific lives in `quor/adapters/` behind the
+`AgentAdapter` Protocol (ADR-036) — see `docs/final/ADAPTERS.md` for the
+full architecture, lifecycle, and how to add a new adapter.
 
 **Core primitive:** `ContentMask` — array of `LineMask(line, Decision, reason, stage)`.  
 Decisions: `KEEP` (default), `COMPRESS` (remove in render), `PROTECT` (cannot be overridden).  
@@ -47,7 +57,7 @@ Stages annotate. Final render applies. Stages never mutate line content.
 | `quor/__main__.py` | Entry point. Version check (3.11+), then routes to hook or CLI. No logic. |
 | `quor/cli/main.py` | Typer app. Registers all 6 commands. No implementation. |
 | `quor/cli/commands/` | One file per command: init, validate, explain, gain, verify, doctor. |
-| `quor/adapters/` | HookAdapter Protocol + Claude adapter. Platform concerns only. |
+| `quor/adapters/` | `AgentAdapter` Protocol + `AdapterRegistry` (ADR-036) + one adapter per AI coding tool (`claude_adapter.py`, `gemini_adapter.py` — real hook capability; `codex_adapter.py`, `cursor_adapter.py`, `vscode_adapter.py`, `windsurf_adapter.py`, `aider_adapter.py`, `continue_adapter.py` — share the `_detection_only.py` base, no confirmed rewrite/replace capability). Platform/agent-payload concerns only — see `docs/final/ADAPTERS.md`. |
 | `quor/pipeline/mask.py` | ContentMask, LineMask, Decision. Core primitive. |
 | `quor/pipeline/engine.py` | Pipeline executor. Orchestrates stages. Enforces PROTECT immutability. |
 | `quor/pipeline/content_type.py` | Heuristic content type detection. |

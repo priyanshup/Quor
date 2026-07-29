@@ -1,0 +1,15 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "quor-test-adapter"
+version = "0.1.0"
+description = "Minimal no-op AgentAdapter fixture for Quor adapter registry tests"
+requires-python = ">=3.11"
+
+[tool.hatch.build.targets.wheel]
+packages = ["quor_test_adapter"]
+
+[project.entry-points."quor.hook_adapter"]
+noop_test_adapter = "quor_test_adapter.adapter:NoOpTestAdapter"

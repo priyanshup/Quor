@@ -293,7 +293,12 @@ class TestHookTimeout:
             patch.object(sys, "argv", ["quor", "hook", "claude"]),
             patch.object(sys, "stdin", fake_in),
             patch.object(sys, "stdout", fake_out),
-            patch("quor.adapters.claude.run_hook", side_effect=side_effect),
+            # QB-035C: __main__._run_hook() now resolves "claude" through
+            # AdapterRegistry -> ClaudeAdapter.handle_event(), which calls
+            # quor.adapters.claude.handle_bytes() (the bytes-in/bytes-out
+            # core) rather than the old sys.stdin/stdout-based run_hook() —
+            # patch the function actually on the hot path.
+            patch("quor.adapters.claude.handle_bytes", side_effect=side_effect),
         ):
             _run_hook()
 

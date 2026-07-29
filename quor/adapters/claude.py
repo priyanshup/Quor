@@ -49,7 +49,30 @@ def run_hook() -> None:
     Raises on parse/validation errors — caller handles fail-open.
     """
     raw = sys.stdin.read()
+    sys.stdout.buffer.write(_handle_text(raw))
+    sys.stdout.buffer.flush()
 
+
+def handle_bytes(raw_stdin: bytes) -> bytes:
+    """Bytes-in/bytes-out equivalent of `run_hook()` — the entry point
+    `ClaudeAdapter.handle_event()` (QB-035B) calls. Touches no stream; pure
+    parse -> transform -> serialize, exactly ADR-036's `AgentAdapter`
+    contract. `run_hook()` above is unchanged and still the code path every
+    existing test/production hook script exercises — this is a new sibling
+    entry point, not a replacement.
+
+    Decodes as UTF-8 strict, matching `sys.stdin.read()`'s behavior when
+    `__main__._run_hook()` wraps the original bytes in
+    `io.TextIOWrapper(..., encoding="utf-8")` (no `errors=` override, so
+    strict decoding — identical to this)."""
+    return _handle_text(raw_stdin.decode("utf-8"))
+
+
+def _handle_text(raw: str) -> bytes:
+    """Shared core of `run_hook()`/`handle_bytes()`: parse a PreToolUse
+    payload, rewrite the command if applicable, and return the serialized
+    `hookSpecificOutput` response bytes. Raises on parse/validation errors —
+    both callers rely on their own outer fail-open guard."""
     # Strip UTF-8 BOM (single or doubled — Cursor sends doubled BOM on Windows)
     raw = raw.lstrip(_UTF8_BOM)
 
@@ -73,5 +96,4 @@ def run_hook() -> None:
         updated_input["command"] = rewritten
         hook_specific["updatedInput"] = updated_input
 
-    sys.stdout.buffer.write(orjson.dumps({"hookSpecificOutput": hook_specific}))
-    sys.stdout.buffer.flush()
+    return orjson.dumps({"hookSpecificOutput": hook_specific})

@@ -255,11 +255,20 @@ Summary of critical non-goals:
 
 ## Architecture Overview
 
+**Multi-agent note (QB-068):** the diagram below traces Claude Code's own
+flow as the original, still-accurate reference example. As of QB-068,
+`[Quor Hook Adapter]` is one of several `AgentAdapter` implementations
+(`quor/adapters/`) resolved through `AdapterRegistry`, not a
+Claude-Code-specific hardcoded path — see `docs/final/ADAPTERS.md` for the
+generalized architecture, lifecycle, and how Codex CLI/Gemini CLI (and any
+future agent) plug into the same `[Quor Dispatcher]`/`[ContentMask
+Pipeline]` below unchanged.
+
 ```
 [Claude Code AI]
     │ stdin JSON: {"tool_input": {"command": "git status"}}
     ▼
-[Quor Hook Adapter — quor/adapters/claude.py]
+[Quor Hook Adapter — quor/adapters/claude.py, via ClaudeAdapter]
     │ Parse command from JSON
     │ Call rewrite_command()
     │ Return {"hookSpecificOutput": {"hookEventName": "PreToolUse",

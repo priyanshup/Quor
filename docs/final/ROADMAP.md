@@ -140,10 +140,27 @@ CLAUDE.md's "Six CLI Commands").
 **What ships (adds to v1.0):**
 
 **Multi-agent support:**
-- Cursor adapter (PreToolUse hook)
-- Copilot CLI adapter
-- Gemini Code Assist adapter (if hook API available)
-- Adapter detection in `quor doctor`
+- ~~Adapter detection in `quor doctor`~~ — shipped early, QB-068: the
+  `AgentAdapter`/`AdapterRegistry` architecture (`docs/final/ADAPTERS.md`,
+  ADR-036) generalizes hook routing, `quor init`, and `quor doctor` across
+  agents.
+- ~~Gemini adapter~~ — shipped early, QB-068, `COMMAND_INTERCEPT` only
+  (command rewriting; no confirmed content-replacement hook — see
+  `docs/final/ADAPTERS.md`).
+- Codex CLI, Cursor, VS Code (Copilot agent mode), Windsurf (Cascade),
+  Aider, Continue.dev — all detection-only as of QB-068/QB-069 (built on
+  the shared `DetectionOnlyAdapter` base, `docs/final/ADAPTERS.md`); none
+  has a working compression hook — each is independently blocked on that
+  specific tool confirming a modify/replace-capable hook event (see
+  ADAPTERS.md's capability matrix for the tool-specific reason). Re-evaluate
+  per tool once its own upstream hook system changes — do not assume
+  progress on one implies progress on another.
+- Copilot CLI adapter (the standalone terminal CLI) — not started as its
+  own adapter. Note: research for `VSCodeAdapter` found VS Code's Copilot
+  agent hooks are documented as parsing/converting Copilot CLI's own hook
+  config format, suggesting real overlap between the two — not independently
+  verified or acted on here; confirm before assuming `VSCodeAdapter`
+  does or doesn't already cover the standalone CLI case.
 
 **Session-level intelligence:**
 - Content the AI has already seen this session is not re-sent
