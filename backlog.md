@@ -5368,6 +5368,139 @@ same running documentation convention QB-061/066/067/073 each followed.
 
 ---
 
+#### QB-077 — Automatic Incremental Repository Intelligence (`quor repo` auto-refresh)
+
+**Effort:** Small · **Value:** Medium · **Risk:** Low · **Category:** New Capability
+
+**Research first (per this repo's Rule 4).** Before writing any code, audited what QB-077's own
+spec asked for — a deterministic fingerprint, cache-hit-is-instant, rebuild-only-affected-files,
+corruption-proof persistence, automatic triggers on repository-aware commands, first-run
+onboarding, and an observability panel — against what QB-072 already shipped. The result: nearly
+all of it already existed. `intel_diff.py` already fingerprints every file with a size+`mtime_ns`
+fast path and a SHA-256 fallback (no full-file parse); `intel.py`'s `ensure_repo_intelligence()`
+already does instant cache-hits, per-file incremental rebuilds for symbols/graph, one-time
+onboarding, and a `--rebuild` escape hatch; `intel_store.py` already persists all four cache files
+via `atomic_io.write_json_atomic` (tempfile + `os.replace`) and treats any corrupted file as a
+cache miss rather than a wrong result; `RepoIntelligence` already carries `action`,
+`files_scanned`, `files_reextracted`, and a computed `cache_hit_ratio` — exactly the metrics this
+item's observability section asked for. Re-implementing any of that would have duplicated already-
+correct, already-tested code. Presented this finding to the user before writing anything, per Rule
+4's "recommendation before implementation" step.
+
+**The genuine gap:** `quor repo` (QB-076) was *deliberately* built read-only/cache-only — a hard
+requirement of that item's own spec was that it must never trigger a walk, re-parse, or rebuild.
+This item reverses that, on purpose: `quor repo` is often the first repository-intelligence command
+a user or AI assistant runs, so "users should not think about map/symbols/graph" (this item's own
+framing) means `quor repo` itself needs to be able to build the cache, not just read one that may
+not exist yet.
+
+**Explicitly scoped out, confirmed with the user before implementing:** the item's own text also
+listed `quor explain` and `quor gain` as commands that should auto-trigger a refresh. Reading both
+commands' source confirmed neither reads or displays any repository-intelligence data today —
+QB-075's prior audit already closed off wiring repo intelligence into the compression pipeline for
+exactly this reason (no consumer, no benefit). Wiring `ensure_repo_intelligence()` into `explain`/
+`gain` now would add a real repo walk-plus-diff (and possibly a multi-second cold build) to every
+invocation of either command for zero observable payoff — pure latency with nothing to show for it.
+Left both untouched; this is a documented decision, not an oversight, mirroring how QB-075 recorded
+its own scoping call. Revisit if either command ever actually starts consuming repository
+intelligence in its own output.
+
+<details>
+<summary>Technical details</summary>
+
+**What shipped:** `quor/cli/commands/repo.py`'s `repo_command` now calls
+`intel.ensure_repo_intelligence(root, rebuild=rebuild, echo=progress_echo)` before
+`dashboard.build_dashboard(root)` — the exact same pattern `map_command`/`symbols_command`/
+`graph_command` already use — and gained a `--rebuild` flag matching those three commands'
+existing one. `build_dashboard()` itself (`dashboard.py`) is **unchanged**: it stays the pure,
+tested, cache-only aggregator QB-076 shipped; it now simply always reads a cache
+`ensure_repo_intelligence()` just guaranteed is fresh, instead of a possibly-stale or possibly-
+absent one. All 15 pre-existing `test_repo_dashboard.py` cases pass unmodified.
+
+**New "Repository Intelligence" status panel.** `dashboard_model.py` gained a frozen
+`RepoIntelligenceStatus` dataclass (`status`, `cache_hit_ratio`, `files_scanned`, `files_reused`,
+`changed_files`, `rebuild_mode`) and one new optional field on `RepoDashboard`:
+`intelligence: RepoIntelligenceStatus | None = None` — defaulting to `None` keeps every existing
+`build_dashboard()` caller/test byte-for-byte unaffected, since that function never sets it.
+`repo_command` populates it directly from the `RepoIntelligence` its own `ensure_repo_intelligence()`
+call just returned (`dataclasses.replace(dashboard, intelligence=...)`) — no second disk read.
+`status`/`rebuild_mode` map `BuildAction` to "Up to date"/"Instant" (cache hit), "Refreshed"/
+"Incremental" (partial rebuild), or "Rebuilt"/"Full" (onboarding or any full-rebuild-shaped action).
+`changed_files` is the real added+modified+deleted+renamed count from the `RepoDiff` (not just
+`reextraction_paths`, since a pure rename still counts as "changed" even though it wasn't re-
+parsed) — `0` on a cache hit, `None`/rendered as "—" when there was no prior state to diff against
+at all. `dashboard_render.py` gained `_print_intelligence_status()`, printed first (right after the
+header, before Languages) since it establishes how much to trust everything printed below; no-ops
+when `intelligence` is unset. `render_json()` needed no changes — `dataclasses.asdict()` already
+picks up the new field.
+
+**Cache consistency — audited, no code change needed.** Each of the four cache files is already
+written atomically and independently, and every write happens only after the full in-memory
+rebuild succeeds, so a crash mid-build leaves the previous cache completely untouched (nothing is
+ever partially written). The four files aren't one cross-file transaction — documented already in
+`intel.py`'s own comments — but every loader already treats a missing/corrupt sibling as
+`corrupted_rebuild` and filters stale entries against the current file-walk set, so this narrow,
+already-defended risk window was judged not worth new transactional complexity for. Noted here
+explicitly rather than silently skipped.
+
+**Benchmark extended.** `tests/benchmarks/repo_intel_benchmark.py` gained a "100 files modified"
+scenario (files `mod_12`–`mod_111` of the synthetic repo, non-overlapping with the existing
+rename/delete scenarios' files) alongside the pre-existing cold/warm/1-modified/10-modified/
+renamed/deleted six, matching this item's own validation list (cold, cache hit, 1/10/100 modified).
+`tests/unit/test_repo_intel_benchmark.py`'s synthetic repo size grew from 60 to 150 files to make
+room, with a new `TestHundredFilesModified` asserting `files_reextracted == 100` and the exact
+resulting `cache_hit_ratio` — count-based, not wall-clock, per this repo's no-flaky-test rule.
+
+**Tests:** `tests/unit/test_cli_repo.py` was substantially rewritten — the old `TestRepoCommandNoCache`
+class and `test_never_walks_the_repository` both asserted the exact behavior this item deliberately
+reverses, so they're gone, replaced by: `TestRepoCommandAutoOnboard` (a fresh repo with zero prior
+`quor map`/`symbols`/`graph` calls now builds intelligence and shows a dashboard directly),
+`TestRepoCommandIntelligencePanel` (cache-hit → "Up to date"/"Instant", a file change →
+"Refreshed"/"Incremental", `--json`'s `intelligence` field shape on both), `TestRepoCommandRebuildFlag`,
+and `TestRepoCommandReflectsChanges` (a file added after `quor repo`'s own first build is picked up
+on the very next `quor repo` call with no `quor map` in between — the direct, observable proof the
+old "never walks the repository" guarantee is now intentionally false). The pre-existing
+`TestRepoCommandDashboard`/`TestRepoCommandErrors`/`TestRepoCommandTracking` classes were kept,
+plus one new defensive-fallback test proving the old "no cache" message still renders correctly if
+`build_dashboard()` ever returned `None` right after a successful `ensure_repo_intelligence()` call
+(unreachable in practice, but real fail-open code, kept covered). Full existing `tests/unit/` suite
+(73 files) and `tests/integration/` with `-m integration` (7 cases) re-run and confirmed zero
+regressions; `quor verify` passed (204/204 inline filter tests); compression benchmark suite
+re-run and confirmed unchanged (127 cases, 35.9% overall, matching the committed baseline — this
+item touches no filter/pipeline code); `ruff check quor/ tests/` and `mypy quor/` both clean.
+
+**Performance — honest results, one target missed.** `python -m tests.benchmarks.repo_intel_benchmark`
+against the (now 150-file) synthetic repo:
+
+| Scenario | Action | Elapsed (s) | Cache Hit | Files Scanned | Re-extracted |
+|---|---|---|---|---|---|
+| cold build | onboarded | 0.97 | 0.00 | 150 | 150 |
+| warm build (cache hit) | cache_hit | 0.26 | 1.00 | 150 | 0 |
+| one file modified | incremental | 0.30 | 0.99 | 150 | 1 |
+| ten files modified | incremental | 0.43 | 0.93 | 150 | 10 |
+| one hundred files modified | incremental | 0.76 | 0.33 | 150 | 100 |
+
+Against this item's own targets: **ten-modified-files &lt;2s is met** (consistently 0.43–0.60s across
+repeated runs); **one-modified-file &lt;500ms is inconsistent** (300–430ms most runs, one outlier over
+2s, attributed to transient Windows git-subprocess spawn variance, not this item's own code — see
+below); **cache-hit &lt;50ms is not met** (consistently 260–370ms). Root cause, not re-profiled with
+`cProfile` here since it's identical to already-diagnosed pre-existing behavior: `_refresh_from_cache()`
+(`intel.py`, unmodified by this item) still runs a full `walk_repository()` — a `git ls-files`
+subprocess call — plus a `stat()`-per-file `diff_repository()` pass *even on a true cache hit*, to
+confirm nothing changed before it can say so; on Windows, subprocess spawn overhead alone is
+typically 50–150ms, matching the gap. This is pre-existing QB-072 behavior this item's benchmark
+addition merely measures for the first time against QB-077's own <50ms target — nothing this item's
+own changes (`repo.py`/`dashboard_model.py`/`dashboard_render.py`) run on the cache-hit path adds any
+extra cost, since `measure()` only times `ensure_repo_intelligence()` itself, not `quor repo`'s
+dashboard-building on top of it. Recommend treating this the same way QB-076 treated its own missed
+&lt;100ms target on a dense graph: an honest, pre-existing, now-documented limitation, not a blocker for
+this item — closing it for real would mean optimizing `walk_repository()`/`diff_repository()`'s own
+git-subprocess cost, out of this item's scope and not requested.
+
+</details>
+
+---
+
 ### Historical (superseded)
 
 *Kept for the record — not resolved work in its own right, but the original request that later,

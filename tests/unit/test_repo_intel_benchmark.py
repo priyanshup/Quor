@@ -25,12 +25,17 @@ import pytest
 
 from tests.benchmarks.repo_intel_benchmark import ScenarioResult, build_synthetic_repo, measure
 
-_BENCHMARK_FILE_COUNT = 60
+_BENCHMARK_FILE_COUNT = 150
+"""Bumped from 60 (QB-072) to 150 by QB-077 so there's room for the new
+"one hundred files modified" scenario (indices 12..111) without overlapping
+the pre-existing rename (`_BENCHMARK_FILE_COUNT - 1`) / delete
+(`_BENCHMARK_FILE_COUNT - 2`) scenarios — matches
+`tests/benchmarks/repo_intel_benchmark.py`'s own `DEFAULT_FILE_COUNT`."""
 
 
 @pytest.fixture(scope="module")
 def _scenario_results() -> dict[str, ScenarioResult]:
-    """Run all six scenarios once per test module (not once per test) —
+    """Run all seven scenarios once per test module (not once per test) —
     each scenario builds on the previous one's on-disk cache state, so
     they must run in this exact sequence, and re-running the expensive
     cold build per assertion would multiply this file's cost for no
@@ -69,6 +74,10 @@ def _scenario_results() -> dict[str, ScenarioResult]:
         for i in range(2, 12):
             (package_dir / f"mod_{i}.py").write_text(f"def func_{i}():\n    return {i * 100}\n", encoding="utf-8")
         results["ten_modified"] = measure(repo, "ten files modified")
+
+        for i in range(12, 112):
+            (package_dir / f"mod_{i}.py").write_text(f"def func_{i}():\n    return {i * 1000}\n", encoding="utf-8")
+        results["hundred_modified"] = measure(repo, "one hundred files modified")
 
         (package_dir / f"mod_{_BENCHMARK_FILE_COUNT - 1}.py").rename(package_dir / "mod_renamed.py")
         subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
@@ -134,6 +143,19 @@ class TestTenFilesModified:
         cold = _scenario_results["cold"]
         ten_modified = _scenario_results["ten_modified"]
         assert ten_modified.elapsed_seconds < cold.elapsed_seconds
+
+
+class TestHundredFilesModified:
+    def test_reextracts_exactly_one_hundred_files(self, _scenario_results: dict[str, ScenarioResult]) -> None:
+        hundred_modified = _scenario_results["hundred_modified"]
+        assert hundred_modified.action == "incremental"
+        assert hundred_modified.files_reextracted == 100
+        assert hundred_modified.cache_hit_ratio == pytest.approx(1.0 - 100 / _BENCHMARK_FILE_COUNT)
+
+    def test_is_faster_than_cold_build(self, _scenario_results: dict[str, ScenarioResult]) -> None:
+        cold = _scenario_results["cold"]
+        hundred_modified = _scenario_results["hundred_modified"]
+        assert hundred_modified.elapsed_seconds < cold.elapsed_seconds
 
 
 class TestFileRenamed:

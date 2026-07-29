@@ -1,9 +1,11 @@
-"""Repository Intelligence performance benchmark (QB-072 perf follow-up).
+"""Repository Intelligence performance benchmark (QB-072 perf follow-up,
+extended with a "100 files modified" scenario by QB-077).
 
 Measures CPU time, peak memory, elapsed wall-clock time, and cache hit
-ratio across six scenarios: cold build, warm build (unchanged), one
-modified file, ten modified files, one renamed file, and one deleted file
-— exactly the scenario list the QB-072 performance follow-up asked for.
+ratio across seven scenarios: cold build, warm build (unchanged), one
+modified file, ten modified files, one hundred modified files, one renamed
+file, and one deleted file — the QB-072 performance follow-up's original
+six plus the 100-file scenario QB-077's validation section asks for.
 
 Unlike `tests/benchmarks/run_benchmarks.py` (compression ratio vs. a
 committed `baseline.json`), this benchmark has no historical baseline to
@@ -149,6 +151,10 @@ def run_all_scenarios(file_count: int = DEFAULT_FILE_COUNT) -> list[ScenarioResu
         for i in range(2, 12):
             (package_dir / f"mod_{i}.py").write_text(f"def func_{i}():\n    return {i * 100}\n", encoding="utf-8")
         results.append(measure(repo, "ten files modified"))
+
+        for i in range(12, 112):
+            (package_dir / f"mod_{i}.py").write_text(f"def func_{i}():\n    return {i * 1000}\n", encoding="utf-8")
+        results.append(measure(repo, "one hundred files modified"))
 
         (package_dir / f"mod_{file_count - 1}.py").rename(package_dir / "mod_renamed.py")
         _git_add_all(repo)

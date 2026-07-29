@@ -35,6 +35,7 @@ def render_json(dashboard: RepoDashboard) -> str:
 def print_dashboard(dashboard: RepoDashboard, console: Console) -> None:
     """Print the full terminal dashboard, section by section, to `console`."""
     _print_header(dashboard, console)
+    _print_intelligence_status(dashboard, console)
     _print_languages(dashboard, console)
     _print_files(dashboard, console)
     _print_symbols(dashboard, console)
@@ -72,6 +73,28 @@ def _print_header(d: RepoDashboard, console: Console) -> None:
     console.print(f"Indexed:    {format_duration(d.cache_age_seconds)} ago{commit_suffix}")
     console.print()
     console.rule(style="dim")
+    console.print()
+
+
+def _print_intelligence_status(d: RepoDashboard, console: Console) -> None:
+    """QB-077: freshness/status of the cache everything below was read
+    from. No-ops when `d.intelligence` is unset (e.g. a caller that built
+    the dashboard directly from `build_dashboard()` without going through
+    `quor repo`'s own refresh step)."""
+    status = d.intelligence
+    if status is None:
+        return
+    console.print("[bold]Repository Intelligence[/bold]")
+    table = _stat_table()
+    table.add_row("Status", f"[cyan]{status.status}[/cyan]")
+    table.add_row("Last refresh", f"[cyan]{format_duration(d.cache_age_seconds)} ago[/cyan]")
+    table.add_row("Cache hit ratio", f"[cyan]{format_percentage(status.cache_hit_ratio)}[/cyan]")
+    table.add_row("Files scanned", f"[cyan]{format_count(status.files_scanned)}[/cyan]")
+    table.add_row("Files reused", f"[cyan]{format_count(status.files_reused)}[/cyan]")
+    changed = "—" if status.changed_files is None else format_count(status.changed_files)
+    table.add_row("Changed files", f"[cyan]{changed}[/cyan]")
+    table.add_row("Rebuild mode", f"[cyan]{status.rebuild_mode}[/cyan]")
+    console.print(table)
     console.print()
 
 
