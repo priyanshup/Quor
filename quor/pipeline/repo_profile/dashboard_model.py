@@ -53,6 +53,34 @@ class MostConnectedFile:
 
 
 @dataclass(frozen=True, slots=True)
+class RepoIntelligenceStatus:
+    """QB-077: how `quor repo`'s own `ensure_repo_intelligence()` call that
+    just ran refreshed the cache this dashboard reads — sourced directly
+    from the `RepoIntelligence` that call returned, not from any cache file
+    (`RepoDashboard`'s other fields are cache-only; this one field is the
+    sole exception, since it describes the refresh itself, not repository
+    content)."""
+
+    status: str
+    """Human-readable outcome of this call: "Up to date" (cache hit),
+    "Refreshed" (incremental), or "Rebuilt" (any full-rebuild-shaped
+    action)."""
+
+    cache_hit_ratio: float
+    files_scanned: int
+    files_reused: int
+    rebuild_mode: str
+    """"Instant" / "Incremental" / "Full" — mirrors `status` but phrased as
+    a mode rather than an outcome, matching QB-077's own spec wording."""
+
+    changed_files: int | None = None
+    """Files added/modified/deleted/renamed since the last scan. `0` for a
+    cache hit, `None` when this call had no prior state to diff against
+    (onboarding or any forced/corrupted/version-triggered full rebuild) —
+    "changed files" isn't a meaningful number in that case."""
+
+
+@dataclass(frozen=True, slots=True)
 class RepoDashboard:
     """The complete, deterministic repository dashboard — every field
     sourced from already-cached repository intelligence, per this module's
@@ -94,3 +122,11 @@ class RepoDashboard:
     profile_notes: list[str] = field(default_factory=list)
     """Passed through verbatim from `RepoProfile.notes` — already a
     deterministic, evidence-carrying fact list, never re-derived here."""
+
+    intelligence: RepoIntelligenceStatus | None = None
+    """QB-077: populated by `quor repo`'s own command layer after this
+    dashboard is built, from the `RepoIntelligence` its `ensure_repo_
+    intelligence()` call just returned — never set by `build_dashboard()`
+    itself, which stays a pure, cache-only aggregator with no knowledge of
+    "what just happened." `None` for any caller that only wants the
+    cache-only view `build_dashboard()` alone provides."""
