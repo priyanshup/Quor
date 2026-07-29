@@ -50,7 +50,12 @@ from __future__ import annotations
 import warnings
 from typing import TYPE_CHECKING
 
-from quor.pipeline.ast_summarize._treesitter_utils import add_candidate, collect_error_ranges
+from quor.pipeline.ast_summarize._treesitter_utils import (
+    add_candidate,
+    collect_error_ranges,
+    iter_descendants,
+)
+from quor.pipeline.ast_summarize.relationship_model import Relationship
 from quor.pipeline.ast_summarize.symbol_model import ENTRY_POINT_NAMES, Symbol, SymbolKind
 
 if TYPE_CHECKING:
@@ -298,3 +303,198 @@ def _add_method_symbol(node: Node, symbols: list[Symbol]) -> None:
             is_entry_point=name in ENTRY_POINT_NAMES,
         )
     )
+
+
+def _flatten_qualified_name(node: Node) -> str | None:
+    if node.type == "identifier":
+        return _decode(node)
+    if node.type == "qualified_name":
+        qualifier = node.child_by_field_name("qualifier")
+        name = node.child_by_field_name("name")
+        if qualifier is not None and name is not None:
+            base = _flatten_qualified_name(qualifier)
+            return f"{base}.{_decode(name)}" if base is not None else None
+    return None
+
+
+def extract_relationships_csharp(source: str) -> list[Relationship]:
+    """Return every deterministic import/inherits/overrides/calls
+    relationship C#'s grammar makes explicit (QB-067) — file-local and
+    unresolved, see `relationship_model.py`'s module docstring.
+
+    - **imports**: every `using` directive's dotted namespace. `target`
+      is the full dotted name; `qualifier` is always `None` — unlike
+      every other language here, a C# `using` opens a *namespace*, not a
+      specific type or member binding, so there is no single local name
+      it introduces to resolve a bare identifier against (a real,
+      documented language-semantics limitation: cross-file `inherits`/
+      `calls` resolution for C# is therefore same-file-only, since the
+      orchestrator's binding table has nothing to key a `using` on — see
+      `graph.py`'s own resolution notes). `using static`/alias
+      (`using X = Y;`) directives are handled the same shape-detection
+      way as a plain `using` (both are `using_directive` nodes); an
+      alias's own local name is not treated as a binding for the same
+      "no addressable name" reason.
+    - **inherits**: every entry in a class's colon-delimited base list
+      (`class Foo : Base, IBar, IBaz`) is reported as `inherits` — C#'s
+      grammar (and this extractor) cannot syntactically distinguish a
+      base *class* from an implemented *interface* in that list without
+      resolving each name's own declaration (a class can appear with no
+      base class at all, `class Foo : IBar`, which is syntactically
+      identical to `class Foo : Base`) — a real, documented limitation,
+      not a naming-convention guess (`I`-prefix is a convention, not a
+      language rule, and QB-067 rules out heuristics). `implements_interface`
+      is therefore never emitted for C# (see `java.py`/`typescript.py` for
+      languages whose grammar keeps these syntactically separate).
+    - **implements_trait**: never emitted — C# has no trait construct.
+    - **overrides**: a method carrying an explicit `override` modifier —
+      `qualifier` is the enclosing class's own raw base-list (first
+      entry only, the conventional base-class position) name; a method
+      with no `override` modifier is not reported.
+    - **calls**: only from within a method/constructor already reported
+      as a `Symbol` by `extract_symbols_csharp()` — `source` is that
+      `Symbol`'s own name. A bare call (`Helper()`), an explicit
+      `this.Other()`/`base.Method()` call, and a qualified call
+      (`Utils.StaticCall()`) are each recorded — a deeper chain is
+      skipped.
+
+    Returns an empty list (with the same actionable warning
+    `analyze_csharp()` emits) if the optional dependency is missing.
+    Otherwise may raise on a genuine, unrecoverable parser failure — same
+    fail-open contract as `analyze_csharp()`."""
+    try:
+        import tree_sitter
+        import tree_sitter_c_sharp
+    except ImportError:
+        warnings.warn(
+            "[quor] tree-sitter/tree-sitter-c-sharp is not installed; "
+            "install quor[csharp] to enable C# relationship extraction "
+            "(falling back to no relationships for this file)",
+            stacklevel=2,
+        )
+        return []
+
+    language = tree_sitter.Language(tree_sitter_c_sharp.language())
+    parser = tree_sitter.Parser(language)
+    tree = parser.parse(source.encode("utf-8"))
+
+    relationships: list[Relationship] = []
+    for child in tree.root_node.children:
+        if child.type == "using_directive":
+            _add_using_relationship(child, relationships)
+    _visit_top_level_relationships(tree.root_node, relationships)
+    return relationships
+
+
+def _add_using_relationship(node: Node, relationships: list[Relationship]) -> None:
+    name_node = next((c for c in node.children if c.type in ("identifier", "qualified_name")), None)
+    if name_node is None:
+        return
+    target = _flatten_qualified_name(name_node)
+    if target is not None:
+        relationships.append(Relationship(kind="import", source="", target=target, line=node.start_point.row + 1))
+
+
+def _visit_top_level_relationships(node: Node, relationships: list[Relationship]) -> None:
+    for child in node.children:
+        if child.type == _NAMESPACE_TYPE:
+            body = child.child_by_field_name("body")
+            if body is not None and body.type == _TYPE_BODY:
+                _visit_top_level_relationships(body, relationships)
+        elif child.type in _TYPE_DECLARATION_TYPES:
+            _add_type_relationships(child, relationships)
+
+
+def _add_type_relationships(node: Node, relationships: list[Relationship]) -> None:
+    name_node = node.child_by_field_name("name")
+    if name_node is None:
+        return
+    type_name = _decode(name_node)
+
+    superclass_name: str | None = None
+    base_list = next((c for c in node.children if c.type == "base_list"), None)
+    if base_list is not None:
+        bases = [c for c in base_list.children if c.is_named]
+        for index, base_node in enumerate(bases):
+            base_name = _flatten_qualified_name(base_node) or (
+                _decode(base_node) if base_node.type == "identifier" else None
+            )
+            if base_name is None:
+                continue
+            if index == 0:
+                superclass_name = base_name
+            relationships.append(
+                Relationship(
+                    kind="inherits", source=type_name, target=base_name, line=base_node.start_point.row + 1
+                )
+            )
+
+    body = node.child_by_field_name("body")
+    if body is None:
+        return
+    for member in body.children:
+        if member.type in _METHOD_LIKE_TYPES:
+            _add_method_relationships(member, superclass_name, relationships)
+
+
+def _has_override_modifier(node: Node) -> bool:
+    return any(child.type == "modifier" and _decode(child) == "override" for child in node.children)
+
+
+def _add_method_relationships(
+    node: Node, superclass_name: str | None, relationships: list[Relationship]
+) -> None:
+    name_node = node.child_by_field_name("name")
+    if name_node is None:
+        return
+    method_name = _decode(name_node)
+    _collect_calls(node, method_name, relationships)
+    if superclass_name is not None and _has_override_modifier(node):
+        relationships.append(
+            Relationship(
+                kind="overrides",
+                source=method_name,
+                target=method_name,
+                line=node.start_point.row + 1,
+                qualifier=superclass_name,
+            )
+        )
+
+
+def _collect_calls(node: Node, source_name: str, relationships: list[Relationship]) -> None:
+    for descendant in iter_descendants(node):
+        if descendant.type != "invocation_expression":
+            continue
+        func = descendant.child_by_field_name("function")
+        if func is None:
+            continue
+        line = descendant.start_point.row + 1
+        if func.type == "identifier":
+            relationships.append(
+                Relationship(kind="calls", source=source_name, target=_decode(func), line=line)
+            )
+        elif func.type == "member_access_expression":
+            name_node = func.child_by_field_name("name")
+            expr_node = func.child_by_field_name("expression")
+            if name_node is None:
+                continue
+            if expr_node is not None and expr_node.type in ("this", "base"):
+                relationships.append(
+                    Relationship(
+                        kind="calls",
+                        source=source_name,
+                        target=_decode(name_node),
+                        line=line,
+                        qualifier=expr_node.type,
+                    )
+                )
+            elif expr_node is not None and expr_node.type == "identifier":
+                relationships.append(
+                    Relationship(
+                        kind="calls",
+                        source=source_name,
+                        target=_decode(name_node),
+                        line=line,
+                        qualifier=_decode(expr_node),
+                    )
+                )

@@ -668,6 +668,15 @@ REPO_PROFILE_FILTER_LABEL = "repo-profile"
 # equal by design, and `flag_low_performers` must exclude this label too.
 REPO_SYMBOLS_FILTER_LABEL = "repo-symbols"
 
+# QB-067: the synthetic `filter_name` `quor graph` tracks its invocations
+# under (see `quor/cli/commands/graph.py::_track_graph_invocation`). Same
+# reasoning as `REPO_PROFILE_FILTER_LABEL`/`REPO_SYMBOLS_FILTER_LABEL`
+# above, applied to the third synthesis-not-compression command: a
+# repository dependency graph has no "before" blob either, so
+# `original_tokens`/`final_tokens` are recorded equal by design, and
+# `flag_low_performers` must exclude this label too.
+REPO_GRAPH_FILTER_LABEL = "repo-graph"
+
 
 @dataclass(frozen=True)
 class FilterUsage:

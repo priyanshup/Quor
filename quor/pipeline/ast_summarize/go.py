@@ -47,7 +47,12 @@ from __future__ import annotations
 import warnings
 from typing import TYPE_CHECKING
 
-from quor.pipeline.ast_summarize._treesitter_utils import add_candidate, collect_error_ranges
+from quor.pipeline.ast_summarize._treesitter_utils import (
+    add_candidate,
+    collect_error_ranges,
+    iter_descendants,
+)
+from quor.pipeline.ast_summarize.relationship_model import Relationship
 from quor.pipeline.ast_summarize.symbol_model import ENTRY_POINT_NAMES, Symbol, SymbolKind
 
 if TYPE_CHECKING:
@@ -241,3 +246,135 @@ def _add_function_symbol(node: Node, symbols: list[Symbol]) -> None:
             is_entry_point=name in ENTRY_POINT_NAMES,
         )
     )
+
+
+def extract_relationships_go(source: str) -> list[Relationship]:
+    """Return every deterministic import/calls relationship Go's grammar
+    makes explicit (QB-067) — file-local and unresolved, see
+    `relationship_model.py`'s module docstring.
+
+    - **imports**: every `import_spec` (single or grouped `import (...)`
+      form). `target` is the raw import path exactly as written (e.g.
+      `"fmt"`, `"pkg/sub"`). `qualifier` is the local package identifier
+      the import binds: an explicit alias (`f "fmt"`) or blank/dot import
+      (`_`/`.`, recorded literally — neither ever resolves to a real
+      symbol, so they are harmless, honest dead ends downstream) when
+      present; otherwise the import path's own last segment (Go's own,
+      near-universal package-naming convention — idiomatic Go always
+      names a package to match its directory's final path element, the
+      same convention `go vet`/`gopls` themselves rely on — not a Quor
+      guess, and documented here as a bounded, real-language-convention
+      assumption, not a heuristic invented for this feature).
+    - **inherits / implements_interface / implements_trait / overrides**:
+      never emitted. Go has no class inheritance at all, and interface
+      satisfaction is *structural* (a type implements an interface simply
+      by having the right method set, with no `implements`-style
+      declaration anywhere in the source) — there is no syntactic marker
+      to extract this from without a full structural type check, which is
+      out of scope for a single-file AST extractor. A real, documented
+      language limitation, not an oversight.
+    - **calls**: only from within a function/method already reported as a
+      `Symbol` by `extract_symbols_go()` (top-level functions and
+      methods) — `source` is that `Symbol`'s own name. A bare call
+      (`helper()`) has `qualifier=None`; a selector call
+      (`pkg.Func()`/`w.Render()`) has `qualifier=<operand name>` — Go has
+      no `self`/`this`, so a method call through a receiver variable
+      (`w.Render()`) is recorded the same shape as a package-qualified
+      call (`pkg.Func()`); the orchestrator only resolves it if
+      `qualifier` happens to match a real import binding, so a receiver
+      call harmlessly stays unresolved unless its variable name
+      coincides with an unrelated import alias (documented, low-risk
+      ambiguity — resolution additionally requires the target name to
+      exist in that specific resolved file, making an accidental false
+      match rare).
+
+    Returns an empty list (with the same actionable warning
+    `analyze_go()` emits) if the optional dependency is missing.
+    Otherwise may raise on a genuine, unrecoverable parser failure — same
+    fail-open contract as `analyze_go()`."""
+    try:
+        import tree_sitter
+        import tree_sitter_go
+    except ImportError:
+        warnings.warn(
+            "[quor] tree-sitter/tree-sitter-go is not installed; "
+            "install quor[go] to enable Go relationship extraction "
+            "(falling back to no relationships for this file)",
+            stacklevel=2,
+        )
+        return []
+
+    language = tree_sitter.Language(tree_sitter_go.language())
+    parser = tree_sitter.Parser(language)
+    tree = parser.parse(source.encode("utf-8"))
+
+    relationships: list[Relationship] = []
+    for child in tree.root_node.children:
+        if child.type == "import_declaration":
+            _add_import_declaration_relationships(child, relationships)
+        elif child.type in _FUNCTION_LIKE_TYPES:
+            _add_function_relationships(child, relationships)
+    return relationships
+
+
+def _string_literal_text(node: Node) -> str:
+    for child in node.children:
+        if child.type in ("interpreted_string_literal_content", "raw_string_literal_content"):
+            return _decode(child)
+    return ""
+
+
+def _add_import_declaration_relationships(node: Node, relationships: list[Relationship]) -> None:
+    for child in node.children:
+        if child.type == "import_spec":
+            _add_import_spec_relationship(child, relationships)
+        elif child.type == "import_spec_list":
+            for spec in child.children:
+                if spec.type == "import_spec":
+                    _add_import_spec_relationship(spec, relationships)
+
+
+def _add_import_spec_relationship(spec: Node, relationships: list[Relationship]) -> None:
+    path_node = spec.child_by_field_name("path")
+    if path_node is None:
+        return
+    target = _string_literal_text(path_node)
+    name_node = spec.child_by_field_name("name")
+    qualifier = _decode(name_node) if name_node is not None else (target.rsplit("/", 1)[-1] or None)
+    relationships.append(
+        Relationship(kind="import", source="", target=target, line=spec.start_point.row + 1, qualifier=qualifier)
+    )
+
+
+def _add_function_relationships(node: Node, relationships: list[Relationship]) -> None:
+    name_node = node.child_by_field_name("name")
+    if name_node is None:
+        return
+    _collect_calls(node, _decode(name_node), relationships)
+
+
+def _collect_calls(node: Node, source_name: str, relationships: list[Relationship]) -> None:
+    for descendant in iter_descendants(node):
+        if descendant.type != "call_expression":
+            continue
+        func = descendant.child_by_field_name("function")
+        if func is None:
+            continue
+        line = descendant.start_point.row + 1
+        if func.type == "identifier":
+            relationships.append(
+                Relationship(kind="calls", source=source_name, target=_decode(func), line=line)
+            )
+        elif func.type == "selector_expression":
+            operand = func.child_by_field_name("operand")
+            field = func.child_by_field_name("field")
+            if operand is not None and operand.type == "identifier" and field is not None:
+                relationships.append(
+                    Relationship(
+                        kind="calls",
+                        source=source_name,
+                        target=_decode(field),
+                        line=line,
+                        qualifier=_decode(operand),
+                    )
+                )

@@ -69,16 +69,39 @@ from __future__ import annotations
 from collections.abc import Callable
 from importlib import import_module
 
-from quor.pipeline.ast_summarize.csharp import analyze_csharp, extract_symbols_csharp
-from quor.pipeline.ast_summarize.go import analyze_go, extract_symbols_go
-from quor.pipeline.ast_summarize.java import analyze_java, extract_symbols_java
-from quor.pipeline.ast_summarize.javascript import analyze_javascript, extract_symbols_javascript
-from quor.pipeline.ast_summarize.python import analyze_python, extract_symbols_python
-from quor.pipeline.ast_summarize.rust import analyze_rust, extract_symbols_rust
+from quor.pipeline.ast_summarize.csharp import (
+    analyze_csharp,
+    extract_relationships_csharp,
+    extract_symbols_csharp,
+)
+from quor.pipeline.ast_summarize.go import analyze_go, extract_relationships_go, extract_symbols_go
+from quor.pipeline.ast_summarize.java import (
+    analyze_java,
+    extract_relationships_java,
+    extract_symbols_java,
+)
+from quor.pipeline.ast_summarize.javascript import (
+    analyze_javascript,
+    extract_relationships_javascript,
+    extract_symbols_javascript,
+)
+from quor.pipeline.ast_summarize.python import (
+    analyze_python,
+    extract_relationships_python,
+    extract_symbols_python,
+)
+from quor.pipeline.ast_summarize.relationship_model import Relationship
+from quor.pipeline.ast_summarize.rust import (
+    analyze_rust,
+    extract_relationships_rust,
+    extract_symbols_rust,
+)
 from quor.pipeline.ast_summarize.symbol_model import Symbol
 from quor.pipeline.ast_summarize.typescript import (
     analyze_tsx,
     analyze_typescript,
+    extract_relationships_tsx,
+    extract_relationships_typescript,
     extract_symbols_tsx,
     extract_symbols_typescript,
 )
@@ -134,6 +157,54 @@ _SYMBOL_EXTRACTORS: dict[str, Callable[[str], list[Symbol]]] = {
 }
 
 
+# Language name -> relationship-extractor callable (QB-067). A third,
+# parallel dict — not a field added to Symbol/a richer _SYMBOL_EXTRACTORS
+# return type — for the identical reason `_SYMBOL_EXTRACTORS` is its own
+# dict rather than a field on `_ANALYZERS`: "what does this file declare a
+# *relationship* to" (imports, inheritance, calls, ...) is independently
+# correct from "what does this file declare," serves a different consumer
+# (`quor graph` vs. `quor symbols`), and must never be coupled to one
+# shared, larger call. Same eight languages, same optional-dependency
+# gating via `_REQUIRED_PACKAGES` below (unchanged, shared by all three
+# families).
+_RELATIONSHIP_EXTRACTORS: dict[str, Callable[[str], list[Relationship]]] = {
+    "python": extract_relationships_python,
+    "javascript": extract_relationships_javascript,
+    "typescript": extract_relationships_typescript,
+    "tsx": extract_relationships_tsx,
+    "go": extract_relationships_go,
+    "java": extract_relationships_java,
+    "rust": extract_relationships_rust,
+    "csharp": extract_relationships_csharp,
+}
+
+
+# Extension -> `ast_summarize` registry language key (QB-067) — promoted
+# here from `quor/pipeline/repo_profile/symbols.py`'s originally-private
+# table so both `quor symbols` and `quor graph`'s orchestrators (QB-066/
+# QB-067) share exactly one source of truth for "which extensions this
+# registry can parse," rather than two copies that could silently drift.
+# Deliberately a fresh table, not `quor/pipeline/repo_profile/languages.py`'s
+# display-name census table or `claude_read.py`'s private filter-routing
+# table — see `symbols.py`'s own (now-historical) comment for why importing
+# either of those would have been the wrong reuse; the same reasoning
+# applies to this table's new home.
+EXTENSION_TO_LANGUAGE: dict[str, str] = {
+    ".py": "python",
+    ".pyi": "python",
+    ".js": "javascript",
+    ".jsx": "javascript",
+    ".mjs": "javascript",
+    ".cjs": "javascript",
+    ".ts": "typescript",
+    ".tsx": "tsx",
+    ".go": "go",
+    ".java": "java",
+    ".rs": "rust",
+    ".cs": "csharp",
+}
+
+
 def get_analyzer(language: str) -> Callable[[str], set[int]] | None:
     """Return the analyzer callable registered for `language`, or `None` if
     no analyzer is registered for it.
@@ -158,6 +229,14 @@ def get_symbol_extractor(language: str) -> Callable[[str], list[Symbol]] | None:
     dependency gating are identical for a language's `analyze_*()` and
     `extract_symbols_*()`), so this module needs no second copy of either."""
     return _SYMBOL_EXTRACTORS.get(language)
+
+
+def get_relationship_extractor(language: str) -> Callable[[str], list[Relationship]] | None:
+    """Return the relationship-extractor callable registered for
+    `language`, or `None` if none is registered — same "unsupported
+    language, not an error" contract as `get_analyzer()`/
+    `get_symbol_extractor()`, applied to the QB-067 relationship family."""
+    return _RELATIONSHIP_EXTRACTORS.get(language)
 
 
 def registered_languages() -> frozenset[str]:
