@@ -193,8 +193,13 @@ Gemini CLI's `BeforeTool` hook is confirmed (via Gemini CLI's own docs) to
 support rewriting a tool's arguments via `hookSpecificOutput.tool_input`,
 matched against the `run_shell_command` tool — the Gemini equivalent of
 Claude Code's `hookSpecificOutput.updatedInput`. This adapter installs a
-PowerShell hook script (same Windows-first pattern as Claude's) registered
-under `~/.gemini/settings.json`'s `hooks.BeforeTool`.
+PowerShell hook script — the same pattern Claude's launcher used before
+QB-082 (ADR-043) made Claude's cross-platform (POSIX `.sh` via `sh` on
+macOS/Linux, `.ps1` via PowerShell still on Windows). Gemini's own POSIX
+equivalent is a deliberate, tracked follow-up (not yet implemented) — see
+ADR-043 — so installing `quor init --agent gemini` on macOS/Linux still
+produces a Windows-only hook today. Registered under `~/.gemini/settings.json`'s
+`hooks.BeforeTool`.
 
 **Not implemented, and why:** `CONTENT_INTERCEPT`. Gemini CLI's `AfterTool`
 hook's only confirmed output capability is `additionalContext` (append) —
@@ -338,8 +343,10 @@ their two checks are both always advisory, by design (see
    can the hook modify a tool call's input (required for
    `COMMAND_INTERCEPT`) or a tool's output (required for
    `CONTENT_INTERCEPT`)? What's the exact stdin/stdout JSON shape? Is the
-   platform (Windows, since Quor is Windows-first) actually supported?
-   Fetch the tool's own current documentation directly — six adapters in a
+   target platform actually supported — Quor was originally Windows-first,
+   and every adapter except Claude's (see ADR-043) is still Windows-only, so
+   don't assume macOS/Linux support exists for a new adapter without
+   deliberately adding it. Fetch the tool's own current documentation directly — six adapters in a
    row (QB-068/QB-069) found the answer differs from what a blog post or a
    sibling tool's shape would suggest.
 2. **If the research confirms a real modify/replace capability** (like

@@ -13,10 +13,38 @@ import orjson
 import pytest
 from typer.testing import CliRunner
 
+from quor.adapters import hook_manifest
 from quor.cli.main import app
 from quor.errors import ExitCode
 
 runner = CliRunner()
+
+
+@pytest.fixture(autouse=True)
+def _pin_windows_platform(monkeypatch: pytest.MonkeyPatch) -> None:
+    """QB-082: every test in this file predates cross-platform hook launcher
+    support and was written assuming Windows (.ps1 filenames, `powershell`
+    command strings). Pins `hook_manifest.is_windows` itself — NOT
+    `os.name`/`sys.platform` — module-wide so they keep passing identically
+    regardless of the actual host OS running pytest.
+
+    Patching the underlying `os.name` instead would look equivalent but
+    silently breaks: CPython's `pathlib.WindowsPath`/`PosixPath` each bake
+    an "only instantiable on the real matching OS" guard in as a class-body
+    conditional evaluated once, the moment `pathlib` is first imported
+    (long before this fixture ever runs) — so flipping `os.name` afterward
+    doesn't change which concrete class `Path(...)` builds, it just makes
+    `WindowsPath()` raise `UnsupportedOperation` while every other call
+    still constructs a real `PosixPath` on this machine. Patching
+    `is_windows()` directly changes only *our* platform decision, leaving
+    every real `Path`/`tmp_path`/`platformdirs` call completely unaffected.
+
+    `TestPosixLauncherGeneration`/`TestDoctorPosix` below explicitly
+    override this per-test via their own `monkeypatch.setattr(hook_manifest,
+    "is_windows", lambda: False)` calls, which `pytest.MonkeyPatch` restores
+    to this module-wide default at that test's teardown, not at
+    suite-level."""
+    monkeypatch.setattr(hook_manifest, "is_windows", lambda: True)
 
 
 def _make_proc(stdout: str = "", returncode: int = 0) -> MagicMock:
@@ -32,6 +60,14 @@ def _install_real_hooks(tmp_path: Path, settings_path: Path) -> None:
     state `doctor`'s registered/up-to-date checks (QB-037) require. Replaces
     the old bare "dummy" script-content fixtures, which predate those checks
     and would now read as "installed but not registered / not up to date".
+
+    QB-082: the registered command string mirrors whatever
+    `hook_manifest.is_windows()` currently resolves to (patched per-test via
+    the module-wide `_pin_windows_platform` fixture, or overridden to POSIX
+    by `TestPosixLauncherGeneration`/`TestDoctorPosix`) — the same branch
+    `_install_hook_entry()` itself uses — so this helper accurately
+    simulates either platform's real install shape rather than always
+    hardcoding the Windows one.
     """
     from quor.adapters.hook_manifest import HOOK_SPECS, render_hook_script
 
@@ -41,15 +77,14 @@ def _install_real_hooks(tmp_path: Path, settings_path: Path) -> None:
     for spec in HOOK_SPECS:
         script_path = hooks_dir / spec.script_name
         script_path.write_text(render_hook_script(spec, python=sys.executable), encoding="utf-8")
+        if hook_manifest.is_windows():
+            command = f'powershell -ExecutionPolicy Bypass -File "{script_path}"'
+        else:
+            command = f'{hook_manifest.POSIX_SHELL} "{script_path}"'
         settings["hooks"].setdefault(spec.event, []).append(
             {
                 "matcher": spec.matcher,
-                "hooks": [
-                    {
-                        "type": "command",
-                        "command": f'powershell -ExecutionPolicy Bypass -File "{script_path}"',
-                    }
-                ],
+                "hooks": [{"type": "command", "command": command}],
             }
         )
     settings_path.write_text(orjson.dumps(settings).decode("utf-8"), encoding="utf-8")
@@ -1962,6 +1997,169 @@ class TestExecutionPolicyCheck:
             _warn_if_execution_policy_restricted()  # must not raise
 
         assert capsys.readouterr().out == ""
+
+
+# ---------------------------------------------------------------------------
+# QB-082: cross-platform (POSIX) hook launcher generation
+#
+# Only the assertions that actually differ by platform are duplicated from
+# TestInit/TestReadHookRegistration/TestExecutionPolicyCheck above (script
+# extension, launcher content, executable bit, registered command shape,
+# execution-policy check skipped entirely) — hook collision detection and
+# doctor's script/registration matching are already platform-agnostic
+# substring containment (see _hook_installed()'s docstring in init.py) and
+# are not re-tested here.
+# ---------------------------------------------------------------------------
+
+
+class TestPosixLauncherGeneration:
+    @pytest.fixture(autouse=True)
+    def _posix_platform(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(hook_manifest, "is_windows", lambda: False)
+
+    @pytest.fixture(autouse=True)
+    def _fast_execution_policy_check(self) -> Iterator[None]:
+        """See TestInit's identical fixture — same rationale (QB-030). Also
+        proves this class's own is_windows()-False patch doesn't accidentally
+        make _warn_if_execution_policy_restricted() try a real subprocess
+        call — it early-returns before ever reaching subprocess.run, so this
+        mock is never even consulted; see test_execution_policy_check_
+        skipped_entirely below for the dedicated assertion of that."""
+        proc = MagicMock(spec=subprocess.CompletedProcess)
+        proc.returncode = 0
+        proc.stdout = "RemoteSigned"
+        with patch("quor.cli.commands.init.subprocess.run", return_value=proc):
+            yield
+
+    def test_dry_run_writes_sh_script_with_correct_content(self, tmp_path: Path) -> None:
+        settings_path = tmp_path / "settings.json"
+        with patch("platformdirs.user_data_dir", return_value=str(tmp_path / "data")):
+            result = runner.invoke(
+                app, ["init", "--claude", "--yes", "--settings-path", str(settings_path)]
+            )
+        assert result.exit_code == 0
+
+        hook_path = tmp_path / "data" / "hooks" / "claude-hook.sh"
+        assert hook_path.exists()
+        content = hook_path.read_text(encoding="utf-8")
+        assert content.startswith("#!/bin/sh")
+        assert "exec" in content
+        assert "quor hook claude" in content
+        assert sys.executable in content
+
+    def test_launcher_is_executable(self, tmp_path: Path) -> None:
+        """Regression test for QB-082's chmod requirement — fails on the
+        pre-fix code (which never set an executable bit on any launcher),
+        passes once _install_claude() chmods the script on POSIX."""
+        settings_path = tmp_path / "settings.json"
+        with patch("platformdirs.user_data_dir", return_value=str(tmp_path / "data")):
+            result = runner.invoke(
+                app, ["init", "--claude", "--yes", "--settings-path", str(settings_path)]
+            )
+        assert result.exit_code == 0
+
+        hook_path = tmp_path / "data" / "hooks" / "claude-hook.sh"
+        assert hook_path.stat().st_mode & 0o777 == 0o755
+
+    def test_settings_json_command_uses_posix_shell(self, tmp_path: Path) -> None:
+        """Regression test for QB-082 — fails on the pre-fix code (which
+        always wrote `powershell -ExecutionPolicy Bypass -File` regardless
+        of platform), passes once `_install_hook_entry()` branches on
+        `hook_manifest.is_windows()`."""
+        settings_path = tmp_path / "settings.json"
+        result = runner.invoke(
+            app, ["init", "--claude", "--yes", "--settings-path", str(settings_path)]
+        )
+        assert result.exit_code == 0
+
+        data = orjson.loads(settings_path.read_bytes())
+        commands = [h["command"] for entry in data["hooks"]["PreToolUse"] for h in entry["hooks"]]
+        assert any(c.startswith(f"{hook_manifest.POSIX_SHELL} ") for c in commands)
+        assert not any("powershell" in c for c in commands)
+
+    def test_read_hook_sh_script_and_registration(self, tmp_path: Path) -> None:
+        settings_path = tmp_path / "settings.json"
+        with patch("platformdirs.user_data_dir", return_value=str(tmp_path / "data")):
+            result = runner.invoke(
+                app, ["init", "--claude", "--yes", "--settings-path", str(settings_path)]
+            )
+        assert result.exit_code == 0
+
+        read_hook_path = tmp_path / "data" / "hooks" / "claude-hook-read.sh"
+        content = read_hook_path.read_text(encoding="utf-8")
+        assert content.startswith("#!/bin/sh")
+        assert "quor hook claude-read" in content
+
+        data = orjson.loads(settings_path.read_bytes())
+        post_tool_use = data["hooks"]["PostToolUse"]
+        matching = [
+            entry
+            for entry in post_tool_use
+            if any("claude-hook-read.sh" in h["command"] for h in entry["hooks"])
+        ]
+        assert len(matching) == 1
+        assert matching[0]["matcher"] == "Read"
+
+    def test_execution_policy_check_skipped_entirely(self) -> None:
+        """Regression test — fails on the pre-fix code (which always
+        attempted a powershell subprocess call regardless of platform),
+        passes once `_warn_if_execution_policy_restricted()` early-returns
+        on POSIX."""
+        from quor.cli.commands.init import _warn_if_execution_policy_restricted
+
+        with patch("quor.cli.commands.init.subprocess.run") as mock_run:
+            _warn_if_execution_policy_restricted()
+
+        mock_run.assert_not_called()
+
+
+class TestDoctorPosix:
+    """Proof that doctor.py's generic script/registration/freshness checks
+    (QB-037) hold for the POSIX (.sh) hook family too, not just the Windows
+    (.ps1) family they were originally written against — see
+    hook_manifest.py's module docstring for why no doctor.py *checking*
+    logic itself needed to change (the repair path did — see
+    test_fix_repairs_stale_posix_hook_and_chmods_it below)."""
+
+    @pytest.fixture(autouse=True)
+    def _posix_platform(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(hook_manifest, "is_windows", lambda: False)
+
+    def test_all_green_after_posix_hook_installed(self, tmp_path: Path) -> None:
+        settings_path = tmp_path / "settings.json"
+        _install_real_hooks(tmp_path, settings_path)
+        with patch("platformdirs.user_data_dir", return_value=str(tmp_path)):
+            result = runner.invoke(app, ["doctor", "--settings-path", str(settings_path)])
+        assert result.exit_code == 0
+        assert "✓ Bash hook script installed" in result.output
+        assert "✓ Bash hook registered in settings.json" in result.output
+        assert "✓ Bash hook up to date" in result.output
+
+    def test_stale_posix_hook_detected(self, tmp_path: Path) -> None:
+        settings_path = tmp_path / "settings.json"
+        _install_real_hooks(tmp_path, settings_path)
+        _make_hook_stale(tmp_path, "claude-hook.sh")
+        with patch("platformdirs.user_data_dir", return_value=str(tmp_path)):
+            result = runner.invoke(app, ["doctor", "--settings-path", str(settings_path)])
+        assert result.exit_code == ExitCode.GENERAL_ERROR
+
+    def test_fix_repairs_stale_posix_hook_and_chmods_it(self, tmp_path: Path) -> None:
+        """Regression test for the doctor.py `--fix` gap found while
+        implementing QB-082: the repair path writes a fresh script via the
+        same primitive `_install_claude()` uses, but originally didn't chmod
+        it — a repaired POSIX hook would have been left non-executable
+        (silently, since settings.json invokes it via an explicit shell
+        anyway) while a freshly-installed one was executable. Fails on the
+        pre-fix doctor.py, passes once `_repair_hooks()` also chmods."""
+        settings_path = tmp_path / "settings.json"
+        _install_real_hooks(tmp_path, settings_path)
+        _make_hook_stale(tmp_path, "claude-hook.sh")
+        with patch("platformdirs.user_data_dir", return_value=str(tmp_path)):
+            result = runner.invoke(app, ["doctor", "--settings-path", str(settings_path), "--fix"])
+        assert result.exit_code == 0
+
+        hook_path = tmp_path / "hooks" / "claude-hook.sh"
+        assert hook_path.stat().st_mode & 0o777 == 0o755
 
 
 # ---------------------------------------------------------------------------

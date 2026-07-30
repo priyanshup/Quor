@@ -457,6 +457,9 @@ $input | & "C:\full\path\to\python.exe" -m quor hook claude
 - PowerShell execution policy: `quor init` checks and warns if `Get-ExecutionPolicy` returns `Restricted`. It does NOT attempt to change the policy.
 - The hook script must handle the cursor doubled-BOM edge case: strip `\xEF\xBB\xBF\xEF\xBB\xBF` before JSON parsing.
 
+**Superseded in part by ADR-043** — see there for the POSIX (macOS/Linux) launcher added in
+QB-082. This ADR's Windows PowerShell decision is unchanged and still current for Windows.
+
 ---
 
 ## ADR-018: Error Handling — Fail-Open at Every Level
@@ -2028,3 +2031,94 @@ synthetic labels already are — a reporting command has no "before" blob to com
   not what this command's spec means by "dependency," and remains fully visible via `quor graph`
   instead.
 - See `backlog.md`'s `QB-078` entry for the implementation record (test counts, files touched).
+
+---
+
+## ADR-043: Cross-Platform Claude Hook Launcher (QB-082)
+
+**Status:** Decided and shipped
+**Date:** 2026-07-30
+
+**Context:**
+`quor init --claude` generated only a PowerShell (`.ps1`) launcher script, registered in
+`settings.json` as `powershell -ExecutionPolicy Bypass -File "<path>"` — correct for ADR-017's
+Windows-first target, but a real, silent-failure bug on macOS/Linux: neither `powershell` nor
+`pwsh` exists on a default install of either, so `quor init --claude` on those platforms wrote a
+hook that would fail every single Claude Code PreToolUse/PostToolUse invocation with "command not
+found." CI (`ubuntu-latest`/`windows-latest`) never caught this — the Linux leg only proved the
+Python package itself installs and unit-tests pass, not that the actual hook mechanism works end
+to end, since it too was still PowerShell-only. Surfaced when the project owner tried to install
+Quor on their own macOS development machine.
+
+**Decision:**
+Windows keeps ADR-017's PowerShell launcher unchanged. macOS/Linux now get a POSIX shell (`.sh`)
+launcher instead, registered as `<sh> "<path>"` where `<sh>` is resolved via `shutil.which("sh")`
+falling back to `/bin/sh`. The generated script is a thin wrapper exactly like the PS1 one — `exec
+"{python}" -m quor hook claude` — `exec` replaces the launcher shell process with Python directly,
+so stdin/stdout are inherited as-is with no PowerShell-style read-all-then-pipe dance required. The
+real hook logic (`quor/adapters/claude.py`/`claude_read.py`'s `run_hook()`/`handle_bytes()`) is
+untouched — 100% platform-independent Python already, never forked or duplicated for this change.
+
+Platform detection is centralized in one new function, `hook_manifest.is_windows()` (`os.name ==
+"nt"` — the check that most directly expresses "Windows vs. POSIX process semantics," the actual
+axis every call site branches on, rather than `sys.platform`'s more specific and less relevant
+`"win32"`/`"cygwin"`/... string). `init.py`/`doctor.py` import the `hook_manifest` *module* rather
+than pulling `is_windows`/`POSIX_SHELL` in by name — a `from ... import is_windows` binds a
+separate reference in the importing module's own namespace at import time, which a test patching
+`hook_manifest.is_windows` later could never reach; going through the module keeps exactly one
+patchable source of truth. `ClaudeHookSpec.script_name`/`.template` (`hook_manifest.py`) became
+`@property` methods resolving `is_windows()` at *access time* rather than fixed fields resolved
+once at spec-construction/module-import time — necessary because the specs (`BASH_HOOK_SPEC`/
+`READ_HOOK_SPEC`) are frozen module-level constants built once at import; a fixed-field design would
+have frozen the platform decision permanently at that first import, long before any test (or, in
+principle, any runtime platform check) could matter.
+
+On POSIX, the freshly-written launcher is also `chmod 0o755`'d — conventional for a shell script,
+not strictly required by settings.json's own invocation (which always names the shell explicitly),
+but avoids a surprise if a user later runs `./claude-hook.sh` directly. `doctor --fix`'s repair path
+(`_repair_hooks()`) needed the identical `chmod` added — found only while implementing this, since
+it writes a fresh script via the same primitive `_install_claude()` uses, and would otherwise have
+left a *repaired* POSIX hook non-executable while a freshly *installed* one was not.
+
+**Why not simulate the other platform via `os.name`/`sys.platform` monkeypatching in tests:**
+Tried first, rejected. CPython's `pathlib.WindowsPath`/`PosixPath` each bake an "only instantiable
+on the real matching OS" guard in as a class-body conditional (`if os.name == 'nt': def
+__new__(...): raise UnsupportedOperation(...)`) evaluated exactly once, the moment `pathlib` is
+first imported — which happens at real interpreter/process startup, long before any test fixture
+runs. Patching `os.name` afterward doesn't change which concrete class `Path(...)` builds; it just
+makes the "wrong" class's `__new__` start raising while every other code path still constructs a
+real, correctly-flavored `Path` on the actual host OS. Since nearly every test in `test_cli.py`
+constructs real `Path` objects (`tmp_path`, `platformdirs`-derived paths), this would have broken
+in confusing, hard-to-diagnose ways. Tests instead monkeypatch `hook_manifest.is_windows` itself (a
+plain function returning a bool) — changing only Quor's own platform decision, leaving every real
+filesystem path operation completely unaffected. `tests/unit/test_hook_manifest.py`'s own tests are
+the one exception, safely patching `os.name` directly, because that module's code path never
+constructs a `Path` at all.
+
+**Gemini deferred, deliberately:** `quor/adapters/gemini_adapter.py` has its own fully independent
+copy of the pre-QB-082 Windows-only pattern (own `HOOK_PS1_TEMPLATE`, own hardcoded `powershell`
+command). The launcher abstraction here (`is_windows()`, `POSIX_SHELL`, the platform-property
+pattern on `ClaudeHookSpec`) is intentionally reusable for Gemini, but Gemini's migration is
+deferred to a separate ticket to keep QB-082's scope minimal — `quor init --agent gemini` remains
+Windows-only until that follow-up ships.
+
+**CI:** added `macos-latest` to the existing `ubuntu-latest`/`windows-latest` matrix, at full
+Python-version breadth (not reduced to one version) — under-testing the real launcher on macOS is
+exactly the gap that let this bug ship in the first place, so the extra CI minutes are a deliberate
+trade the project owner chose to keep paying rather than risk a silent regression here again. A new
+integration test (`tests/integration/test_cli_commands.py`) pipes a synthetic PreToolUse payload
+straight through the real, unmocked generated `.sh` launcher via a real `sh` subprocess and confirms
+valid `hookSpecificOutput` JSON comes back — the strongest available proof the POSIX path actually
+works end to end, not just that unit-level mocks agree with each other.
+
+**Consequences:**
+- `quor init --claude`'s user-facing command is unchanged on every platform — the fix is entirely
+  internal to launcher generation, matching the ticket's own "no separate CLI commands" constraint.
+- `doctor.py` needed zero changes to its *checking* logic (`_check_hook_script`/
+  `_check_hook_registered`/`_check_hook_up_to_date` already only ever read `spec.script_name`/
+  `spec.template`/`spec.schema_version` generically) — only its `--fix` *repair* path gained the
+  `chmod` call described above.
+- See `backlog.md`'s `QB-082` entry for the implementation record.
+
+**Superseded in part:** this ADR extends, rather than replaces, ADR-017 — see that entry's own
+closing note.

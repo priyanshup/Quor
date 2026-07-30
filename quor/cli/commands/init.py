@@ -24,6 +24,10 @@ import platformdirs
 import typer
 from rich.console import Console
 
+# Module import (not `from quor.adapters.hook_manifest import is_windows`) so tests can
+# monkeypatch `hook_manifest.is_windows`/`hook_manifest.POSIX_SHELL` and have every call site
+# below observe it — a `from`-imported name would be a separate reference such a patch can't reach.
+from quor.adapters import hook_manifest
 from quor.adapters.base import InstallContext, InstallResult
 from quor.adapters.hook_manifest import (
     BASH_HOOK_SPEC,
@@ -149,6 +153,13 @@ def _install_claude(ctx: InstallContext) -> InstallResult:
     for spec in HOOK_SPECS:
         script_path = script_paths[spec.hook_id]
         _write_text_atomic(script_path, render_hook_script(spec, python=sys.executable))
+        if not hook_manifest.is_windows():
+            # Conventional for a POSIX shell script — not required for
+            # settings.json's own invocation (that always names the shell
+            # explicitly, see _install_hook_entry below), but makes the
+            # launcher independently runnable if someone later does
+            # `./claude-hook.sh` directly.
+            script_path.chmod(0o755)
         new_settings = _install_hook_entry(new_settings, spec, script_path)
     _write_json_atomic(settings_file, new_settings)
 
@@ -208,9 +219,10 @@ def _hook_installed(settings: dict[str, Any], spec: ClaudeHookSpec) -> bool:
     """Return True if `settings.json` already has a `spec.event` entry whose
     command references `spec.script_name`. Generic across every hook in
     HOOK_SPECS — the command field holds `powershell ... -File "<path>\\
-    <script_name>"`, not the literal `quor hook <name>` (that string only
-    appears inside the .ps1 file content), so the script filename is what's
-    actually present and matchable here."""
+    <script_name>"` on Windows or `<sh> "<path>/<script_name>"` on macOS/
+    Linux (QB-082), never the literal `quor hook <name>` (that string only
+    appears inside the launcher file's own content), so the script filename
+    is what's actually present and matchable here regardless of platform."""
     entries = settings.get("hooks", {}).get(spec.event, [])
     for entry in entries:
         for h in entry.get("hooks", []):
@@ -266,7 +278,10 @@ def _install_hook_entry(
         for entry in hooks.get(spec.event, [])
         if not any(spec.script_name in h.get("command", "") for h in entry.get("hooks", []))
     ]
-    command = f'powershell -ExecutionPolicy Bypass -File "{script_path}"'
+    if hook_manifest.is_windows():
+        command = f'powershell -ExecutionPolicy Bypass -File "{script_path}"'
+    else:
+        command = f'{hook_manifest.POSIX_SHELL} "{script_path}"'
     entries.append({"matcher": spec.matcher, "hooks": [{"type": "command", "command": command}]})
     hooks[spec.event] = entries
     new_settings["hooks"] = hooks
@@ -274,6 +289,12 @@ def _install_hook_entry(
 
 
 def _warn_if_execution_policy_restricted() -> None:
+    if not hook_manifest.is_windows():
+        # PowerShell execution policy is a Windows-only concept — skip the
+        # subprocess attempt entirely on macOS/Linux rather than relying on
+        # the OSError fail-open below (harmless either way, but this avoids
+        # a pointless spawn on every POSIX install).
+        return
     try:
         result = subprocess.run(
             ["powershell", "-NoProfile", "-Command", "Get-ExecutionPolicy"],
