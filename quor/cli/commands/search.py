@@ -80,6 +80,15 @@ def _exit_empty_query(*, json_output: bool) -> NoReturn:
     raise typer.Exit(code=ExitCode.GENERAL_ERROR)
 
 
+def _exit_invalid_limit(limit: int, *, json_output: bool) -> NoReturn:
+    message = f"Invalid --limit {limit} — must be a positive integer."
+    if json_output:
+        typer.echo(orjson.dumps({"error": "invalid_limit", "message": message}).decode())
+    else:
+        typer.secho(message, fg=typer.colors.RED, err=True)
+    raise typer.Exit(code=ExitCode.GENERAL_ERROR)
+
+
 def _track(root: Path, output: str, t0: float) -> None:
     """Record this invocation the same way `quor explore` does — fails
     open, never affects real output. No "before" blob (this only reads
@@ -124,21 +133,29 @@ def search_command(
     t0 = time.monotonic()
     root = resolve_repo_root(path)
 
-    if not query.strip():
+    query = query.strip()
+    if not query:
         _exit_empty_query(json_output=json_output)
+
+    if limit < 1:
+        _exit_invalid_limit(limit, json_output=json_output)
 
     validated_kind: FileKind | None = None
     if kind is not None:
-        if kind not in _FILE_KINDS:
+        kind_casefold = kind.casefold()
+        if kind_casefold not in _FILE_KINDS:
             _exit_invalid_choice("--kind", kind, _FILE_KINDS, json_output=json_output)
-        validated_kind = cast(FileKind, kind)
+        validated_kind = cast(FileKind, kind_casefold)
 
     validated_importance: FileImportance | None = None
     if importance is not None:
         titled = importance.capitalize()
         if titled not in _FILE_IMPORTANCES:
             _exit_invalid_choice(
-                "--importance", importance, _FILE_IMPORTANCES, json_output=json_output
+                "--importance",
+                importance,
+                tuple(choice.lower() for choice in _FILE_IMPORTANCES),
+                json_output=json_output,
             )
         validated_importance = cast(FileImportance, titled)
 

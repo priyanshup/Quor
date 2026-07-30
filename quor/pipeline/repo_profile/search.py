@@ -133,7 +133,10 @@ def _path_tokens(path: str) -> frozenset[str]:
 
 
 def _best_evidence(
-    path: str, entry: FileIntelligenceEntry, neighbors: tuple[str, ...], query_casefold: str
+    path: str,
+    entry: FileIntelligenceEntry,
+    reverse_index: dict[str, list[str]],
+    query_casefold: str,
 ) -> tuple[SearchEvidence, str] | None:
     """Check all 7 evidence tiers, in priority order, first match wins — a
     file gets exactly one tier, the strongest it qualifies for. The tier
@@ -141,9 +144,11 @@ def _best_evidence(
     ordered checklist here rather than scattered across helpers.
 
     Bounded per-file cost only: this scans exactly `entry`'s own
-    `top_symbols`/`neighbors` and the query string — it never touches any
+    `top_symbols`/neighbors and the query string — it never touches any
     other file's data and never does repository-wide work, which is the
-    property the whole 100ms latency budget rests on.
+    property the whole 100ms latency budget rests on. `_dependency_neighbors()`
+    is only called once all six cheaper tiers have failed to match — the
+    common case (an early tier hit) never pays for building it.
     """
     p = PurePosixPath(path)
     filename = p.name
@@ -173,7 +178,7 @@ def _best_evidence(
         if query_casefold in symbol.casefold():
             return "top_symbol", symbol
 
-    for neighbor in neighbors:
+    for neighbor in _dependency_neighbors(path, entry, reverse_index):
         if query_casefold in _path_tokens(neighbor):
             return "dependency", neighbor
 
@@ -237,8 +242,7 @@ def search(
         if entry_points_only and not entry.entry_point:
             continue
 
-        neighbors = _dependency_neighbors(path, entry, reverse_index)
-        evidence = _best_evidence(path, entry, neighbors, query_casefold)
+        evidence = _best_evidence(path, entry, reverse_index, query_casefold)
         if evidence is None:
             continue
         tier, matched_value = evidence
