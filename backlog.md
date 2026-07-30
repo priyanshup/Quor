@@ -560,6 +560,15 @@ likely obsoletes needing a filter-specific fix, so it should be scoped first.
 review via a direct SQLite query against the real tracking DB — invisible in the benchmark corpus,
 which has no case that exercises this pattern (mypy's 2 benchmark samples both compress fine).
 
+**Product decision (2026-07-31):** re-raised explicitly during the v0.5.0 README rewrite — the
+project owner does not consider a filter that expands output on real usage acceptable, benchmark
+corpus blind spot or not. Reconfirmed as next-priority exploration work, ahead of any further
+benchmark-number-driven marketing (the README's new "Numbers" section deliberately does not
+mention mypy's real-world regression, since it's an unresolved defect, not a proof point — see
+QB-085's README rewrite). No scoping decision made yet; option (b) above (fix generally via
+QB-053/QB-054's negative-savings self-correction) still the leading candidate over a mypy-specific
+patch.
+
 </details>
 
 ---
@@ -6003,6 +6012,55 @@ updated together, per ADR-037/038/039's own repeated warning about this exact om
 **Files changed:** `quor/cli/commands/dashboard.py` (new), `quor/tracking/db.py`,
 `quor/cli/main.py`, `quor/__main__.py`, `docs/FAQ.md`, `README.md`, `docs/final/DECISIONS.md`
 (ADR-045), `tests/unit/test_tracking_db.py`, `tests/unit/test_dashboard.py` (new).
+
+</details>
+
+---
+
+#### QB-085 — README Rewrite: Marketing Pass + Real Benchmark Numbers
+
+**Effort:** Small · **Value:** Medium · **Risk:** Low · **Category:** Documentation
+
+**Status:** Implemented (2026-07-31).
+
+<details>
+<summary>Technical details</summary>
+
+**Request:** QB-084's README trim was written from a developer's point of view — accurate, but not
+positioned to sell the product. Two specific problems flagged directly: (1) the README's own
+headline number (35.3%, from the stale 60-case corpus QB-047 has since grown past) understated what
+the *current*, CI-gated 127-case benchmark run actually shows, and buried the real high-end cases
+(several real commands compress 75-89%) instead of leading with them; (2) a separate, unrelated
+concern raised in the same conversation — mypy's real-usage net-negative compression (QB-052) — was
+explicitly *not* wanted folded into marketing copy, only tracked as engineering follow-up (see
+QB-052's own 2026-07-31 product-decision note).
+
+**What changed:** Re-ran `python -m tests.benchmarks.run_benchmarks` against the real, current,
+CI-verified 127-case corpus (confirmed matching the committed `baseline.json` byte-for-byte) rather
+than reusing QB-084's carried-forward 35.3%/60-case figure — the honest current number is
+**35.9%/18,962 tokens saved**, plus four verified real high-end cases pulled directly from
+`benchmark-results.json`'s `best_performers` (a mostly-cached `pip install`, 88.8%; a deeply nested
+Java exception, 88.6%; noisy `pnpm install` output, 77.1%; a large JS file read via Claude Code's
+`Read` tool, 75.0%) and the `per_ecosystem` breakdown (Java 55.6%, config files 53.9%, JavaScript
+49.5%, down to Documents at 24.8%) — every number in the new README traces to a real, reproducible
+benchmark run, nothing invented. No competitor named or compared against (none appear in any
+existing public-facing doc); no fabricated testimonials, user counts, or logos — per this repo's own
+Rule 4/ANTI_GOALS #9 spirit, credible verified numbers over hype.
+
+**Also corrected while rewriting:** the "Supported" section's `**Assistant:** Claude Code.` line
+predated QB-068/QB-069's multi-agent adapter work entirely — it now accurately states Claude Code
+and Gemini CLI get full compression, and the six `DetectionOnlyAdapter` agents (Codex CLI, Cursor,
+VS Code Copilot agent mode, Windsurf, Aider, Continue.dev) are listed as detected-but-pending,
+verified against each adapter's own `agent_id`/`display_name` in `quor/adapters/*.py`. The Commands
+table gained `quor search` (QB-080, previously omitted despite already being a shipped command).
+
+**Deliberately not done:** a full regeneration of `docs/BENCHMARKS.md`'s own prose (still describes
+the 60-case corpus as of its 2026-07-15 generation date) — flagged to the project owner as a larger,
+separate staleness gap, out of scope for a README-only rewrite; `docs/BENCHMARKS.md`'s narrower
+"Full breakdown" link from the README remains valid as a path, just not yet regenerated to match the
+127-case corpus.
+
+**Files changed:** `README.md`, `backlog.md` (this entry, plus the QB-052 product-decision note).
 
 </details>
 
