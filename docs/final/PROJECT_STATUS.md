@@ -1,7 +1,12 @@
 ﻿# PROJECT STATUS
 ## Quor — Current State Snapshot
 
-> Last updated: 2026-07-04 (PreToolUse hook protocol fix, ADR-030 — see below; v0.3.0 is the current version, v0.2.1 is the latest published release)
+> Last updated: 2026-07-04 (PreToolUse hook protocol fix, ADR-030 — see below).
+> Version note added 2026-07-31 without a full snapshot rewrite: v0.5.0 is the current version
+> (v0.3.0, v0.4.0, and v0.4.1 all shipped after this snapshot's last full update — see
+> CHANGELOG.md for what each contained; QB-083/QB-084 are v0.5.0's own additions). The
+> phase-by-phase narrative below still reflects the 2026-07-04 snapshot and has not been
+> re-walked against those later releases.
 > Update this document at the start of every implementation session.
 
 ---
@@ -15,7 +20,7 @@
 | Documentation | COMPLETE | 100% | 10 canonical docs + README, CHANGELOG, LICENSE, CONTRIBUTING, CODE_OF_CONDUCT, SECURITY all written and reconciled against the released package (see Release Notes below). |
 | Implementation | COMPLETE | 100% | All 10 phases complete, including packaging. |
 | Testing | COMPLETE | 100% | 983 tests, ruff+mypy clean on `quor/` and `tests/`. All passing, fully machine-isolated. Verified on Python 3.11, 3.13, 3.14. |
-| Packaging | COMPLETE | 100% | v0.1.0 published to both TestPyPI and PyPI on 2026-07-01; v0.2.0 and v0.2.1 released since (2026-07-04); v0.3.0 is the current version. v0.2.1 installed and verified from the real PyPI index in a fresh virtual environment. |
+| Packaging | COMPLETE | 100% | v0.1.0 published to both TestPyPI and PyPI on 2026-07-01; v0.2.0, v0.2.1, v0.3.0, v0.4.0, and v0.4.1 released since; v0.5.0 is the current version (see CHANGELOG.md). v0.2.1 was the last release installed and verified from the real PyPI index in a fresh virtual environment as of this snapshot's own 2026-07-04 update. |
 
 ---
 
@@ -183,7 +188,7 @@ against the actual released package and CLI behavior.
 
 ## Known Blockers
 
-None. v0.3.0 is the current version; v0.2.1 is the latest published release on PyPI (2026-07-04); v0.1.0 was the first, published 2026-07-01.
+None. v0.5.0 is the current version; v0.4.1 was the prior published release on PyPI (2026-07-11); v0.1.0 was the first, published 2026-07-01. (This snapshot's own narrative below still reflects the 2026-07-04/v0.3.0 state — see the version note at the top of this document.)
 
 ---
 
@@ -263,7 +268,7 @@ The mode system (ADR-009: AUDIT/OPTIMIZE/SIMULATE) remains **display-only** — 
 
 ## Immediate Next Milestone
 
-**v0.3.0 is the current version** (v0.1.0 was the first release, 2026-07-01; v0.2.0 and v0.2.1 followed on 2026-07-04). `pyproject.toml` entry-points, PyPI registration, README, and the release workflow are all done and published. The next milestone is **v0.5 — Public Alpha** (see ROADMAP.md): Windows + Linux CI already exist from v0.1, so the remaining gap is broader real-world usage (multiple non-builder developers) and the additional Public Alpha gates in RELEASE_CRITERIA.md.
+**v0.5.0 is the current version** (v0.1.0 was the first release, 2026-07-01; v0.2.0 and v0.2.1 followed on 2026-07-04; v0.3.0, v0.4.0, and v0.4.1 followed after this section was originally written — see CHANGELOG.md). `pyproject.toml` entry-points, PyPI registration, README, and the release workflow are all done and published. The next milestone is **v0.5 — Public Alpha** (see ROADMAP.md) — a named milestone gate in RELEASE_CRITERIA.md, not the same thing as the v0.5.0 package version reached above, and not yet confirmed passed: Windows + Linux CI already exist from v0.1, so the remaining gap is broader real-world usage (multiple non-builder developers) and the additional Public Alpha gates in RELEASE_CRITERIA.md.
 
 ---
 

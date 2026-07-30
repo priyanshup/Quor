@@ -33,7 +33,8 @@ as real data comes in.
 extraction sub-items, QB-005's JavaScript/TypeScript sub-items, QB-036, QB-035A) previously stated
 "not committed — awaiting explicit commit instruction." That was true when each was written, but
 stale by the time this restructuring happened: `CHANGELOG.md` and `git log` confirm all of it shipped
-in Quor **v0.4.0** and **v0.4.1** (2026-07-11, the current release). Each affected entry has been
+in Quor **v0.4.0** and **v0.4.1** (2026-07-11, then the current release — v0.5.0 is current as of
+2026-07-31, see CHANGELOG.md). Each affected entry has been
 corrected in place, with the correction called out explicitly rather than silently edited. This
 itself is a useful data point: this document had drifted from reality before, which is part of why
 it needed restructuring now, and worth remembering the next time "Status" is read as gospel — when
@@ -83,7 +84,7 @@ engine** — one component of which happens to be command-output compression tod
 
 ## Current Status
 
-*As of Quor v0.4.1, released 2026-07-11 (today). Windows-first, Claude Code only.*
+*As of Quor v0.5.0, released 2026-07-31. Windows-first, Claude Code only.*
 
 **What's actually shipped and live on `main` today:**
 
@@ -3569,7 +3570,7 @@ derived from which `requires_language` values were actually skipped
 (`ast_summarize/registry.py::extra_for_language()`), not hardcoded, so a future language sharing a
 different extra name would produce the correct hint automatically.
 
-**Status:** Fixed and merged to `main` (PR #49, `fix/qb-038-verify-optional-deps`) — shipped in Quor **v0.4.1** (2026-07-11), the current release.
+**Status:** Fixed and merged to `main` (PR #49, `fix/qb-038-verify-optional-deps`) — shipped in Quor **v0.4.1** (2026-07-11); still live, unchanged, in the current v0.5.0 release.
 
 </details>
 
