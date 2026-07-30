@@ -30,7 +30,7 @@ import tracemalloc
 from dataclasses import dataclass
 from pathlib import Path
 
-from quor.pipeline.repo_profile import intel_store
+from quor.pipeline.repo_profile import intel_store, search
 from quor.pipeline.repo_profile.intel import ensure_repo_intelligence
 
 DEFAULT_FILE_COUNT = 150
@@ -244,6 +244,107 @@ def render_file_intelligence_lookup_report(results: list[FileIntelligenceLookupR
     return "\n".join(lines)
 
 
+@dataclass(frozen=True)
+class SearchLatencyResult:
+    """QB-080: measures `search.search()` end-to-end against an already-
+    loaded `file_intelligence.json` — the full evidence-scoring + ranking
+    pass, not just the raw file load `measure_file_intelligence_lookup()`
+    covers. Reported, not asserted (see module docstring);
+    `tests/unit/test_repo_intel_benchmark.py` is where a bound actually
+    gets asserted."""
+
+    file_count: int
+    cpu_seconds: float
+    elapsed_seconds: float
+
+
+def measure_search_latency(root: Path, file_count: int, query: str = "mod_1") -> SearchLatencyResult:
+    """Requires `file_intelligence.json` to already exist at `root`. Loads
+    the cache once (mirroring what a real `quor search` CLI invocation
+    does) outside the timer, then measures the `search.search()` call
+    alone."""
+    entries = intel_store.load_file_intelligence(root)
+    if entries is None:
+        raise RuntimeError("file_intelligence.json missing — call ensure_repo_intelligence(root) first")
+    cpu_start = time.process_time()
+    wall_start = time.monotonic()
+    search.search(entries, query)
+    elapsed = time.monotonic() - wall_start
+    cpu = time.process_time() - cpu_start
+    return SearchLatencyResult(file_count=file_count, cpu_seconds=cpu, elapsed_seconds=elapsed)
+
+
+@dataclass(frozen=True)
+class ReverseImportIndexResult:
+    """QB-080: measures `search._build_reverse_import_index()` alone — the
+    one genuinely new algorithmic step this item introduces (every other
+    part of `search()` is a bounded per-file scan). Reported separately
+    from `measure_search_latency()`'s end-to-end number so a future
+    accidental regression to something worse than linear is directly
+    visible, not folded invisibly into the total."""
+
+    file_count: int
+    cpu_seconds: float
+    elapsed_seconds: float
+
+
+def measure_reverse_import_index(root: Path, file_count: int) -> ReverseImportIndexResult:
+    entries = intel_store.load_file_intelligence(root)
+    if entries is None:
+        raise RuntimeError("file_intelligence.json missing — call ensure_repo_intelligence(root) first")
+    cpu_start = time.process_time()
+    wall_start = time.monotonic()
+    search._build_reverse_import_index(entries)
+    elapsed = time.monotonic() - wall_start
+    cpu = time.process_time() - cpu_start
+    return ReverseImportIndexResult(file_count=file_count, cpu_seconds=cpu, elapsed_seconds=elapsed)
+
+
+def run_search_latency_scenarios() -> tuple[list[SearchLatencyResult], list[ReverseImportIndexResult]]:
+    """Same two-repo-size shape as `run_file_intelligence_lookup_scenarios()`
+    (150/2000 files) — deliberately not wired into the automated
+    `pytest tests/unit/` suite for the same reason (building a 2000-file
+    repo is real, non-trivial cost this module's docstring already scopes
+    to "run manually via `python -m ...`")."""
+    search_results: list[SearchLatencyResult] = []
+    reverse_index_results: list[ReverseImportIndexResult] = []
+    for file_count in (DEFAULT_FILE_COUNT, 2000):
+        tmp_root = Path(tempfile.mkdtemp(prefix="quor_search_latency_bench_"))
+        try:
+            repo = tmp_root / "repo"
+            build_synthetic_repo(repo, file_count)
+            ensure_repo_intelligence(repo)
+            search_results.append(measure_search_latency(repo, file_count))
+            reverse_index_results.append(measure_reverse_import_index(repo, file_count))
+        finally:
+            shutil.rmtree(tmp_root, ignore_errors=True)
+    return search_results, reverse_index_results
+
+
+def render_search_latency_report(
+    search_results: list[SearchLatencyResult], reverse_index_results: list[ReverseImportIndexResult]
+) -> str:
+    lines = [
+        "## quor search Latency (QB-080)",
+        "",
+        "End-to-end `search.search()` cost against an already-loaded "
+        "`file_intelligence.json`, plus `_build_reverse_import_index()` "
+        "measured separately as the one genuinely new algorithmic step "
+        "this item introduces.",
+        "",
+        "| Repo Size (files) | Search Elapsed (s) | Search CPU (s) | "
+        "Reverse Index Elapsed (s) | Reverse Index CPU (s) |",
+        "|---|---|---|---|---|",
+    ]
+    for s, r in zip(search_results, reverse_index_results, strict=True):
+        lines.append(
+            f"| {s.file_count} | {s.elapsed_seconds:.4f} | {s.cpu_seconds:.4f} | "
+            f"{r.elapsed_seconds:.4f} | {r.cpu_seconds:.4f} |"
+        )
+    lines.append("")
+    return "\n".join(lines)
+
+
 def render_report(results: list[ScenarioResult]) -> str:
     lines = [
         "# Repository Intelligence Performance Benchmark (QB-072)",
@@ -273,7 +374,10 @@ def main() -> None:
     lookup_results = run_file_intelligence_lookup_scenarios()
     lookup_report = render_file_intelligence_lookup_report(lookup_results)
 
-    full_report = report + "\n" + lookup_report
+    search_results, reverse_index_results = run_search_latency_scenarios()
+    search_report = render_search_latency_report(search_results, reverse_index_results)
+
+    full_report = report + "\n" + lookup_report + "\n" + search_report
     print(full_report)
 
     output_path = Path(__file__).parent / "results" / "repo-intel-benchmark-report.md"

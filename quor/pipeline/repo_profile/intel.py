@@ -51,7 +51,7 @@ from __future__ import annotations
 
 import dataclasses
 import time
-from collections import Counter
+from collections import Counter, defaultdict
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
@@ -108,9 +108,7 @@ _ONBOARDING_BANNER = (
     "(map, symbols, dependency graph) — this happens once; future runs "
     "reuse the cache and rebuild only what changed."
 )
-_CORRUPTED_BANNER = (
-    "[quor] Repository intelligence cache was unreadable — rebuilding from scratch."
-)
+_CORRUPTED_BANNER = "[quor] Repository intelligence cache was unreadable — rebuilding from scratch."
 _VERSION_BANNER = (
     "[quor] Quor version changed since this cache was built — rebuilding repository intelligence."
 )
@@ -131,7 +129,9 @@ def _noop(_message: str) -> None:
     pass
 
 
-def ensure_repo_intelligence(root: Path, *, rebuild: bool = False, echo: Echo | None = None) -> RepoIntelligence:
+def ensure_repo_intelligence(
+    root: Path, *, rebuild: bool = False, echo: Echo | None = None
+) -> RepoIntelligence:
     """Return `root`'s repository intelligence, building or refreshing the
     cache exactly as much as needed. `echo` receives progress/onboarding
     messages (pass `typer.echo` with `err=True` from a CLI command so they
@@ -143,17 +143,23 @@ def ensure_repo_intelligence(root: Path, *, rebuild: bool = False, echo: Echo | 
     quor_version = str(quor.__version__)
 
     if rebuild:
-        return _full_rebuild(root, action="forced_rebuild", t0=t0, echo=_echo, quor_version=quor_version)
+        return _full_rebuild(
+            root, action="forced_rebuild", t0=t0, echo=_echo, quor_version=quor_version
+        )
 
     if not intel_store.state_exists(root):
         return _full_rebuild(root, action="onboarded", t0=t0, echo=_echo, quor_version=quor_version)
 
     state = intel_store.load_state(root)
     if state is None:
-        return _full_rebuild(root, action="corrupted_rebuild", t0=t0, echo=_echo, quor_version=quor_version)
+        return _full_rebuild(
+            root, action="corrupted_rebuild", t0=t0, echo=_echo, quor_version=quor_version
+        )
 
     if state.schema_version != CACHE_SCHEMA_VERSION or state.quor_version != quor_version:
-        return _full_rebuild(root, action="version_rebuild", t0=t0, echo=_echo, quor_version=quor_version)
+        return _full_rebuild(
+            root, action="version_rebuild", t0=t0, echo=_echo, quor_version=quor_version
+        )
 
     return _refresh_from_cache(root, state, t0=t0, echo=_echo, quor_version=quor_version)
 
@@ -300,13 +306,24 @@ def _build_file_intelligence(
     tiers = dashboard.importance_tiers(walk_result.files, edges)
     configuration_paths = _configuration_paths(profile)
 
+    # import_out/import_in stay pure counts (`imports`/`imported_by` below,
+    # unchanged since QB-079); import_out_paths is QB-080's addition — the
+    # same loop also keeps *which* files each `import` edge resolved to, not
+    # only how many. File-level only (edge.kind == "import"), never a
+    # call/inherit/export edge and never edge.target_symbol — this must stay
+    # a plain file-to-file list, or a future "improvement" toward
+    # symbol-level detail here would silently reintroduce the
+    # symbol_facts.json/graph_facts.json cost QB-080 was written specifically
+    # to avoid on the search/read path.
     import_out: Counter[str] = Counter()
     import_in: Counter[str] = Counter()
+    import_out_paths: dict[str, set[str]] = defaultdict(set)
     for edge in edges:
         if edge.kind == "import":
             import_out[edge.source_file] += 1
             if edge.target_file is not None:
                 import_in[edge.target_file] += 1
+                import_out_paths[edge.source_file].add(edge.target_file)
 
     entries: dict[str, FileIntelligenceEntry] = {}
     for rel_path in walk_result.files:
@@ -314,9 +331,16 @@ def _build_file_intelligence(
         file_facts = graph_facts.get(rel_path)
         fingerprint = fingerprints.get(rel_path)
 
-        language = file_facts.language if file_facts is not None else (language_for_path(rel_path) or "unknown")
+        language = (
+            file_facts.language
+            if file_facts is not None
+            else (language_for_path(rel_path) or "unknown")
+        )
         kind = _classify_kind(
-            rel_path, root, configuration_paths=configuration_paths, scan_content=file_facts is not None
+            rel_path,
+            root,
+            configuration_paths=configuration_paths,
+            scan_content=file_facts is not None,
         )
 
         entries[rel_path] = FileIntelligenceEntry(
@@ -325,15 +349,19 @@ def _build_file_intelligence(
             importance=tiers.get(rel_path, "Low"),
             imports=import_out.get(rel_path, 0),
             imported_by=import_in.get(rel_path, 0),
-            entry_point=file_symbols is not None and any(s.is_entry_point for s in file_symbols.symbols),
+            entry_point=file_symbols is not None
+            and any(s.is_entry_point for s in file_symbols.symbols),
             top_symbols=_primary_symbol_names(file_symbols),
+            imported_files=sorted(import_out_paths.get(rel_path, set())),
             size=fingerprint.size if fingerprint is not None else 0,
             mtime_ns=fingerprint.mtime_ns if fingerprint is not None else 0,
         )
     return entries
 
 
-def _full_rebuild(root: Path, *, action: BuildAction, t0: float, echo: Echo, quor_version: str) -> RepoIntelligence:
+def _full_rebuild(
+    root: Path, *, action: BuildAction, t0: float, echo: Echo, quor_version: str
+) -> RepoIntelligence:
     banner = _ACTION_BANNERS.get(action)
     if banner:
         echo(banner)
@@ -350,7 +378,9 @@ def _full_rebuild(root: Path, *, action: BuildAction, t0: float, echo: Echo, quo
     )
 
     echo("Building dependency graph...")
-    graph, graph_facts, graph_parse_failures = build_dependency_graph_with_facts(root, walk_result=walk_result)
+    graph, graph_facts, graph_parse_failures = build_dependency_graph_with_facts(
+        root, walk_result=walk_result
+    )
 
     fingerprints = fingerprint_files(root, walk_result.files)
     now = _utc_now_iso()
@@ -400,7 +430,9 @@ def _refresh_from_cache(
         # state.json was fine but a sibling artifact file is missing or
         # corrupted — treat the whole cache as unusable rather than
         # returning a partially-stale RepoIntelligence.
-        return _full_rebuild(root, action="corrupted_rebuild", t0=t0, echo=echo, quor_version=quor_version)
+        return _full_rebuild(
+            root, action="corrupted_rebuild", t0=t0, echo=echo, quor_version=quor_version
+        )
     symbol_files, symbol_parse_failures = symbol_data
     graph_facts, graph_parse_failures = graph_data
 
@@ -432,10 +464,14 @@ def _refresh_from_cache(
         profile = build_profile(root, walk_result=walk_result)
 
         echo("Building symbols...")
-        symbol_files, symbol_parse_failures = _refresh_symbol_facts(root, diff, symbol_files, symbol_parse_failures)
+        symbol_files, symbol_parse_failures = _refresh_symbol_facts(
+            root, diff, symbol_files, symbol_parse_failures
+        )
 
         echo("Building dependency graph...")
-        graph_facts, graph_parse_failures = _refresh_graph_facts(root, diff, graph_facts, graph_parse_failures)
+        graph_facts, graph_parse_failures = _refresh_graph_facts(
+            root, diff, graph_facts, graph_parse_failures
+        )
 
         intel_store.save_state(
             root,
@@ -486,7 +522,10 @@ def _refresh_from_cache(
 
 
 def _refresh_symbol_facts(
-    root: Path, diff: RepoDiff, cached_files: dict[str, FileSymbols], cached_parse_failures: set[str]
+    root: Path,
+    diff: RepoDiff,
+    cached_files: dict[str, FileSymbols],
+    cached_parse_failures: set[str],
 ) -> tuple[dict[str, FileSymbols], set[str]]:
     files = dict(cached_files)
     parse_failures = set(cached_parse_failures)
@@ -513,7 +552,11 @@ def _refresh_symbol_facts(
         files.pop(rel_path, None)
         parse_failures.discard(rel_path)
         language = EXTENSION_TO_LANGUAGE.get(PurePosixPath(rel_path).suffix.lower())
-        if language is None or not is_language_available(language) or get_symbol_extractor(language) is None:
+        if (
+            language is None
+            or not is_language_available(language)
+            or get_symbol_extractor(language) is None
+        ):
             continue
         file_symbols, reason = extract_file_symbols(root, rel_path, language)
         if reason == "parse_failure":

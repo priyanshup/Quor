@@ -26,9 +26,10 @@ Five files live under that directory:
   failed to parse; `RepoDependencyGraph` itself is always cheaply
   *reassembled* from this (via `graph.assemble_graph()`), for the same
   reason.
-- `file_intelligence.json` (QB-079) — one small `FileIntelligenceEntry` per
-  file the last scan walked (language, kind, importance tier, import
-  counts, top symbols, its own size/mtime fingerprint). Purely additive:
+- `file_intelligence.json` (QB-079, extended by QB-080) — one small
+  `FileIntelligenceEntry` per file the last scan walked (language, kind,
+  importance tier, import counts, top symbols, resolved outgoing import
+  paths, its own size/mtime fingerprint). Purely additive:
   independent of the other four files' shape, versioned separately via
   `FILE_INTELLIGENCE_VERSION` rather than `CACHE_SCHEMA_VERSION`, and
   designed to be looked up in O(1) per file without loading
@@ -113,7 +114,9 @@ def load_state(root: Path) -> RepoIntelState | None:
     try:
         data = orjson.loads(path.read_bytes())
         fingerprints = {
-            p: FileFingerprint(size=f["size"], mtime_ns=f["mtime_ns"], content_hash=f["content_hash"])
+            p: FileFingerprint(
+                size=f["size"], mtime_ns=f["mtime_ns"], content_hash=f["content_hash"]
+            )
             for p, f in data["fingerprints"].items()
         }
         return RepoIntelState(
@@ -278,6 +281,7 @@ def load_file_intelligence(root: Path) -> dict[str, FileIntelligenceEntry] | Non
                 imported_by=f["imported_by"],
                 entry_point=f["entry_point"],
                 top_symbols=list(f["top_symbols"]),
+                imported_files=list(f["imported_files"]),
                 size=f["size"],
                 mtime_ns=f["mtime_ns"],
             )
