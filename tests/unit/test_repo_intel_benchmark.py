@@ -317,8 +317,14 @@ class TestRelevantFilesLatency:
 
         # Pure regex/string work over one bounded prompt string — no
         # repository access at all, so this should stay effectively free
-        # regardless of repo size.
-        assert result.extraction_cpu_seconds < 0.01
+        # regardless of repo size. 0.05s (not a tighter bound like 0.01s),
+        # matching this class's other "negligible" checks below — confirmed
+        # on real windows-latest CI that `time.process_time()`'s clock
+        # granularity there can round a sub-millisecond operation up to a
+        # full tick (observed: exactly 0.015625s = 1/64s, the classic
+        # ~15.6ms Windows system-timer tick), so anything below ~20ms is not
+        # a reliable "negligible work" threshold on that platform specifically.
+        assert result.extraction_cpu_seconds < 0.05
 
     def test_merged_search_cpu_time_stays_bounded_even_at_max_query_terms(self, tmp_path: Path) -> None:
         from quor.pipeline.repo_profile.intel import ensure_repo_intelligence
@@ -353,4 +359,6 @@ class TestRelevantFilesLatency:
 
         # A handful of string-formatted lines (bounded by
         # `claude_read.MAX_RELEVANT_FILES`) — should stay effectively free.
-        assert result.render_cpu_seconds < 0.01
+        # 0.05s, not 0.01s — see test_extraction_cpu_time_is_negligible
+        # above for why (Windows process-time clock granularity).
+        assert result.render_cpu_seconds < 0.05
