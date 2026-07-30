@@ -5,11 +5,17 @@ from __future__ import annotations
 from collections import Counter
 from pathlib import Path
 
+import orjson
+
 from quor.pipeline.ast_summarize.relationship_model import Relationship
 from quor.pipeline.ast_summarize.symbol_model import Symbol
 from quor.pipeline.repo_profile import intel_store
 from quor.pipeline.repo_profile.graph import FileFacts
-from quor.pipeline.repo_profile.intel_model import FileFingerprint, RepoIntelState
+from quor.pipeline.repo_profile.intel_model import (
+    FileFingerprint,
+    FileIntelligenceEntry,
+    RepoIntelState,
+)
 from quor.pipeline.repo_profile.model import RepoProfile, RepoStatistics
 from quor.pipeline.repo_profile.symbols_model import FileSymbols
 
@@ -157,3 +163,64 @@ class TestGraphFactsRoundtrip:
         path.write_bytes(b"{broken")
 
         assert intel_store.load_graph_facts(tmp_path) is None
+
+
+class TestFileIntelligenceRoundtrip:
+    def test_file_intelligence_exists_false_when_missing(self, tmp_path: Path) -> None:
+        assert intel_store.file_intelligence_exists(tmp_path) is False
+
+    def test_save_then_load_roundtrips_field_for_field(self, tmp_path: Path) -> None:
+        entries = {
+            "a.py": FileIntelligenceEntry(
+                language="python",
+                kind="source",
+                importance="High",
+                imports=3,
+                imported_by=61,
+                entry_point=False,
+                top_symbols=["Foo", "bar"],
+                size=1234,
+                mtime_ns=567890,
+            ),
+            "tests/test_a.py": FileIntelligenceEntry(language="python", kind="test"),
+        }
+        intel_store.save_file_intelligence(tmp_path, entries)
+
+        assert intel_store.file_intelligence_exists(tmp_path) is True
+        loaded = intel_store.load_file_intelligence(tmp_path)
+
+        assert loaded == entries
+
+    def test_load_missing_returns_none(self, tmp_path: Path) -> None:
+        assert intel_store.load_file_intelligence(tmp_path) is None
+
+    def test_load_corrupted_returns_none(self, tmp_path: Path) -> None:
+        intel_store.save_file_intelligence(tmp_path, {})
+        path = intel_store.cache_dir(tmp_path) / "file_intelligence.json"
+        path.write_bytes(b"{broken")
+
+        assert intel_store.load_file_intelligence(tmp_path) is None
+
+    def test_load_wrong_shape_returns_none(self, tmp_path: Path) -> None:
+        path = intel_store.cache_dir(tmp_path)
+        path.mkdir(parents=True, exist_ok=True)
+        (path / "file_intelligence.json").write_bytes(b'{"unexpected": "shape"}')
+
+        assert intel_store.load_file_intelligence(tmp_path) is None
+
+    def test_load_version_mismatch_returns_none(self, tmp_path: Path) -> None:
+        """A `file_intelligence.json` written at an older/newer
+        `FILE_INTELLIGENCE_VERSION` is treated exactly like "missing" —
+        not a separate corrupted-vs-stale distinction (see
+        `load_file_intelligence()`'s own docstring: this lets `intel.py`'s
+        existing backfill-on-next-touch logic handle a version bump the
+        same way as a first-time build, with no extra branching)."""
+        intel_store.save_file_intelligence(tmp_path, {"a.py": FileIntelligenceEntry(language="python", kind="source")})
+        path = intel_store.cache_dir(tmp_path) / "file_intelligence.json"
+
+        data = orjson.loads(path.read_bytes())
+        data["version"] = data["version"] + 1
+        path.write_bytes(orjson.dumps(data))
+
+        assert intel_store.file_intelligence_exists(tmp_path) is True
+        assert intel_store.load_file_intelligence(tmp_path) is None

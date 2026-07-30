@@ -184,3 +184,86 @@ class RepoIntelligence:
         if self.files_scanned == 0:
             return 1.0
         return 1.0 - (self.files_reextracted / self.files_scanned)
+
+
+FileImportance = Literal["High", "Medium", "Low"]
+"""A file's dependency-graph connectivity rank among every file the last
+scan walked, tertile-split — the same three values `explorer_model.Importance`
+already defines for `quor explore`'s per-file output. Redefined here (not
+imported) rather than adding a new cross-package import edge between two
+sibling business-logic modules; `dashboard.py::importance_tiers()` is the
+one shared implementation both call (QB-079)."""
+
+FileKind = Literal["source", "test", "generated", "configuration"]
+"""A file's deterministically classified role (QB-079) — evidence-backed
+only, computed by `intel.py::_classify_kind()` from naming conventions, a
+bounded content-marker scan, and `RepoProfile.configuration_files`/
+`lockfiles`, never guessed. Deliberately excludes a "library"/"application"
+split: there is no existing deterministic signal for that distinction in
+this codebase today (`RepoProfile.services` covers too few repositories to
+be a real classifier) — add it only if repository intelligence gains a
+genuine deterministic source for it (explicit package/deployment metadata,
+not a path-shape guess)."""
+
+FILE_INTELLIGENCE_VERSION = 1
+"""Independent of `CACHE_SCHEMA_VERSION` above — `file_intelligence.json`'s
+on-disk shape can change without forcing a rebuild of the state/profile/
+symbol/graph cache files, and vice versa. Embedded as a top-level `version`
+key in `file_intelligence.json` itself; `intel_store.load_file_intelligence()`
+treats a mismatch exactly like "file missing", so `intel.py`'s existing
+backfill-on-next-touch logic handles a version bump the same way as a
+first-time build — no coordination with `CACHE_SCHEMA_VERSION` needed."""
+
+
+@dataclass(frozen=True, slots=True)
+class FileIntelligenceEntry:
+    """One file's build-time-computed facts (QB-079) — a general-purpose
+    per-file intelligence cache, not a Read-hook-specific artifact. The
+    Read hook (`quor/adapters/claude_read.py`) is this cache's first
+    consumer, not its only intended one; `quor explore`/`quor repo` and
+    future consumers (an editor extension, `quor explain`) can read the
+    same file in O(1) instead of recomputing these facts. Every field is
+    either copied from an already-computed artifact the same build pass
+    produces, or a cheap deterministic classification with real evidence
+    — never a guess, and never derived by parsing a file this module
+    would not already have parsed for `quor symbols`/`quor graph`.
+
+    Kept deliberately small: the compressed Read output already carries
+    the full AST summary, so this is a compact pointer *to* the repo, not
+    a second symbol database — `top_symbols` stays capped at 5, with no
+    per-symbol detail (signatures, decorators, inheritance) stored here.
+    """
+
+    language: str
+    """`ast_summarize` language key (e.g. `"python"`) for an AST-covered
+    file, `languages.py`'s display name for a recognized-but-unparsed
+    file, or `"unknown"` if the extension isn't recognized at all."""
+
+    kind: FileKind
+
+    importance: FileImportance = "Low"
+    """Meaningful for every walked file (computed over the whole repo's
+    connectivity, not just AST-covered files)."""
+
+    imports: int = 0
+    """Resolved `import`-kind edges with this file as source. Always `0`
+    for a file with no `graph_facts` entry (not AST-covered, or failed to
+    parse) — never estimated."""
+
+    imported_by: int = 0
+    """Resolved `import`-kind edges with this file as target."""
+
+    entry_point: bool = False
+    """`Symbol.is_entry_point` for any symbol in this file — `False` for
+    any file with no `symbol_files` entry."""
+
+    top_symbols: list[str] = field(default_factory=list)
+    """Public, top-level declaration names only (methods excluded) —
+    capped at 5, declaration-line order, de-duplicated. Empty for any file
+    with no `symbol_files` entry."""
+
+    size: int = 0
+    mtime_ns: int = 0
+    """This file's own fingerprint copy — a consumer needing only a
+    staleness check never has to load the (much larger) `state.json` to
+    get it."""

@@ -187,3 +187,36 @@ class TestFileDeleted:
         assert deleted.files_reextracted == 0
         assert deleted.cache_hit_ratio == 1.0
         assert deleted.files_scanned == _BENCHMARK_FILE_COUNT - 1  # one fewer file walked
+
+
+class TestFileIntelligenceLookup:
+    """QB-079: the file_intelligence.json lookup a consumer (the Read hook
+    first) performs must cost a small, roughly constant amount of CPU
+    time — not scale with total repo size the way loading
+    `symbol_facts.json`/`graph_facts.json` in full does (this item's own
+    investigation measured that combined load at 114ms for the real Quor
+    repository). Independent of the module-scoped `_scenario_results`
+    fixture above — a small, fast repo of its own, not the 150-file one —
+    since this test only needs the lookup to exist and be cheap, not to
+    exercise the full scenario matrix."""
+
+    def test_lookup_cpu_time_stays_well_under_the_hook_budget(self, tmp_path: Path) -> None:
+        from quor.pipeline.repo_profile.intel import ensure_repo_intelligence
+        from tests.benchmarks.repo_intel_benchmark import (
+            build_synthetic_repo,
+            measure_file_intelligence_lookup,
+        )
+
+        repo = tmp_path / "repo"
+        build_synthetic_repo(repo, 30)
+        ensure_repo_intelligence(repo)
+
+        result = measure_file_intelligence_lookup(repo, 30)
+
+        # Generous bound, not a tight threshold — CLAUDE.md's own hook
+        # budget is <10ms; this leaves real headroom for CI noise while
+        # still catching a regression back toward "loads the whole
+        # multi-MB symbol_facts.json/graph_facts.json instead" (which this
+        # item's own investigation measured at 114ms, over 2 orders of
+        # magnitude above this bound).
+        assert result.cpu_seconds < 0.05

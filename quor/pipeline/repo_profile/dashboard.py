@@ -35,6 +35,7 @@ from collections import Counter
 from collections.abc import Iterable
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
+from typing import Literal
 
 from quor.pipeline.ast_summarize.symbol_model import Symbol
 from quor.pipeline.repo_profile import intel_store
@@ -159,6 +160,33 @@ def connectivity_counts(edges: Iterable[Edge]) -> tuple[Counter[str], Counter[st
         if e.target_file is not None:
             incoming[e.target_file] += 1
     return outgoing, incoming
+
+
+def importance_tiers(paths: Iterable[str], edges: Iterable[Edge]) -> dict[str, Literal["High", "Medium", "Low"]]:
+    """Rank every path in `paths` by dependency-graph connectivity
+    (`connectivity_counts()`), tertile-split — top third `"High"`, middle
+    third `"Medium"`, bottom third `"Low"`. Ties (equal connectivity)
+    broken by path for fully deterministic, byte-identical repeated
+    output; a path with zero edges lands in the bottom tier by
+    construction, never a special case.
+
+    The one shared implementation behind `explorer.py`'s per-file
+    `Importance` (QB-078) and `intel.py`'s build-time `file_intelligence.json`
+    (QB-079) — each supplies a different `paths` population (an
+    `ExplorerCache`'s `state.fingerprints` vs. a fresh build's
+    `walk_result.files`) rather than reimplementing the ranking twice."""
+    outgoing, incoming = connectivity_counts(edges)
+    ranked = sorted(paths, key=lambda p: (-(outgoing[p] + incoming[p]), p))
+    total = len(ranked)
+    tiers: dict[str, Literal["High", "Medium", "Low"]] = {}
+    for index, path in enumerate(ranked):
+        if index < total / 3:
+            tiers[path] = "High"
+        elif index < 2 * total / 3:
+            tiers[path] = "Medium"
+        else:
+            tiers[path] = "Low"
+    return tiers
 
 
 def _most_connected_files(edges: Iterable[Edge]) -> list[MostConnectedFile]:

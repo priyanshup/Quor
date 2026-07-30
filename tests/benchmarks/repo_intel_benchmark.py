@@ -30,6 +30,7 @@ import tracemalloc
 from dataclasses import dataclass
 from pathlib import Path
 
+from quor.pipeline.repo_profile import intel_store
 from quor.pipeline.repo_profile.intel import ensure_repo_intelligence
 
 DEFAULT_FILE_COUNT = 150
@@ -129,6 +130,39 @@ def measure(root: Path, name: str, *, rebuild: bool = False) -> ScenarioResult:
     )
 
 
+@dataclass(frozen=True)
+class FileIntelligenceLookupResult:
+    """QB-079: measures the O(1) per-file lookup a consumer (the Read hook
+    first) performs against `file_intelligence.json` alone —
+    `intel_store.load_file_intelligence()` plus one dict `.get()` — never
+    the full `ensure_repo_intelligence()` call, and never
+    `symbol_facts.json`/`graph_facts.json`, the two files this item's own
+    investigation measured at 114ms combined for this repository. Reported,
+    not asserted (see module docstring) — the point is to make "this
+    doesn't scale like a full four-file cache load does" empirically
+    visible; `tests/unit/test_repo_intel_benchmark.py` is where a bound
+    actually gets asserted."""
+
+    file_count: int
+    cpu_seconds: float
+    elapsed_seconds: float
+
+
+def measure_file_intelligence_lookup(root: Path, file_count: int) -> FileIntelligenceLookupResult:
+    """Requires `file_intelligence.json` to already exist at `root` (call
+    `ensure_repo_intelligence(root)` first) — this function only measures
+    the read-back lookup, never a build."""
+    cpu_start = time.process_time()
+    wall_start = time.monotonic()
+    entries = intel_store.load_file_intelligence(root)
+    if entries is None:
+        raise RuntimeError("file_intelligence.json missing — call ensure_repo_intelligence(root) first")
+    entries.get("src/pkg/mod_0.py")
+    elapsed = time.monotonic() - wall_start
+    cpu = time.process_time() - cpu_start
+    return FileIntelligenceLookupResult(file_count=file_count, cpu_seconds=cpu, elapsed_seconds=elapsed)
+
+
 def run_all_scenarios(file_count: int = DEFAULT_FILE_COUNT) -> list[ScenarioResult]:
     """Run all six scenarios in sequence against one synthetic repo (each
     scenario builds on the previous one's on-disk state, the same way a
@@ -169,6 +203,47 @@ def run_all_scenarios(file_count: int = DEFAULT_FILE_COUNT) -> list[ScenarioResu
         shutil.rmtree(tmp_root, ignore_errors=True)
 
 
+def run_file_intelligence_lookup_scenarios() -> list[FileIntelligenceLookupResult]:
+    """Builds two independent synthetic repos — `DEFAULT_FILE_COUNT` (150,
+    matching every other scenario in this module) and a much larger one
+    (2000 files) — and measures the file_intelligence.json lookup alone
+    against each, to make its cost-independent-of-repo-size empirically
+    visible. Deliberately not part of `run_all_scenarios()`/wired into
+    `tests/unit/test_repo_intel_benchmark.py`'s automated suite — building
+    a 2000-file repo is real, non-trivial cost this module's docstring
+    already scopes to "run manually via `python -m ...`", not something
+    the default `pytest tests/unit/` gate should pay on every run."""
+    results: list[FileIntelligenceLookupResult] = []
+    for file_count in (DEFAULT_FILE_COUNT, 2000):
+        tmp_root = Path(tempfile.mkdtemp(prefix="quor_file_intel_lookup_bench_"))
+        try:
+            repo = tmp_root / "repo"
+            build_synthetic_repo(repo, file_count)
+            ensure_repo_intelligence(repo)
+            results.append(measure_file_intelligence_lookup(repo, file_count))
+        finally:
+            shutil.rmtree(tmp_root, ignore_errors=True)
+    return results
+
+
+def render_file_intelligence_lookup_report(results: list[FileIntelligenceLookupResult]) -> str:
+    lines = [
+        "## file_intelligence.json Lookup (QB-079)",
+        "",
+        "The Read hook's per-file lookup — `intel_store.load_file_intelligence()` "
+        "+ one dict `.get()` — measured independently of repo size, in contrast "
+        "to the full four-file cache load this item's own investigation measured "
+        "at 114ms for this repository's `symbol_facts.json`+`graph_facts.json`.",
+        "",
+        "| Repo Size (files) | Elapsed (s) | CPU (s) |",
+        "|---|---|---|",
+    ]
+    for r in results:
+        lines.append(f"| {r.file_count} | {r.elapsed_seconds:.4f} | {r.cpu_seconds:.4f} |")
+    lines.append("")
+    return "\n".join(lines)
+
+
 def render_report(results: list[ScenarioResult]) -> str:
     lines = [
         "# Repository Intelligence Performance Benchmark (QB-072)",
@@ -194,11 +269,16 @@ def render_report(results: list[ScenarioResult]) -> str:
 def main() -> None:
     results = run_all_scenarios()
     report = render_report(results)
-    print(report)
+
+    lookup_results = run_file_intelligence_lookup_scenarios()
+    lookup_report = render_file_intelligence_lookup_report(lookup_results)
+
+    full_report = report + "\n" + lookup_report
+    print(full_report)
 
     output_path = Path(__file__).parent / "results" / "repo-intel-benchmark-report.md"
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(report, encoding="utf-8")
+    output_path.write_text(full_report, encoding="utf-8")
 
 
 if __name__ == "__main__":

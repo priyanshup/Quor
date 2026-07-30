@@ -21,11 +21,14 @@ last produced.
 
 Dependency/reverse-dependency lookups (`file_dependencies()`/`file_used_by()`)
 and the connectivity ranking behind `Importance` both filter/aggregate
-`RepoDependencyGraph.edges` and `dashboard.py::connectivity_counts()`
-directly — no new graph-resolution or traversal logic, per QB-078's own "do
-not duplicate graph traversal logic" constraint. Resolving *which* file an
-import/call/base-class reference points to remains `graph.py`'s job alone;
-this module only ever asks "what does the already-resolved graph say."
+`RepoDependencyGraph.edges` via `dashboard.py::connectivity_counts()`/
+`dashboard.py::importance_tiers()` directly — no new graph-resolution or
+traversal logic, per QB-078's own "do not duplicate graph traversal logic"
+constraint. `importance_tiers()` (QB-079) is the same shared implementation
+`intel.py` uses to build `file_intelligence.json`'s per-file `importance`
+field, so the two never drift. Resolving *which* file an import/call/
+base-class reference points to remains `graph.py`'s job alone; this module
+only ever asks "what does the already-resolved graph say."
 """
 
 from __future__ import annotations
@@ -37,7 +40,7 @@ from pathlib import Path, PurePosixPath
 
 import quor
 from quor.pipeline.repo_profile import intel_store
-from quor.pipeline.repo_profile.dashboard import _largest_modules, connectivity_counts
+from quor.pipeline.repo_profile.dashboard import _largest_modules, importance_tiers
 from quor.pipeline.repo_profile.explorer_model import (
     CacheStatus,
     CacheUnavailable,
@@ -225,24 +228,10 @@ def file_summary(cache: ExplorerCache, path: str) -> FileSummary | None:
 
 def _importance_tiers(cache: ExplorerCache) -> dict[str, Importance]:
     """Rank every file this cache's last scan knew about by dependency-graph
-    connectivity (`connectivity_counts()`, the same aggregate
-    `dashboard.py`'s "Most connected files" listing uses), split into three
-    equal-sized tiers by rank — top third `"High"`, middle third `"Medium"`,
-    bottom third `"Low"`. Ties (equal connectivity) broken by path for
-    fully deterministic, byte-identical repeated output. A file with zero
-    edges lands in the bottom tier by construction, never a special case."""
-    outgoing, incoming = connectivity_counts(cache.graph.edges)
-    paths = sorted(cache.state.fingerprints, key=lambda p: (-(outgoing[p] + incoming[p]), p))
-    total = len(paths)
-    tiers: dict[str, Importance] = {}
-    for index, path in enumerate(paths):
-        if index < total / 3:
-            tiers[path] = "High"
-        elif index < 2 * total / 3:
-            tiers[path] = "Medium"
-        else:
-            tiers[path] = "Low"
-    return tiers
+    connectivity — delegates to `dashboard.importance_tiers()` (QB-079),
+    the one shared implementation also used to build `file_intelligence.json`,
+    rather than re-deriving the same tertile ranking a second way."""
+    return importance_tiers(cache.state.fingerprints, cache.graph.edges)
 
 
 def repo_stats(cache: ExplorerCache) -> RepoStats:
