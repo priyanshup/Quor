@@ -5501,6 +5501,74 @@ git-subprocess cost, out of this item's scope and not requested.
 
 ---
 
+#### QB-078 — Repository Explorer (`quor explore`)
+
+**Effort:** Medium · **Value:** Medium · **Risk:** Low · **Category:** New Capability
+(Reporting)
+
+`quor map`/`quor symbols`/`quor graph`/`quor repo` each answer a different repository-structure
+question, but none answers a single, targeted one ("where is `UserService` defined," "what does
+this file depend on") without reading a whole document. `quor explore` is a fifth,
+sub-command-shaped reporting surface — `find <name>`, `deps <file>`, `used-by <file>`,
+`file <path>`, `stats` — built entirely from the same on-disk cache the other four already
+maintain. **Unlike `quor repo` (QB-077), it never calls `ensure_repo_intelligence()`** — the
+task's own spec is explicit that this command must never walk, parse, or rebuild the repository,
+a deliberate divergence from QB-077's auto-refresh philosophy (see ADR-042).
+
+**Status:** Implemented (not committed, per session instruction).
+
+<details>
+<summary>Technical details</summary>
+
+**Governance first.** `quor explore` is an 8th exemption to Quor's six-command cap (`schema`/`map`/
+`symbols`/`graph`/`repo` are the prior five). Per CLAUDE.md's own gate and the ADR-037/038/039
+precedent ("sign-off must be obtained in-session, not assumed from the originating task instructions
+alone"), explicit user approval was requested and obtained before any code was written — see
+ADR-042 for the full design summary that was presented for that approval, including the cache-only
+vs. auto-refresh design tension this item deliberately resolves against QB-077's more recent
+precedent.
+
+**What shipped:** `quor/pipeline/repo_profile/explorer_model.py` (frozen dataclasses —
+`CacheUnavailable`, `SymbolMatch`/`SymbolFindResult`, `DependencyResult`/`UsedByResult`,
+`FileSummary`, `RepoStats`), `explorer.py` (`load_cache()` — the sole, cache-only read path,
+distinguishing `missing`/`corrupted`/`stale`/`fresh`; `find_symbol()`, `file_dependencies()`,
+`file_used_by()`, `file_summary()`, `repo_stats()`), `explorer_render.py` (plain-text + `--json`
+via `dataclasses.asdict()`/orjson, one pair per result type), and `quor/cli/commands/explore.py`
+(a Typer sub-app, `app.add_typer(explore_app, name="explore", ...)` in `main.py`, `"explore"` added
+to `__main__.py`'s `_CLI_COMMANDS` — the exact omission ADR-037/038/039 each independently caught).
+`dashboard.py::_most_connected_files()`'s inline connectivity `Counter` walk was promoted to a
+shared `connectivity_counts()` function (behavior-identical, still called from its original site)
+so `quor explore file`'s full-repository `Repository importance` tiering and `quor repo`'s top-10
+listing share one implementation rather than two. `REPO_EXPLORE_FILTER_LABEL` added to
+`quor/tracking/db.py` and excluded from `filter_divergence.flag_low_performers()`, mirroring the
+four prior synthetic labels. `docs/final/CLAUDE.md` and `quor/cli/main.py`'s own module docstring
+updated to list all six current exemptions (catching up `quor repo`, which had never been added to
+either despite already shipping in QB-076/QB-077).
+
+**Design choices confirmed with the user before implementation (see ADR-042 for full reasoning):**
+cache-only reads only, never `ensure_repo_intelligence()`; `find` is exact-name-only (no fuzzy
+matching); `Exports` reuses `Symbol.is_public` verbatim; `deps`/`used-by` are resolved `import`-kind
+edges only, not every relationship kind; `Repository importance` is a tertile connectivity rank
+over every file the last scan walked, not just files with edges.
+
+**Testing:** 39 new tests — `tests/unit/test_repo_explorer.py` (19, pure logic: cache-state
+detection including a `monkeypatch`-based "never walks the repository" regression test mirroring
+QB-076's own; exact-match/ambiguous/not-found `find`; deps/used-by resolution and reverse-symmetry;
+file summary; stats; a direct <100ms performance assertion on the query logic itself) and
+`tests/unit/test_cli_explore.py` (20, CLI-level: missing/corrupted-cache error distinction,
+`--json` schema stability, ambiguous-symbol listing at exit 0, tracking, byte-identical repeated
+JSON output for the fields that don't carry a live clock read, nonexistent `--path`). Full gate:
+`ruff check quor/ tests/` clean; `mypy quor/` clean (138 source files); full `pytest tests/unit/`
+green (no regressions); `pytest tests/benchmarks/` green, compression behavior byte-identical
+(this item touches `repo_profile/`, not `pipeline/`/`filters/`/`rewrite/`, so no compression-path
+change was possible); `quor verify` 204/204. Manual smoke test against a real two-file git repo
+confirmed `find`/`deps`/`used-by`/`stats` output matches the task's own example format exactly,
+including `--json` mode.
+
+</details>
+
+---
+
 ### Historical (superseded)
 
 *Kept for the record — not resolved work in its own right, but the original request that later,

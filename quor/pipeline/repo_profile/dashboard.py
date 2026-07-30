@@ -144,14 +144,25 @@ def _graph_node_count(edges: Iterable[Edge]) -> int:
     return len(nodes)
 
 
-def _most_connected_files(edges: Iterable[Edge]) -> list[MostConnectedFile]:
+def connectivity_counts(edges: Iterable[Edge]) -> tuple[Counter[str], Counter[str]]:
+    """`(outgoing, incoming)` edge-degree counters, keyed by file path —
+    every edge's `source_file` increments `outgoing`, every non-`None`
+    `target_file` increments `incoming`. Factored out of
+    `_most_connected_files()` (QB-078) so `quor explore`'s per-file
+    "Repository importance" tiering can rank *every* file's connectivity,
+    not just this module's own top-`_TOP_N` dashboard listing, without a
+    second implementation of the same `Counter` walk over `edges`."""
     outgoing: Counter[str] = Counter()
     incoming: Counter[str] = Counter()
     for e in edges:
         outgoing[e.source_file] += 1
         if e.target_file is not None:
             incoming[e.target_file] += 1
+    return outgoing, incoming
 
+
+def _most_connected_files(edges: Iterable[Edge]) -> list[MostConnectedFile]:
+    outgoing, incoming = connectivity_counts(edges)
     files = set(outgoing) | set(incoming)
     ranked = sorted(files, key=lambda p: (-(outgoing[p] + incoming[p]), p))
     return [

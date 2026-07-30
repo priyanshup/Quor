@@ -7,10 +7,23 @@ asserts pass/fail (mirrors this repo's existing `report.py`/
 become actual regression protection — via *count-based* assertions
 (how many files got re-extracted, what the reported cache hit ratio is),
 never a flaky wall-clock threshold, per this repo's own testing rules
-(docs/final/CLAUDE.md Rule 2 — no known-flaky test tolerated). A single,
-generously-bounded comparative timing check is included as a smoke
-guard for the core optimization's actual purpose (incremental must be
-faster than full), not as a strict gate.
+(docs/final/CLAUDE.md Rule 2 — no known-flaky test tolerated).
+
+**`elapsed_seconds` (wall-clock, `time.monotonic()`) is deliberately never
+compared between scenarios.** An earlier version of this file's four
+`test_is_faster_than_cold_build` tests did exactly that, on the reasoning
+that "incremental must be faster than full" needs some timing check as a
+smoke guard — but on a shared/noisy CI runner, two near-simultaneous
+sub-second `elapsed_seconds` measurements can be flipped by ordinary
+scheduling/IO jitter alone (confirmed: a real CI run recorded `one_modified`
+elapsed at 0.368s vs. `cold` at 0.276s — backwards — while the same run's
+`cpu_seconds` was correctly ordered, 0.183s vs. 0.273s). Every comparative
+timing check here uses `cpu_seconds` (`time.process_time()`, user+system
+CPU time, excludes time blocked on git subprocess I/O wait — see
+`measure()`'s own docstring) instead: a real measurement of how much actual
+work each scenario did, immune to being descheduled while another process
+on the runner gets a turn, so no tolerance margin is needed to make it
+non-flaky.
 """
 
 from __future__ import annotations
@@ -112,11 +125,12 @@ class TestWarmBuild:
     def test_is_faster_than_cold_build(self, _scenario_results: dict[str, ScenarioResult]) -> None:
         cold = _scenario_results["cold"]
         warm = _scenario_results["warm"]
-        # A generous, structural comparison (not a strict threshold): a
-        # cache hit skips every parse and every write, so it must be
-        # meaningfully cheaper than a cold build that does both, on any
-        # machine — this is the whole point of the QB-072 cache.
-        assert warm.elapsed_seconds < cold.elapsed_seconds
+        # A structural comparison, not a wall-clock threshold: a cache hit
+        # skips every parse and every write, so it must consume meaningfully
+        # less CPU time than a cold build that does both, on any machine —
+        # this is the whole point of the QB-072 cache. `cpu_seconds`, not
+        # `elapsed_seconds` — see this module's own docstring for why.
+        assert warm.cpu_seconds < cold.cpu_seconds
 
 
 class TestOneFileModified:
@@ -129,7 +143,7 @@ class TestOneFileModified:
     def test_is_faster_than_cold_build(self, _scenario_results: dict[str, ScenarioResult]) -> None:
         cold = _scenario_results["cold"]
         one_modified = _scenario_results["one_modified"]
-        assert one_modified.elapsed_seconds < cold.elapsed_seconds
+        assert one_modified.cpu_seconds < cold.cpu_seconds
 
 
 class TestTenFilesModified:
@@ -142,7 +156,7 @@ class TestTenFilesModified:
     def test_is_faster_than_cold_build(self, _scenario_results: dict[str, ScenarioResult]) -> None:
         cold = _scenario_results["cold"]
         ten_modified = _scenario_results["ten_modified"]
-        assert ten_modified.elapsed_seconds < cold.elapsed_seconds
+        assert ten_modified.cpu_seconds < cold.cpu_seconds
 
 
 class TestHundredFilesModified:
@@ -155,7 +169,7 @@ class TestHundredFilesModified:
     def test_is_faster_than_cold_build(self, _scenario_results: dict[str, ScenarioResult]) -> None:
         cold = _scenario_results["cold"]
         hundred_modified = _scenario_results["hundred_modified"]
-        assert hundred_modified.elapsed_seconds < cold.elapsed_seconds
+        assert hundred_modified.cpu_seconds < cold.cpu_seconds
 
 
 class TestFileRenamed:

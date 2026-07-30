@@ -1915,3 +1915,116 @@ ADR-036 architecture actually generalizes past a second agent.
   (Cursor's own bug tracker shows hooks "intermittently non-functional" as
   of this research; Windsurf's hooks moved host (docs.windsurf.com →
   docs.devin.ai) mid-research, reflecting Cognition's acquisition).
+
+---
+
+## ADR-042: Repository Explorer — Cache-Only Reads, Never Triggers a Rebuild; `quor explore` as an 8th Exempted Command (QB-078)
+
+**Status:** Decided and shipped
+**Date:** 2026-07-30
+
+**Context:**
+QB-078 asked for a deterministic `quor explore` command family (`find`/`deps`/`used-by`/`file`/
+`stats`) letting a developer or AI agent answer repository-structure questions "using Quor's
+existing cached repository intelligence" — explicit, repeated constraints: "This feature must
+never walk or parse the repository," a <100ms target, "No subprocesses. No filesystem walks. No
+parsing. No rebuilding," and no duplication of any parsing/graph-traversal logic already living in
+`quor/pipeline/repo_profile/`. Per CLAUDE.md's own "V1 has exactly 6 commands... don't add more
+without explicit approval" gate and the identical discipline ADR-037/038/039 already established
+for `map`/`symbols`/`graph`, explicit user sign-off was obtained in-session before any CLI code was
+written — not assumed granted by the ticket text alone, mirroring those three ADRs' own stated
+discipline.
+
+**Decision:**
+Introduced `quor/pipeline/repo_profile/explorer.py`, whose sole entry point `load_cache()` reads
+the same four on-disk cache files `intel_store.py` already maintains (`state.json`/`profile.json`/
+`symbol_facts.json`/`graph_facts.json`) — never calling `ensure_repo_intelligence()`,
+`walk_repository()`, or any parser, matching `dashboard.py::build_dashboard()`'s existing
+"reads cache only" contract for `quor repo`. Unlike `build_dashboard()`, which deliberately
+collapses "no cache ever built" and "cache exists but unreadable" into a single `None` (both need
+the same "run `quor map`" guidance, per its own docstring), `load_cache()` keeps the states QB-078's
+own UX section calls for distinct: `missing` (`intel_store.state_exists()` is `False`), `corrupted`
+(`state.json` or any sibling artifact file present but unreadable — the same signal
+`intel.py::ensure_repo_intelligence()` treats as `"corrupted_rebuild"`, just never acted on here),
+`stale` (readable, but `schema_version`/`quor_version` differs from the current build — the same
+condition `intel.py` calls `"version_rebuild"`, again reported rather than rebuilt), and `fresh`.
+`find`'s "symbol not found" and "ambiguous symbol" (more than one match — not an error; QB-078's own
+example output renders it as a numbered list at exit code 0) round out the states the spec asked
+for.
+
+Five subcommands live in one Typer sub-app (`explore_app`, `quor/cli/commands/explore.py`,
+registered via `app.add_typer(explore_app, name="explore", ...)` in `main.py`, with `"explore"`
+added to `__main__.py`'s `_CLI_COMMANDS` — the exact omission ADR-037/038/039 each independently
+caught and guarded with a regression test):
+- `find <name>` — exact-name-only lookup (QB-078's own "no fuzzy matching" constraint) across every
+  cached `FileSymbols`; `Exports` in its output reuses `Symbol.is_public` verbatim under the label
+  QB-078's spec uses, rather than inventing a second, separately computed "is this exported"
+  concept — `Symbol.is_public`'s own existing docstring already defines it as *directly* the export
+  mechanism for JS/TS and each other supported language's own closest deterministic analogue.
+- `deps <file>` / `used-by <file>` — resolved `import`-kind edges only (`Edge.kind == "import"`,
+  `target_file is not None`), filtered directly from the already-resolved `RepoDependencyGraph.edges`
+  `graph.py` produced — no new resolution or traversal logic, per QB-078's own "do not duplicate
+  graph traversal logic" constraint.
+- `file <path>` — per-file symbol/relationship counts plus a `Repository importance` tier
+  (`High`/`Medium`/`Low`), computed by tertile-ranking every cached file's connectivity degree,
+  itself computed by the new `dashboard.py::connectivity_counts()` — extracted from
+  `dashboard.py::_most_connected_files()`'s existing `Counter` walk over `edges` so `quor explore`'s
+  full-repository ranking and `quor repo`'s top-10 dashboard listing share one implementation, not
+  two.
+- `stats` — repository-wide aggregates, reusing `dashboard.py::_largest_modules()` for
+  `largest_file` and adding two small, single-purpose `Counter`s (most-imported-file,
+  most-referenced-symbol) not already computed elsewhere; `Repository intelligence age` reuses the
+  exact `now - last_completed_build` formula `dashboard.py::build_dashboard()` already computes
+  inline.
+
+Every subcommand supports `--json` via `explorer_render.py`, one `render_*_json()`/`render_*_text()`
+pair per result type (`dataclasses.asdict()` + `orjson`, the same idiom `symbols_render.py`/
+`graph_render.py`/`dashboard_render.py` already use) rather than a single polymorphic renderer,
+since `dataclasses.asdict()` needs a concrete dataclass type to type-check under mypy. Plain,
+deterministic text by default (not `quor repo`'s Rich terminal dashboard) — QB-078 frames this
+command for two audiences at once ("developers and AI agents"), the same reasoning `quor map`/
+`quor symbols`/`quor graph`'s own fixed-template convention already rests on. Invocations are
+tracked under a new `REPO_EXPLORE_FILTER_LABEL` (`quor/tracking/db.py`), excluded from
+`filter_divergence.flag_low_performers()`'s low-performer check exactly like the four prior
+synthetic labels already are — a reporting command has no "before" blob to compress.
+
+**Options considered:**
+- **Auto-refresh via `ensure_repo_intelligence()`, mirroring QB-077's `quor repo`** (the
+  newest, most-recently-shipped precedent in this same package) vs. **strict cache-only reads**:
+  cache-only was chosen — QB-078's own spec is explicit and repeated ("must never walk or parse,"
+  "No subprocesses... No rebuilding," target <100ms) in a way QB-077's "users shouldn't have to
+  think about map/symbols/graph" philosophy directly conflicts with for this specific command.
+  `quor explore` is deliberately not a sixth member of the auto-refreshing family; it is the one
+  repository-intelligence command in this package that stays a pure, read-only lens, matching
+  `quor repo`'s *original* QB-076 design (before QB-077 reversed it) rather than `quor repo`'s
+  current one.
+- **Reusing `dashboard.py::build_dashboard()` directly** vs. **a new `load_cache()`**: rejected —
+  `build_dashboard()` collapses missing/corrupted into one `None` by design (documented as
+  intentional in its own docstring, since `quor repo` gives both the identical "run `quor map`"
+  guidance), which cannot serve QB-078's explicit requirement to distinguish the two with different
+  actionable messages.
+- **A single polymorphic `render_json(value: object)`** vs. **one typed function per result type**:
+  the typed-per-type approach was chosen after the polymorphic version failed to type-check cleanly
+  under mypy (`dataclasses.asdict()` requires a concrete dataclass type) — matches every existing
+  `*_render.py` module's own one-function-per-artifact convention rather than introducing a new
+  pattern.
+- **Ranking `Importance` over only files with at least one edge** vs. **every file the last scan
+  walked** (`state.fingerprints`): the full fingerprint set was chosen, so a genuinely disconnected
+  file (a doc, a config) deterministically lands in the bottom tier by construction rather than
+  being excluded from ranking as a special case.
+
+**Consequences:**
+- No changes to `intel.py`, `intel_store.py`, or `dashboard.py`'s existing behavior beyond one
+  refactor (`_most_connected_files()`'s inline `Counter` walk promoted to `connectivity_counts()`,
+  called from both the original call site and `explorer.py` — behavior-identical) — every existing
+  `repo_profile`/`quor map`/`quor symbols`/`quor graph`/`quor repo` test and the compression
+  benchmark suite pass unmodified.
+- `quor explore` cannot, by design, tell a user their repository *content* has changed since the
+  last `quor map`/`quor repo` run — only that the cache is missing, corrupted, or built by a
+  different Quor version. `Repository intelligence age` (`stats`) is the only staleness signal
+  offered; closing that gap would require exactly the walk this command must never perform.
+- Real, documented scope narrowing, not silent partiality: `deps`/`used-by` report only resolved
+  `import`-kind edges — a `calls`/`inherits`/`overrides` relationship is a real, cached fact but is
+  not what this command's spec means by "dependency," and remains fully visible via `quor graph`
+  instead.
+- See `backlog.md`'s `QB-078` entry for the implementation record (test counts, files touched).

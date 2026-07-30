@@ -752,6 +752,16 @@ REPO_GRAPH_FILTER_LABEL = "repo-graph"
 # `flag_low_performers` must exclude this label too.
 REPO_DASHBOARD_FILTER_LABEL = "repo-dashboard"
 
+# QB-078: the synthetic `filter_name` `quor explore` tracks its invocations
+# under (see `quor\cli\commands\explore.py::_track()`). Same reasoning as
+# `REPO_PROFILE_FILTER_LABEL`/`REPO_SYMBOLS_FILTER_LABEL`/
+# `REPO_GRAPH_FILTER_LABEL`/`REPO_DASHBOARD_FILTER_LABEL` above, applied to
+# the fifth synthesis-not-compression command: `quor explore` only reads
+# already-cached repository intelligence, so it has no "before" blob
+# either — `original_tokens`/`final_tokens` are recorded equal by design,
+# and `flag_low_performers` must exclude this label too.
+REPO_EXPLORE_FILTER_LABEL = "repo-explore"
+
 
 @dataclass(frozen=True)
 class FilterUsage:
