@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from typing import Any
 
-_FALLBACK_VERSION = "0.4.1"
+_FALLBACK_VERSION = "0.5.0"
 """Kept in sync with pyproject.toml's [project].version by
 test_version_matches_pyproject (QB-020) the same way __version__ itself
 used to be."""

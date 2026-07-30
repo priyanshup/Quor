@@ -3,6 +3,29 @@
 All notable changes to Quor are documented here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.5.0] — 2026-07-31
+
+- **Added: cross-platform Gemini hook launcher (QB-083).** `quor init --agent gemini` only ever
+  generated a PowerShell (`.ps1`) launcher — correct on Windows, but a silent "command not found"
+  failure on macOS/Linux, since neither `powershell` nor `pwsh` exists there by default. The same
+  bug QB-082 fixed for Claude, left open in Gemini's independent adapter at the time (deliberately
+  deferred out of that ticket's scope). Windows keeps its PowerShell launcher unchanged; macOS/Linux
+  now get a POSIX `.sh` launcher invoked via `sh`, chmod'd `0o755` on install — reusing
+  `hook_manifest.is_windows()`/`POSIX_SHELL`, the same platform primitives Claude's own launcher
+  uses, rather than a second copy of the platform-detection logic. See ADR-044.
+- **Added: `quor dashboard` — live terminal view of token savings (QB-084).** A ninth exempted
+  utility command (same non-filtering precedent as `map`/`symbols`/`graph`/`repo`/`explore`/
+  `search`): a foreground, auto-refreshing `rich.live.Live` view (1s default) of tokens saved, an
+  explicitly-caveated estimated-cost figure, top filters, and a recent-activity feed, all scoped to
+  "since this command started." `--once` (or any non-TTY caller) gets a single snapshot instead of
+  a hang. Deliberately terminal-only, no browser/port/daemon (`ANTI_GOALS.md` #7/#11) and still the
+  existing char/4 token approximation (ADR-013's `tiktoken` rejection stands). `quor/tracking/db.py`
+  gained an additive `since` parameter on `query_gain()` and a new `query_recent_invocations()`,
+  both backwards-compatible read-only views over the existing `invocations` table — no schema
+  change. Also fixes `docs/FAQ.md`'s Windows-only `py -m ...` guidance (should be `python -m ...`,
+  the direct cause of a real macOS bug report) and trims `README.md` from 136 to 90 lines, surfacing
+  the real 35.3% overall benchmark figure. See ADR-045.
+
 ## [0.4.1] — 2026-07-11
 
 - **Fixed: `quor verify`/`quor doctor` falsely reported unhealthy on a plain
