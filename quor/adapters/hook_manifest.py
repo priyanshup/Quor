@@ -28,14 +28,51 @@ which proposes a full per-agent Protocol for V2 multi-assistant support.
 That reuses the same "declarative hook list drives install/doctor"
 conclusion this module reaches independently, but this module stays
 Claude-Code-only, matching ANTI_GOALS.md #12 (no multi-agent support in V1).
+
+QB-082: `script_name`/`template` used to be plain fields holding a fixed
+PowerShell-shaped value — Quor was Windows-only until this change. They are
+now `@property` methods that resolve per-platform via `is_windows()` at
+*access time*, backed by four platform-specific fields
+(`windows_script_name`/`posix_script_name`/`windows_template`/
+`posix_template`). Resolving at access time (not once at spec-construction
+time) is what lets a test flip platform detection and see
+`spec.script_name`/`spec.template` change immediately, with no module
+reload. `is_windows()`/`POSIX_SHELL` are the one shared source of truth for
+this — `init.py` imports them rather than re-deriving platform logic itself.
+See `docs/final/DECISIONS.md` ADR-043 for the full rationale, including why
+Gemini's adapter (`quor/adapters/gemini_adapter.py`) is deliberately not
+migrated to this pattern yet.
 """
 
 from __future__ import annotations
 
+import os
+import shutil
 from dataclasses import dataclass
 
-from quor.adapters.claude import HOOK_PS1_TEMPLATE
-from quor.adapters.claude_read import HOOK_READ_PS1_TEMPLATE
+from quor.adapters.claude import HOOK_PS1_TEMPLATE, HOOK_SH_TEMPLATE
+from quor.adapters.claude_read import HOOK_READ_PS1_TEMPLATE, HOOK_READ_SH_TEMPLATE
+
+
+def is_windows() -> bool:
+    """Single source of truth for "is this a Windows hook install" across
+    the whole hook install/render/registration path — `init.py` and this
+    module's own `ClaudeHookSpec` properties both call this rather than
+    each re-deriving a platform check. `os.name == "nt"` (not
+    `sys.platform`'s more specific `"win32"`/`"cygwin"`/... string) is the
+    standard-library check that most directly expresses "Windows vs. POSIX
+    process semantics", which is the actual axis every call site branches
+    on. Read fresh on every call (never cached at import time), so a test
+    can patch `os.name` and see it take effect immediately."""
+    return os.name == "nt"
+
+
+POSIX_SHELL = shutil.which("sh") or "/bin/sh"
+"""The POSIX shell used both to invoke a generated `.sh` launcher from
+settings.json and by tests asserting against that same command string —
+resolved once here so neither call site hardcodes `/bin/sh` independently.
+`shutil.which("sh")` finds the real interpreter on PATH; the near-universal
+`/bin/sh` is the fallback on the rare system where PATH lookup fails."""
 
 
 @dataclass(frozen=True)
@@ -46,9 +83,25 @@ class ClaudeHookSpec:
     label: str            # display name, e.g. "Bash" — used in doctor/init output
     event: str            # Claude Code hook event, e.g. "PreToolUse" / "PostToolUse"
     matcher: str          # Claude Code tool matcher, e.g. "Bash" / "Read"
-    script_name: str      # generated .ps1 filename, also the settings.json command marker
-    template: str         # HOOK_*_PS1_TEMPLATE — {python} and {schema_version} placeholders
+    windows_script_name: str   # generated .ps1 filename on Windows
+    posix_script_name: str     # generated .sh filename on macOS/Linux
+    windows_template: str      # HOOK_*_PS1_TEMPLATE — {python}/{schema_version} placeholders
+    posix_template: str        # HOOK_*_SH_TEMPLATE — {python}/{schema_version} placeholders
     schema_version: int   # this hook's own definition version — see module docstring
+
+    @property
+    def script_name(self) -> str:
+        """Platform-resolved generated filename — also the settings.json
+        command marker `doctor.py`/`init.py` match on. See module docstring
+        for why this is a property, not a fixed field."""
+        return self.windows_script_name if is_windows() else self.posix_script_name
+
+    @property
+    def template(self) -> str:
+        """Platform-resolved launcher template — {python} and
+        {schema_version} placeholders, filled in by `render_hook_script()`.
+        See module docstring for why this is a property, not a fixed field."""
+        return self.windows_template if is_windows() else self.posix_template
 
 
 BASH_HOOK_SPEC = ClaudeHookSpec(
@@ -56,8 +109,10 @@ BASH_HOOK_SPEC = ClaudeHookSpec(
     label="Bash",
     event="PreToolUse",
     matcher="Bash",
-    script_name="claude-hook.ps1",
-    template=HOOK_PS1_TEMPLATE,
+    windows_script_name="claude-hook.ps1",
+    posix_script_name="claude-hook.sh",
+    windows_template=HOOK_PS1_TEMPLATE,
+    posix_template=HOOK_SH_TEMPLATE,
     schema_version=1,
 )
 
@@ -66,8 +121,10 @@ READ_HOOK_SPEC = ClaudeHookSpec(
     label="Read",
     event="PostToolUse",
     matcher="Read",
-    script_name="claude-hook-read.ps1",
-    template=HOOK_READ_PS1_TEMPLATE,
+    windows_script_name="claude-hook-read.ps1",
+    posix_script_name="claude-hook-read.sh",
+    windows_template=HOOK_READ_PS1_TEMPLATE,
+    posix_template=HOOK_READ_SH_TEMPLATE,
     schema_version=1,
 )
 

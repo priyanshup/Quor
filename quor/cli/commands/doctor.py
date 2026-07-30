@@ -334,6 +334,7 @@ def _repair_hooks(settings_path: Path | None) -> list[tuple[str, bool, str]]:
     error) is reported and does not prevent repairing another hook or
     writing settings.json for the hooks that did succeed.
     """
+    from quor.adapters import hook_manifest  # module import — see init.py's import comment
     from quor.adapters.hook_manifest import render_hook_script
     from quor.atomic_io import write_json_atomic as _write_json_atomic
     from quor.atomic_io import write_text_atomic as _write_text_atomic
@@ -362,6 +363,11 @@ def _repair_hooks(settings_path: Path | None) -> list[tuple[str, bool, str]]:
         try:
             script_path = _hook_script_path(spec)
             _write_text_atomic(script_path, render_hook_script(spec, python=sys.executable))
+            if not hook_manifest.is_windows():
+                # Match _install_claude()'s fresh-install behavior (QB-082) —
+                # a repaired POSIX script must be executable too, not just a
+                # freshly-installed one.
+                script_path.chmod(0o755)
             settings = _install_hook_entry(settings, spec, script_path)
             settings_dirty = True
             results.append((f"{spec.label} hook script regenerated", True, str(script_path)))
