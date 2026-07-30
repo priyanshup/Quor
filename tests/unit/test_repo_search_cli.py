@@ -138,6 +138,15 @@ class TestSearchValidation:
 
         assert result.exit_code != 0
 
+    def test_kind_filter_is_case_insensitive(self, tmp_path: Path) -> None:
+        repo = _make_repo(tmp_path)
+        _warm_file_intelligence(repo, {"a.py": FileIntelligenceEntry(language="python", kind="source")})
+
+        result = runner.invoke(app, ["search", "a", "--path", str(repo), "--kind", "SOURCE"])
+
+        assert result.exit_code == 0
+        assert "a.py" in result.output
+
     def test_invalid_importance_rejected(self, tmp_path: Path) -> None:
         repo = _make_repo(tmp_path)
         _warm_file_intelligence(repo, {"a.py": FileIntelligenceEntry(language="python", kind="source")})
@@ -145,12 +154,51 @@ class TestSearchValidation:
         result = runner.invoke(app, ["search", "a", "--path", str(repo), "--importance", "not_a_real_tier"])
 
         assert result.exit_code != 0
+        assert "high, medium, low" in result.output
+
+    def test_importance_filter_accepts_lowercase(self, tmp_path: Path) -> None:
+        repo = _make_repo(tmp_path)
+        _warm_file_intelligence(
+            repo, {"a.py": FileIntelligenceEntry(language="python", kind="source", importance="High")}
+        )
+
+        result = runner.invoke(app, ["search", "a", "--path", str(repo), "--importance", "high"])
+
+        assert result.exit_code == 0
+        assert "a.py" in result.output
 
     def test_empty_query_rejected(self, tmp_path: Path) -> None:
         repo = _make_repo(tmp_path)
         _warm_file_intelligence(repo, {"a.py": FileIntelligenceEntry(language="python", kind="source")})
 
         result = runner.invoke(app, ["search", "   ", "--path", str(repo)])
+
+        assert result.exit_code != 0
+
+    def test_whitespace_padded_query_is_stripped_before_matching(self, tmp_path: Path) -> None:
+        repo = _make_repo(tmp_path)
+        _warm_file_intelligence(
+            repo, {"src/payment.py": FileIntelligenceEntry(language="python", kind="source")}
+        )
+
+        result = runner.invoke(app, ["search", "  payment  ", "--path", str(repo)])
+
+        assert result.exit_code == 0
+        assert "src/payment.py" in result.output
+
+    def test_zero_limit_rejected(self, tmp_path: Path) -> None:
+        repo = _make_repo(tmp_path)
+        _warm_file_intelligence(repo, {"a.py": FileIntelligenceEntry(language="python", kind="source")})
+
+        result = runner.invoke(app, ["search", "a", "--path", str(repo), "--limit", "0"])
+
+        assert result.exit_code != 0
+
+    def test_negative_limit_rejected(self, tmp_path: Path) -> None:
+        repo = _make_repo(tmp_path)
+        _warm_file_intelligence(repo, {"a.py": FileIntelligenceEntry(language="python", kind="source")})
+
+        result = runner.invoke(app, ["search", "a", "--path", str(repo), "--limit", "-1"])
 
         assert result.exit_code != 0
 
