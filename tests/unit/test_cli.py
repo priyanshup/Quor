@@ -2047,6 +2047,15 @@ class TestPosixLauncherGeneration:
         assert "quor hook claude" in content
         assert sys.executable in content
 
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason=(
+            "Verifies real POSIX permission bits (0o755) — meaningless on a real Windows "
+            "host, whose chmod() cannot represent Unix execute bits at all, regardless of "
+            "what this class's is_windows() mock says. Not a production gap: chmod(0o755) "
+            "only ever runs when is_windows() is genuinely False, i.e. on a real POSIX host."
+        ),
+    )
     def test_launcher_is_executable(self, tmp_path: Path) -> None:
         """Regression test for QB-082's chmod requirement — fails on the
         pre-fix code (which never set an executable bit on any launcher),
@@ -2143,6 +2152,15 @@ class TestDoctorPosix:
             result = runner.invoke(app, ["doctor", "--settings-path", str(settings_path)])
         assert result.exit_code == ExitCode.GENERAL_ERROR
 
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason=(
+            "Verifies real POSIX permission bits (0o755) — meaningless on a real Windows "
+            "host, whose chmod() cannot represent Unix execute bits at all, regardless of "
+            "what this class's is_windows() mock says. Not a production gap: chmod(0o755) "
+            "only ever runs when is_windows() is genuinely False, i.e. on a real POSIX host."
+        ),
+    )
     def test_fix_repairs_stale_posix_hook_and_chmods_it(self, tmp_path: Path) -> None:
         """Regression test for the doctor.py `--fix` gap found while
         implementing QB-082: the repair path writes a fresh script via the
