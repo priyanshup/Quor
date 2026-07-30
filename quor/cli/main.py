@@ -1,14 +1,18 @@
 """Typer application and command registration.
 
-The six V1 commands (do not add more without approval) plus seven exempt
+The six V1 commands (do not add more without approval) plus eight exempt
 utility commands — `schema` (JSON Schema dump), `map` (QB-061's
 deterministic Repository Context Profile), `symbols` (QB-066's
 deterministic Repository Symbols index), `graph` (QB-067's deterministic
 Repository Dependency Graph), `version` (QB-073), `repo` (QB-076's
-Repository Intelligence Dashboard), and `explore` (QB-078's Repository
+Repository Intelligence Dashboard), `explore` (QB-078's Repository
 Explorer, ADR-042 — a cache-only reporting sub-app, distinct from `repo` in
 that it never calls `ensure_repo_intelligence()`, see
-`quor/cli/commands/explore.py`'s own module docstring) — none is a
+`quor/cli/commands/explore.py`'s own module docstring), and `search`
+(QB-080's Semantic Repository Search — deterministic, cache-only, reads
+only `file_intelligence.json`, never `ensure_repo_intelligence()` and never
+`symbol_facts.json`/`graph_facts.json`, see
+`quor/cli/commands/search.py`'s own module docstring) — none is a
 filtering operation, so none counts against the six:
   quor init --claude
   quor validate [file]
@@ -22,13 +26,14 @@ filtering operation, so none counts against the six:
   quor graph
   quor repo
   quor explore
+  quor search
   quor version
 
 Commands are grouped into three `rich_help_panel`s for `--help` (QB-073):
-Installation (init, doctor), Analysis (map, symbols, graph, repo, explore),
-and Utilities (everything else) — purely a `--help` presentation grouping,
-Typer's own built-in mechanism; it changes nothing about how any command is
-invoked, routed (`__main__.py::_CLI_COMMANDS`), or tested.
+Installation (init, doctor), Analysis (map, symbols, graph, repo, explore,
+search), and Utilities (everything else) — purely a `--help` presentation
+grouping, Typer's own built-in mechanism; it changes nothing about how any
+command is invoked, routed (`__main__.py::_CLI_COMMANDS`), or tested.
 """
 
 import typer
@@ -42,6 +47,7 @@ from quor.cli.commands.graph import graph_command
 from quor.cli.commands.init import init
 from quor.cli.commands.map import map_command
 from quor.cli.commands.repo import repo_command
+from quor.cli.commands.search import search_command
 from quor.cli.commands.symbols import symbols_command
 from quor.cli.commands.validate import validate
 from quor.cli.commands.verify import verify
@@ -66,6 +72,7 @@ app.command(name="symbols", rich_help_panel=_PANEL_ANALYSIS)(symbols_command)
 app.command(name="graph", rich_help_panel=_PANEL_ANALYSIS)(graph_command)
 app.command(name="repo", rich_help_panel=_PANEL_ANALYSIS)(repo_command)
 app.add_typer(explore_app, name="explore", rich_help_panel=_PANEL_ANALYSIS)
+app.command(name="search", rich_help_panel=_PANEL_ANALYSIS)(search_command)
 app.command(rich_help_panel=_PANEL_UTILITIES)(explain)
 app.command(rich_help_panel=_PANEL_UTILITIES)(validate)
 app.command(rich_help_panel=_PANEL_UTILITIES)(verify)

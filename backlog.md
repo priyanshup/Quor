@@ -5649,6 +5649,131 @@ correct Repository Context block matching the cache's own recorded facts.
 
 ---
 
+#### QB-080 — Semantic Repository Search (`quor search`)
+
+**Effort:** Medium · **Value:** Medium · **Risk:** Low · **Category:** New Capability
+
+`quor explore` (QB-078) assumes the user already knows what they're looking for (an exact symbol
+name, an exact file path). This item adds `quor search <query>`, a deterministic command that
+discovers relevant files from cached repository intelligence — "where is auth implemented," "which
+files deal with payments" — without embeddings, fuzzy ranking, TF-IDF, or any probabilistic
+technique.
+
+**Status:** Implemented (not committed, per this session's standing "commit only when explicitly
+asked" rule).
+
+<details>
+<summary>Technical details</summary>
+
+**Investigation first, per this repo's Rule 4.** Audited every existing repository-intelligence
+cache before writing any search logic. `file_intelligence.json` (QB-079) is the only one cheap
+enough to meet the ticket's own "under 100ms, never scale with repo size" requirement — its
+full-dict load is asserted at <50ms CPU even at 2000 files
+(`test_repo_intel_benchmark.py::TestFileIntelligenceLookup`). `symbol_facts.json`/`graph_facts.json`
+(exhaustive per-symbol data, full edge list) were measured at 114ms combined for this repository's
+469 files — the exact O(repo-size) cost QB-079 already rejected for the Read hook, and precisely
+what `quor search` must never pay as repos grow. `quor explore find`/`deps`/`used-by` already pay
+that cost, but as an explicit one-shot exhaustive query, not something meant to scale the way a
+general search command must.
+
+**The gap.** The ticket's own 7-tier evidence list separates "Exact/Prefix symbol match" from a
+distinctly weaker "Top-symbol match," and names a 7th "Import/export relationship match" tier —
+but `file_intelligence.json`'s `top_symbols` is capped at 5 public top-level names per file, and
+the cache had no way to answer "what does this file import" beyond a bare count. Both gaps were
+presented to the user as explicit stop-and-explain decisions (per this ticket's own conditions),
+resolved as follows, then refined across four further review rounds before implementation:
+
+1. **Symbol tiers (exact/prefix/top-symbol) never load `symbol_facts.json`.** All three operate
+   only against `top_symbols`, differing solely in match strength (equality / prefix / substring).
+   Known, accepted limitation: private, nested, or 6th+ symbols aren't matched here — `quor explore
+   find` remains the tool for an exhaustive answer.
+2. **`file_intelligence.json` gains one new field, `imported_files`** — every resolved
+   `import`-kind edge target with a file as source, file-level only (never a call/inherit/export
+   edge, never a `target_symbol`), full and uncapped (a cap would blind the dependency tier for
+   exactly the well-connected "hub" files "show everything related to X" cares about most), derived
+   from the *already-computed* edges list in the same loop that already produces the pre-existing
+   `imports`/`imported_by` counts — no new repository traversal. `FILE_INTELLIGENCE_VERSION` bumped
+   1 → 2 (the first genuinely new *indexed relationship* data the cache has gained, not just another
+   scalar). Only the outgoing direction is persisted — `search.py::_build_reverse_import_index()`
+   derives the reverse ("imported by") direction in memory, once per `search()` call, by inverting
+   `imported_files` across the whole already-loaded dict (`O(total import edges)`, a `defaultdict(set)`
+   accumulation then one `sorted()` pass — free duplicate-edge protection, fully deterministic).
+   `quor search` reads only `file_intelligence.json`, always — never `graph_facts.json`.
+3. The resulting 7th evidence tier is named `dependency` (not the ticket's literal "import/export" —
+   the cache only ever stores resolved imports, never export data) and matches via **exact
+   case-folded path-token equality** against each neighbor's `{stem, filename, directory
+   components}` (`search.py::_path_tokens()`), not substring — plain substring search over a
+   whole-repo-wide neighbor list got noisy fast (`"auth"` spuriously matching
+   `authentication.py`/`oauth.py`).
+4. New `--importance high|medium|low` filter alongside `--kind`/`--language`/`--entry-points` — the
+   data already existed on every entry.
+5. Ranking tuple, every component named rather than an anonymous literal: tier priority, then entry
+   point (ranks ahead of plain High importance — usually the more useful result on a tie), then
+   importance, then filename-length closeness to the query (scoped to only the `exact_filename`/
+   `filename_contains` tiers — applying it universally was an early mistake, caught in review:
+   filename length has no bearing on a symbol/directory/dependency match), then path (the primary,
+   stable tiebreak — alphabetical, doesn't drift as the repo evolves), then connectivity
+   (`imports + imported_by`, descending) as the very last, most volatile tiebreak.
+6. `SearchMatch.matched_value` (not an earlier `detail` draft) is always populated and shown
+   prominently as a "Matched:" line in text output, for every tier, not only symbol/dependency ones.
+
+**Deliberately not built, per the user's own final, distilled instruction each round:** a
+confidence/star rating derived from evidence tier; a `--explain` flag surfacing every tier a file
+did/didn't match (both good ideas, worth a future ticket); extracting a shared
+`RepositoryQueryEngine` behind `explore`/`search`/`repo` (reasonable once a 4th–5th
+repository-reporting command exists — candidate QB-085+, not now); an interactive `quor search
+--interactive`/`quor browse` mode (a natural next step once QB-078/079/080 all exist, but a
+separate ticket).
+
+**New modules**, mirroring `explorer.py`/`explorer_model.py`/`explorer_render.py`'s own
+cache-only/plain-dataclass/fixed-template conventions: `search_model.py` (`SearchEvidence`,
+`SearchMatch`, `SearchResult` — reuses `explorer_model.CacheUnavailable` directly rather than
+duplicating it), `search.py` (`load_cache()`, `_build_reverse_import_index()`, `_path_tokens()`,
+`_dependency_neighbors()`, `_best_evidence()` — all 7 tiers checked in one function, in priority
+order, since the tier ordering *is* the command's contract — `search()`), `search_render.py`
+(`render_search_text/json()`, reusing `explorer_render.render_cache_unavailable_text/json()`), and
+`cli/commands/search.py` (a single command, not a sub-app like `explore` — `search` has one verb).
+Wired as a 9th exempt utility command (`quor/cli/main.py`, `quor/__main__.py::_CLI_COMMANDS`),
+tracked under a new `REPO_SEARCH_FILTER_LABEL` (`quor/tracking/db.py`, excluded from
+`filter_divergence.py`'s low-performer check, same as every prior synthesis-not-compression
+command).
+
+**Testing:** `test_repo_intel_file_intelligence.py` gained `imported_files` population/dedup/sort
+cases including a many-neighbor hub-file case and an explicit "no reverse direction persisted"
+case; `test_repo_intel_store.py`'s roundtrip test extended to the new field; new
+`test_repo_search.py` (evidence-tier isolation including the exact-token-not-substring dependency
+case, priority ordering, every filter, every tiebreak including the filename-length exclusion for
+non-filename tiers, limit/truncation, case-insensitivity, and a same-input-twice determinism
+assertion) and `test_repo_search_cli.py` (missing/corrupted cache, text/JSON shape, validation
+errors, zero-match-is-not-an-error, and one real `quor map`-build-then-search end-to-end test).
+`tests/benchmarks/repo_intel_benchmark.py` gained `measure_search_latency()` and a separate
+`measure_reverse_import_index()` (reported, not asserted, at 150/2000 synthetic files — the reverse
+index gets its own number since it's the one genuinely new algorithmic step this item introduces);
+`test_repo_intel_benchmark.py` gained matching `cpu_seconds`-based regression guards (search
+<0.1s, reverse index <0.05s, generous bounds against QB-080's own 100ms target). Full gate: `ruff
+check quor/ tests/` clean; `mypy quor/` clean; `pytest tests/unit/` full suite green (all 78 test
+files, batched per this repo's own hook self-timeout, no regressions — including the full,
+previously-slow `test_repo_intel.py`/`test_cli_repo.py`/`test_repo_profile_*_benchmark.py`
+suites); `quor verify` unchanged at 204/204.
+
+**Real-repository validation** (this repository, 475 files, after `quor map --rebuild`):
+`file_intelligence.json` grew from 114,181 bytes (reconstructed pre-QB-080 shape) to 205,028 bytes
+— **+90,847 bytes, +79.6%**. Reported plainly rather than characterized as "small," per the user's
+own "stop and explain before storing anything substantially larger than necessary" — in absolute
+terms it's still modest (205KB vs. `graph_facts.json`'s 714KB / `symbol_facts.json`'s 3.1MB), and
+the growth is spread across 187 files with resolved imports (685 total edges, max 24 for any single
+file) rather than dominated by one or two pathological hub files, so no compact (index-based)
+representation was pursued — the condition for revisiting that ("one or two extreme hub files
+dominate the delta") wasn't met. Latency, measured directly against the real, already-loaded cache:
+`_build_reverse_import_index()` well under 1ms; `search()` end to end (load + score + rank) ~6–8ms
+wall time per query — two orders of magnitude under the ticket's 100ms target. Manual smoke test:
+`quor search FileIntelligenceEntry`/`quor search payment` (text and `--json`) against this real
+repository produced correct, byte-identical output across repeated invocations.
+
+</details>
+
+---
+
 ### Historical (superseded)
 
 *Kept for the record — not resolved work in its own right, but the original request that later,

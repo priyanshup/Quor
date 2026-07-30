@@ -183,6 +183,47 @@ class TestBuildFileIntelligence:
         assert entries["app/util.py"].imported_by == 1
         assert entries["app/service.py"].top_symbols == ["run"]
         assert entries["app/service.py"].kind == "source"
+        assert entries["app/service.py"].imported_files == ["app/util.py"]
+        assert entries["app/util.py"].imported_files == []
+
+    def test_imported_files_deduplicated_and_sorted_for_a_hub_file(self, tmp_path: Path) -> None:
+        """QB-080: a file imported by many others (a "hub") must not be
+        capped or silently dropped — `imported_files` is the *outgoing*
+        direction only, so this exercises a hub file's own multiple
+        outgoing imports, deduplicated (two edges to the same target
+        collapse to one entry) and sorted, not just counted."""
+        files = ["hub.py", "leaf_c.py", "leaf_a.py", "leaf_b.py"]
+        walk_result = self._walk(tmp_path, files)
+        fingerprints = {p: FileFingerprint(size=0, mtime_ns=0, content_hash="x") for p in files}
+        profile = _profile(tmp_path)
+        edges = [
+            Edge(kind="import", source_file="hub.py", target_raw="c", line=1, target_file="leaf_c.py"),
+            Edge(kind="import", source_file="hub.py", target_raw="a", line=2, target_file="leaf_a.py"),
+            Edge(kind="import", source_file="hub.py", target_raw="b", line=3, target_file="leaf_b.py"),
+            # A duplicate edge to the same target must not produce a duplicate entry.
+            Edge(kind="import", source_file="hub.py", target_raw="a-again", line=4, target_file="leaf_a.py"),
+        ]
+
+        entries = _build_file_intelligence(tmp_path, walk_result, {}, {}, edges, fingerprints, profile)
+
+        assert entries["hub.py"].imported_files == ["leaf_a.py", "leaf_b.py", "leaf_c.py"]
+
+    def test_no_reverse_direction_is_persisted(self, tmp_path: Path) -> None:
+        """QB-080's own explicit tradeoff: only the outgoing direction is
+        ever stored on `FileIntelligenceEntry` — the target of an import
+        edge gets no `imported_files` entry of its own from that edge (the
+        reverse direction is derived in memory by `quor search`'s own
+        `_build_reverse_import_index()`, never persisted a second time)."""
+        files = ["a.py", "b.py"]
+        walk_result = self._walk(tmp_path, files)
+        fingerprints = {p: FileFingerprint(size=0, mtime_ns=0, content_hash="x") for p in files}
+        profile = _profile(tmp_path)
+        edges = [Edge(kind="import", source_file="a.py", target_raw="b", line=1, target_file="b.py")]
+
+        entries = _build_file_intelligence(tmp_path, walk_result, {}, {}, edges, fingerprints, profile)
+
+        assert entries["a.py"].imported_files == ["b.py"]
+        assert entries["b.py"].imported_files == []
 
     def test_entry_point_detection(self, tmp_path: Path) -> None:
         files = ["main.py"]
@@ -214,6 +255,7 @@ class TestBuildFileIntelligence:
         assert entry.top_symbols == []
         assert entry.imports == 0
         assert entry.imported_by == 0
+        assert entry.imported_files == []
         assert entry.entry_point is False
         assert entry.language == "unknown"  # Markdown is excluded from languages.py's census
         assert entry.size == 5

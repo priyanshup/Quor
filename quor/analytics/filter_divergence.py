@@ -19,6 +19,7 @@ from quor.tracking.db import (
     REPO_EXPLORE_FILTER_LABEL,
     REPO_GRAPH_FILTER_LABEL,
     REPO_PROFILE_FILTER_LABEL,
+    REPO_SEARCH_FILTER_LABEL,
     REPO_SYMBOLS_FILTER_LABEL,
     FilterUsage,
 )
@@ -26,9 +27,9 @@ from quor.tracking.db import (
 # Synthetic, non-ContentMask-filter labels that must never be flagged as
 # "low performing" — each is documented at its own definition (PASSTHROUGH_LABEL
 # in quor/tracking/db.py, REPO_PROFILE_FILTER_LABEL/REPO_SYMBOLS_FILTER_LABEL/
-# REPO_GRAPH_FILTER_LABEL/REPO_DASHBOARD_FILTER_LABEL/REPO_EXPLORE_FILTER_LABEL
-# alongside it) as always reading 0.0%/near-zero by design, not as evidence
-# of a broken filter.
+# REPO_GRAPH_FILTER_LABEL/REPO_DASHBOARD_FILTER_LABEL/REPO_EXPLORE_FILTER_LABEL/
+# REPO_SEARCH_FILTER_LABEL alongside it) as always reading 0.0%/near-zero by
+# design, not as evidence of a broken filter.
 _EXCLUDED_FROM_LOW_PERFORMER_CHECK = frozenset(
     {
         PASSTHROUGH_LABEL,
@@ -37,6 +38,7 @@ _EXCLUDED_FROM_LOW_PERFORMER_CHECK = frozenset(
         REPO_GRAPH_FILTER_LABEL,
         REPO_DASHBOARD_FILTER_LABEL,
         REPO_EXPLORE_FILTER_LABEL,
+        REPO_SEARCH_FILTER_LABEL,
     }
 )
 

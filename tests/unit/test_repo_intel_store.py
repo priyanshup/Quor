@@ -179,6 +179,7 @@ class TestFileIntelligenceRoundtrip:
                 imported_by=61,
                 entry_point=False,
                 top_symbols=["Foo", "bar"],
+                imported_files=["b.py", "tests/test_a.py"],
                 size=1234,
                 mtime_ns=567890,
             ),

@@ -220,3 +220,51 @@ class TestFileIntelligenceLookup:
         # item's own investigation measured at 114ms, over 2 orders of
         # magnitude above this bound).
         assert result.cpu_seconds < 0.05
+
+
+class TestSearchLatency:
+    """QB-080: `quor search`'s own cost must stay well under its 100ms
+    target and, like `TestFileIntelligenceLookup` above, must not scale
+    with total repo size the way loading `symbol_facts.json`/
+    `graph_facts.json` in full does. A small, fast repo of its own —
+    this only needs `search()` to exist and be cheap, not to exercise the
+    full scenario matrix."""
+
+    def test_search_cpu_time_stays_well_under_the_100ms_target(self, tmp_path: Path) -> None:
+        from quor.pipeline.repo_profile.intel import ensure_repo_intelligence
+        from tests.benchmarks.repo_intel_benchmark import (
+            build_synthetic_repo,
+            measure_search_latency,
+        )
+
+        repo = tmp_path / "repo"
+        build_synthetic_repo(repo, 30)
+        ensure_repo_intelligence(repo)
+
+        result = measure_search_latency(repo, 30)
+
+        # Generous bound, not a tight threshold — QB-080's own target is
+        # <100ms; this leaves real headroom for CI noise while still
+        # catching a regression toward something that scales with repo
+        # size (e.g. accidentally loading symbol_facts.json/graph_facts.json).
+        assert result.cpu_seconds < 0.1
+
+    def test_reverse_import_index_cpu_time_stays_small(self, tmp_path: Path) -> None:
+        from quor.pipeline.repo_profile.intel import ensure_repo_intelligence
+        from tests.benchmarks.repo_intel_benchmark import (
+            build_synthetic_repo,
+            measure_reverse_import_index,
+        )
+
+        repo = tmp_path / "repo"
+        build_synthetic_repo(repo, 30)
+        ensure_repo_intelligence(repo)
+
+        result = measure_reverse_import_index(repo, 30)
+
+        # `_build_reverse_import_index()` is the one genuinely new
+        # algorithmic step QB-080 introduces — asserted separately from the
+        # end-to-end search bound above so a future regression to something
+        # worse than linear is caught precisely, not just folded into the
+        # total.
+        assert result.cpu_seconds < 0.05

@@ -205,14 +205,20 @@ be a real classifier) — add it only if repository intelligence gains a
 genuine deterministic source for it (explicit package/deployment metadata,
 not a path-shape guess)."""
 
-FILE_INTELLIGENCE_VERSION = 1
+FILE_INTELLIGENCE_VERSION = 2
 """Independent of `CACHE_SCHEMA_VERSION` above — `file_intelligence.json`'s
 on-disk shape can change without forcing a rebuild of the state/profile/
 symbol/graph cache files, and vice versa. Embedded as a top-level `version`
 key in `file_intelligence.json` itself; `intel_store.load_file_intelligence()`
 treats a mismatch exactly like "file missing", so `intel.py`'s existing
 backfill-on-next-touch logic handles a version bump the same way as a
-first-time build — no coordination with `CACHE_SCHEMA_VERSION` needed."""
+first-time build — no coordination with `CACHE_SCHEMA_VERSION` needed.
+
+Bumped 1 -> 2 by QB-080: `FileIntelligenceEntry` gained `imported_files`, its
+first indexed *relationship* data (every prior field was a scalar or a
+capped name list) — a genuinely new kind of content, not just another
+scalar, so existing caches need regenerating rather than silently reading
+back with a missing field."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -261,6 +267,24 @@ class FileIntelligenceEntry:
     """Public, top-level declaration names only (methods excluded) —
     capped at 5, declaration-line order, de-duplicated. Empty for any file
     with no `symbol_files` entry."""
+
+    imported_files: list[str] = field(default_factory=list)
+    """Repo-relative POSIX paths of every file this file has a resolved
+    `import`-kind edge targeting (QB-080) — deduplicated, sorted for
+    determinism, **not capped** (a hard cap would silently blind `quor
+    search`'s dependency-evidence tier for exactly the well-connected "hub"
+    files that tier is most useful for). File-level only: never a
+    call/inherit/export edge, never a `target_symbol` — this must stay a
+    plain list of *files*, not grow into anything requiring
+    `symbol_facts.json`/`graph_facts.json` at read time, or it defeats
+    QB-080's own latency goal (search must never scale with repo size the
+    way loading those two files does).
+
+    Deliberately one direction only — the reverse ("imported by") is never
+    persisted a second time here; `imported_by` above already gives the
+    scalar count, and `quor search`'s own `search.py` derives the full
+    reverse path list in memory, once per invocation, by inverting this
+    field across the whole loaded cache."""
 
     size: int = 0
     mtime_ns: int = 0
