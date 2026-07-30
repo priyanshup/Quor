@@ -2122,3 +2122,137 @@ works end to end, not just that unit-level mocks agree with each other.
 
 **Superseded in part:** this ADR extends, rather than replaces, ADR-017 — see that entry's own
 closing note.
+
+---
+
+## ADR-044: Cross-Platform Gemini Hook Launcher (QB-083)
+
+**Status:** Decided and shipped
+**Date:** 2026-07-31
+
+**Context:**
+`quor init --agent gemini` (`quor/adapters/gemini_adapter.py`) had its own fully independent copy
+of the pre-QB-082 Windows-only pattern: a single `HOOK_PS1_TEMPLATE` and a hardcoded `powershell
+-ExecutionPolicy Bypass -File "<path>"` command string, deliberately deferred out of QB-082's own
+scope (see ADR-043's "Gemini deferred, deliberately" note) to keep that ticket minimal. The bug this
+left behind is identical in shape to Claude's own pre-QB-082 bug: `powershell`/`pwsh` don't exist on
+a default macOS/Linux install, so `quor init --agent gemini` on those platforms wrote a hook that
+would fail every Gemini CLI `BeforeTool` invocation with "command not found."
+
+**Decision:**
+Apply exactly QB-082's fix to `gemini_adapter.py`, reusing its platform primitives rather than
+re-deriving them: `hook_manifest.is_windows()` and `hook_manifest.POSIX_SHELL` are imported (module
+import, matching `init.py`'s own comment on why — a test patching `hook_manifest.is_windows` must
+reach every call site through the one shared reference). Windows keeps the existing PS1 launcher
+unchanged; macOS/Linux now get a POSIX `.sh` launcher — `exec "{python}" -m quor hook gemini
+command_intercept` — registered as `<sh> "<path>"`, chmod'd `0o755` after writing, identical in
+shape to `quor/adapters/claude.py`'s `HOOK_SH_TEMPLATE`.
+
+The single `_SCRIPT_NAME = "gemini-hook.ps1"` constant became two constants
+(`_WINDOWS_SCRIPT_NAME`/`_POSIX_SCRIPT_NAME`) resolved through a `_script_name()` function called
+fresh at every use site (`_script_path()`, `_hook_registered()`, `_install_hook_entry()`, the doctor
+"not registered" message) — the same "resolve at access time, not at module-import/spec-construction
+time" reasoning ADR-043 already established for `ClaudeHookSpec.script_name`, adapted to a plain
+function since Gemini has exactly one hook, not a family of specs iterated by a shared install/
+doctor loop.
+
+**Why this stays its own module, not a `ClaudeHookSpec` migration:** `hook_manifest.py`'s
+`ClaudeHookSpec` dataclass and `HOOK_SPECS` tuple exist to let `init.py`/`doctor.py` iterate a
+*growing family* of Claude hooks generically. Gemini has exactly one hook (`BeforeTool`/
+`run_shell_command`) and its own independent `install()`/`doctor_checks()` implementation on the
+`AgentAdapter` Protocol (QB-068) — folding it into `ClaudeHookSpec`/`HOOK_SPECS` would couple two
+adapters that are otherwise deliberately independent (see `gemini_adapter.py`'s own module
+docstring) for no shared benefit; only the two platform primitives (`is_windows()`/`POSIX_SHELL`)
+are reused, exactly as ADR-043 already anticipated when it called that platform-detection layer
+"intentionally reusable for Gemini."
+
+**No `doctor --fix` repair path needed:** unlike Claude's `HOOK_SPECS`, which `doctor.py`'s
+`_repair_hooks()` iterates and therefore needed its own `chmod` fix (see ADR-043's own
+"Consequences" section), Gemini has no equivalent repair path in `doctor.py` at all — its
+`doctor_checks()` only ever reports install state, it never regenerates the script. `install()`'s
+own `chmod` (this ADR) is therefore the only POSIX-executable-bit code path that exists for Gemini,
+with nothing else to keep in sync.
+
+**Testing:** `tests/unit/test_gemini_adapter.py` gained the same module-wide `is_windows`-pinned-
+to-Windows autouse fixture `tests/unit/test_cli.py` already uses for QB-082 (so every pre-existing
+test in the file keeps exercising the Windows path unchanged, regardless of the host OS running
+pytest), plus a new `TestGeminiPosix` class mirroring `test_cli.py`'s `TestPosixLauncherGeneration`/
+`TestDoctorPosix`: `.sh` script content and extension, the `0o755` executable bit (skipped on real
+Windows hosts, where `chmod` cannot represent Unix execute bits), the `<sh> "<path>"` registered
+command shape (and the absence of `powershell` in it), and a full install-then-`doctor_checks()`
+green check. `tests/integration/test_cli_commands.py` gained
+`TestGeminiInitIntegration::test_real_posix_launcher_executes_end_to_end` — the same "no mocking the
+boundary that matters" proof QB-082 added for Claude: a real, unmocked `sh` subprocess executes the
+generated `.sh` launcher against a synthetic Gemini CLI `BeforeTool` payload and confirms the
+rewritten `hookSpecificOutput.tool_input.command` comes back correct. No CI matrix change was
+needed — `macos-latest` was already added to `.github/workflows/ci.yml` by QB-082, and it now proves
+Gemini's own POSIX launcher end to end too.
+
+**Consequences:**
+- `quor init --agent gemini`'s user-facing command is unchanged on every platform — entirely
+  internal to launcher generation, matching QB-082's own precedent.
+- `gemini_adapter.py`'s module docstring's former "Windows compatibility is not addressed" caveat is
+  now scoped correctly: Quor's own launcher is cross-platform; only Gemini CLI's *own* end-to-end
+  behavior on a real installed binary remains unverified (unchanged from before this ticket — see
+  that docstring's own "Not confirmed" section).
+- See `backlog.md`'s `QB-083` entry for the implementation record.
+
+**Extends:** this ADR applies ADR-043's decision to a second adapter; it does not revise ADR-043
+itself.
+
+---
+
+## ADR-045: Live Terminal Dashboard, not a Browser Dashboard (QB-084)
+
+**Status:** Decided and shipped
+**Date:** 2026-07-31
+
+**Context:**
+A live, auto-refreshing view of token savings (`quor gain`, but continuously updating instead of a
+one-shot snapshot) was requested, explicitly modeled on a competitor's browser-based savings
+dashboard. Two of that request's specifics directly conflict with standing project decisions:
+
+1. A browser dashboard is exactly what `ANTI_GOALS.md` #7 rules out by name ("no Flask, no
+   FastAPI... the browser is not in scope").
+2. A "real" (non-approximate) token counter would mean adopting `tiktoken`, which ADR-013 already
+   rejected as a compiled-dependency risk on corporate/Windows machines.
+
+Presented to the project owner directly; both were confirmed rather than silently worked around —
+terminal view over browser, and keep the char/4 approximation over a real tokenizer.
+
+**Decision:**
+`quor dashboard` (`quor/cli/commands/dashboard.py`) is a foreground, `rich.live.Live`-driven
+terminal view — no new dependency (`rich` is already core), no port, no daemon. It captures
+`session_start` at launch and polls the existing SQLite tracking DB every `--refresh` seconds
+(default 1s) for rows at or after that timestamp, so the numbers shown are "since I started
+watching," not a calendar window. `--once` (or a non-TTY caller) renders a single static snapshot
+instead of driving `Live`, so scripted/CI use never hangs.
+
+`quor/tracking/db.py::query_gain()` gained an additive `since: datetime | None` parameter (falls
+back to the existing `days`-relative window when omitted — no behavior change for `quor gain`'s
+own callers) and a new `query_recent_invocations()` for the dashboard's recent-activity feed —
+both read-only views over the same `invocations` table, no schema change. Token counts remain the
+existing `count_tokens()` char/4 estimate (ADR-013); an estimated-cost line (`tokens_saved * a
+fixed reference $/M-token price`) was added for parity with the referenced competitor's cost
+figure, carrying an explicit "not a guaranteed figure" caveat alongside the standard ±20% token
+disclaimer (`ANTI_GOALS.md` #24) — no caveat was removed or weakened anywhere in this work.
+
+Registered as a ninth exempted utility command (`quor/cli/main.py`, `quor/__main__.py`'s
+`_CLI_COMMANDS`), same precedent as `quor repo`/`quor map`/`quor explore` — presentation only,
+computes nothing new, doesn't count against the six V1 filtering commands.
+
+Alongside this: `docs/FAQ.md`'s "Corporate laptops" section told users to run `py -m ...`, which
+only exists on Windows — the one doc in the repo that contradicted ADR-029's own reasoning, and
+very likely the direct cause of a real "`py`: command not found" report on macOS. Fixed to
+`python -m ...`, matching every other doc. `README.md` was also rewritten for length (136 → 90
+lines) — same information, denser tables, real benchmark numbers (35.3% overall, from
+`docs/BENCHMARKS.md`) surfaced instead of buried, and an explicit `python -m quor` fallback note
+next to Install.
+
+**Consequences:**
+- No new dependency, no new network surface, no daemon — the corporate-safety posture
+  (`ANTI_GOALS.md` #1, #2, #5, #6, #7, #11) is unchanged by this feature.
+- `quor gain`'s own behavior and output are unaffected — `since` is opt-in and additive.
+- The estimated-cost figure is the one genuinely new kind of number this project shows a user;
+  flagged in-command with its own caveat, not blended into the ±20% token-count disclaimer.
+- See `backlog.md`'s `QB-084` entry for the implementation record.

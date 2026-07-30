@@ -25,6 +25,7 @@ from quor.tracking.db import (
     normalize_project_path,
     query_filter_analytics,
     query_gain,
+    query_recent_invocations,
 )
 
 # ---------------------------------------------------------------------------
@@ -50,6 +51,37 @@ def _sample_record(**kwargs) -> InvocationRecord:
     }
     defaults.update(kwargs)
     return InvocationRecord(**defaults)
+
+
+def _seed_invocations(db_path: Path, records: list[dict]) -> None:
+    """Write rows directly against schema.sql, bypassing TrackingDB's
+    background thread — same approach TestQueryGain._populate() uses, kept
+    standalone here so QB-083's `since=`/`query_recent_invocations` tests
+    don't need to reach into that class."""
+    schema_sql = (
+        Path(__file__).parent.parent.parent / "quor" / "tracking" / "schema.sql"
+    ).read_text(encoding="utf-8")
+    with sqlite3.connect(str(db_path)) as conn:
+        conn.executescript(schema_sql)
+        for r in records:
+            conn.execute(
+                """INSERT INTO invocations
+                   (command, project_path, original_tokens, final_tokens,
+                    filter_name, was_passthrough, duration_ms, recorded_at, schema_version)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    r.get("command", "git status"),
+                    r.get("project_path", "/proj"),
+                    r.get("original_tokens", 100),
+                    r.get("final_tokens", 20),
+                    r.get("filter_name", "git"),
+                    r.get("was_passthrough", 0),
+                    r.get("duration_ms", 10.0),
+                    r.get("recorded_at", datetime.now(UTC).isoformat(timespec="seconds")),
+                    1,
+                ),
+            )
+        conn.commit()
 
 
 # ---------------------------------------------------------------------------
@@ -928,6 +960,136 @@ class TestQueryGain:
     def test_read_hook_invocations_zero_on_empty_db(self, tmp_path: Path) -> None:
         report = query_gain(tmp_path / "missing.db", tmp_path)
         assert report.read_hook_invocations == 0
+
+
+class TestQueryGainSince:
+    """QB-083: `since=` scopes query_gain() to a literal timestamp instead
+    of the `days`-relative window — the primitive `quor dashboard` polls on
+    to show "since I started watching" numbers."""
+
+    def test_since_excludes_rows_before_cutoff(self, tmp_path: Path) -> None:
+        db_path = tmp_path / "quor.db"
+        cutoff = datetime(2026, 7, 31, 12, 0, 0, tzinfo=UTC)
+        _seed_invocations(
+            db_path,
+            [
+                {
+                    "original_tokens": 100,
+                    "final_tokens": 50,
+                    "project_path": "/proj",
+                    "recorded_at": (cutoff - timedelta(seconds=1)).isoformat(timespec="seconds"),
+                },
+                {
+                    "original_tokens": 200,
+                    "final_tokens": 80,
+                    "project_path": "/proj",
+                    "recorded_at": cutoff.isoformat(timespec="seconds"),
+                },
+                {
+                    "original_tokens": 300,
+                    "final_tokens": 90,
+                    "project_path": "/proj",
+                    "recorded_at": (cutoff + timedelta(seconds=5)).isoformat(timespec="seconds"),
+                },
+            ],
+        )
+        report = query_gain(db_path, Path("/proj"), since=cutoff)
+        assert report.total_invocations == 2
+        assert report.tokens_saved == (200 - 80) + (300 - 90)
+
+    def test_since_none_falls_back_to_days_window(self, tmp_path: Path) -> None:
+        """No `since` passed — behavior identical to before QB-083 (existing
+        `quor gain` callers pass neither and must see no change)."""
+        db_path = tmp_path / "quor.db"
+        _seed_invocations(
+            db_path,
+            [{"original_tokens": 100, "final_tokens": 20, "project_path": "/proj"}],
+        )
+        report = query_gain(db_path, Path("/proj"), days=30)
+        assert report.total_invocations == 1
+
+    def test_since_on_empty_db_returns_zeros(self, tmp_path: Path) -> None:
+        report = query_gain(
+            tmp_path / "missing.db", tmp_path, since=datetime.now(UTC)
+        )
+        assert report.total_invocations == 0
+        assert report.tokens_saved == 0
+
+
+class TestQueryRecentInvocations:
+    """QB-083: the recent-activity feed backing `quor dashboard` — newest
+    first, scoped by project and `since`, metadata only."""
+
+    def test_returns_rows_since_cutoff_newest_first(self, tmp_path: Path) -> None:
+        db_path = tmp_path / "quor.db"
+        cutoff = datetime(2026, 7, 31, 12, 0, 0, tzinfo=UTC)
+        _seed_invocations(
+            db_path,
+            [
+                {
+                    "command": "too old",
+                    "project_path": "/proj",
+                    "recorded_at": (cutoff - timedelta(seconds=10)).isoformat(timespec="seconds"),
+                },
+                {
+                    "command": "first",
+                    "project_path": "/proj",
+                    "recorded_at": cutoff.isoformat(timespec="seconds"),
+                },
+                {
+                    "command": "second",
+                    "project_path": "/proj",
+                    "recorded_at": (cutoff + timedelta(seconds=5)).isoformat(timespec="seconds"),
+                },
+            ],
+        )
+        rows = query_recent_invocations(db_path, Path("/proj"), since=cutoff)
+        assert [r.command for r in rows] == ["second", "first"]
+
+    def test_respects_limit(self, tmp_path: Path) -> None:
+        db_path = tmp_path / "quor.db"
+        cutoff = datetime(2026, 7, 31, 12, 0, 0, tzinfo=UTC)
+        _seed_invocations(
+            db_path,
+            [
+                {
+                    "command": f"cmd-{i}",
+                    "project_path": "/proj",
+                    "recorded_at": (cutoff + timedelta(seconds=i)).isoformat(timespec="seconds"),
+                }
+                for i in range(5)
+            ],
+        )
+        rows = query_recent_invocations(db_path, Path("/proj"), since=cutoff, limit=2)
+        assert len(rows) == 2
+        assert rows[0].command == "cmd-4"
+
+    def test_scoped_to_project(self, tmp_path: Path) -> None:
+        db_path = tmp_path / "quor.db"
+        cutoff = datetime(2026, 7, 31, 12, 0, 0, tzinfo=UTC)
+        _seed_invocations(
+            db_path,
+            [
+                {
+                    "command": "in scope",
+                    "project_path": "/proj",
+                    "recorded_at": cutoff.isoformat(timespec="seconds"),
+                },
+                {
+                    "command": "other project",
+                    "project_path": "/other",
+                    "recorded_at": cutoff.isoformat(timespec="seconds"),
+                },
+            ],
+        )
+        rows = query_recent_invocations(db_path, Path("/proj"), since=cutoff)
+        assert [r.command for r in rows] == ["in scope"]
+
+    def test_empty_db_returns_empty_list(self, tmp_path: Path) -> None:
+        rows = query_recent_invocations(
+            tmp_path / "missing.db", tmp_path, since=datetime.now(UTC)
+        )
+        assert rows == []
 
 
 class TestQueryFilterAnalytics:

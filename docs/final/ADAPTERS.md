@@ -192,14 +192,14 @@ that matters (rewrite, no-op, BOM handling, Read compression, Read no-op).
 Gemini CLI's `BeforeTool` hook is confirmed (via Gemini CLI's own docs) to
 support rewriting a tool's arguments via `hookSpecificOutput.tool_input`,
 matched against the `run_shell_command` tool — the Gemini equivalent of
-Claude Code's `hookSpecificOutput.updatedInput`. This adapter installs a
-PowerShell hook script — the same pattern Claude's launcher used before
-QB-082 (ADR-043) made Claude's cross-platform (POSIX `.sh` via `sh` on
-macOS/Linux, `.ps1` via PowerShell still on Windows). Gemini's own POSIX
-equivalent is a deliberate, tracked follow-up (not yet implemented) — see
-ADR-043 — so installing `quor init --agent gemini` on macOS/Linux still
-produces a Windows-only hook today. Registered under `~/.gemini/settings.json`'s
-`hooks.BeforeTool`.
+Claude Code's `hookSpecificOutput.updatedInput`. As of QB-083 (ADR-044),
+this adapter is cross-platform on the same terms Claude's launcher already
+was (QB-082/ADR-043): Windows still gets a PowerShell hook script; macOS/
+Linux get a POSIX `.sh` launcher invoked via `sh`, chmod'd `0o755` after
+writing. Platform detection reuses `hook_manifest.is_windows()`/
+`POSIX_SHELL` directly rather than re-deriving it — the same shared
+primitives Claude's own launcher generation uses, not a second copy of the
+logic. Registered under `~/.gemini/settings.json`'s `hooks.BeforeTool`.
 
 **Not implemented, and why:** `CONTENT_INTERCEPT`. Gemini CLI's `AfterTool`
 hook's only confirmed output capability is `additionalContext` (append) —
@@ -344,9 +344,9 @@ their two checks are both always advisory, by design (see
    `COMMAND_INTERCEPT`) or a tool's output (required for
    `CONTENT_INTERCEPT`)? What's the exact stdin/stdout JSON shape? Is the
    target platform actually supported — Quor was originally Windows-first,
-   and every adapter except Claude's (see ADR-043) is still Windows-only, so
-   don't assume macOS/Linux support exists for a new adapter without
-   deliberately adding it. Fetch the tool's own current documentation directly — six adapters in a
+   and every adapter except Claude's (ADR-043) and Gemini's (ADR-044) is
+   still Windows-only, so don't assume macOS/Linux support exists for a new
+   adapter without deliberately adding it. Fetch the tool's own current documentation directly — six adapters in a
    row (QB-068/QB-069) found the answer differs from what a blog post or a
    sibling tool's shape would suggest.
 2. **If the research confirms a real modify/replace capability** (like

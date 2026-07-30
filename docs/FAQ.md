@@ -25,9 +25,11 @@ Windows is Quor's primary development and CI target — `pip install quor`, no R
 Some locked-down endpoint-protection policies block the small, unsigned `quor.exe`/`qr.exe` launcher stubs that `pip` creates, even though they only re-invoke the interpreter. This never affects Claude Code itself — every command it runs already goes through `<your Python interpreter> -m quor ...` directly, not the launcher. When typing commands yourself on such a machine, use the same form:
 
 ```bash
-py -m pip install quor
-py -m quor doctor
+python -m pip install quor
+python -m quor doctor
 ```
+
+Use `python` (or `python3` on macOS/Linux), never `py` — the `py` launcher only exists on Windows, and even there it isn't guaranteed to resolve to the interpreter Quor is installed under (see ADR-029).
 
 ## Optional language support
 

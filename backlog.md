@@ -33,7 +33,8 @@ as real data comes in.
 extraction sub-items, QB-005's JavaScript/TypeScript sub-items, QB-036, QB-035A) previously stated
 "not committed — awaiting explicit commit instruction." That was true when each was written, but
 stale by the time this restructuring happened: `CHANGELOG.md` and `git log` confirm all of it shipped
-in Quor **v0.4.0** and **v0.4.1** (2026-07-11, the current release). Each affected entry has been
+in Quor **v0.4.0** and **v0.4.1** (2026-07-11, then the current release — v0.5.0 is current as of
+2026-07-31, see CHANGELOG.md). Each affected entry has been
 corrected in place, with the correction called out explicitly rather than silently edited. This
 itself is a useful data point: this document had drifted from reality before, which is part of why
 it needed restructuring now, and worth remembering the next time "Status" is read as gospel — when
@@ -83,7 +84,7 @@ engine** — one component of which happens to be command-output compression tod
 
 ## Current Status
 
-*As of Quor v0.4.1, released 2026-07-11 (today). Windows-first, Claude Code only.*
+*As of Quor v0.5.0, released 2026-07-31. Windows-first, Claude Code only.*
 
 **What's actually shipped and live on `main` today:**
 
@@ -3569,7 +3570,7 @@ derived from which `requires_language` values were actually skipped
 (`ast_summarize/registry.py::extra_for_language()`), not hardcoded, so a future language sharing a
 different extra name would produce the correct hint automatically.
 
-**Status:** Fixed and merged to `main` (PR #49, `fix/qb-038-verify-optional-deps`) — shipped in Quor **v0.4.1** (2026-07-11), the current release.
+**Status:** Fixed and merged to `main` (PR #49, `fix/qb-038-verify-optional-deps`) — shipped in Quor **v0.4.1** (2026-07-11); still live, unchanged, in the current v0.5.0 release.
 
 </details>
 
@@ -5892,6 +5893,116 @@ two independently-triggered features and risked regressing QB-079's already-ship
 feature performs its own independent, cheapest-check-first-gated load instead); a symbol-level or
 call/inherit/export-edge dependency tier (QB-080's own file-level-only dependency tier is reused
 unchanged — see that item's own module docstring for why).
+
+</details>
+
+---
+
+#### QB-083 — Cross-Platform Gemini Hook Launcher
+
+**Effort:** Small · **Value:** Medium · **Risk:** Low · **Category:** Bug Fix
+
+**Status:** Implemented (2026-07-31).
+
+<details>
+<summary>Technical details</summary>
+
+**The bug, and why QB-082 didn't already fix it.** QB-082 made Claude Code's hook launcher
+cross-platform but deliberately left `quor/adapters/gemini_adapter.py` untouched (see that item's
+own scope note and ADR-043's "Gemini deferred, deliberately" section) — Gemini's adapter carries its
+own fully independent PowerShell-only launcher (`HOOK_PS1_TEMPLATE`, a hardcoded `powershell
+-ExecutionPolicy Bypass -File` command string), never wired into `hook_manifest.py`'s shared
+`ClaudeHookSpec` machinery at all. The result: `quor init --agent gemini` on macOS/Linux wrote a
+hook that would fail every Gemini CLI `BeforeTool` invocation with "command not found," the exact
+same class of bug QB-082 fixed for Claude, just left open in a second adapter.
+
+**Fix: reuse QB-082's platform primitives, don't rebuild them.** `gemini_adapter.py` now imports
+`quor.adapters.hook_manifest` (module import, not `from ... import is_windows`, matching `init.py`'s
+own reasoning — a test patching `hook_manifest.is_windows` must reach every call site through one
+shared reference). Windows keeps the existing `gemini-hook.ps1` launcher unchanged. macOS/Linux now
+get a new `gemini-hook.sh` launcher — `exec "{python}" -m quor hook gemini command_intercept`,
+identical in shape to `quor/adapters/claude.py`'s own `HOOK_SH_TEMPLATE` — registered as
+`hook_manifest.POSIX_SHELL "<path>"` and chmod'd `0o755` after writing. The single `_SCRIPT_NAME`
+constant became `_WINDOWS_SCRIPT_NAME`/`_POSIX_SCRIPT_NAME` resolved through a `_script_name()`
+function called fresh at every use site — the same access-time-resolution reasoning ADR-043 already
+established for `ClaudeHookSpec.script_name`, adapted to a plain function since Gemini has exactly
+one hook rather than a family of specs.
+
+**Deliberately not migrated to `ClaudeHookSpec`/`HOOK_SPECS`:** that dataclass/tuple exist so
+`init.py`/`doctor.py` can iterate a *growing family* of Claude hooks generically. Gemini has exactly
+one hook and its own independent `install()`/`doctor_checks()` on the `AgentAdapter` Protocol
+(QB-068) — only the two platform primitives (`is_windows()`/`POSIX_SHELL`) are reused, not the
+dataclass itself, keeping the two adapters' otherwise-independent install/doctor logic uncoupled.
+
+**No `doctor --fix` repair-path gap (unlike QB-082's own finding for Claude):** Gemini has no
+equivalent of `doctor.py`'s `_repair_hooks()` — its `doctor_checks()` only ever reports install
+state, never regenerates the script — so `install()`'s own `chmod` is the only POSIX-executable-bit
+code path that exists here, with no second call site to keep in sync.
+
+**Testing:** `tests/unit/test_gemini_adapter.py` gained a module-wide autouse fixture pinning
+`hook_manifest.is_windows` to `True` (mirroring `test_cli.py`'s identical QB-082 fixture, so every
+pre-existing test keeps exercising the Windows path unchanged regardless of the host OS running
+pytest) and a new `TestGeminiPosix` class covering `.sh` script content/extension, the `0o755`
+executable bit (skipped on real Windows hosts), the `<sh> "<path>"` registered command shape (and
+absence of `powershell` in it), and a full install-then-`doctor_checks()` green check.
+`tests/integration/test_cli_commands.py` gained
+`TestGeminiInitIntegration::test_real_posix_launcher_executes_end_to_end`: a real, unmocked `sh`
+subprocess executes the generated `.sh` launcher against a synthetic Gemini CLI `BeforeTool` payload
+and confirms the rewritten `hookSpecificOutput.tool_input.command` comes back correct. No CI matrix
+change needed — `macos-latest` was already added by QB-082 and now exercises Gemini's own POSIX
+launcher too. Full gate: `ruff check quor/ tests/` clean; `mypy quor/` clean; full `pytest
+tests/unit/` green; `pytest tests/integration/ -m integration` green.
+
+**Files changed:** `quor/adapters/gemini_adapter.py`, `tests/unit/test_gemini_adapter.py`,
+`tests/integration/test_cli_commands.py`, `docs/final/ADAPTERS.md`, `docs/final/DECISIONS.md`
+(ADR-044).
+
+</details>
+
+---
+
+#### QB-084 — Live Terminal Dashboard + Doc Cleanup
+
+**Effort:** Medium · **Value:** High · **Risk:** Low · **Category:** Feature
+
+**Status:** Implemented (2026-07-31).
+
+<details>
+<summary>Technical details</summary>
+
+**Request:** a Headroom-style live view of token savings, explicitly modeled on a competitor's
+browser dashboard, plus a real (non-approximate) token counter, a fix for a broken `py` command on
+macOS, and a much shorter README with real numbers. Two parts of the request directly conflicted
+with standing decisions — a browser UI (`ANTI_GOALS.md` #7) and a real tokenizer (ADR-013's
+`tiktoken` rejection) — surfaced and confirmed with the project owner before building anything:
+terminal view over browser, keep char/4 over `tiktoken`. See ADR-045 for the full reasoning.
+
+**`quor dashboard`** (`quor/cli/commands/dashboard.py`): a ninth exempted utility command, foreground
+`rich.live.Live` view polling the existing SQLite tracking DB for rows since the command started
+(`--refresh` seconds, default 1s; `--once` or a non-TTY caller gets one static snapshot instead).
+Shows tokens saved this session, a fixed-reference-price cost estimate (explicitly caveated,
+separate from the standard ±20% token disclaimer), top filters, and a recent-activity feed of
+metadata only (never command output content, per `ANTI_GOALS.md` #4). No new dependency (`rich` is
+already core), no port, no daemon.
+
+**`quor/tracking/db.py`:** `query_gain()` gained an additive `since: datetime | None` parameter
+(falls back to the existing `days`-relative window when omitted — `quor gain` itself is unaffected)
+and a new `query_recent_invocations()` for the dashboard's feed. Both are read-only views over the
+existing `invocations` table; no schema change.
+
+**Doc fixes:** `docs/FAQ.md`'s "Corporate laptops" section told users to run `py -m ...`, which only
+exists on Windows and contradicts ADR-029's own reasoning — the direct, confirmed cause of a real
+"`py`: command not found" report on macOS. Fixed to `python -m ...`. `README.md` rewritten from 136
+to 90 lines: denser tables, the real 35.3%-overall benchmark figure surfaced (previously only in
+`docs/BENCHMARKS.md`), and an explicit `python -m quor` fallback note next to Install.
+
+**Registration:** `quor/cli/main.py` (import + `app.command(name="dashboard", ...)`, docstring's
+"six + N exempt" count updated) and `quor/__main__.py`'s `_CLI_COMMANDS` frozenset — both call sites
+updated together, per ADR-037/038/039's own repeated warning about this exact omission.
+
+**Files changed:** `quor/cli/commands/dashboard.py` (new), `quor/tracking/db.py`,
+`quor/cli/main.py`, `quor/__main__.py`, `docs/FAQ.md`, `README.md`, `docs/final/DECISIONS.md`
+(ADR-045), `tests/unit/test_tracking_db.py`, `tests/unit/test_dashboard.py` (new).
 
 </details>
 

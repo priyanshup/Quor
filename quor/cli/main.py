@@ -1,6 +1,6 @@
 """Typer application and command registration.
 
-The six V1 commands (do not add more without approval) plus eight exempt
+The six V1 commands (do not add more without approval) plus nine exempt
 utility commands — `schema` (JSON Schema dump), `map` (QB-061's
 deterministic Repository Context Profile), `symbols` (QB-066's
 deterministic Repository Symbols index), `graph` (QB-067's deterministic
@@ -8,12 +8,16 @@ Repository Dependency Graph), `version` (QB-073), `repo` (QB-076's
 Repository Intelligence Dashboard), `explore` (QB-078's Repository
 Explorer, ADR-042 — a cache-only reporting sub-app, distinct from `repo` in
 that it never calls `ensure_repo_intelligence()`, see
-`quor/cli/commands/explore.py`'s own module docstring), and `search`
+`quor/cli/commands/explore.py`'s own module docstring), `search`
 (QB-080's Semantic Repository Search — deterministic, cache-only, reads
 only `file_intelligence.json`, never `ensure_repo_intelligence()` and never
 `symbol_facts.json`/`graph_facts.json`, see
-`quor/cli/commands/search.py`'s own module docstring) — none is a
-filtering operation, so none counts against the six:
+`quor/cli/commands/search.py`'s own module docstring), and `dashboard`
+(QB-083's live terminal token-savings view — reads the same tracking DB
+`quor gain` does, computes nothing new, see
+`quor/cli/commands/dashboard.py`'s own module docstring for why it's a
+terminal TUI and not a browser dashboard) — none is a filtering operation,
+so none counts against the six:
   quor init --claude
   quor validate [file]
   quor explain <command>
@@ -28,6 +32,7 @@ filtering operation, so none counts against the six:
   quor explore
   quor search
   quor version
+  quor dashboard
 
 Commands are grouped into three `rich_help_panel`s for `--help` (QB-073):
 Installation (init, doctor), Analysis (map, symbols, graph, repo, explore,
@@ -39,6 +44,7 @@ command is invoked, routed (`__main__.py::_CLI_COMMANDS`), or tested.
 import typer
 
 from quor import __version__
+from quor.cli.commands.dashboard import dashboard_command
 from quor.cli.commands.doctor import doctor, should_warn_stale_hooks
 from quor.cli.commands.explain import explain
 from quor.cli.commands.explore import explore_app
@@ -73,6 +79,7 @@ app.command(name="graph", rich_help_panel=_PANEL_ANALYSIS)(graph_command)
 app.command(name="repo", rich_help_panel=_PANEL_ANALYSIS)(repo_command)
 app.add_typer(explore_app, name="explore", rich_help_panel=_PANEL_ANALYSIS)
 app.command(name="search", rich_help_panel=_PANEL_ANALYSIS)(search_command)
+app.command(name="dashboard", rich_help_panel=_PANEL_ANALYSIS)(dashboard_command)
 app.command(rich_help_panel=_PANEL_UTILITIES)(explain)
 app.command(rich_help_panel=_PANEL_UTILITIES)(validate)
 app.command(rich_help_panel=_PANEL_UTILITIES)(verify)

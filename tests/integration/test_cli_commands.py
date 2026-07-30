@@ -243,3 +243,53 @@ class TestInitAndDoctorIntegration:
         response = orjson.loads(proc.stdout)
         assert response["hookSpecificOutput"]["hookEventName"] == "PreToolUse"
         assert response["hookSpecificOutput"]["permissionDecision"] == "allow"
+
+
+# ---------------------------------------------------------------------------
+# quor init --agent gemini — real files, chained end to end (QB-083)
+# ---------------------------------------------------------------------------
+
+
+class TestGeminiInitIntegration:
+    @pytest.mark.skipif(hook_manifest.is_windows(), reason="POSIX-only: execs the generated .sh launcher via sh")
+    def test_real_posix_launcher_executes_end_to_end(self, tmp_path: Path) -> None:
+        """QB-083: the Gemini equivalent of
+        TestInitAndDoctorIntegration.test_real_posix_launcher_executes_end_to_end
+        above — the strongest possible proof the POSIX Gemini launcher
+        actually works: running the generated `.sh` script for real (a
+        genuine `sh` subprocess, no mocking) against a synthetic Gemini CLI
+        BeforeTool payload produces a valid rewritten `hookSpecificOutput`
+        on stdout, exactly as Gemini CLI itself would invoke it."""
+        from quor.adapters.base import InstallContext
+        from quor.adapters.gemini_adapter import GeminiAdapter
+
+        settings_path = tmp_path / "settings.json"
+        result = GeminiAdapter().install(InstallContext(settings_override=settings_path, yes=True))
+        assert not result.warnings
+
+        data = orjson.loads(settings_path.read_bytes())
+        command = next(
+            h["command"]
+            for entry in data["hooks"]["BeforeTool"]
+            for h in entry["hooks"]
+            if "gemini-hook.sh" in h["command"]
+        )
+
+        payload = orjson.dumps(
+            {"tool_name": "run_shell_command", "tool_input": {"command": "git status"}}
+        )
+        proc = subprocess.run(
+            command,
+            shell=True,
+            input=payload,
+            capture_output=True,
+            timeout=10,
+        )
+        assert proc.returncode == 0, proc.stderr.decode("utf-8", errors="replace")
+        response = orjson.loads(proc.stdout)
+        assert response["decision"] == "allow"
+
+        from quor.rewrite.invocation import get_quor_invocation
+
+        rewritten = response["hookSpecificOutput"]["tool_input"]["command"]
+        assert rewritten == f"{get_quor_invocation()} git status"
