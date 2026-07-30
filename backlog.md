@@ -5569,6 +5569,86 @@ including `--json` mode.
 
 ---
 
+#### QB-079 — Context-Aware Read Compression (Repository Intelligence in the Read hook)
+
+**Effort:** Medium · **Value:** Medium · **Risk:** Low · **Category:** New Capability
+
+Compressed Read output (QB-005F/QB-040/QB-007E4) carried no hint of the repository intelligence
+Quor already maintains — a compressed `.py` file gave no signal of what imports it, what it
+imports, or how central it is to the repo. This item adds a compact "Repository Context" block to
+compressed Read output, sourced entirely from already-cached repository intelligence.
+
+**Status:** Implemented (not committed, per session instruction).
+
+<details>
+<summary>Technical details</summary>
+
+**Investigation first, per this repo's Rule 4.** The naive approach — reading `symbol_facts.json`/
+`graph_facts.json` per Read call — was measured at 114ms combined for this repository (3.1MB +
+714KB), scaling with total repo size, not the one file being read: an O(repo-size) cost on a path
+that must be O(1)/near-O(1), and a direct violation of both CLAUDE.md's `<10ms` hook-response
+budget and QB-072's own explicit, user-confirmed decision to keep repository-intelligence work off
+the hook dispatch path entirely (`intel.py`'s own module docstring). Implementation was paused and
+presented to the user per the task's own "stop if latency increases noticeably" condition.
+
+**Resolution: a fifth, purely-additive cache file, `file_intelligence.json`.** Computed once at
+existing build/refresh time (`intel.py`'s `_full_rebuild()`/`_refresh_from_cache()`, alongside the
+existing `save_state()`/`save_profile()`/`save_symbol_facts()`/`save_graph_facts()` calls — never
+inside the hook), holding one small `FileIntelligenceEntry` per file the last scan walked:
+`language`, `kind` (`source`/`test`/`generated`/`configuration` — evidence-based only, via naming
+convention, a bounded content-marker scan mirroring `entry_points.py`'s own bounded/timeout-guarded
+pattern, and cross-referencing `RepoProfile.configuration_files`/`lockfiles`; no "library"/
+"application" split — confirmed with the user there is no existing deterministic signal for that
+distinction), `importance` (High/Medium/Low, via a newly-public `dashboard.importance_tiers()`
+factored out of `explorer.py`'s own private tiering so both call sites share one implementation),
+`imports`/`imported_by` (resolved `import`-kind edge counts), `entry_point`
+(`Symbol.is_entry_point`), `top_symbols` (public top-level declarations only, capped at 5 — the
+compressed body already carries the full AST summary, so this stays a compact pointer, not a
+second symbol database), and its own `size`/`mtime_ns` fingerprint copy (so a consumer's staleness
+check never has to load the much larger `state.json`). Versioned independently
+(`FILE_INTELLIGENCE_VERSION`, embedded in the file itself) from `CACHE_SCHEMA_VERSION`, so this
+cache's shape can evolve without forcing an unrelated full rebuild of the other four files; a
+version mismatch is treated exactly like "missing" and backfilled on the next touch (including a
+plain cache-hit) without rewriting anything else.
+
+**A general-purpose cache, not a Read-hook-specific artifact.** `quor/adapters/claude_read.py` is
+this cache's first consumer, not its only intended one — `quor explore`/`quor repo` or a future
+editor integration can read the same file in O(1) later. The Read hook's own consumption
+(`_maybe_prepend_repo_context()`) is scoped to the same 7 extensions
+`_SOURCE_CODE_FILTER_NAMES_BY_EXTENSION` already routes to AST-summarize filters, fails open at
+every step (missing cache, no entry, a `Path.stat()` size/mtime mismatch against the entry's own
+copy — omit rather than show possibly-stale information), and only ever calls
+`intel_store.load_file_intelligence()` — never `ensure_repo_intelligence()` or
+`walk_repository()`. Measured against this real repository (469 files) after a real `quor map`
+run: the lookup alone costs ~16ms, versus the 114ms the rejected naive approach would have cost —
+and unlike that approach, this doesn't scale with total repo size the way loading
+`symbol_facts.json`/`graph_facts.json` in full does.
+
+**Testing:** new `TestFileIntelligenceRoundtrip` (`test_repo_intel_store.py`, including a
+version-mismatch-as-miss case), a new `TestFileIntelligence` class in `test_repo_intel.py` (full
+rebuild covers every walked file including non-AST ones, incremental refresh updates the changed
+file, a true cache-hit with a valid file leaves it untouched, and two backfill cases — missing
+file and stale version — that don't rewrite the other four cache files), a new
+`test_repo_intel_file_intelligence.py` (`_primary_symbol_names()`/`_classify_kind()`/
+`_build_file_intelligence()` unit coverage plus a parity test proving `intel.py`'s build-time cache
+and `explorer.file_summary()` agree on `importance`/import counts for the same repo state), a new
+`TestImportanceTiers` class in `test_repo_dashboard.py`, and a new `test_read_hook_repo_context.py`
+(11 `run_hook()`-driven cases: block present with correct fields, omitted for missing cache/no
+entry/stale size/stale mtime/non-source extensions/a path outside the repo root without
+raising/a no-op compression). `tests/benchmarks/repo_intel_benchmark.py` gained a reported (not
+asserted) `measure_file_intelligence_lookup()` at 150 and 2000 synthetic files;
+`test_repo_intel_benchmark.py` gained a `cpu_seconds`-based (never wall-clock, per this repo's own
+Rule 2) regression guard. Full gate: `ruff check quor/ tests/` clean; `mypy quor/` clean;
+`pytest tests/unit/` full suite green (every file run, batched per this repo's own hook
+self-timeout, no regressions); `pytest tests/benchmarks/` green; `quor verify` 204/204. Manual
+smoke test: a real `quor map` run against this repository backfilled `file_intelligence.json` for
+all 469 walked files, and the real `claude-read` hook invoked against a real `.py` file rendered a
+correct Repository Context block matching the cache's own recorded facts.
+
+</details>
+
+---
+
 ### Historical (superseded)
 
 *Kept for the record — not resolved work in its own right, but the original request that later,

@@ -89,6 +89,8 @@ from quor.adapters.dispatcher import CONCISE_INSTRUCTION
 from quor.config.model import FilterConfig
 from quor.filters.registry import FilterRegistry
 from quor.pipeline.extract.registry import extract
+from quor.pipeline.repo_profile import intel_store
+from quor.pipeline.repo_profile.intel_model import FileIntelligenceEntry
 from quor.tracking.db import TrackingDB, track_invocation
 
 # ---------------------------------------------------------------------------
@@ -335,6 +337,15 @@ def _compress_read_output(
     same shared helper both this path and `_compress_extracted_document`
     use, so it mirrors both exactly.
 
+    QB-079: once that source-code branch produces genuinely changed
+    content, `_maybe_prepend_repo_context()` is given one chance to prepend
+    a compact "Repository Context" block sourced from the already-cached
+    `file_intelligence.json` (`intel_store.load_file_intelligence()` — a
+    single O(1) dict lookup, never `ensure_repo_intelligence()` or
+    `walk_repository()`). It fails open at every step (missing cache, no
+    entry for this path, a stale size/mtime match) back to `compressed`
+    completely unchanged — see that function's own docstring.
+
     Every other extension keeps using the exact code below, unmodified.
     """
     tool_response = hook_input.tool_response
@@ -368,10 +379,22 @@ def _compress_read_output(
             command=command,
         )
 
-    named_filter = (
-        _SOURCE_CODE_FILTER_NAMES_BY_EXTENSION.get(suffix)
-        or _STRUCTURED_DATA_FILTER_NAMES_BY_EXTENSION.get(suffix)
-        or _STRUCTURED_DATA_FILTER_NAMES_BY_BASENAME.get(Path(file_path).name)
+    source_code_filter = _SOURCE_CODE_FILTER_NAMES_BY_EXTENSION.get(suffix)
+    if source_code_filter is not None:
+        compressed = _compress_via_named_filter(
+            content=tool_response,
+            original=tool_response,
+            filter_name=source_code_filter,
+            tracking=tracking,
+            t0=t0,
+            command=command,
+        )
+        if compressed is not None:
+            compressed = _maybe_prepend_repo_context(file_path, compressed)
+        return compressed
+
+    named_filter = _STRUCTURED_DATA_FILTER_NAMES_BY_EXTENSION.get(suffix) or _STRUCTURED_DATA_FILTER_NAMES_BY_BASENAME.get(
+        Path(file_path).name
     )
     if named_filter is not None:
         return _compress_via_named_filter(
@@ -575,3 +598,76 @@ def _find_filter_by_name(registry: FilterRegistry, name: str) -> FilterConfig | 
         if filter_config.name == name:
             return filter_config
     return None
+
+
+# ---------------------------------------------------------------------------
+# QB-079: Repository Context — an O(1) lookup against file_intelligence.json
+# ---------------------------------------------------------------------------
+
+
+def _relative_posix_path(file_path: str, root: Path) -> str | None:
+    """`tool_input.file_path` is very likely absolute; `file_intelligence.json`
+    is keyed by repo-relative POSIX paths (`walk_repository()`'s own
+    convention — see `intel.py`). Returns `None` (never raises) for a path
+    outside `root`, including a different-drive `ValueError`
+    `Path.relative_to()` raises on Windows."""
+    try:
+        candidate = Path(file_path)
+        if not candidate.is_absolute():
+            candidate = root / candidate
+        rel = candidate.resolve().relative_to(root.resolve())
+    except (OSError, ValueError):
+        return None
+    return rel.as_posix()
+
+
+def _maybe_prepend_repo_context(file_path: str, rendered: str) -> str:
+    """Prepend a compact "Repository Context" block to `rendered` if (and
+    only if) `file_intelligence.json` has a fresh entry for this path.
+    Fails open at every step — any missing/corrupt/out-of-scope/stale
+    condition returns `rendered` completely unchanged, never raises, and
+    never shows possibly-wrong information (mirrors ADR-030's "omit rather
+    than guess" discipline, applied to this block instead of
+    `updatedToolOutput` itself).
+
+    Never calls `ensure_repo_intelligence()` or `walk_repository()` — the
+    single `intel_store.load_file_intelligence()` call below, plus one
+    `Path.stat()` for the staleness check, is the entire cost this
+    function can ever add to the hook's hot path."""
+    try:
+        root = Path.cwd()  # same convention FilterRegistry(project_root=Path.cwd()) already uses above
+        rel_path = _relative_posix_path(file_path, root)
+        if rel_path is None:
+            return rendered
+
+        entries = intel_store.load_file_intelligence(root)
+        if entries is None:
+            return rendered
+        entry = entries.get(rel_path)
+        if entry is None:
+            return rendered
+
+        try:
+            st = (root / rel_path).stat()
+        except OSError:
+            return rendered
+        if st.st_size != entry.size or st.st_mtime_ns != entry.mtime_ns:
+            return rendered  # stale cache entry — omit rather than show possibly-wrong info
+
+        return _render_repo_context_block(rel_path, entry) + rendered
+    except Exception as exc:  # noqa: BLE001 — fail-open: never let a lookup error surface
+        warnings.warn(f"[quor] Repository Context lookup error: {exc}", stacklevel=2)
+        return rendered
+
+
+def _render_repo_context_block(rel_path: str, entry: FileIntelligenceEntry) -> str:
+    defines = ", ".join(entry.top_symbols) if entry.top_symbols else "(none)"
+    entry_point = "yes" if entry.entry_point else "no"
+    return (
+        f"Repository Context ({rel_path}):\n"
+        f"  Kind: {entry.kind.capitalize()} | Language: {entry.language} | "
+        f"Importance: {entry.importance} | Entry point: {entry_point}\n"
+        f"  Defines: {defines}\n"
+        f"  Imports: {entry.imports} file(s) | Imported by: {entry.imported_by} file(s)\n"
+        "\n"
+    )

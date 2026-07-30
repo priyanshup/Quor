@@ -17,8 +17,9 @@ from pathlib import Path
 from quor.pipeline.ast_summarize.relationship_model import Relationship
 from quor.pipeline.ast_summarize.symbol_model import Symbol
 from quor.pipeline.repo_profile import intel_store
-from quor.pipeline.repo_profile.dashboard import build_dashboard
+from quor.pipeline.repo_profile.dashboard import build_dashboard, importance_tiers
 from quor.pipeline.repo_profile.graph import FileFacts
+from quor.pipeline.repo_profile.graph_model import Edge
 from quor.pipeline.repo_profile.intel_model import RepoIntelState
 from quor.pipeline.repo_profile.model import LanguageStat, RepoProfile, RepoStatistics
 from quor.pipeline.repo_profile.symbols_model import FileSymbols
@@ -165,3 +166,41 @@ class TestBuildDashboardAggregation:
 
         assert dashboard is not None
         assert 7200 <= dashboard.cache_age_seconds < 7260
+
+
+class TestImportanceTiers:
+    """QB-079: `importance_tiers()` was promoted from `explorer.py`'s own
+    private `_importance_tiers()` so `intel.py`'s build-time
+    `file_intelligence.json` and `quor explore`'s per-file `Importance`
+    share one implementation — see `explorer.py::_importance_tiers()`'s
+    docstring, now a one-line delegate to this function."""
+
+    def test_empty_edges_still_splits_into_thirds_by_path(self) -> None:
+        """With zero connectivity for every path (a degenerate tie across
+        the board), ranking falls through entirely to the alphabetical
+        tie-break — every path still lands in *some* tier, evenly split
+        by path order, not all bucketed into "Low" as a special case."""
+        tiers = importance_tiers(["a.py", "b.py", "c.py"], [])
+        assert tiers == {"a.py": "High", "b.py": "Medium", "c.py": "Low"}
+
+    def test_tertile_split_by_connectivity(self) -> None:
+        # nine files with strictly decreasing, distinct incoming-edge
+        # counts (8 down to 0, no ties) — top third High, middle third
+        # Medium, bottom third Low, in exact count order.
+        paths = [f"leaf_{i}.py" for i in range(9)]
+        edges = [
+            Edge(kind="import", source_file=f"src_{i}_{j}.py", target_raw="x", line=j, target_file=f"leaf_{i}.py")
+            for i in range(9)
+            for j in range(8 - i)
+        ]
+
+        tiers = importance_tiers(paths, edges)
+
+        assert [tiers[f"leaf_{i}.py"] for i in range(3)] == ["High", "High", "High"]
+        assert [tiers[f"leaf_{i}.py"] for i in range(3, 6)] == ["Medium", "Medium", "Medium"]
+        assert [tiers[f"leaf_{i}.py"] for i in range(6, 9)] == ["Low", "Low", "Low"]
+
+    def test_ties_broken_by_path_for_determinism(self) -> None:
+        first = importance_tiers(["b.py", "a.py", "c.py"], [])
+        second = importance_tiers(["a.py", "b.py", "c.py"], [])
+        assert first == second

@@ -73,6 +73,16 @@ _EXTENSION_TO_LANGUAGE: dict[str, str] = {
 }
 
 
+def language_for_path(rel_path: str) -> str | None:
+    """Display-name language lookup for a single path (e.g. `"Python"`,
+    `"HTML"`), or `None` if the extension isn't a recognized language
+    (config/data formats deliberately excluded — see module docstring).
+    Factored out of `compute_language_stats()`'s own per-file extension
+    lookup for `intel.py`'s `file_intelligence.json` (QB-079), which needs
+    a single file's language, not a repo-wide histogram."""
+    return _EXTENSION_TO_LANGUAGE.get(PurePosixPath(rel_path).suffix.lower())
+
+
 def compute_language_stats(files: list[str]) -> list[LanguageStat]:
     """Return per-language file counts/percentages, sorted by file count
     descending (ties broken alphabetically for deterministic output).
@@ -84,8 +94,7 @@ def compute_language_stats(files: list[str]) -> list[LanguageStat]:
     """
     counts: dict[str, int] = {}
     for f in files:
-        ext = PurePosixPath(f).suffix.lower()
-        language = _EXTENSION_TO_LANGUAGE.get(ext)
+        language = language_for_path(f)
         if language is not None:
             counts[language] = counts.get(language, 0) + 1
 

@@ -51,9 +51,12 @@ from __future__ import annotations
 
 import dataclasses
 import time
+from collections import Counter
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
+
+import regex
 
 import quor
 from quor.pipeline.ast_summarize.registry import (
@@ -62,7 +65,7 @@ from quor.pipeline.ast_summarize.registry import (
     get_symbol_extractor,
     is_language_available,
 )
-from quor.pipeline.repo_profile import intel_store
+from quor.pipeline.repo_profile import dashboard, intel_store
 from quor.pipeline.repo_profile.graph import (
     _MAX_FILE_SIZE_BYTES as _GRAPH_MAX_FILE_SIZE_BYTES,
 )
@@ -72,15 +75,20 @@ from quor.pipeline.repo_profile.graph import (
     build_dependency_graph_with_facts,
     extract_file_facts,
 )
-from quor.pipeline.repo_profile.graph_model import RepoDependencyGraph
+from quor.pipeline.repo_profile.graph_model import Edge, RepoDependencyGraph
 from quor.pipeline.repo_profile.intel_diff import diff_repository, fingerprint_files, git_head
 from quor.pipeline.repo_profile.intel_model import (
     CACHE_SCHEMA_VERSION,
     BuildAction,
+    FileFingerprint,
+    FileIntelligenceEntry,
+    FileKind,
     RepoDiff,
     RepoIntelligence,
     RepoIntelState,
 )
+from quor.pipeline.repo_profile.languages import language_for_path
+from quor.pipeline.repo_profile.model import RepoProfile
 from quor.pipeline.repo_profile.profiler import build_profile
 from quor.pipeline.repo_profile.symbols import (
     _MAX_FILE_SIZE_BYTES as _SYMBOLS_MAX_FILE_SIZE_BYTES,
@@ -150,6 +158,181 @@ def ensure_repo_intelligence(root: Path, *, rebuild: bool = False, echo: Echo | 
     return _refresh_from_cache(root, state, t0=t0, echo=_echo, quor_version=quor_version)
 
 
+# ---------------------------------------------------------------------------
+# file_intelligence.json (QB-079) — build-time computation.
+#
+# A general-purpose per-file cache, not a Read-hook-specific artifact (see
+# intel_model.py::FileIntelligenceEntry's own docstring); computed once per
+# build/refresh pass here, alongside the existing save_state()/save_profile()/
+# save_symbol_facts()/save_graph_facts() calls, and read back in O(1) by
+# consumers (claude_read.py first, quor explore/quor repo potentially later)
+# that must never call ensure_repo_intelligence()/walk_repository() themselves.
+# ---------------------------------------------------------------------------
+
+_PRIMARY_SYMBOL_KINDS = frozenset({"class", "interface", "struct", "trait", "enum", "function"})
+_MAX_TOP_SYMBOLS = 5
+
+_TEST_DIR_NAMES = frozenset({"test", "tests", "__tests__", "spec", "specs"})
+
+_GENERATED_BASENAME_SUFFIXES = ("_pb2.py", "_pb2_grpc.py", ".pb.go", ".g.cs", ".g.dart")
+_GENERATED_NAME_SUBSTRINGS = ("_generated.", ".generated.")
+_GENERATED_CONTENT_RE = r"(@generated\b|DO NOT EDIT|Code generated .* DO NOT EDIT)"
+_GENERATED_SCAN_TIMEOUT = 1.0
+_MAX_SCAN_BYTES = 65_536
+"""Matches entry_points.py's own `_MAX_SCAN_BYTES` bound — a generated-file
+marker, like a `__main__` guard, is always near the top of the file."""
+
+
+def _primary_symbol_names(file_symbols: FileSymbols | None) -> list[str]:
+    """Public, top-level declaration names only (methods excluded — a
+    method isn't a standalone "thing this file defines" the way a
+    module-level class/function is), declaration-line order, de-duplicated,
+    capped at `_MAX_TOP_SYMBOLS`. `[]` for a file with no `FileSymbols` at
+    all (not AST-covered, or failed to parse)."""
+    if file_symbols is None:
+        return []
+    candidates = sorted(
+        (s for s in file_symbols.symbols if s.is_public and s.kind in _PRIMARY_SYMBOL_KINDS),
+        key=lambda s: s.line,
+    )
+    names: list[str] = []
+    seen: set[str] = set()
+    for s in candidates:
+        if s.name in seen:
+            continue
+        seen.add(s.name)
+        names.append(s.name)
+        if len(names) >= _MAX_TOP_SYMBOLS:
+            break
+    return names
+
+
+def _is_test_path(rel_path: str) -> bool:
+    """Naming-convention evidence only — the same "convention as proof"
+    rigor `entry_points.py`'s `__main__`-guard detection and
+    `Symbol.is_public`'s per-language visibility rules already use."""
+    posix = PurePosixPath(rel_path)
+    if any(part.lower() in _TEST_DIR_NAMES for part in posix.parts[:-1]):
+        return True
+    name = posix.name
+    stem = posix.stem
+    return (
+        stem.startswith("test_")
+        or stem.endswith("_test")
+        or ".test." in name
+        or ".spec." in name
+        or name.endswith("Test.java")
+        or name.endswith("Tests.cs")
+    )
+
+
+def _is_generated_by_name(rel_path: str) -> bool:
+    name = PurePosixPath(rel_path).name
+    if name.endswith(_GENERATED_BASENAME_SUFFIXES):
+        return True
+    return any(marker in name for marker in _GENERATED_NAME_SUBSTRINGS)
+
+
+def _is_generated_by_content(root: Path, rel_path: str) -> bool:
+    """Bounded first-`_MAX_SCAN_BYTES`-bytes scan for a canonical
+    "generated" marker — copies `entry_points.py::_python_main_guard_entry_points()`'s
+    exact bounded-read/timeout-guarded pattern, not a new unbounded read.
+    Only called for files this same build pass already opened for AST
+    parsing (see `_build_file_intelligence`'s `scan_content` gate) — never
+    adds a new read for a file this module wouldn't already be touching."""
+    try:
+        with open(root / rel_path, "rb") as fh:
+            raw = fh.read(_MAX_SCAN_BYTES)
+    except OSError:
+        return False
+    content = raw.decode("utf-8", errors="ignore")
+    try:
+        return bool(regex.search(_GENERATED_CONTENT_RE, content, timeout=_GENERATED_SCAN_TIMEOUT))
+    except TimeoutError:
+        return False
+
+
+def _configuration_paths(profile: RepoProfile) -> set[str]:
+    """Repo-relative paths already known to be configuration/lockfiles —
+    reuses `RepoProfile.configuration_files`/`lockfiles` verbatim (no new
+    detection). `DetectedItem.evidence` entries are always shaped
+    `"<path> — <reason>"` (see `detectors/registry.py::_match_rule()`), so
+    the path is everything before the first " — "."""
+    paths: set[str] = set(profile.lockfiles)
+    for item in profile.configuration_files:
+        for evidence in item.evidence:
+            paths.add(evidence.split(" — ", 1)[0])
+    return paths
+
+
+def _classify_kind(
+    rel_path: str, root: Path, *, configuration_paths: set[str], scan_content: bool
+) -> FileKind:
+    """Evidence-based only — checked in priority order, first match wins.
+    No "library"/"application" split: there is no existing deterministic
+    signal for that distinction today (confirmed with the user)."""
+    if _is_test_path(rel_path):
+        return "test"
+    if _is_generated_by_name(rel_path):
+        return "generated"
+    if scan_content and _is_generated_by_content(root, rel_path):
+        return "generated"
+    if rel_path in configuration_paths:
+        return "configuration"
+    return "source"
+
+
+def _build_file_intelligence(
+    root: Path,
+    walk_result: WalkResult,
+    symbol_files: dict[str, FileSymbols],
+    graph_facts: dict[str, FileFacts],
+    edges: list[Edge],
+    fingerprints: dict[str, FileFingerprint],
+    profile: RepoProfile,
+) -> dict[str, FileIntelligenceEntry]:
+    """Build the complete `file_intelligence.json` payload for every file
+    this walk saw. Reuses everything already computed this same build pass
+    (`walk_result`/`symbol_files`/`graph_facts`/`edges`/`fingerprints`/
+    `profile`) — the only new work is `_classify_kind()`'s naming checks
+    and, for AST-covered files only, one bounded content scan (see
+    `_is_generated_by_content`'s own docstring)."""
+    tiers = dashboard.importance_tiers(walk_result.files, edges)
+    configuration_paths = _configuration_paths(profile)
+
+    import_out: Counter[str] = Counter()
+    import_in: Counter[str] = Counter()
+    for edge in edges:
+        if edge.kind == "import":
+            import_out[edge.source_file] += 1
+            if edge.target_file is not None:
+                import_in[edge.target_file] += 1
+
+    entries: dict[str, FileIntelligenceEntry] = {}
+    for rel_path in walk_result.files:
+        file_symbols = symbol_files.get(rel_path)
+        file_facts = graph_facts.get(rel_path)
+        fingerprint = fingerprints.get(rel_path)
+
+        language = file_facts.language if file_facts is not None else (language_for_path(rel_path) or "unknown")
+        kind = _classify_kind(
+            rel_path, root, configuration_paths=configuration_paths, scan_content=file_facts is not None
+        )
+
+        entries[rel_path] = FileIntelligenceEntry(
+            language=language,
+            kind=kind,
+            importance=tiers.get(rel_path, "Low"),
+            imports=import_out.get(rel_path, 0),
+            imported_by=import_in.get(rel_path, 0),
+            entry_point=file_symbols is not None and any(s.is_entry_point for s in file_symbols.symbols),
+            top_symbols=_primary_symbol_names(file_symbols),
+            size=fingerprint.size if fingerprint is not None else 0,
+            mtime_ns=fingerprint.mtime_ns if fingerprint is not None else 0,
+        )
+    return entries
+
+
 def _full_rebuild(root: Path, *, action: BuildAction, t0: float, echo: Echo, quor_version: str) -> RepoIntelligence:
     banner = _ACTION_BANNERS.get(action)
     if banner:
@@ -187,6 +370,11 @@ def _full_rebuild(root: Path, *, action: BuildAction, t0: float, echo: Echo, quo
     intel_store.save_profile(root, profile)
     intel_store.save_symbol_facts(root, symbol_files, symbol_parse_failures)
     intel_store.save_graph_facts(root, graph_facts, graph_parse_failures)
+
+    file_intelligence = _build_file_intelligence(
+        root, walk_result, symbol_files, graph_facts, graph.edges, fingerprints, profile
+    )
+    intel_store.save_file_intelligence(root, file_intelligence)
 
     elapsed = time.monotonic() - t0
     echo(f"Finished in {elapsed:.1f} seconds.")
@@ -268,6 +456,18 @@ def _refresh_from_cache(
 
     symbol_index = _assemble_symbols(root, walk_result, symbol_files, symbol_parse_failures)
     graph = _assemble_graph(root, walk_result, graph_facts, graph_parse_failures)
+
+    if not diff.is_empty or intel_store.load_file_intelligence(root) is None:
+        # Either fresh data (diff non-empty) or a one-time backfill for a
+        # cache that predates file_intelligence.json / was built at an
+        # older FILE_INTELLIGENCE_VERSION — never rewrites the other four
+        # files, and a true cache-hit with an already-valid file skips
+        # this entirely, preserving that branch's "nothing rebuilt"
+        # contract for everything except this additive file.
+        file_intelligence = _build_file_intelligence(
+            root, walk_result, symbol_files, graph_facts, graph.edges, new_fingerprints, profile
+        )
+        intel_store.save_file_intelligence(root, file_intelligence)
 
     elapsed = time.monotonic() - t0
     action: BuildAction = "cache_hit" if diff.is_empty else "incremental"

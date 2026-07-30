@@ -10,7 +10,7 @@ collide and the same repository always maps back to the same directory
 regardless of which command (`quor map`/`quor symbols`/`quor graph`)
 touches it first.
 
-Four files live under that directory:
+Five files live under that directory:
 - `state.json` — `RepoIntelState` (identity, versions, git HEAD, file
   count, timestamps, per-file fingerprints).
 - `profile.json` — the cached `RepoProfile` (`quor map`'s own output),
@@ -26,13 +26,26 @@ Four files live under that directory:
   failed to parse; `RepoDependencyGraph` itself is always cheaply
   *reassembled* from this (via `graph.assemble_graph()`), for the same
   reason.
+- `file_intelligence.json` (QB-079) — one small `FileIntelligenceEntry` per
+  file the last scan walked (language, kind, importance tier, import
+  counts, top symbols, its own size/mtime fingerprint). Purely additive:
+  independent of the other four files' shape, versioned separately via
+  `FILE_INTELLIGENCE_VERSION` rather than `CACHE_SCHEMA_VERSION`, and
+  designed to be looked up in O(1) per file without loading
+  `symbol_facts.json`/`graph_facts.json` in full — the general-purpose
+  per-file cache the Read hook (`claude_read.py`) and future consumers
+  (`quor explore`/`quor repo`, editor integrations) read directly instead
+  of recomputing.
 
 **Fail-open, corruption-as-missing.** Every read function returns `None`
 on any parse/shape error (mirrors `plugin_loader.py::_read_cache()`'s
 identical "unreadable cache, will rescan" contract) rather than raising —
 `intel.py` treats a `None` from any of these exactly like "no cache at
 all," forcing a full rebuild rather than propagating a corrupt on-disk
-file into a wrong in-memory result.
+file into a wrong in-memory result. `load_file_intelligence()` additionally
+treats a `FILE_INTELLIGENCE_VERSION` mismatch as `None` (see its own
+docstring) — that file alone can be rebuilt independently of the other
+four.
 """
 
 from __future__ import annotations
@@ -50,7 +63,12 @@ from quor.atomic_io import write_json_atomic
 from quor.pipeline.ast_summarize.relationship_model import Relationship
 from quor.pipeline.ast_summarize.symbol_model import Symbol
 from quor.pipeline.repo_profile.graph import FileFacts
-from quor.pipeline.repo_profile.intel_model import FileFingerprint, RepoIntelState
+from quor.pipeline.repo_profile.intel_model import (
+    FILE_INTELLIGENCE_VERSION,
+    FileFingerprint,
+    FileIntelligenceEntry,
+    RepoIntelState,
+)
 from quor.pipeline.repo_profile.model import RepoProfile
 from quor.pipeline.repo_profile.symbols_model import FileSymbols
 
@@ -59,6 +77,7 @@ _STATE_FILENAME = "state.json"
 _PROFILE_FILENAME = "profile.json"
 _SYMBOL_FACTS_FILENAME = "symbol_facts.json"
 _GRAPH_FACTS_FILENAME = "graph_facts.json"
+_FILE_INTELLIGENCE_FILENAME = "file_intelligence.json"
 
 
 def repo_key(root: Path) -> str:
@@ -219,3 +238,58 @@ def save_graph_facts(root: Path, facts: dict[str, FileFacts], parse_failures: se
         "parse_failures": sorted(parse_failures),
     }
     write_json_atomic(cache_dir(root) / _GRAPH_FACTS_FILENAME, data)
+
+
+# ---------------------------------------------------------------------------
+# file_intelligence.json (QB-079)
+# ---------------------------------------------------------------------------
+
+
+def file_intelligence_exists(root: Path) -> bool:
+    """Whether a `file_intelligence.json` exists at all for `root` —
+    distinct from `load_file_intelligence()` returning `None`, which also
+    happens when the file is corrupted or was written at an older
+    `FILE_INTELLIGENCE_VERSION`. `intel.py` uses this distinction purely
+    for logging/observability; either case triggers the same "rebuild just
+    this file" backfill (see `intel.py`'s own module docstring)."""
+    return (cache_dir(root) / _FILE_INTELLIGENCE_FILENAME).exists()
+
+
+def load_file_intelligence(root: Path) -> dict[str, FileIntelligenceEntry] | None:
+    """Return `path -> FileIntelligenceEntry`, or `None` on any miss,
+    corruption, or `FILE_INTELLIGENCE_VERSION` mismatch — a version
+    mismatch is deliberately treated exactly like "file missing" (not a
+    separate case) so every caller already handling "no file intelligence
+    cache yet" also correctly handles "cache built by an older QB-079
+    schema", with no extra branching."""
+    path = cache_dir(root) / _FILE_INTELLIGENCE_FILENAME
+    if not path.exists():
+        return None
+    try:
+        data = orjson.loads(path.read_bytes())
+        if data["version"] != FILE_INTELLIGENCE_VERSION:
+            return None
+        return {
+            p: FileIntelligenceEntry(
+                language=f["language"],
+                kind=f["kind"],
+                importance=f["importance"],
+                imports=f["imports"],
+                imported_by=f["imported_by"],
+                entry_point=f["entry_point"],
+                top_symbols=list(f["top_symbols"]),
+                size=f["size"],
+                mtime_ns=f["mtime_ns"],
+            )
+            for p, f in data["files"].items()
+        }
+    except (orjson.JSONDecodeError, KeyError, TypeError, ValueError):
+        return None
+
+
+def save_file_intelligence(root: Path, entries: dict[str, FileIntelligenceEntry]) -> None:
+    data = {
+        "version": FILE_INTELLIGENCE_VERSION,
+        "files": {p: asdict(e) for p, e in entries.items()},
+    }
+    write_json_atomic(cache_dir(root) / _FILE_INTELLIGENCE_FILENAME, data)

@@ -22,6 +22,7 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
+import orjson
 import pytest
 
 import quor
@@ -78,6 +79,7 @@ class TestFirstTimeRepository:
         assert (cache_dir / "profile.json").exists()
         assert (cache_dir / "symbol_facts.json").exists()
         assert (cache_dir / "graph_facts.json").exists()
+        assert (cache_dir / "file_intelligence.json").exists()
 
 
 class TestUnchangedRepository:
@@ -270,6 +272,90 @@ class TestRebuildFlag:
 
         assert result.action == "forced_rebuild"
         assert result.diff is None
+
+
+class TestFileIntelligence:
+    """QB-079: `file_intelligence.json` — built alongside the other four
+    cache files, covering every walked file (not just AST-covered ones,
+    per `intel.py::_build_file_intelligence()`'s own docstring)."""
+
+    def test_full_rebuild_covers_every_walked_file(self, repo: Path) -> None:
+        _make_repo(repo)
+        (repo / "README.md").write_text("# hi\n", encoding="utf-8")
+        ensure_repo_intelligence(repo)
+
+        entries = intel_store.load_file_intelligence(repo)
+        assert entries is not None
+        assert set(entries) == {"a.py", "b.py", "README.md"}
+        assert entries["a.py"].kind == "source"
+        assert entries["a.py"].language == "python"
+        assert entries["b.py"].imports == 1  # b.py imports a.py
+        assert entries["a.py"].imported_by == 1
+
+    def test_incremental_refresh_updates_the_changed_file(self, repo: Path) -> None:
+        _make_repo(repo)
+        ensure_repo_intelligence(repo)
+
+        (repo / "a.py").write_text("def foo():\n    pass\n\n\ndef extra():\n    pass\n", encoding="utf-8")
+        result = ensure_repo_intelligence(repo)
+        assert result.action == "incremental"
+
+        entries = intel_store.load_file_intelligence(repo)
+        assert entries is not None
+        assert entries["a.py"].top_symbols == ["foo", "extra"]
+
+    def test_cache_hit_with_valid_file_intelligence_leaves_it_untouched(self, repo: Path) -> None:
+        _make_repo(repo)
+        ensure_repo_intelligence(repo)
+        path = intel_store.cache_dir(repo) / "file_intelligence.json"
+        before = path.read_bytes()
+
+        result = ensure_repo_intelligence(repo)
+
+        assert result.action == "cache_hit"
+        assert path.read_bytes() == before
+
+    def test_cache_hit_backfills_a_pre_qb079_cache(self, repo: Path) -> None:
+        """A cache built before QB-079 has no `file_intelligence.json` at
+        all — the very next touch (even a plain cache-hit) must backfill
+        it without rewriting the other four files."""
+        _make_repo(repo)
+        ensure_repo_intelligence(repo)
+        cache_dir = intel_store.cache_dir(repo)
+        (cache_dir / "file_intelligence.json").unlink()
+        # profile.json/symbol_facts.json/graph_facts.json are never rewritten
+        # on a true cache-hit; state.json's last_scan_timestamp always
+        # advances (a live clock read), so only last_completed_build (which
+        # does NOT advance on a cache-hit) is the meaningful invariant there.
+        profile_before = (cache_dir / "profile.json").read_bytes()
+        symbols_before = (cache_dir / "symbol_facts.json").read_bytes()
+        graph_before = (cache_dir / "graph_facts.json").read_bytes()
+        last_completed_before = intel_store.load_state(repo).last_completed_build  # type: ignore[union-attr]
+
+        result = ensure_repo_intelligence(repo)
+
+        assert result.action == "cache_hit"
+        assert intel_store.load_file_intelligence(repo) is not None
+        assert (cache_dir / "profile.json").read_bytes() == profile_before
+        assert (cache_dir / "symbol_facts.json").read_bytes() == symbols_before
+        assert (cache_dir / "graph_facts.json").read_bytes() == graph_before
+        state_after = intel_store.load_state(repo)
+        assert state_after is not None
+        assert state_after.last_completed_build == last_completed_before
+
+    def test_cache_hit_backfills_a_stale_version_file_intelligence(self, repo: Path) -> None:
+        _make_repo(repo)
+        ensure_repo_intelligence(repo)
+        path = intel_store.cache_dir(repo) / "file_intelligence.json"
+
+        data = orjson.loads(path.read_bytes())
+        data["version"] = data["version"] + 1
+        path.write_bytes(orjson.dumps(data))
+
+        result = ensure_repo_intelligence(repo)
+
+        assert result.action == "cache_hit"
+        assert intel_store.load_file_intelligence(repo) is not None
 
 
 class TestPerformanceRegression:
