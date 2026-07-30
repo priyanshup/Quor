@@ -7,16 +7,32 @@ is confirmed vs. inferred from Gemini CLI's own documentation.
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import orjson
 import pytest
 
+from quor.adapters import hook_manifest
 from quor.adapters.base import AgentEvent, DoctorContext, InstallContext
 from quor.adapters.gemini_adapter import GeminiAdapter, handle_bytes
 from quor.rewrite.invocation import get_quor_invocation
 
 _BOM = "﻿"
+
+
+@pytest.fixture(autouse=True)
+def _pin_windows_platform(monkeypatch: pytest.MonkeyPatch) -> None:
+    """QB-083: every test in this file predates the cross-platform Gemini
+    hook launcher and was written assuming Windows (.ps1 filename,
+    `powershell` command string). Pins `hook_manifest.is_windows` itself —
+    NOT `os.name`/`sys.platform` — module-wide, exactly matching
+    `tests/unit/test_cli.py`'s identical QB-082 fixture and its rationale
+    (patching `os.name` directly doesn't change which `pathlib.Path`
+    subclass already got baked in at interpreter startup). `TestGeminiPosix`
+    below overrides this per-test via its own `monkeypatch.setattr`, which
+    `pytest.MonkeyPatch` restores to this default at that test's teardown."""
+    monkeypatch.setattr(hook_manifest, "is_windows", lambda: True)
 
 
 def _payload(command: str) -> bytes:
@@ -140,3 +156,75 @@ class TestGeminiAdapterInstallAndDoctor:
         settings = orjson.loads(settings_path.read_bytes())
         matchers = {e["matcher"] for e in settings["hooks"]["BeforeTool"]}
         assert matchers == {"write_file", "run_shell_command"}
+
+
+class TestGeminiPosix:
+    """QB-083: the POSIX (.sh) equivalent of the launcher generated above —
+    mirrors `tests/unit/test_cli.py`'s `TestPosixLauncherGeneration`/
+    `TestDoctorPosix` for Claude's own QB-082 fix. Only the assertions that
+    differ by platform are duplicated here (script extension, launcher
+    content, executable bit, registered command shape) — collision
+    detection and reinstall-dedup are already platform-agnostic substring
+    containment and are not re-tested."""
+
+    @pytest.fixture(autouse=True)
+    def _posix_platform(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(hook_manifest, "is_windows", lambda: False)
+
+    def test_install_writes_sh_script_with_correct_content(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr("platformdirs.user_data_dir", lambda *_a, **_kw: str(tmp_path / "data"))
+        settings_path = tmp_path / "settings.json"
+        result = GeminiAdapter().install(InstallContext(settings_override=settings_path, yes=True))
+
+        assert not result.warnings
+        script_path = next(p for p in result.installed_paths if p != settings_path)
+        assert script_path.name == "gemini-hook.sh"
+        content = script_path.read_text(encoding="utf-8")
+        assert content.startswith("#!/bin/sh")
+        assert "exec" in content
+        assert "quor hook gemini command_intercept" in content
+
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason=(
+            "Verifies real POSIX permission bits (0o755) — meaningless on a real Windows "
+            "host, whose chmod() cannot represent Unix execute bits at all, regardless of "
+            "what this class's is_windows() mock says. Not a production gap: chmod(0o755) "
+            "only ever runs when is_windows() is genuinely False, i.e. on a real POSIX host."
+        ),
+    )
+    def test_launcher_is_executable(self, tmp_path: Path) -> None:
+        """Regression test for QB-083's chmod requirement — fails on the
+        pre-fix code (which never set an executable bit), passes once
+        `install()` chmods the script on POSIX."""
+        settings_path = tmp_path / "settings.json"
+        result = GeminiAdapter().install(InstallContext(settings_override=settings_path, yes=True))
+
+        script_path = next(p for p in result.installed_paths if p != settings_path)
+        assert script_path.stat().st_mode & 0o777 == 0o755
+
+    def test_settings_json_command_uses_posix_shell(self, tmp_path: Path) -> None:
+        """Regression test for QB-083 — fails on the pre-fix code (which
+        always wrote `powershell -ExecutionPolicy Bypass -File` regardless
+        of platform), passes once `_install_hook_entry()` branches on
+        `hook_manifest.is_windows()`."""
+        settings_path = tmp_path / "settings.json"
+        GeminiAdapter().install(InstallContext(settings_override=settings_path, yes=True))
+
+        settings = orjson.loads(settings_path.read_bytes())
+        commands = [h["command"] for e in settings["hooks"]["BeforeTool"] for h in e["hooks"]]
+        assert any(c.startswith(f"{hook_manifest.POSIX_SHELL} ") for c in commands)
+        assert not any("powershell" in c for c in commands)
+
+    def test_doctor_reports_installed_and_registered_after_posix_install(self, tmp_path: Path) -> None:
+        settings_path = tmp_path / "settings.json"
+        adapter = GeminiAdapter()
+        adapter.install(InstallContext(settings_override=settings_path, yes=True))
+
+        checks = adapter.doctor_checks(DoctorContext(settings_override=settings_path))
+        names_ok = {name: ok for name, ok, _ in checks}
+        assert names_ok["Gemini CLI hook script installed"] is True
+        assert names_ok["Gemini CLI hook registered in settings.json"] is True
+        assert names_ok["Gemini CLI hook responds correctly"] is True

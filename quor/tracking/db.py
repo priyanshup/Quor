@@ -7,6 +7,7 @@ Public API:
     track_invocation()     — shared fail-open recorder for every InvocationRecord
                               producer (Bash dispatcher, Read hook, ...)
     query_gain()           — read-side: produce a GainReport from SQLite
+    query_recent_invocations() — read-side: last N invocations for `quor dashboard` (QB-083)
     normalize_project_path() — canonical project identity (query_gain's matching rule)
     get_tracking_db()      — factory: create TrackingDB in the platformdirs data dir
     count_tokens()         — ceil(len(text)/4) estimate (±20%)
@@ -32,7 +33,7 @@ import threading
 import time
 import warnings
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -531,8 +532,20 @@ def query_gain(
     db_path: Path,
     project_path: Path,
     days: int = 30,
+    since: datetime | None = None,
 ) -> GainReport:
-    """Return a GainReport aggregated from SQLite for the given project + window."""
+    """Return a GainReport aggregated from SQLite for the given project + window.
+
+    `since`, when given, overrides `days` entirely: the query is scoped to
+    `recorded_at >= since` (a literal timestamp) instead of a relative
+    `-{days} days` window. Used by `quor dashboard` (QB-083) to show
+    "since I started watching" rather than a calendar window — `days` is
+    still accepted (and still returned on the report) for callers that pass
+    neither, so every existing caller is unaffected. `since` is formatted
+    with the same `isoformat(timespec="seconds")` convention
+    `InvocationRecord.recorded_at` already uses, so the plain string
+    comparison SQLite performs sorts correctly against stored rows.
+    """
     if not db_path.exists():
         return GainReport(
             total_invocations=0,
@@ -564,7 +577,12 @@ def query_gain(
     # literally rather than reinterpreted as a wildcard; only the deliberate
     # trailing "/%" wildcard suffix is left unescaped.
     subdir_pattern = f"{_escape_like(project_key)}/%"
-    since = f"-{days} days"
+    if since is not None:
+        cutoff_expr = "?"
+        cutoff_param: str = since.astimezone(UTC).isoformat(timespec="seconds")
+    else:
+        cutoff_expr = "datetime('now', ?)"
+        cutoff_param = f"-{days} days"
     project_filter = (
         f"(project_key_normalized = ? OR project_key_normalized LIKE ? {_LIKE_ESCAPE_CLAUSE})"
     )
@@ -635,9 +653,9 @@ def query_gain(
                  SUM(was_passthrough)                  AS passthroughs
                FROM invocations
                WHERE {project_filter}
-                 AND recorded_at  >= datetime('now', ?)
+                 AND recorded_at  >= {cutoff_expr}
             """,
-            (project_key, subdir_pattern, since),
+            (project_key, subdir_pattern, cutoff_param),
         ).fetchone()
 
         total = int(row["total"])
@@ -655,13 +673,13 @@ def query_gain(
             f"""SELECT filter_name, SUM(original_tokens - final_tokens) AS saved_sum
                FROM invocations
                WHERE {project_filter}
-                 AND recorded_at  >= datetime('now', ?)
+                 AND recorded_at  >= {cutoff_expr}
                  AND filter_name  IS NOT NULL
                GROUP BY filter_name
                ORDER BY saved_sum DESC
                LIMIT 5
             """,
-            (project_key, subdir_pattern, since),
+            (project_key, subdir_pattern, cutoff_param),
         ).fetchall()
 
         # Read-hook activity in this same window (see GainReport.
@@ -674,10 +692,10 @@ def query_gain(
             f"""SELECT COUNT(*) AS n
                FROM invocations
                WHERE {project_filter}
-                 AND recorded_at  >= datetime('now', ?)
+                 AND recorded_at  >= {cutoff_expr}
                  AND command LIKE 'Read: %'
             """,
-            (project_key, subdir_pattern, since),
+            (project_key, subdir_pattern, cutoff_param),
         ).fetchone()
 
     top_filters = [(r["filter_name"], int(r["saved_sum"])) for r in top_rows]
@@ -697,6 +715,86 @@ def query_gain(
         days=days,
         read_hook_invocations=read_hook_invocations,
     )
+
+
+# ---------------------------------------------------------------------------
+# Read-side: query_recent_invocations (QB-083 — quor dashboard)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class RecentInvocation:
+    """One row for `quor dashboard`'s recent-activity feed. Metadata only —
+    the same columns `InvocationRecord` already writes, never the actual
+    command output content (ANTI_GOALS.md #4)."""
+
+    command: str
+    filter_name: str | None
+    original_tokens: int
+    final_tokens: int
+    recorded_at: str
+
+
+def query_recent_invocations(
+    db_path: Path,
+    project_path: Path,
+    since: datetime,
+    limit: int = 10,
+) -> list[RecentInvocation]:
+    """Return up to `limit` most-recent invocations at/after `since`, newest
+    first. Mirrors `query_gain()`'s project-scoping (same normalize/escape
+    helpers, same `project_key_normalized` column) — a second, narrower view
+    over the same rows, not a second data source."""
+    if not db_path.exists():
+        return []
+
+    project_key = normalize_project_path(project_path)
+    if _is_degenerate_project_key(project_key):
+        raise ValueError(
+            f"project_path {str(project_path)!r} normalizes to {project_key!r}, "
+            "which has no directory segment of its own and is too broad to "
+            "safely scope a query (it would match every project under that "
+            "root/drive). Pass a specific project directory instead."
+        )
+    subdir_pattern = f"{_escape_like(project_key)}/%"
+    since_param = since.astimezone(UTC).isoformat(timespec="seconds")
+    project_filter = (
+        f"(project_key_normalized = ? OR project_key_normalized LIKE ? {_LIKE_ESCAPE_CLAUSE})"
+    )
+
+    with contextlib.closing(sqlite3.connect(str(db_path))) as conn:
+        conn.row_factory = sqlite3.Row
+        _ensure_project_identity_columns(conn)
+        conn.create_function("normalize_project_path", 1, normalize_project_path)
+        conn.execute(
+            """UPDATE invocations
+               SET project_key_normalized = normalize_project_path(project_path)
+               WHERE project_key_normalized IS NULL
+            """
+        )
+        conn.commit()
+
+        rows = conn.execute(
+            f"""SELECT command, filter_name, original_tokens, final_tokens, recorded_at
+               FROM invocations
+               WHERE {project_filter}
+                 AND recorded_at >= ?
+               ORDER BY recorded_at DESC
+               LIMIT ?
+            """,
+            (project_key, subdir_pattern, since_param, limit),
+        ).fetchall()
+
+    return [
+        RecentInvocation(
+            command=r["command"],
+            filter_name=r["filter_name"],
+            original_tokens=int(r["original_tokens"]),
+            final_tokens=int(r["final_tokens"]),
+            recorded_at=r["recorded_at"],
+        )
+        for r in rows
+    ]
 
 
 # ---------------------------------------------------------------------------
