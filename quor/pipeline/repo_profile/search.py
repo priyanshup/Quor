@@ -31,6 +31,7 @@ cost this whole module exists to avoid.
 from __future__ import annotations
 
 from collections import defaultdict
+from collections.abc import Sequence
 from pathlib import Path, PurePosixPath
 
 from quor.pipeline.repo_profile import intel_store
@@ -270,3 +271,52 @@ def search(
         total_candidates=total_candidates,
         truncated=total_candidates > len(limited),
     )
+
+
+def merge_search(
+    entries: dict[str, FileIntelligenceEntry],
+    queries: Sequence[str],
+    *,
+    limit: int,
+    exclude: frozenset[str] = frozenset(),
+) -> list[SearchMatch]:
+    """Run `search()` once per query in `queries`, merge the results across
+    all of them into one deduplicated list capped at `limit` — QB-081's
+    only entry point for "several independent queries, one file list."
+
+    Not a new query engine: `search()` and its private `_best_evidence()`
+    still perform 100% of the per-file evidence matching, once per
+    `(query, file)` pair, completely unchanged. This function only resolves
+    what happens when the *same file* is matched by more than one query,
+    and what deterministic order the merged list comes back in — exactly
+    the two things a single `search()` call never has to decide.
+
+    A file matched by several queries keeps only its strongest tier
+    (lowest `_EVIDENCE_PRIORITY` number); ties are impossible, since
+    `_best_evidence()` already returns exactly one tier for a given
+    `(file, query)` pair. The merged order is `(tier, path)` — deliberately
+    *not* `search()`'s own richer `_sort_key` (importance / entry-point /
+    filename-length / connectivity): those extra tiebreaks are only
+    meaningful relative to one query string, and a merged file may have
+    been found by several different ones with no single "the" query to
+    measure filename-length-closeness against. `path` alone is still a
+    fully deterministic, stable secondary order, exactly as it already is
+    as `_sort_key`'s own second-to-last tiebreak.
+
+    `exclude` is checked per-match, before merging — the one caller-known
+    file this must never recommend is the one already being read (see
+    `claude_read.py::_maybe_prepend_relevant_files`), so there is no
+    "relevant files" entry pointing back at the file whose full content
+    the agent already has in hand.
+    """
+    best: dict[str, SearchMatch] = {}
+    for query in queries:
+        result = search(entries, query, limit=limit)
+        for match in result.matches:
+            if match.path in exclude:
+                continue
+            current = best.get(match.path)
+            if current is None or _EVIDENCE_PRIORITY[match.evidence] < _EVIDENCE_PRIORITY[current.evidence]:
+                best[match.path] = match
+    ordered = sorted(best.values(), key=lambda m: (_EVIDENCE_PRIORITY[m.evidence], m.path))
+    return ordered[:limit]

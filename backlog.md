@@ -5774,6 +5774,129 @@ repository produced correct, byte-identical output across repeated invocations.
 
 ---
 
+#### QB-081 — Repository-Aware Read Hook
+
+**Effort:** Medium · **Value:** Medium · **Risk:** Low · **Category:** New Capability
+
+QB-080 gave Quor a deterministic way to answer "what files match this query," but nothing in the
+Read hook ever asked that question automatically. This item makes the Read hook the first automatic
+consumer of QB-080's `search()` engine: every Read now gets one chance at a compact "Relevant
+repository files" section, built from deterministic query terms extracted from the user's own most
+recent prompt text — independent of whether the file being read is source code, and independent of
+whether `_compress_read_output()` did anything at all.
+
+**Status:** Implemented (not committed, per this session's standing "commit only when explicitly
+asked" rule).
+
+<details>
+<summary>Technical details</summary>
+
+**The query-source gap, presented to the user as an explicit stop-and-explain decision (per this
+ticket's own conditions).** `search()` (QB-080) takes a query string, but a Claude Code PostToolUse/
+Read hook payload carries no free-text "user request" field — only `tool_name`/`tool_input.file_path`/
+`tool_response`. The only path to real prompt text is `transcript_path`, a JSONL conversation log
+Claude Code passes on every hook payload — and Claude Code's own documentation states the per-line
+transcript schema is internal and can change between releases. Presented to the user as two options
+(best-effort transcript parsing vs. abandoning "user request" text entirely in favor of file-path-
+derived context); resolved in favor of best-effort parsing, on the reasoning that this codebase's
+existing fail-open discipline (every branch of `claude_read.py` already degrades to "do nothing" on
+any unexpected condition) absorbs the risk cleanly: a future transcript format change simply makes
+`_extract_last_user_prompt()` find nothing, and the whole feature silently stops firing — never a
+hook failure.
+
+**Query extraction (`quor/pipeline/repo_profile/query_extract.py`) is pure, deterministic text
+processing — no NLP, no stopword list, no word-frequency heuristic.** A token qualifies as a search
+term only by *shape*: a quoted span (`` `...` ``/`"..."`, single quotes excluded since an apostrophe
+in a contraction/possessive has no reliable closing partner) is always taken verbatim; a bare word
+qualifies only if it contains an underscore (snake_case), a path separator (directory-like), a dot
+after trailing-punctuation stripping (filename/import-looking), or a lowercase-to-uppercase case
+transition (camelCase/PascalCase). Plain English words match none of these and are silently dropped —
+the same "no unevidenced classification" discipline `intel_model.FileKind` already applies to
+`kind`. Deduplicates case-insensitively, preserves first-seen order, and caps at `MAX_QUERY_TERMS`
+(4) — the number that actually bounds this feature's worst-case added latency, since each term drives
+one full `search()` pass over `file_intelligence.json`.
+
+**Merging (`search.merge_search()`, added directly to `search.py` so it can reuse `_EVIDENCE_PRIORITY`
+and `search()` without crossing a private-module boundary) is composition, not a new query engine.**
+Runs `search()` once per query term, keeps each file's strongest evidence tier across every query
+that matched it, and orders the merged result by `(tier, path)` — deliberately not `search()`'s own
+richer `_sort_key` (importance/entry-point/filename-length/connectivity), since those tiebreaks are
+only meaningful relative to one query string and a merged file may have been found by several
+different ones. Accepts an `exclude` set so the file currently being read is never recommended to
+itself.
+
+**Rendering (`search_render.render_relevant_files_block()`)** is a new, deliberately shorter label
+set than `render_search_text()`'s CLI-oriented template — one path plus one evidence line per file, no
+scores, no confidence, matching the ticket's own illustrative format exactly.
+
+**Wiring (`claude_read.py::_maybe_prepend_relevant_files()`), called from `_handle_text()` — not
+`_compress_read_output()` — so it runs on every Read regardless of which branch (or no branch)
+handled compression.** Ordered cheapest-check-first so a Read with nothing for this feature to do
+(no `transcript_path`, or a prompt with no identifier-shaped terms) never touches
+`file_intelligence.json` at all: `base` must be a string → `file_path` non-empty → `transcript_path`
+non-empty → the bounded transcript-tail read yields prompt text → extraction yields at least one
+term → *only then* is `intel_store.load_file_intelligence()` called → `merge_search()` returns at
+least one match. Deliberately returns `None` (not the unchanged `base`) on any early exit — returning
+`base` would make `_handle_text()` treat an untouched original response as "genuinely compressed" and
+set `updatedToolOutput` to a byte-for-byte copy of content Claude Code already has, silently breaking
+the existing "omit if unchanged" contract every other branch of this module already follows.
+`transcript_path` was added as a typed (but adapter-scoped, best-effort) field on
+`PostToolUseHookInput` (`quor/adapters/base.py`) — QB-007A/QB-079 never needed it.
+
+**Latency bound to the transcript, not conversation length.** `_read_transcript_tail()` reads only
+the last 64KiB of `transcript_path` (seeking from the end, dropping a possibly-truncated first
+line), regardless of total transcript size — a long-running session's transcript can grow far larger
+than `file_intelligence.json` ever does, and this feature must never let Read-hook latency scale with
+conversation length.
+
+**Configuration:** one constant, `claude_read.MAX_RELEVANT_FILES` (default 5, within the ticket's
+suggested 3-8 range) — no runtime flag yet, per the ticket's own scope.
+
+**Testing:** `tests/unit/test_query_extract.py` (determinism, every shape rule individually, dedup,
+ordering, the default/custom term limit), `tests/unit/test_repo_search.py`'s new `TestMergeSearch`
+class (single-query parity with `search()`, cross-query merging, duplicate terms, same-file-strongest-
+tier, `exclude`, the result cap, tier-then-path ordering, determinism),
+`tests/unit/test_search_render_relevant_files.py` (empty input, format, every evidence label, no
+scores/confidence, multi-match ordering, determinism), and a new
+`tests/unit/test_read_hook_relevant_files.py` (10 `run_hook()`-driven cases covering every case this
+ticket's own "Tests" section asks for: identical-prompt determinism, duplicate query terms, multiple
+queries resolving to the same file, cache unavailable, empty extraction — both "no qualifying terms"
+and "no `transcript_path` at all" — the result cap, deterministic tier-then-path ordering, the
+file-being-read exclusion, and injection into a file type `_compress_read_output()` never touches at
+all, the key behavioral difference from QB-079's Repository Context block). Full gate: `ruff check
+quor/ tests/` clean; `mypy quor/` clean; `pytest tests/unit/` full suite green (all 82 test files,
+batched per this repo's own hook self-timeout, no regressions — every pre-existing
+`test_read_hook_repo_context.py` case stays green unchanged, since none of its fixture payloads ever
+set `transcript_path`, so this feature is a strict no-op for all of them); `quor verify` unchanged at
+204/204.
+
+**Benchmark (`tests/benchmarks/repo_intel_benchmark.py::measure_relevant_files_latency()`),
+extraction/search/render measured independently, per this ticket's own requirement.** Real numbers
+against synthetic 150- and 2000-file repos, with `file_intelligence.json` already loaded (mirroring
+`measure_search_latency()`'s own convention): extraction ~0.08–0.1ms (negligible, pure string work);
+merged search (worst case, `MAX_QUERY_TERMS`=4 full `search()` passes) ~3.3ms at 150 files, ~49ms at
+2000 files; render <0.01ms. `tests/unit/test_repo_intel_benchmark.py` gained matching `cpu_seconds`-
+based regression guards (extraction <0.01s, merged search <0.4s — 4x `TestSearchLatency`'s own
+single-query 100ms ceiling, generous rather than tight — render <0.01s).
+
+**Real-repository validation** (this repository, 479 files, after a real `quor map` run): a real
+`claude-read` hook invocation, fed a synthetic transcript asking "How does merge_search relate to
+the search.py module and file_intelligence.json?" against a real `.py` file, correctly surfaced
+`quor/pipeline/repo_profile/search.py` (exact symbol: `merge_search`), `quor/cli/commands/search.py`
+(exact filename), a test file (filename contains), and two dependency-tier files — composing
+correctly ahead of QB-079's own Repository Context block and the AST-summarized body.
+
+**Deliberately not built:** a runtime config flag for `MAX_RELEVANT_FILES` (ticket's own scope: "no
+runtime flags yet"); reusing `_maybe_prepend_repo_context()`'s own cache-load path (would have coupled
+two independently-triggered features and risked regressing QB-079's already-shipped tests; this
+feature performs its own independent, cheapest-check-first-gated load instead); a symbol-level or
+call/inherit/export-edge dependency tier (QB-080's own file-level-only dependency tier is reused
+unchanged — see that item's own module docstring for why).
+
+</details>
+
+---
+
 ### Historical (superseded)
 
 *Kept for the record — not resolved work in its own right, but the original request that later,
