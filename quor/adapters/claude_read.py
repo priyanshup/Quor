@@ -91,6 +91,9 @@ from quor.filters.registry import FilterRegistry
 from quor.pipeline.extract.registry import extract
 from quor.pipeline.repo_profile import intel_store
 from quor.pipeline.repo_profile.intel_model import FileIntelligenceEntry
+from quor.pipeline.repo_profile.query_extract import extract_query_terms
+from quor.pipeline.repo_profile.search import merge_search
+from quor.pipeline.repo_profile.search_render import render_relevant_files_block
 from quor.tracking.db import TrackingDB, track_invocation
 
 # ---------------------------------------------------------------------------
@@ -267,6 +270,12 @@ def _handle_text(raw: str, tracking: TrackingDB | None) -> bytes:
     hook_specific: dict[str, Any] = {"hookEventName": "PostToolUse"}
 
     compressed = _compress_read_output(hook_input, tracking)
+    original_response = hook_input.tool_response if isinstance(hook_input.tool_response, str) else None
+    with_relevant_files = _maybe_prepend_relevant_files(
+        hook_input, compressed if compressed is not None else original_response
+    )
+    if with_relevant_files is not None:
+        compressed = with_relevant_files
     if compressed is not None:
         if not compressed.startswith(CONCISE_INSTRUCTION):
             compressed = CONCISE_INSTRUCTION + compressed
@@ -347,6 +356,15 @@ def _compress_read_output(
     completely unchanged — see that function's own docstring.
 
     Every other extension keeps using the exact code below, unmodified.
+
+    QB-081: independently of everything above (and regardless of which
+    branch handles this Read, including the plain passthrough case at the
+    very bottom), `_handle_text()` — not this function — gives
+    `_maybe_prepend_relevant_files()` one chance to prepend a "Relevant
+    repository files" section afterward, built from `quor.pipeline.
+    repo_profile.search.merge_search()` fed with deterministic query terms
+    extracted from the user's own most recent prompt text. See that
+    function's own docstring for its fail-open chain.
     """
     tool_response = hook_input.tool_response
     file_path = hook_input.tool_input.file_path
@@ -671,3 +689,219 @@ def _render_repo_context_block(rel_path: str, entry: FileIntelligenceEntry) -> s
         f"  Imports: {entry.imports} file(s) | Imported by: {entry.imported_by} file(s)\n"
         "\n"
     )
+
+
+# ---------------------------------------------------------------------------
+# QB-081: Relevant repository files — deterministic query terms from the
+# user's own most recent prompt text, fed through QB-080's `merge_search()`.
+# ---------------------------------------------------------------------------
+
+MAX_RELEVANT_FILES = 5
+"""The one configuration constant this feature exposes (per QB-081's own
+spec — no runtime flags yet): the maximum number of files the "Relevant
+repository files" section ever shows, after every extracted query's
+results have been merged and deduplicated. Within the ticket's own
+suggested 3-8 range. Change this constant directly to tune it; there is no
+CLI flag or config-file key for it yet."""
+
+_TRANSCRIPT_TAIL_BYTES = 65536
+"""Bound the transcript read to a fixed byte window from the end of the
+file, regardless of total transcript size — a long-running session's
+transcript can grow far larger than `file_intelligence.json` ever does,
+and this feature must never let Read-hook latency scale with conversation
+length. 64KiB comfortably holds the last several conversation turns in
+practice; if the most recent user message happens to start before this
+window, `_read_transcript_tail()` simply won't see it and this feature
+silently finds nothing to search for — the same "omit rather than guess"
+fail-open every other branch of this module already follows, not a
+special case."""
+
+
+def _read_transcript_tail(path: Path) -> str:
+    """Read the last `_TRANSCRIPT_TAIL_BYTES` of `path` (or the whole file
+    if smaller), decoding leniently (`errors="ignore"`) since a seek into
+    the middle of a multi-byte UTF-8 sequence is expected, not exceptional.
+    When the seek lands mid-line, that first (partial) line is dropped —
+    it cannot be parsed as JSON anyway, and the real content it belonged to
+    is either fully captured by a later, complete line or simply outside
+    the window entirely. Returns `""` for any I/O failure (missing file,
+    permission error, ...) — never raises; every caller already treats an
+    empty return as "no transcript available."
+    """
+    try:
+        size = path.stat().st_size
+    except OSError:
+        return ""
+    try:
+        with path.open("rb") as fh:
+            if size > _TRANSCRIPT_TAIL_BYTES:
+                fh.seek(size - _TRANSCRIPT_TAIL_BYTES)
+            data = fh.read()
+    except OSError:
+        return ""
+    text = data.decode("utf-8", errors="ignore")
+    if size > _TRANSCRIPT_TAIL_BYTES:
+        _, _, text = text.partition("\n")
+    return text
+
+
+def _extract_last_user_prompt(transcript_path: str) -> str | None:
+    """Best-effort scan of `transcript_path` (a JSONL conversation log
+    Claude Code provides on every hook payload) for the most recent
+    user-authored prompt text.
+
+    **This is a deliberately isolated risk.** Claude Code's own
+    documentation states the per-line transcript schema is internal and
+    can change between releases — unlike `tool_input`/`tool_response`,
+    which are the hook's actual documented contract. Every line is parsed
+    defensively and any single malformed/unrecognized line is simply
+    skipped, never raised; if Claude Code changes this format entirely,
+    every line fails to yield text, this function returns `None`, and the
+    whole QB-081 feature silently stops finding anything to inject —
+    exactly the same "no cache, no message, no rebuild, no warning" fail-open
+    contract QB-079's `_maybe_prepend_repo_context()` already follows for a
+    missing/stale `file_intelligence.json`, applied here to a missing/stale
+    prompt source instead.
+
+    Tolerates two message shapes without raising on either: the real
+    Claude Code transcript line (`{"type": "user", "message": {"role":
+    "user", "content": [...]}, ...}`) and a flatter `{"role": "user",
+    "content": ...}` shape, in case a future/alternate transcript writer
+    uses the bare Anthropic Messages API shape directly. An explicit
+    non-"user" `type` (assistant, tool result, summary/meta line, ...) is
+    skipped; content blocks are flattened to their `"text"`-type entries
+    only, so a message that is only tool-result content (no `"text"`
+    block) contributes nothing, exactly as if it weren't user prompt text
+    at all.
+    """
+    if not transcript_path:
+        return None
+    tail = _read_transcript_tail(Path(transcript_path))
+    if not tail:
+        return None
+
+    last_text: str | None = None
+    for line in tail.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            entry = orjson.loads(line)
+        except orjson.JSONDecodeError:
+            continue
+        text = _extract_user_text(entry)
+        if text:
+            last_text = text
+    return last_text
+
+
+def _extract_user_text(entry: Any) -> str | None:
+    if not isinstance(entry, dict):
+        return None
+    entry_type = entry.get("type")
+    if entry_type is not None and entry_type != "user":
+        return None
+
+    message = entry.get("message")
+    if not isinstance(message, dict):
+        message = entry  # tolerate a flatter {"role": ..., "content": ...} shape
+
+    role = message.get("role")
+    if role is not None and role != "user":
+        return None
+
+    return _flatten_content(message.get("content"))
+
+
+def _flatten_content(content: Any) -> str | None:
+    if isinstance(content, str):
+        stripped = content.strip()
+        return stripped or None
+    if isinstance(content, list):
+        parts = [
+            block["text"]
+            for block in content
+            if isinstance(block, dict) and block.get("type") == "text" and isinstance(block.get("text"), str)
+        ]
+        joined = "\n".join(parts).strip()
+        return joined or None
+    return None
+
+
+def _maybe_prepend_relevant_files(hook_input: PostToolUseHookInput, base: str | None) -> str | None:
+    """Prepend a "Relevant repository files" block onto `base` (whatever
+    `_compress_read_output()` already produced, or the raw original
+    `tool_response` when it produced nothing) if — and only if — every
+    step below finds something real to inject; returns `None` the instant
+    any step comes up empty (the caller, `_handle_text()`, treats `None`
+    exactly like "this call added nothing," leaving whatever `compressed`
+    already was untouched — never raises (mirrors
+    `_maybe_prepend_repo_context()`'s own fail-open contract exactly,
+    applied to an independent feature with its own cache-load and
+    fail-open chain). Deliberately does **not** return `base` unchanged on
+    a no-op: that would make `_handle_text()` treat an untouched original
+    response as "genuinely compressed" and set `updatedToolOutput` to a
+    byte-for-byte copy of content Claude Code already has — the same
+    `None`-means-omit discipline `_compress_read_output()` itself already
+    follows, applied one level up.
+
+    Cheapest checks run first, deliberately, so a Read with nothing for
+    this feature to do (no `transcript_path`, or a prompt with no
+    identifier-shaped terms) never pays for a `file_intelligence.json`
+    load at all — the hard "no slowdown when unavailable" requirement,
+    satisfied by ordering rather than a separate short-circuit flag:
+      1. `base` must be a string (nothing to prepend onto otherwise).
+      2. `tool_input.file_path` must be non-empty.
+      3. `transcript_path` must be non-empty.
+      4. The bounded transcript tail read must yield some user prompt text.
+      5. That text must yield at least one deterministic query term.
+      Only once all five hold does this function touch
+      `intel_store.load_file_intelligence()` — the same single O(1)-ish
+      cache read `_maybe_prepend_repo_context()` already uses, requested
+      independently here since the two features run on different branches
+      (this one runs for every Read, including ones `_compress_read_output`
+      never touches at all) and are kept decoupled on purpose (QB-081 must
+      not risk regressing QB-079's already-shipped, already-tested
+      behavior).
+      6. `merge_search()` must return at least one match, excluding the
+      file currently being read (recommending the file the agent already
+      has the full contents of adds nothing).
+
+    Any exception anywhere in this chain is caught and logged exactly like
+    every other fail-open branch in this module; `None` is returned, same
+    as every other early-exit above.
+    """
+    if base is None:
+        return None
+    file_path = hook_input.tool_input.file_path
+    if not file_path:
+        return None
+    transcript_path = hook_input.transcript_path
+    if not transcript_path:
+        return None
+
+    try:
+        prompt_text = _extract_last_user_prompt(transcript_path)
+        if not prompt_text:
+            return None
+
+        queries = extract_query_terms(prompt_text)
+        if not queries:
+            return None
+
+        root = Path.cwd()
+        rel_path = _relative_posix_path(file_path, root)
+        exclude = frozenset({rel_path}) if rel_path is not None else frozenset()
+
+        entries = intel_store.load_file_intelligence(root)
+        if entries is None:
+            return None
+
+        matches = merge_search(entries, queries, limit=MAX_RELEVANT_FILES, exclude=exclude)
+        if not matches:
+            return None
+
+        return render_relevant_files_block(matches) + base
+    except Exception as exc:  # noqa: BLE001 — fail-open: never let this enhancement surface an error
+        warnings.warn(f"[quor] Relevant repository files lookup error: {exc}", stacklevel=2)
+        return None

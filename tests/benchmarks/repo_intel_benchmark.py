@@ -345,6 +345,114 @@ def render_search_latency_report(
     return "\n".join(lines)
 
 
+@dataclass(frozen=True)
+class RelevantFilesLatencyResult:
+    """QB-081: the three phases the Read hook's "Relevant repository
+    files" feature adds — query-term extraction, the merged multi-query
+    `search()` pass, and rendering — measured independently, mirroring
+    `measure_search_latency()`/`measure_reverse_import_index()`'s own
+    "report each real cost separately" convention rather than one combined
+    number that would hide which phase actually dominates. Reported, not
+    asserted (see module docstring); `tests/unit/test_repo_intel_benchmark.py`
+    is where a bound actually gets asserted."""
+
+    file_count: int
+    extraction_cpu_seconds: float
+    extraction_elapsed_seconds: float
+    search_cpu_seconds: float
+    search_elapsed_seconds: float
+    render_cpu_seconds: float
+    render_elapsed_seconds: float
+
+
+def measure_relevant_files_latency(root: Path, file_count: int) -> RelevantFilesLatencyResult:
+    """Requires `file_intelligence.json` to already exist at `root`. Loads
+    the cache once (mirroring `measure_search_latency()`'s own "load
+    outside the timer" convention), then times, independently: extracting
+    query terms from a realistic multi-identifier prompt, the resulting
+    `merge_search()` call (worst case — `query_extract.MAX_QUERY_TERMS`
+    terms, each a full pass over `entries`), and rendering the merged
+    matches."""
+    from quor.pipeline.repo_profile.query_extract import extract_query_terms
+    from quor.pipeline.repo_profile.search import merge_search
+    from quor.pipeline.repo_profile.search_render import render_relevant_files_block
+
+    entries = intel_store.load_file_intelligence(root)
+    if entries is None:
+        raise RuntimeError("file_intelligence.json missing — call ensure_repo_intelligence(root) first")
+
+    prompt = "Where is `mod_1` used, and how does mod_2.py relate to ModHandler and src/pkg?"
+
+    cpu_start = time.process_time()
+    wall_start = time.monotonic()
+    queries = extract_query_terms(prompt)
+    extraction_elapsed = time.monotonic() - wall_start
+    extraction_cpu = time.process_time() - cpu_start
+
+    cpu_start = time.process_time()
+    wall_start = time.monotonic()
+    matches = merge_search(entries, queries, limit=5)
+    search_elapsed = time.monotonic() - wall_start
+    search_cpu = time.process_time() - cpu_start
+
+    cpu_start = time.process_time()
+    wall_start = time.monotonic()
+    render_relevant_files_block(matches)
+    render_elapsed = time.monotonic() - wall_start
+    render_cpu = time.process_time() - cpu_start
+
+    return RelevantFilesLatencyResult(
+        file_count=file_count,
+        extraction_cpu_seconds=extraction_cpu,
+        extraction_elapsed_seconds=extraction_elapsed,
+        search_cpu_seconds=search_cpu,
+        search_elapsed_seconds=search_elapsed,
+        render_cpu_seconds=render_cpu,
+        render_elapsed_seconds=render_elapsed,
+    )
+
+
+def run_relevant_files_latency_scenarios() -> list[RelevantFilesLatencyResult]:
+    """Same two-repo-size shape (150/2000 files) as
+    `run_search_latency_scenarios()` — deliberately not wired into the
+    automated `pytest tests/unit/` suite for the same reason (building a
+    2000-file repo is real, non-trivial cost this module's docstring
+    already scopes to "run manually via `python -m ...`")."""
+    results: list[RelevantFilesLatencyResult] = []
+    for file_count in (DEFAULT_FILE_COUNT, 2000):
+        tmp_root = Path(tempfile.mkdtemp(prefix="quor_relevant_files_bench_"))
+        try:
+            repo = tmp_root / "repo"
+            build_synthetic_repo(repo, file_count)
+            ensure_repo_intelligence(repo)
+            results.append(measure_relevant_files_latency(repo, file_count))
+        finally:
+            shutil.rmtree(tmp_root, ignore_errors=True)
+    return results
+
+
+def render_relevant_files_latency_report(results: list[RelevantFilesLatencyResult]) -> str:
+    lines = [
+        "## Read Hook Relevant Files Latency (QB-081)",
+        "",
+        "Query-term extraction, the merged `merge_search()` pass, and "
+        "rendering, measured independently against an already-loaded "
+        "`file_intelligence.json` — the three phases "
+        "`claude_read.py::_maybe_prepend_relevant_files()` adds to the Read "
+        "hook whenever a transcript prompt yields at least one query term.",
+        "",
+        "| Repo Size (files) | Extraction (s) | Search (s) | Render (s) |",
+        "|---|---|---|---|",
+    ]
+    for r in results:
+        lines.append(
+            f"| {r.file_count} | {r.extraction_elapsed_seconds:.4f} | "
+            f"{r.search_elapsed_seconds:.4f} | {r.render_elapsed_seconds:.4f} |"
+        )
+    lines.append("")
+    return "\n".join(lines)
+
+
 def render_report(results: list[ScenarioResult]) -> str:
     lines = [
         "# Repository Intelligence Performance Benchmark (QB-072)",
@@ -377,7 +485,10 @@ def main() -> None:
     search_results, reverse_index_results = run_search_latency_scenarios()
     search_report = render_search_latency_report(search_results, reverse_index_results)
 
-    full_report = report + "\n" + lookup_report + "\n" + search_report
+    relevant_files_results = run_relevant_files_latency_scenarios()
+    relevant_files_report = render_relevant_files_latency_report(relevant_files_results)
+
+    full_report = report + "\n" + lookup_report + "\n" + search_report + "\n" + relevant_files_report
     print(full_report)
 
     output_path = Path(__file__).parent / "results" / "repo-intel-benchmark-report.md"

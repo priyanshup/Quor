@@ -317,3 +317,76 @@ class TestDeterminism:
         first = search.search(entries, "payment")
         second = search.search(entries, "payment")
         assert first == second
+
+
+class TestMergeSearch:
+    """`search.merge_search()` (QB-081) — combines several independent
+    `search()` calls into one deduplicated, deterministically ordered list.
+    """
+
+    def test_single_query_matches_plain_search(self) -> None:
+        entries = {"src/auth/login.py": _entry(top_symbols=["LoginManager"])}
+        merged = search.merge_search(entries, ["LoginManager"], limit=5)
+        plain = search.search(entries, "LoginManager").matches
+        assert [m.path for m in merged] == [m.path for m in plain]
+
+    def test_results_from_different_queries_are_merged(self) -> None:
+        entries = {
+            "src/auth/login.py": _entry(top_symbols=["LoginManager"]),
+            "src/auth/session.py": _entry(imported_files=["src/auth/login.py"]),
+            "src/auth/token.py": _entry(),
+        }
+        merged = search.merge_search(entries, ["LoginManager", "token.py"], limit=5)
+        assert {m.path for m in merged} == {"src/auth/login.py", "src/auth/token.py"}
+
+    def test_duplicate_query_terms_do_not_duplicate_a_file(self) -> None:
+        entries = {"src/auth/login.py": _entry(top_symbols=["LoginManager"])}
+        merged = search.merge_search(entries, ["LoginManager", "LoginManager"], limit=5)
+        assert [m.path for m in merged] == ["src/auth/login.py"]
+
+    def test_same_file_matched_by_multiple_queries_keeps_strongest_tier(self) -> None:
+        # "login" only reaches login.py via a weaker tier (a symbol-prefix
+        # match); "LoginManager" reaches it via the exact_symbol tier. The
+        # merged result must keep the stronger one.
+        entries = {"src/auth/login.py": _entry(top_symbols=["LoginManager"])}
+        merged = search.merge_search(entries, ["login", "LoginManager"], limit=5)
+        assert len(merged) == 1
+        assert merged[0].evidence == "exact_symbol"
+
+    def test_exclude_removes_a_matching_path(self) -> None:
+        entries = {
+            "src/auth/login.py": _entry(top_symbols=["LoginManager"]),
+            "src/auth/session.py": _entry(top_symbols=["LoginManager"]),
+        }
+        merged = search.merge_search(
+            entries, ["LoginManager"], limit=5, exclude=frozenset({"src/auth/login.py"})
+        )
+        assert [m.path for m in merged] == ["src/auth/session.py"]
+
+    def test_limit_caps_the_merged_result(self) -> None:
+        entries = {f"mod_{i}.py": _entry(top_symbols=[f"Mod{i}"]) for i in range(10)}
+        queries = [f"Mod{i}" for i in range(10)]
+        merged = search.merge_search(entries, queries, limit=3)
+        assert len(merged) == 3
+
+    def test_empty_queries_yields_empty_list(self) -> None:
+        entries = {"a.py": _entry()}
+        assert search.merge_search(entries, [], limit=5) == []
+
+    def test_result_order_is_tier_then_path(self) -> None:
+        entries = {
+            "z_exact.py": _entry(top_symbols=["Target"]),
+            "a_exact.py": _entry(top_symbols=["Target"]),
+            "b_contains.py": _entry(),
+        }
+        merged = search.merge_search(entries, ["Target", "b_contains"], limit=5)
+        assert [m.path for m in merged] == ["a_exact.py", "z_exact.py", "b_contains.py"]
+
+    def test_repeated_call_is_deterministic(self) -> None:
+        entries = {
+            "src/auth/login.py": _entry(top_symbols=["LoginManager"]),
+            "src/auth/session.py": _entry(imported_files=["src/auth/login.py"]),
+        }
+        first = search.merge_search(entries, ["LoginManager", "session.py"], limit=5)
+        second = search.merge_search(entries, ["LoginManager", "session.py"], limit=5)
+        assert first == second

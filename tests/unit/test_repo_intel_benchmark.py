@@ -268,3 +268,65 @@ class TestSearchLatency:
         # worse than linear is caught precisely, not just folded into the
         # total.
         assert result.cpu_seconds < 0.05
+
+
+class TestRelevantFilesLatency:
+    """QB-081: the Read hook's "Relevant repository files" feature adds
+    three phases on top of everything QB-079/QB-080 already cost — query-
+    term extraction, a merged multi-query `search()` pass (up to
+    `query_extract.MAX_QUERY_TERMS` full `search()` calls), and rendering.
+    Each is bounded separately, mirroring `TestSearchLatency`'s own
+    per-phase split, so a regression in any one phase is caught precisely."""
+
+    def test_extraction_cpu_time_is_negligible(self, tmp_path: Path) -> None:
+        from quor.pipeline.repo_profile.intel import ensure_repo_intelligence
+        from tests.benchmarks.repo_intel_benchmark import (
+            build_synthetic_repo,
+            measure_relevant_files_latency,
+        )
+
+        repo = tmp_path / "repo"
+        build_synthetic_repo(repo, 30)
+        ensure_repo_intelligence(repo)
+
+        result = measure_relevant_files_latency(repo, 30)
+
+        # Pure regex/string work over one bounded prompt string — no
+        # repository access at all, so this should stay effectively free
+        # regardless of repo size.
+        assert result.extraction_cpu_seconds < 0.01
+
+    def test_merged_search_cpu_time_stays_bounded_even_at_max_query_terms(self, tmp_path: Path) -> None:
+        from quor.pipeline.repo_profile.intel import ensure_repo_intelligence
+        from tests.benchmarks.repo_intel_benchmark import (
+            build_synthetic_repo,
+            measure_relevant_files_latency,
+        )
+
+        repo = tmp_path / "repo"
+        build_synthetic_repo(repo, 30)
+        ensure_repo_intelligence(repo)
+
+        result = measure_relevant_files_latency(repo, 30)
+
+        # Worst case is `query_extract.MAX_QUERY_TERMS` (4) independent
+        # `search()` calls — generously bounded at 4x `TestSearchLatency`'s
+        # own single-query 100ms ceiling, not a tight threshold.
+        assert result.search_cpu_seconds < 0.4
+
+    def test_render_cpu_time_is_negligible(self, tmp_path: Path) -> None:
+        from quor.pipeline.repo_profile.intel import ensure_repo_intelligence
+        from tests.benchmarks.repo_intel_benchmark import (
+            build_synthetic_repo,
+            measure_relevant_files_latency,
+        )
+
+        repo = tmp_path / "repo"
+        build_synthetic_repo(repo, 30)
+        ensure_repo_intelligence(repo)
+
+        result = measure_relevant_files_latency(repo, 30)
+
+        # A handful of string-formatted lines (bounded by
+        # `claude_read.MAX_RELEVANT_FILES`) — should stay effectively free.
+        assert result.render_cpu_seconds < 0.01

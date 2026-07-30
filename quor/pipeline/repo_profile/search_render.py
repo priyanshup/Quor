@@ -25,7 +25,7 @@ import dataclasses
 
 import orjson
 
-from quor.pipeline.repo_profile.search_model import SearchEvidence, SearchResult
+from quor.pipeline.repo_profile.search_model import SearchEvidence, SearchMatch, SearchResult
 
 _EVIDENCE_LABELS: dict[SearchEvidence, str] = {
     "exact_symbol": "Exact symbol match",
@@ -71,3 +71,46 @@ def render_search_text(result: SearchResult) -> str:
         lines.append(f"Total: {result.total_candidates}")
 
     return "\n".join(lines)
+
+
+_RELEVANT_FILES_LABELS: dict[SearchEvidence, str] = {
+    "exact_symbol": "Exact symbol",
+    "exact_filename": "Exact filename",
+    "exact_directory": "Exact directory",
+    "prefix_symbol": "Symbol prefix",
+    "filename_contains": "Filename contains",
+    "top_symbol": "Symbol",
+    "dependency": "Dependency",
+}
+"""QB-081's own, deliberately shorter label set for `render_relevant_files_block()`
+below — distinct from `_EVIDENCE_LABELS` above (`"Exact symbol match"` etc.),
+which is `quor search`'s own fuller CLI wording. The Read hook prepends its
+block onto real file content on every matching Read call, so each entry
+stays to one label word plus the matched value, not a full sentence."""
+
+
+def render_relevant_files_block(matches: list[SearchMatch]) -> str:
+    """QB-081's Read-hook injection format: a compact "Relevant repository
+    files" section, one path plus one evidence line per match, no scores
+    or confidence — deliberately distinct from `render_search_text()`'s
+    fuller per-match template (Evidence/Matched/Language/Kind/Importance/
+    Imports/Imported-by), which is built for a one-shot `quor search`
+    invocation a person reads, not something prepended onto every Read.
+
+    Ends with exactly one blank line after the last entry (mirrors
+    `claude_read._render_repo_context_block()`'s own trailing blank-line
+    separator) so the caller can prepend this directly onto real file
+    content with no extra join logic. Returns `""` for an empty `matches`
+    list — `claude_read.py` never calls this with an empty list (it only
+    calls this after confirming `matches` is non-empty), but keeping this
+    function total rather than assuming a non-empty caller avoids a
+    silent one-line join bug if that ever changes.
+    """
+    if not matches:
+        return ""
+    lines = ["Relevant repository files", ""]
+    for m in matches:
+        lines.append(f"- {m.path}")
+        lines.append(f"  {_RELEVANT_FILES_LABELS[m.evidence]}: {m.matched_value}")
+        lines.append("")
+    return "\n".join(lines) + "\n"

@@ -210,6 +210,17 @@ class PostToolUseHookInput(BaseModel):
     tool_name: str = ""
     tool_input: ReadToolInput
     tool_response: Any = None
+    transcript_path: str = ""
+    """Path to this session's JSONL conversation transcript, as Claude Code
+    itself provides it on every hook payload. Declared here (rather than
+    left to fall through `extra="allow"`) only so QB-081's Relevant
+    repository files feature (`quor/adapters/claude_read.py`) has a typed
+    field to read — QB-007A/QB-079 never needed it. The per-line JSONL
+    schema at this path is Claude Code's own internal, undocumented detail
+    (not part of the hook contract), so `claude_read.py` treats every byte
+    read from it as best-effort: any missing file, unexpected shape, or
+    parse failure degrades to "no prompt text found," never a hook
+    failure."""
 
 
 class PostToolUseHookSpecificOutput(BaseModel):
