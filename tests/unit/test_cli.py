@@ -299,6 +299,124 @@ class TestGain:
         assert "No Read-hook activity has been recorded" in output
         assert "quor init --claude" in output
 
+    def test_low_sample_caveat_shown_below_threshold(self, tmp_path: Path) -> None:
+        """QB-091: a single command's percentage is presented with a caveat
+        rather than the same bare confidence a settled reading gets."""
+        from quor.tracking.db import InvocationRecord, TrackingDB
+
+        db_path = tmp_path / "data" / "quor.db"
+        db = TrackingDB(db_path=db_path)
+        db.record(
+            InvocationRecord(
+                command="git status",
+                project_path=tmp_path.as_posix(),
+                original_tokens=100,
+                final_tokens=20,
+                filter_name="git-status",
+                was_passthrough=False,
+                duration_ms=5.0,
+            )
+        )
+        db.flush()
+        db.close()
+
+        with patch("platformdirs.user_data_dir", return_value=str(tmp_path / "data")):
+            result = runner.invoke(app, ["gain", "--project", str(tmp_path), "--days", "30"])
+
+        assert "early read" in result.output
+        assert "1 command)" in result.output
+
+    def test_eligible_compression_line_shown_with_passthrough_commands(
+        self, tmp_path: Path
+    ) -> None:
+        """QB-091: when some commands were passthrough (no filter could
+        apply), a second line scopes the compression rate to just the
+        content that was actually eligible."""
+        from quor.tracking.db import InvocationRecord, TrackingDB
+
+        db_path = tmp_path / "data" / "quor.db"
+        db = TrackingDB(db_path=db_path)
+        db.record(
+            InvocationRecord(
+                command="git status",
+                project_path=tmp_path.as_posix(),
+                original_tokens=100,
+                final_tokens=20,
+                filter_name="git-status",
+                was_passthrough=False,
+                duration_ms=5.0,
+            )
+        )
+        db.record(
+            InvocationRecord(
+                command="ps aux",
+                project_path=tmp_path.as_posix(),
+                original_tokens=500,
+                final_tokens=500,
+                filter_name=None,
+                was_passthrough=True,
+                duration_ms=2.0,
+            )
+        )
+        db.flush()
+        db.close()
+
+        with patch("platformdirs.user_data_dir", return_value=str(tmp_path / "data")):
+            result = runner.invoke(app, ["gain", "--project", str(tmp_path), "--days", "30"])
+
+        assert "a filter could apply to" in result.output
+
+    def test_no_eligible_compression_line_without_passthrough(self, tmp_path: Path) -> None:
+        from quor.tracking.db import InvocationRecord, TrackingDB
+
+        db_path = tmp_path / "data" / "quor.db"
+        db = TrackingDB(db_path=db_path)
+        db.record(
+            InvocationRecord(
+                command="git status",
+                project_path=tmp_path.as_posix(),
+                original_tokens=100,
+                final_tokens=20,
+                filter_name="git-status",
+                was_passthrough=False,
+                duration_ms=5.0,
+            )
+        )
+        db.flush()
+        db.close()
+
+        with patch("platformdirs.user_data_dir", return_value=str(tmp_path / "data")):
+            result = runner.invoke(app, ["gain", "--project", str(tmp_path), "--days", "30"])
+
+        assert "a filter could apply to" not in result.output
+
+    def test_filter_display_name_translates_cat_family(self, tmp_path: Path) -> None:
+        """QB-091: `cat-python` (an internal filter id) shows a user-facing
+        label in Top savings, not the raw registry name."""
+        from quor.tracking.db import InvocationRecord, TrackingDB
+
+        db_path = tmp_path / "data" / "quor.db"
+        db = TrackingDB(db_path=db_path)
+        db.record(
+            InvocationRecord(
+                command="Read: app.py",
+                project_path=tmp_path.as_posix(),
+                original_tokens=400,
+                final_tokens=250,
+                filter_name="cat-python",
+                was_passthrough=False,
+                duration_ms=3.0,
+            )
+        )
+        db.flush()
+        db.close()
+
+        with patch("platformdirs.user_data_dir", return_value=str(tmp_path / "data")):
+            result = runner.invoke(app, ["gain", "--project", str(tmp_path), "--days", "30"])
+
+        assert "Python file read" in result.output
+        assert "cat-python" not in result.output
+
     def test_read_activity_included_alongside_bash(self, tmp_path: Path) -> None:
         """QB-007D: a Read-produced row (command="Read: ...") requires no
         special-casing anywhere in `quor gain` — it aggregates into the same

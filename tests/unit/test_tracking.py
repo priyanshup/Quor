@@ -593,6 +593,39 @@ class TestQueryGain:
         assert report.tokens_after == 70
         assert report.tokens_before - report.tokens_after == report.tokens_saved
 
+    def test_eligible_before_excludes_passthrough_rows(self, tmp_path: Path) -> None:
+        """QB-091: eligible_before sums original_tokens only over rows where
+        a filter actually ran — passthrough rows (was_passthrough=1) never
+        had a chance to be filtered at all, so their tokens shouldn't count
+        toward "how much of the eligible content shrank." A passthrough row
+        always has original_tokens == final_tokens (nothing ran on it), so
+        tokens_saved / eligible_before is exactly the compression rate on
+        content Quor could act on."""
+        db_path = tmp_path / "quor.db"
+        self._populate(db_path, [
+            {"original_tokens": 100, "final_tokens": 20, "was_passthrough": 0,
+             "filter_name": "git", "project_path": "/proj"},
+            {"original_tokens": 500, "final_tokens": 500, "was_passthrough": 1,
+             "filter_name": None, "project_path": "/proj"},
+        ])
+        report = query_gain(db_path, Path("/proj"))
+        assert report.tokens_before == 600
+        assert report.eligible_before == 100
+        assert report.tokens_saved == 80
+
+    def test_eligible_before_zero_when_all_passthrough(self, tmp_path: Path) -> None:
+        db_path = tmp_path / "quor.db"
+        self._populate(db_path, [
+            {"original_tokens": 50, "final_tokens": 50, "was_passthrough": 1,
+             "filter_name": None, "project_path": "/proj"},
+        ])
+        report = query_gain(db_path, Path("/proj"))
+        assert report.eligible_before == 0
+
+    def test_empty_db_eligible_before_is_zero(self, tmp_path: Path) -> None:
+        report = query_gain(tmp_path / "missing.db", tmp_path)
+        assert report.eligible_before == 0
+
     def test_gross_savings_and_overhead_decomposition(self, tmp_path: Path) -> None:
         """QB-017 gain hardening: gross_savings/gross_overhead split the same
         per-row difference tokens_saved already sums, into positive and

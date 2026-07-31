@@ -66,6 +66,8 @@ By ecosystem:
 
 Short, already-dense output compresses little — that's correct behavior, not underperformance; Quor never trims a line just to move the number (see [ANTI_GOALS.md](docs/final/ANTI_GOALS.md#9-never-optimize-for-benchmark-numbers-at-the-expense-of-correctness)). Full breakdown in [docs/BENCHMARKS.md](docs/BENCHMARKS.md), or run `quor gain` / `quor dashboard` for your own project's real, live numbers — always shown with an honest ±20% uncertainty band, never a bare number dressed up as exact.
 
+**Why did my `quor gain`/`quor dashboard` percentage swing a lot between two runs?** It's a running average across every command Quor has seen in the window, not a per-command score — one big compressible file read can dominate a small sample (86% after 2 commands), and the ratio settles as more commands, including plenty that are already small or have nothing Quor can filter (`ps`, `grep`, a one-line `git diff`), run afterward (7% after 45). Both numbers are correct the whole time. `quor gain`'s "On the N% of commands a filter could apply to" line, and the Passthrough count both commands show, isolate the compression rate on just the content that was actually eligible — usually the steadier number to watch.
+
 ## Commands
 
 | | |
