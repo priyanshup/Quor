@@ -40,6 +40,7 @@ from quor.pipeline.stages.deduplicate_consecutive import (
 from quor.pipeline.stages.group_repeated import GroupRepeatedConfig, GroupRepeatedStage
 from quor.pipeline.stages.match_output import MatchOutputConfig, MatchOutputStage
 from quor.pipeline.stages.max_tokens import MaxTokensConfig, MaxTokensStage
+from quor.pipeline.stages.path_prefix_fold import PathPrefixFoldConfig, PathPrefixFoldStage
 from quor.pipeline.stages.python_ast_summarize import (
     PythonAstSummarizeConfig,
     PythonAstSummarizeStage,
@@ -75,6 +76,7 @@ _STAGE_HANDLERS: dict[str, tuple[type, type[StageConfig]]] = {
         StructuredDataSummarizeStage,
         StructuredDataSummarizeConfig,
     ),
+    "path_prefix_fold": (PathPrefixFoldStage, PathPrefixFoldConfig),
 }
 
 _BUILTIN_DIR = Path(__file__).parent / "builtin"

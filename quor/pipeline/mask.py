@@ -6,9 +6,20 @@ Stages annotate lines via Decision; the final render step applies the mask.
 Invariants (enforced by Pipeline.execute, not by individual stages):
 - PROTECT decisions are absolute — no subsequent stage can downgrade them.
 - Line content is never modified by stages that set COMPRESS/KEEP decisions.
-  group_repeated and collapse_unchanged_context are the exceptions: each may
+  group_repeated and collapse_unchanged_context are two exceptions: each may
   replace one line in a collapsed run with a summary/placeholder string
   (e.g. "msg (xN)" or "... N unchanged lines omitted ...").
+- path_prefix_fold (QB-095) is a third, narrower exception: it may rewrite
+  every line in a matched run (not just the first) to its separator-trimmed
+  suffix, and insert one new header LineMask ahead of the run announcing the
+  shared prefix — the only stage besides group_repeated allowed to change
+  the mask's total line count. Deliberately approved as a distinct category
+  from the first two: it never discards a line's content (every original
+  filename is reconstructible from header + child, byte-for-byte), it never
+  introduces an alias/reference a reader has to resolve elsewhere, and the
+  rewrite is pure, mechanical substring-stripping — no judgment call. A
+  future stage wanting a fourth exception should be held to that same bar,
+  not treated as an open door.
 """
 
 from __future__ import annotations

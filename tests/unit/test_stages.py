@@ -36,6 +36,7 @@ from quor.pipeline.stages.deduplicate_consecutive import (
 from quor.pipeline.stages.group_repeated import GroupRepeatedConfig, GroupRepeatedStage
 from quor.pipeline.stages.match_output import MatchOutputConfig, MatchOutputStage
 from quor.pipeline.stages.max_tokens import MaxTokensConfig, MaxTokensStage
+from quor.pipeline.stages.path_prefix_fold import PathPrefixFoldConfig, PathPrefixFoldStage
 from quor.pipeline.stages.python_ast_summarize import (
     PythonAstSummarizeConfig,
     PythonAstSummarizeStage,
@@ -807,6 +808,189 @@ class TestCollapseUnchangedContext:
 
     def test_wrong_config_type_raises(self) -> None:
         with pytest.raises(TypeError, match="CollapseUnchangedContextConfig"):
+            self.stage.apply(ContentMask.from_text("x"), RemoveAnsiConfig(type="remove_ansi"))
+
+
+# ---------------------------------------------------------------------------
+# path_prefix_fold
+# ---------------------------------------------------------------------------
+
+class TestPathPrefixFold:
+    stage = PathPrefixFoldStage()
+
+    def _config(
+        self,
+        patterns: list[str] | None = None,
+        separator: str = "/",
+        preserve: list[str] | None = None,
+    ) -> PathPrefixFoldConfig:
+        return PathPrefixFoldConfig(
+            type="path_prefix_fold",
+            patterns=patterns if patterns is not None else [r"/"],
+            separator=separator,
+            preserve_patterns=preserve or [],
+        )
+
+    def test_empty_input(self) -> None:
+        result = self.stage.apply(ContentMask.from_text(""), self._config())
+        assert result.render() == ""
+
+    def test_no_patterns_configured_returns_mask_unchanged(self) -> None:
+        mask = ContentMask.from_text("src/quor/foo.py\nsrc/quor/bar.py")
+        result = self.stage.apply(mask, self._config(patterns=[]))
+        assert result.render() == mask.render()
+
+    def test_no_matching_lines_all_kept_unchanged(self) -> None:
+        mask = ContentMask.from_text("line_a\nline_b\nline_c")
+        result = self.stage.apply(mask, self._config())
+        assert result.render() == mask.render()
+        assert all(lm.decision is Decision.KEEP for lm in result.lines)
+
+    def test_no_shared_separator_left_unfolded(self) -> None:
+        """Matching lines share a real character prefix, but it contains no
+        `/` at all (cut == -1) — there is no directory boundary to trim
+        back to, so the run cannot be folded even though the strings
+        overlap."""
+        mask = ContentMask.from_text("abc/foo.py\nabc-bar.py")
+        result = self.stage.apply(mask, self._config(patterns=[r"^abc"]))
+        assert result.render() == mask.render()
+
+    def test_cheap_run_left_unfolded(self) -> None:
+        """Two short, similar-length lines: header overhead (prefix repeated
+        once, plus punctuation) is not strictly cheaper than leaving them
+        as-is, so the token-cost gate (QB-055's principle) declines to fold."""
+        mask = ContentMask.from_text("src/quor/a.py\nsrc/quor/b.py")
+        result = self.stage.apply(mask, self._config())
+        assert "entries" not in result.render()
+        assert result.render() == mask.render()
+
+    def test_long_run_folded_with_header_and_suffixes(self) -> None:
+        text = "\n".join(
+            [
+                "src/quor/pipeline/stages/foo.py",
+                "src/quor/pipeline/stages/bar.py",
+                "src/quor/pipeline/stages/baz.py",
+            ]
+        )
+        mask = ContentMask.from_text(text)
+        result = self.stage.apply(mask, self._config())
+        rendered = result.render()
+        assert "src/quor/pipeline/stages/ (3 entries):" in rendered
+        assert "foo.py" in rendered
+        assert "bar.py" in rendered
+        assert "baz.py" in rendered
+        assert "src/quor/pipeline/stages/foo.py" not in rendered
+
+    def test_line_count_increases_by_one_header_per_fold(self) -> None:
+        """The one documented exception besides group_repeated (see
+        mask.py's module docstring): folding inserts exactly one new header
+        LineMask ahead of the run, on top of the run's own (rewritten, not
+        removed) lines."""
+        text = "\n".join(
+            [
+                "src/quor/pipeline/stages/foo.py",
+                "src/quor/pipeline/stages/bar.py",
+                "src/quor/pipeline/stages/baz.py",
+            ]
+        )
+        mask = ContentMask.from_text(text)
+        result = self.stage.apply(mask, self._config())
+        assert len(result.lines) == len(mask.lines) + 1
+
+    def test_fold_is_reconstructible_byte_for_byte(self) -> None:
+        """Losslessness claim: header-prefix + each child's suffix must
+        equal that child's original line, for every folded entry."""
+        originals = [
+            "src/quor/pipeline/stages/foo.py",
+            "src/quor/pipeline/stages/bar.py",
+            "src/quor/pipeline/stages/baz.py",
+        ]
+        mask = ContentMask.from_text("\n".join(originals))
+        result = self.stage.apply(mask, self._config())
+        header = result.lines[0].line
+        assert header.endswith(" (3 entries):")
+        prefix = header[: -len(" (3 entries):")]
+        children = [lm.line for lm in result.lines[1:]]
+        assert [prefix + child for child in children] == originals
+
+    def test_separator_boundary_never_splits_a_filename(self) -> None:
+        """Filenames that happen to share a substring right after the real
+        directory boundary ("co..." in both "collapse_..." and "code_...")
+        must never be cut mid-name — the shared prefix is trimmed back to
+        the last separator, not the raw longest-common-prefix."""
+        text = "\n".join(
+            [
+                "src/quor/collapse_unchanged_context.py",
+                "src/quor/code_ast_summarize.py",
+                "src/quor/conftest.py",
+                "src/quor/errors.py",
+            ]
+        )
+        mask = ContentMask.from_text(text)
+        result = self.stage.apply(mask, self._config())
+        # The naive (untrimmed) LCP would have been "src/quor/co" — assert
+        # the exact header and child lines, not just substring containment
+        # (a substring check can't tell "collapse_...py" apart from a
+        # wrongly-cut "llapse_...py" fragment, since the former contains the
+        # latter as a substring).
+        assert result.lines[0].line == "src/quor/ (4 entries):"
+        children = [lm.line for lm in result.lines[1:]]
+        assert children == [
+            "collapse_unchanged_context.py",
+            "code_ast_summarize.py",
+            "conftest.py",
+            "errors.py",
+        ]
+
+    def test_protect_lines_bound_run_and_are_never_modified(self) -> None:
+        lines = (
+            LineMask(line="src/quor/pipeline/stages/foo.py"),
+            _protect("PROTECTED src/quor/pipeline/stages/bar.py"),
+            LineMask(line="src/quor/pipeline/stages/baz.py"),
+        )
+        mask = ContentMask(lines=lines)
+        result = self.stage.apply(mask, self._config())
+        # Each side of the PROTECT line is a run of length 1 — too short to
+        # fold (see test_cheap_run_left_unfolded's reasoning taken further:
+        # _fold_run requires at least 2 lines outright).
+        assert result.lines[1].decision is Decision.PROTECT
+        assert result.lines[1].line == "PROTECTED src/quor/pipeline/stages/bar.py"
+
+    def test_compress_lines_are_run_boundaries(self) -> None:
+        lines = (
+            LineMask(line="src/quor/pipeline/stages/foo.py"),
+            LineMask(line="src/quor/pipeline/stages/bar.py"),
+            LineMask(line="src/quor/pipeline/stages/baz.py"),
+            _compress("src/quor/pipeline/stages/qux.py"),
+            LineMask(line="src/quor/pipeline/other/aaa.py"),
+            LineMask(line="src/quor/pipeline/other/bbb.py"),
+            LineMask(line="src/quor/pipeline/other/ccc.py"),
+        )
+        mask = ContentMask(lines=lines)
+        result = self.stage.apply(mask, self._config())
+        rendered = result.render()
+        assert rendered.count("entries):") == 2
+        assert "src/quor/pipeline/stages/ (3 entries):" in rendered
+        assert "src/quor/pipeline/other/ (3 entries):" in rendered
+
+    def test_preserve_patterns_excludes_line_and_can_prevent_folding(self) -> None:
+        lines = (
+            LineMask(line="src/quor/pipeline/stages/foo.py"),
+            LineMask(line="src/quor/pipeline/stages/bar.py"),
+            LineMask(line="src/quor/pipeline/stages/baz.py"),
+        )
+        mask = ContentMask(lines=lines)
+        result = self.stage.apply(
+            mask, self._config(preserve=[r"bar\.py"])
+        )
+        assert result.lines[1].decision is Decision.PROTECT
+        assert result.lines[1].line == "src/quor/pipeline/stages/bar.py"
+        # foo.py and baz.py are now two separate length-1 runs, split by the
+        # PROTECT line — neither can fold.
+        assert "entries):" not in result.render()
+
+    def test_wrong_config_type_raises(self) -> None:
+        with pytest.raises(TypeError, match="PathPrefixFoldConfig"):
             self.stage.apply(ContentMask.from_text("x"), RemoveAnsiConfig(type="remove_ansi"))
 
 

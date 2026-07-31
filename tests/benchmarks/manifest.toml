@@ -969,6 +969,17 @@ expected_filter = "generic"
 min_reduction_pct = 5.0
 must_contain = ["Build succeeded in 2.4s", "Compiling module: payments"]
 
+[[case]]
+id = "generic-find-path-heavy-listing"
+category = "generic"
+ecosystem = "Generic"
+command = "find src -name *.py"
+sample_file = "samples/generic/003_find_path_heavy_listing.txt"
+expected_filter = "generic"
+min_reduction_pct = 20.0
+must_contain = ["src/quor/pipeline/stages/ (13 entries):", "base.py", "path_prefix_fold.py"]
+must_not_contain = ["src/quor/pipeline/stages/base.py"]
+
 # ---------------------------------------------------------------------------
 # QB-007B: Markdown / plain-text document filters. `command` here is not a
 # shell command — it is a bare file path string, matched by FilterRegistry

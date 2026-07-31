@@ -1,0 +1,13 @@
+src/quor/pipeline/stages/base.py
+src/quor/pipeline/stages/collapse_unchanged_context.py
+src/quor/pipeline/stages/deduplicate_consecutive.py
+src/quor/pipeline/stages/group_repeated.py
+src/quor/pipeline/stages/match_output.py
+src/quor/pipeline/stages/max_tokens.py
+src/quor/pipeline/stages/path_prefix_fold.py
+src/quor/pipeline/stages/python_ast_summarize.py
+src/quor/pipeline/stages/regex_replace.py
+src/quor/pipeline/stages/remove_ansi.py
+src/quor/pipeline/stages/strip_lines.py
+src/quor/pipeline/stages/structured_data_summarize.py
+src/quor/pipeline/stages/truncate_lines.py
