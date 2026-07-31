@@ -31,6 +31,20 @@ preserve_patterns = [
 type = "deduplicate_consecutive"
 
 [[filter.stages]]
+# QB-095: fold consecutive path-like lines (find/ripgrep --files/ls -R/
+# coverage listings, repo maps, etc.) sharing a directory prefix. Deliberately
+# narrow, anchored pattern — the whole line must be one non-whitespace token
+# containing at least one "/" — because a false negative here just declines a
+# fold (harmless), while the fold itself is lossless/reconstructible even if
+# applied to a line that isn't really a path, so there's no real downside to
+# keeping this permissive; anchoring to the whole line is what keeps it from
+# firing on prose that merely mentions a path. Runs before max_tokens so the
+# tail-truncation budget below applies to the already-folded content.
+type = "path_prefix_fold"
+patterns = ['^\S+/\S*$']
+separator = "/"
+
+[[filter.stages]]
 type = "max_tokens"
 limit = 1000
 strategy = "tail"
@@ -55,3 +69,21 @@ description = "Framework traceback frames stripped for a non-pytest crash (e.g. 
 input = "Traceback (most recent call last):\n  File \"/home/user/myproject/app.py\", line 10, in <module>\n    main()\n  File \"/usr/lib/python3.11/site-packages/flask/app.py\", line 1234, in wsgi_app\n    response = self.full_dispatch_request()\nZeroDivisionError: division by zero"
 must_contain = ["Traceback", "app.py\", line 10, in <module>", "ZeroDivisionError"]
 must_not_contain = ["site-packages/flask"]
+
+[[filter.tests]]
+description = "QB-095: path-heavy listing (find/rg --files/ls -R style) folded to a shared-prefix header"
+input = "src/quor/pipeline/stages/foo.py\nsrc/quor/pipeline/stages/bar.py\nsrc/quor/pipeline/stages/baz.py"
+must_contain = ["src/quor/pipeline/stages/ (3 entries):", "foo.py", "bar.py", "baz.py"]
+must_not_contain = ["src/quor/pipeline/stages/foo.py"]
+
+[[filter.tests]]
+description = "QB-095: non-path output is never touched by path_prefix_fold"
+input = "hello\nworld\nfoo"
+must_contain = ["hello", "world", "foo"]
+must_not_contain = ["entries):"]
+
+[[filter.tests]]
+description = "QB-095: short path-like run left unfolded when the header wouldn't pay for itself"
+input = "src/a.py\nsrc/b.py"
+must_contain = ["src/a.py", "src/b.py"]
+must_not_contain = ["entries):"]

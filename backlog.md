@@ -80,6 +80,20 @@ Concretely, this changes how we think about a few things that were previously tr
 Think of Quor less as "a command-output compressor" and more as **an AI context optimization
 engine** — one component of which happens to be command-output compression today.
 
+**Design Principles**
+
+- **Every compressed output must be independently understandable without requiring access to
+  previous tool invocations.** Added 2026-07-31, from a head-of-product review of a deterministic-
+  compression research pass. Quor has no way to know what the model still has in its live context —
+  the harness's own context compaction can evict anything at any point Quor doesn't see. A
+  compressed output that means "unchanged since a previous call" or "see earlier" is therefore
+  making a claim Quor cannot verify. This is why [QB-089](#qb-089--exact-match-session-read-deduplication-safe-first-slice-of-qb-043)
+  is scoped to a literal content-hash match rather than an inferred one, and why any future
+  cross-invocation compression (QB-043 and beyond) must render as an *addition* to the current call's
+  full output, never a *substitution* for it — see QB-043's own entry for the mechanism this implies
+  (a diff-against-last-seen, reusing `collapse_unchanged_context`'s existing machinery, always kept
+  alongside the full current output rather than replacing it).
+
 ---
 
 ## Current Status
@@ -271,6 +285,136 @@ occupant of the #1 slot below, is superseded by the housekeeping correction just
 QB-041/QB-055/QB-054/QB-049/QB-039/QB-053 keep their relative order from the 2026-07-15 pass — the
 evidence behind that ordering (real-usage volume, sequencing dependencies) is unchanged by this
 review; only the four items above jumped ahead of them, not each other.
+
+**Priority interrupt (2026-07-31, later the same day):** a deterministic-compression research pass
+(diff tools, VCS, compilers, static analyzers, IDEs, log processors, search/indexing systems —
+AI/LLM techniques explicitly excluded) surfaced several new candidate stages, reviewed head-of-
+product-style and split into four tiers by build-now/design-first/research-only/reject. Four Tier-1
+items (deterministic, human-readable, architecture-compatible, no aliases, no hidden state) were
+explicitly greenlit to jump the existing queue ahead of QB-051, in this order: **QB-095** (path
+prefix front-coding — this session's pick, in progress now), QB-096 (import block collapsing),
+QB-097 (numeric range compression), QB-098 (timestamp delta encoding). Two further candidates were
+scoped as design-first, not build-now: an AST/structural diff capability and a generalized
+"diff-against-last-seen" extension of QB-043/QB-089 (cross-invocation compression) — the latter
+explicitly constrained to an **additive annotation, never a substitution**, after the review
+concluded Quor cannot assume anything about what the model still remembers between tool calls (the
+harness's own context compaction is invisible to Quor), so no compressed output may depend on a
+claim about a *previous* call still being live in context. That constraint is significant enough to
+record as a standing design principle, not just a note on one item — see the "Design Principles"
+callout under [Vision](#vision). Symbol-dictionary/substring-dictionary substitution and Drain-style
+log-template clustering were explicitly deferred (real payoff, but need measurement or an
+architecture decision first) — not rejected, just not queued. Binary delta encoding, rolling-hash
+content-defined chunking, inverted-index posting-list encoding, and FST term dictionaries were
+rejected outright: all are real, deterministic, lossless techniques in their native domains, but
+none produce output an LLM can read directly without a decode step, which defeats the purpose of
+compressing *before* the model sees it.
+
+---
+
+#### QB-095 — Path prefix front-coding
+
+**Effort:** Small-Medium · **Value:** High · **Risk:** Low · **Expected token impact:** High on
+path-heavy tool output · **Category:** Feature (new compression stage)
+
+**Status:** Implemented (2026-07-31), branch `feature/qb-095-path-prefix-front-coding`. `ruff`/`mypy`
+clean; `quor verify` 207/207 (including 3 new `generic` filter tests); new `TestPathPrefixFold` suite
+13/13; benchmark suite green (128 cases, 36.0% overall, new `generic-find-path-heavy-listing` case
+included, no regressions against baseline). Broad regression sweep across ~70 of the ~85 unit test
+files also green (run in small batches locally to stay under this repo's own 25s self-hook cap on
+`python` Bash calls — see [[project_quor_self_hook_timeout]]); the remaining ~10-15 files
+(`test_cli.py`, `test_cli_graph.py`, `test_cli_map.py`, `test_cli_repo.py`, `test_cli_explore.py`,
+`test_repo_explorer.py`, `test_read_hook_repo_context.py`, `test_repo_dashboard.py`,
+`test_repo_intel.py`, `test_repo_intel_file_intelligence.py`, `test_repo_intel_store.py`) are a
+pre-existing slow, real-subprocess-spawning family unrelated to this change (confirmed via grep: zero
+references to `path_prefix_fold`/`_STAGE_HANDLERS`/`ContentMask`/`LineMask`) that couldn't be run
+locally within the self-hook budget even one file at a time — deferred to CI, which is not subject to
+that local constraint. **Unrelated finding surfaced during this run:** `quor.__version__` reports
+`0.4.1` against `pyproject.toml`'s `0.5.0` (`test_version_matches_pyproject` fails on `main` as
+pulled) — stale installed package metadata, not a source change; needs `pip install -e .` re-run in
+this dev environment, out of scope for this item. Not yet merged; benchmark baseline not yet updated
+(new case is new, not a regression, so no `--update-baseline` run needed).
+
+<details>
+<summary>Technical details</summary>
+
+**Problem:** Path-heavy tool output (`find`, `rg --files`, `ls -R`, coverage reports, repo maps,
+stack traces) repeats a long shared directory prefix on every line —
+`src/quor/pipeline/stages/foo.py` / `.../bar.py` / `.../baz.py` — and no existing stage removes that
+redundancy. It's the same idea search-index term dictionaries and sorted-string front-coding use
+(store a shared prefix once, each entry as its suffix), applied to line-oriented tool output instead
+of a binary index structure.
+
+**Design (approved 2026-07-31):** a new stage, `path_prefix_fold`. Filter-declared `patterns`
+(regex, same "author declares the shape" convention as `group_repeated`/`strip_lines` — no built-in
+"looks like a path" heuristic, consistent with the project's stance against weak-heuristic-backed
+classification) identify candidate KEEP lines. Consecutive matching runs (PROTECT/COMPRESS/
+non-matching lines break a run, same as every other run-based stage) are folded when doing so is
+strictly cheaper by the same token-cost comparison `collapse_unchanged_context` already established
+(QB-055) — no separate line-count threshold. The common prefix is computed char-wise across the
+whole run, then trimmed back to the last path-separator boundary so a fold never splits a filename
+mid-token. Rendering: **one new header LineMask is inserted** (prefix + count) and every line in the
+run is rewritten to its separator-trimmed suffix — every original filename survives, none are
+`COMPRESS`ed away, so this is fully lossless/reconstructible (header + child = original line,
+byte-for-byte), unlike `group_repeated`'s own "(×N)" collapsing which relies on genuine duplication.
+
+**Architecture note:** this required extending `mask.py`'s documented line-rewrite invariant (only
+`group_repeated`/`collapse_unchanged_context` could previously rewrite line content, and only the
+first line of a run) — `path_prefix_fold` is a third sanctioned case, and the only one that rewrites
+every line in a matched run rather than just the first. Explicitly approved this session precisely
+*because* it stays mechanical (pure substring stripping, no aliases, no legend, no cross-reference —
+unlike the deferred symbol-dictionary idea, which was judged too far from this stage's shape to
+approve without a separate design pass).
+
+**Testing:** unit tests in `tests/unit/test_stages.py` (`TestPathPrefixFold`, same empty-input/
+no-match/all-match/PROTECT-survives/timeout coverage as every other stage in that file), inline
+filter tests in `z_generic.toml`, a `tests/benchmarks/manifest.toml` case + sample file (QB-011).
+
+</details>
+
+---
+
+#### QB-096 — Import block collapsing
+
+**Effort:** Small-Medium · **Value:** Medium · **Risk:** Low · **Expected token impact:** Medium ·
+**Category:** Enhancement
+
+Collapse a long, contiguous import block (50-300+ tokens, rarely load-bearing context for the task
+at hand) to its first few entries plus an omitted-count placeholder — the same shape
+`structured_data_summarize` already uses for homogeneous arrays. Natural fit as a new rule inside the
+existing per-language `ast_summarize` registry (QB-005B), not a new stage or new architecture.
+
+**Status:** Proposed 2026-07-31 (compression-technique research pass), queued directly behind
+QB-095/QB-097/QB-098. Not yet scoped in detail.
+
+---
+
+#### QB-097 — Numeric range compression
+
+**Effort:** Small · **Value:** Medium · **Risk:** Low · **Expected token impact:** Small but free ·
+**Category:** Enhancement
+
+Render a `group_repeated` location-normalized summary's consecutive/near-consecutive integer
+locations as a range (`lines 12-18`) instead of listing each one — a small, self-contained rendering
+improvement to `_location_summary_line` in `group_repeated.py`, not a new stage.
+
+**Status:** Proposed 2026-07-31 (compression-technique research pass), queued directly behind
+QB-095/QB-096, ahead of QB-098.
+
+---
+
+#### QB-098 — Timestamp delta encoding
+
+**Effort:** Medium · **Value:** Medium-High · **Risk:** Low · **Expected token impact:** Medium on
+high-frequency logs (CI, Docker, Kubernetes, build logs) · **Category:** Feature (new compression
+stage)
+
+Print a run's first line's full timestamp, then rewrite subsequent lines' leading timestamp to a
+short delta (`+12ms`) — preserves relative timing information losslessly rather than dropping
+timestamps entirely (the common competitor approach). Requires rewriting every matched line's
+leading segment, the same narrowly-scoped multi-line-rewrite category QB-095 establishes.
+
+**Status:** Proposed 2026-07-31 (compression-technique research pass), queued directly behind
+QB-095/QB-096/QB-097.
 
 ---
 

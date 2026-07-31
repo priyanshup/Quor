@@ -107,6 +107,8 @@ class StageHandler(Protocol):
         - Never downgrade a PROTECT decision (the engine enforces this, but
           stages should not rely on the engine to fix their mistakes).
         - Return a ContentMask with the same number of lines as the input
-          unless the stage explicitly modifies line count (group_repeated only).
+          unless the stage explicitly modifies line count (group_repeated and
+          path_prefix_fold only — see quor/pipeline/mask.py's module
+          docstring for both stages' exact, narrow exceptions).
         """
         ...
