@@ -29,6 +29,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from quor.pipeline.ast_summarize.import_model import ImportedName, ImportStatement
+
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
@@ -141,3 +143,84 @@ def add_candidate(
     if has_error_overlap(node, error_ranges):
         return
     lines.update(candidate)
+
+
+def _decode(node: Node) -> str:
+    text = node.text
+    return text.decode("utf-8") if text is not None else ""
+
+
+def _es_string_text(node: Node) -> str:
+    """Decode a `string` node's inner text (between its quote tokens) —
+    empty for an empty string literal, whose `string` node has no
+    `string_fragment` child at all. Mirrors javascript.py's/typescript.py's
+    own (independently duplicated) `_string_source_text()`; this one is
+    private to `extract_es_import_statements()` below, not a further
+    consolidation of those two — see this module's own docstring on why
+    `extract_relationships_*()`'s pre-existing duplication is left alone."""
+    for child in node.children:
+        if child.type == "string_fragment":
+            return _decode(child)
+    return ""
+
+
+def extract_es_import_statements(root: Node) -> list[ImportStatement]:
+    """Return every top-level ESM `import_statement` (QB-096), in source
+    order — not a CommonJS `require()` call, and not an `export ... from`
+    re-export, mirroring `extract_relationships_javascript()`'s own
+    "`require()` is an ordinary call, not a static import" distinction.
+
+    Shared by `javascript.py` and `typescript.py`'s own
+    `collapse_imports_*()` because tree-sitter-javascript and
+    tree-sitter-typescript expose byte-identical node/field shapes for this
+    one grammar construct (`import_statement`/`import_clause`/
+    `namespace_import`/`named_imports`/`import_specifier` — empirically
+    confirmed against both installed grammars, matching how
+    `extract_relationships_typescript()`'s own `_add_import_relationships()`
+    already duplicates `extract_relationships_javascript()`'s identical
+    logic verbatim; here the two languages' `collapse_imports_*()` call this
+    one shared function instead of each keeping its own copy, since
+    QB-096's own task explicitly asks to avoid a new, third copy of logic
+    already proven identical twice)."""
+    statements: list[ImportStatement] = []
+    for child in root.children:
+        if child.type == "import_statement":
+            stmt = _import_statement_from_node(child)
+            if stmt is not None:
+                statements.append(stmt)
+    return statements
+
+
+def _import_statement_from_node(node: Node) -> ImportStatement | None:
+    source_node = node.child_by_field_name("source")
+    if source_node is None:
+        return None
+    module = _es_string_text(source_node)
+    line = node.start_point.row + 1
+    end_line = node.end_point.row + 1
+
+    clause = next((c for c in node.children if c.type == "import_clause"), None)
+    if clause is None:
+        # Side-effect-only import: `import "./polyfill";` — binds no name.
+        return ImportStatement(line=line, end_line=end_line, module=module)
+
+    names: list[ImportedName] = []
+    for child in clause.children:
+        if child.type == "identifier":
+            names.append(ImportedName(name=_decode(child)))
+        elif child.type == "namespace_import":
+            name_node = next((c for c in child.children if c.type == "identifier"), None)
+            if name_node is not None:
+                names.append(ImportedName(name="*", alias=_decode(name_node)))
+        elif child.type == "named_imports":
+            for specifier in child.children:
+                if specifier.type != "import_specifier":
+                    continue
+                name_node = specifier.child_by_field_name("name")
+                if name_node is None:
+                    continue
+                alias_node = specifier.child_by_field_name("alias")
+                alias = _decode(alias_node) if alias_node is not None else None
+                names.append(ImportedName(name=_decode(name_node), alias=alias))
+
+    return ImportStatement(line=line, end_line=end_line, module=module, names=tuple(names))

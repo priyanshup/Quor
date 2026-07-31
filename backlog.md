@@ -378,13 +378,132 @@ filter tests in `z_generic.toml`, a `tests/benchmarks/manifest.toml` case + samp
 **Effort:** Small-Medium · **Value:** Medium · **Risk:** Low · **Expected token impact:** Medium ·
 **Category:** Enhancement
 
-Collapse a long, contiguous import block (50-300+ tokens, rarely load-bearing context for the task
-at hand) to its first few entries plus an omitted-count placeholder — the same shape
-`structured_data_summarize` already uses for homogeneous arrays. Natural fit as a new rule inside the
-existing per-language `ast_summarize` registry (QB-005B), not a new stage or new architecture.
+Collapse a long, contiguous run of import statements — rarely load-bearing context for the task at
+hand, but currently emitted verbatim — to one deterministic, grouped summary. Implemented against
+Python (stdlib `ast`), Java, JavaScript, and TypeScript/TSX (`tree-sitter`) as a new capability of the
+*existing* `python_ast_summarize`/`code_ast_summarize` stages, not a new pipeline stage.
 
-**Status:** Proposed 2026-07-31 (compression-technique research pass), queued directly behind
-QB-095/QB-097/QB-098. Not yet scoped in detail.
+**Status:** Implemented (2026-07-31), branch `feature/qb-096-import-block-collapsing`. Not committed —
+presented for review per this item's own instructions.
+
+<details>
+<summary>Technical details</summary>
+
+**Implementation approach.** A fourth capability alongside `_ANALYZERS`/`_SYMBOL_EXTRACTORS`/
+`_RELATIONSHIP_EXTRACTORS` in `quor/pipeline/ast_summarize/registry.py`: `_IMPORT_COLLAPSERS`/
+`get_import_collapser(language)`, registered for `"python"`/`"java"`/`"javascript"`/`"typescript"`/
+`"tsx"` (not `"go"`/`"rust"`/`"csharp"` — out of this item's scope). Each language's own
+`collapse_imports_*()` does exactly two things: parse with that language's own real parser, and walk
+the tree into a flat, source-ordered `list[ImportStatement]` (new shared data model,
+`quor/pipeline/ast_summarize/import_model.py`). Everything else — which statements form one
+collapsible run, how a run renders, and whether collapsing is actually cheaper — lives once, in a new
+shared module, `quor/pipeline/ast_summarize/import_collapse.py`, not duplicated per language.
+JavaScript and TypeScript additionally share their actual tree-walking (`extract_es_import_statements()`
+in `_treesitter_utils.py`), since `tree-sitter-javascript`/`tree-sitter-typescript` expose
+byte-identical node shapes for ESM `import` statements.
+
+Both `python_ast_summarize.py` and `code_ast_summarize.py` call `get_import_collapser(language)`
+alongside their existing `get_analyzer(language)` call, and merge the two results (body-compress line
+numbers + import-block replacements) via one new shared helper,
+`quor.pipeline.stages._utils._apply_ast_summary()` — so the merge logic (PROTECT/COMPRESS
+passthrough, `preserve_patterns`, import-block splicing, body compression) exists exactly once, not
+duplicated across both stages. **No filter TOML changes were needed anywhere** — every
+`cat-python`/`cat-java`/`cat-javascript`/`cat-typescript`/`cat-tsx` filter already configures the
+right `language`, and picks this up automatically through the same registry lookup it already used.
+
+**Design decisions:**
+- **Bare vs. `from`-style imports render differently, by design, not by accident.** A bare Python
+  `import x` (no natural heading of its own) is classified into a `"Standard library"`/`"Third-party"`
+  bucket via `sys.stdlib_module_names` — an authoritative, version-specific ground truth, not a guess.
+  Every `from`-style import (Python relative/wildcard included, Java's package-qualified imports,
+  JS/TS's module-specifier imports) groups under its own `module` heading instead, even across
+  separate statements sharing that module. This exactly matches the two worked examples in this
+  item's own spec.
+- **Losslessness, precisely stated.** Every individual module/name/alias/relative-dot-prefix/wildcard
+  from a collapsed run survives *somewhere* in the summary — nothing is silently dropped, hidden, or
+  inferred away, including duplicate imports (rendered as repeated bullets, never silently
+  deduplicated — "do not infer unused imports" applies here too). What is **not** preserved is each
+  statement's exact original formatting (spacing, the literal `import` keyword, comma placement) —
+  see `quor/pipeline/mask.py`'s module docstring for why this is a documented, narrower exception than
+  `path_prefix_fold`'s byte-exact one, not the same category.
+- **Purely token-cost-driven, plus one explicit floor.** Same QB-055 principle
+  `collapse_unchanged_context`/`path_prefix_fold` already use: a run collapses only when its rendered
+  form is estimated strictly cheaper than its original text — no arbitrary "N imports" threshold. One
+  floor was added after real testing surfaced a genuine edge case: a single, verbose JS named import
+  (`import { foo } from "bar";`) can be a few tokens *cheaper* rendered as `bar:\n- foo` purely from
+  brace/`from`/quote/semicolon overhead — technically passing the cost gate, but not the behavior "a
+  few imports" was ever meant to produce. `_MIN_ENTRIES_TO_COLLAPSE = 2` (in `import_collapse.py`) is
+  a floor derived directly from this item's own explicit requirement text, not a guessed
+  classification heuristic — and 2, not 3, because this item's own worked TypeScript/JavaScript
+  example already collapses a two-statement run.
+- **Run detection is real-code-aware, not just line-count-based.** Two import statements join one run
+  only if every line between them is blank or a single-line comment (per-language `comment_prefix`) —
+  real code in the gap always breaks the run; a block-comment (`/* ... */`) gap also breaks the run
+  rather than risk mis-parsing one (conservative by design, same "when uncertain, don't merge"
+  instinct `path_prefix_fold` already applies).
+- **Per-heading truncation** (`_MAX_NAMES_PER_GROUP = 10` in `import_collapse.py`) mirrors
+  `structured_data_summarize`'s "cap the display, don't hide the count" pattern for large homogeneous
+  arrays, sized up for import names being a much smaller unit than a JSON/YAML element.
+- **Small module groups render inline, not as a heading + bulleted list** (`_format_module_group()`,
+  `_MAX_INLINE_MODULE_NAMES = 3` — added in a product-review follow-up pass, same day). Found by
+  actually opening the rendered benchmark output and asking "is this nicer to read": a run with
+  several small module groups back to back (Java's `java.time.format:\n- DateTimeFormatter`,
+  TypeScript's `@nestjs/typeorm:\n- InjectRepository`, ...) produced a wall of tiny headings —
+  visually heavier than the 1-3 lines each one replaced, even though it was still cheaper in raw
+  tokens. A module group of 3 names or fewer now renders as one line (`"module: a, b, c"`), matching
+  the density of the already-existing wildcard/side-effect one-liners; a group of 4+ still gets the
+  vertical, scannable list. **Deliberately does not apply to the "Standard library"/"Third-party"
+  buckets** — the reviewer's own worked example (`Standard library:\n- os\n- sys\n- pathlib`, called
+  "excellent") keeps those bulleted at any size, and there's no reason to second-guess that. Verified
+  directly against the three review concerns: (1) a deeply-nested, parenthesized Python import
+  (`from a.b.c.d.e import (Foo, Bar, Baz)`, 6 physical lines) now collapses to one line
+  (`a.b.c.d.e: Foo, Bar, Baz`) instead of a heading + 3 bullets; (2) 2/3/4 bare imports still never
+  collapse at all (cost gate declines — confirmed unchanged), and a 2-statement single-module case
+  (`from quor.pipeline import mask` / `... import stages`) now renders as one natural line instead of
+  a heading + 2 bullets; (3) the TypeScript benchmark sample's entire 9-module import block collapsed
+  from 9 scattered headings to 9 clean one-liners (only the one module with 4 names kept its bulleted
+  list) — genuinely reads like a compact dependency manifest now, not a denser version of the
+  original. Regression-locked with dedicated tests (`test_small_bare_import_counts_never_collapse`,
+  `test_small_from_import_group_renders_as_one_natural_line`,
+  `test_deeply_nested_module_path_collapses_to_one_scannable_line`,
+  `test_deeply_relative_single_import_alongside_others`, plus explicit inline-vs-bulleted boundary
+  tests in `TestRenderImportBlock`).
+
+**Benchmark numbers** (`python -m tests.benchmarks.run_benchmarks`, baseline updated twice — once for
+the initial implementation, once more for the inline-small-group readability fix above): 4 new cases
+— `cat-python-stdlib-heavy-utility` (61.3% reduction, 20 imports → `Standard library:` bucket +
+`(+10 more)`, unaffected by the readability fix since buckets stay bulleted), `cat-python-thirdparty-
+heavy-service` (45.7%, 14 imports → `Third-party:` bucket, same), `cat-java-import-heavy-report-
+generator` (41.9%, up from 40.9% pre-fix — 16 imports across 6 packages, now only the two 4-5-name
+packages stay bulleted), `cat-typescript-import-heavy-orders-module` (35.7%, up from 33.6% pre-fix —
+14 imports across 8 modules, now only one 4-name module stays bulleted). **No regression on existing
+benchmarks**: all 4 existing cat-python/cat-java cases with real import statements
+(`cat-python-payment-processor`/`cat-python-webhook-handlers`/`cat-java-order-service`/
+`cat-java-notification-dispatcher-lambda-field`) reported `unchanged` (±0.0pp) against the prior
+baseline — their import blocks are too small (below `_MIN_ENTRIES_TO_COLLAPSE` or the cost gate) to
+trigger collapsing. Overall suite: 128 → 132 cases, 36.0% → 36.3% overall.
+
+**Testing:** `tests/unit/test_ast_summarize.py` — `TestGroupImportRuns`/`TestRenderImportBlock`/
+`TestCollapseImportRuns` (shared logic, hand-built fixtures), `TestCollapseImportsPython` (every case
+this item's own "Tests" section names: no imports, single import, small block unchanged, large
+stdlib block, third-party, aliases, wildcard, relative, duplicate, mixed styles, plus multiline
+parenthesized imports and a real-code-gap case), `TestCollapseImportsJava`/`JavaScript`/`TypeScript`
+(real-parser smoke coverage), `TestRegistryImportCollapser`. `tests/unit/test_stages.py` — end-to-end
+integration through the real stage/`ContentMask` path (import collapsing + body compression
+together, line-count invariant, `preserve_patterns` interaction, small-block-unchanged) added to
+`TestPythonAstSummarize`/`TestCodeAstSummarize`/`TestCodeAstSummarizeJava`/`JavaScript`/`TypeScript`.
+
+**Verification:** `ruff check quor/ tests/` clean; `mypy quor/` clean; `quor verify` 207/207
+(unchanged count — confirms zero filter TOML changes were needed); full unit suite green; benchmark
+suite green (132 cases, no regressions, baseline updated).
+
+**One pre-existing, unrelated gap noticed while updating docs:** `docs/final/COMMAND_SUPPORT.md`'s
+main command table has no row at all for `cat-java`/`cat-go`/`cat-rust`/`cat-csharp` (QB-046 shipped
+the analyzers; the table was never backfilled for any of the four) — out of scope for this item
+(fixing one of four consistently-missing rows would look like an oversight, not a decision); flagged
+here rather than silently worked around.
+
+</details>
 
 ---
 

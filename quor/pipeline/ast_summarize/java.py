@@ -60,6 +60,12 @@ from quor.pipeline.ast_summarize._treesitter_utils import (
     collect_error_ranges,
     iter_descendants,
 )
+from quor.pipeline.ast_summarize.import_collapse import collapse_import_runs
+from quor.pipeline.ast_summarize.import_model import (
+    ImportBlockReplacement,
+    ImportedName,
+    ImportStatement,
+)
 from quor.pipeline.ast_summarize.relationship_model import Relationship
 from quor.pipeline.ast_summarize.symbol_model import ENTRY_POINT_NAMES, Symbol, SymbolKind
 
@@ -457,6 +463,75 @@ def _add_method_relationships(
                 qualifier=superclass_name,
             )
         )
+
+
+def collect_import_statements_java(root: Node) -> list[ImportStatement]:
+    """Return every top-level `import_declaration` (including `import
+    static ...`, treated identically to a plain import — same choice
+    `_add_import_relationship()` above already makes), in source order
+    (QB-096). Java has no bare, headingless import shape at all — every
+    import always groups under its package (everything but the last dotted
+    segment) as `module`, mirroring `extract_relationships_java()`'s own
+    `target.rsplit(".", 1)` split, just kept as two separate fields
+    (`module`, name) instead of one dotted `target` string.
+    """
+    statements: list[ImportStatement] = []
+    for child in root.children:
+        if child.type != "import_declaration":
+            continue
+        line = child.start_point.row + 1
+        end_line = child.end_point.row + 1
+        is_wildcard = any(c.type == "asterisk" for c in child.children)
+        scoped = next((c for c in child.children if c.type in ("scoped_identifier", "identifier")), None)
+        if scoped is None:
+            continue
+        target = _flatten_scoped_identifier(scoped)
+        if target is None:
+            continue
+        if is_wildcard:
+            statements.append(ImportStatement(line=line, end_line=end_line, module=target, is_wildcard=True))
+            continue
+        module, _, name = target.rpartition(".")
+        statements.append(
+            ImportStatement(line=line, end_line=end_line, module=module, names=(ImportedName(name=name),))
+        )
+    return statements
+
+
+def collapse_imports_java(source: str) -> list[ImportBlockReplacement]:
+    """Return the collapsed replacement for every token-cheaper run of
+    consecutive top-level `import` declarations (QB-096) — see
+    `import_collapse.py`'s module docstring for the shared run-detection,
+    rendering, and cost-gate rules this delegates to. No stdlib/third-party
+    classification for Java — every import already groups under its own
+    package heading, so the bucket concept (Python-only, see
+    `import_collapse.py`) never applies here.
+
+    Returns an empty list (with the same actionable warning `analyze_java()`
+    emits) if the optional dependency is missing. Otherwise may raise on a
+    genuine, unrecoverable parser failure — same fail-open contract as
+    `analyze_java()`.
+    """
+    try:
+        import tree_sitter
+        import tree_sitter_java
+    except ImportError:
+        warnings.warn(
+            "[quor] tree-sitter/tree-sitter-java is not installed; "
+            "install quor[java] to enable Java import collapsing "
+            "(falling back to no compression for this file)",
+            stacklevel=2,
+        )
+        return []
+
+    language = tree_sitter.Language(tree_sitter_java.language())
+    parser = tree_sitter.Parser(language)
+    tree = parser.parse(source.encode("utf-8"))
+
+    statements = collect_import_statements_java(tree.root_node)
+    if not statements:
+        return []
+    return collapse_import_runs(statements, source.split("\n"), comment_prefix="//")
 
 
 def _collect_calls(node: Node, source_name: str, relationships: list[Relationship]) -> None:

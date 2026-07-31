@@ -69,8 +69,11 @@ from typing import TYPE_CHECKING
 from quor.pipeline.ast_summarize._treesitter_utils import (
     add_candidate,
     collect_error_ranges,
+    extract_es_import_statements,
     iter_descendants,
 )
+from quor.pipeline.ast_summarize.import_collapse import collapse_import_runs
+from quor.pipeline.ast_summarize.import_model import ImportBlockReplacement
 from quor.pipeline.ast_summarize.relationship_model import Relationship
 from quor.pipeline.ast_summarize.symbol_model import ENTRY_POINT_NAMES, Symbol
 
@@ -228,6 +231,42 @@ def _visit_variable_declaration(
         value = declarator.child_by_field_name("value")
         if value is not None and value.type in _FUNCTION_LIKE_TYPES:
             add_candidate(value, error_ranges, lines)
+
+
+def collapse_imports_javascript(source: str) -> list[ImportBlockReplacement]:
+    """Return the collapsed replacement for every token-cheaper run of
+    consecutive top-level `import` statements (QB-096) — see
+    `import_collapse.py`'s module docstring for the shared run-detection,
+    rendering, and cost-gate rules this delegates to. No stdlib/third-party
+    classification for JavaScript — every import already groups under its
+    own module-specifier heading (the bucket concept is Python-only, see
+    `import_collapse.py`).
+
+    Returns an empty list (with the same actionable warning
+    `analyze_javascript()` emits) if the optional dependency is missing.
+    Otherwise may raise on a genuine, unrecoverable parser failure — same
+    fail-open contract as `analyze_javascript()`.
+    """
+    try:
+        import tree_sitter
+        import tree_sitter_javascript
+    except ImportError:
+        warnings.warn(
+            "[quor] tree-sitter/tree-sitter-javascript is not installed; "
+            "install quor[javascript] to enable JavaScript import collapsing "
+            "(falling back to no compression for this file)",
+            stacklevel=2,
+        )
+        return []
+
+    language = tree_sitter.Language(tree_sitter_javascript.language())
+    parser = tree_sitter.Parser(language)
+    tree = parser.parse(source.encode("utf-8"))
+
+    statements = extract_es_import_statements(tree.root_node)
+    if not statements:
+        return []
+    return collapse_import_runs(statements, source.split("\n"), comment_prefix="//")
 
 
 def extract_symbols_javascript(source: str) -> list[Symbol]:

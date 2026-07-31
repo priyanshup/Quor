@@ -46,9 +46,19 @@ Fail-open contract — two genuinely different cases, per QB-005A Section 4:
     here, exactly like `python_ast_summarize.py`. It propagates to
     `Pipeline.execute()`'s existing per-stage fail-open handling.
 
-This stage never regenerates, reformats, or rewrites source text — every
-kept line is the original line, byte-for-byte, identical in spirit to
-`python_ast_summarize.py`'s own guarantee.
+This stage never regenerates, reformats, or rewrites source text for BODY
+compression — every kept body line is the original line, byte-for-byte,
+identical in spirit to `python_ast_summarize.py`'s own guarantee.
+
+QB-096: this stage's *import*-collapsing half is the one deliberate
+exception, documented in `quor/pipeline/mask.py`'s own module docstring —
+`get_import_collapser(config.language)` may replace a whole run of
+consecutive, top-level import statements with one synthesized, multi-line
+summary block, applied via `quor.pipeline.stages._utils._apply_ast_summary()`
+(the merge helper this stage shares with `python_ast_summarize.py`). An
+unregistered language's import collapser (same as its analyzer) fails open —
+`get_import_collapser()` returning `None` simply contributes no
+replacements, never an error.
 """
 
 from __future__ import annotations
@@ -57,9 +67,9 @@ from typing import ClassVar
 
 from pydantic import ConfigDict, Field
 
-from quor.pipeline.ast_summarize.registry import get_analyzer
-from quor.pipeline.mask import ContentMask, Decision, LineMask
-from quor.pipeline.stages._utils import _compile, matches_any
+from quor.pipeline.ast_summarize.registry import get_analyzer, get_import_collapser
+from quor.pipeline.mask import ContentMask
+from quor.pipeline.stages._utils import _apply_ast_summary, _compile
 from quor.pipeline.stages.base import StageConfig
 
 
@@ -94,7 +104,8 @@ class CodeAstSummarizeStage:
             )
 
         analyzer = get_analyzer(config.language)
-        if analyzer is None:
+        import_collapser = get_import_collapser(config.language)
+        if analyzer is None and import_collapser is None:
             # Unsupported language: fail open, silently, unchanged mask.
             # See module docstring for why this check lives here (apply())
             # rather than in can_handle().
@@ -104,42 +115,22 @@ class CodeAstSummarizeStage:
         # mask.render()'s already-compressed view — see
         # python_ast_summarize.py's identical comment for why this matters
         # (keeps a 1:1 index<->lineno mapping regardless of what upstream
-        # stages already decided). The analyzer call itself may raise on
-        # invalid input for its language; deliberately not caught here —
-        # see module docstring "Fail-open".
-        compress_lines = analyzer("\n".join(lm.line for lm in mask.lines))
-        if not compress_lines:
+        # stages already decided). The analyzer/collapser calls themselves
+        # may raise on invalid input for their language; deliberately not
+        # caught here — see module docstring "Fail-open".
+        source = "\n".join(lm.line for lm in mask.lines)
+        compress_lines = analyzer(source) if analyzer is not None else set()
+        import_replacements = import_collapser(source) if import_collapser is not None else []
+
+        if not compress_lines and not import_replacements:
             return mask
 
         compiled_preserve = [_compile(p) for p in config.preserve_patterns]
-        new_lines: list[LineMask] = []
-        for idx, lm in enumerate(mask.lines):
-            line_number = idx + 1  # analyzers report 1-indexed line numbers
-
-            if lm.decision is Decision.PROTECT:
-                new_lines.append(lm)
-                continue
-
-            if lm.decision is Decision.COMPRESS:
-                new_lines.append(lm)
-                continue
-
-            if compiled_preserve and matches_any(lm.line, compiled_preserve):
-                new_lines.append(
-                    LineMask(lm.line, Decision.PROTECT, "matches preserve_pattern", self.stage_type)
-                )
-                continue
-
-            if line_number in compress_lines:
-                new_lines.append(
-                    LineMask(
-                        lm.line,
-                        Decision.COMPRESS,
-                        f"{config.language} function/method body",
-                        self.stage_type,
-                    )
-                )
-            else:
-                new_lines.append(lm)
-
-        return ContentMask(tuple(new_lines))
+        return _apply_ast_summary(
+            mask,
+            compress_lines,
+            import_replacements,
+            compiled_preserve,
+            self.stage_type,
+            body_reason=f"{config.language} function/method body",
+        )

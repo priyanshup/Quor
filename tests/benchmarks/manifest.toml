@@ -673,6 +673,33 @@ expected_filter = "cat-python"
 min_reduction_pct = 10.0
 must_contain = ["import hmac", "SIGNATURE_VERSION = \"v2\"", "def verify_signature(payload: bytes, signature: str, secret: str) -> bool:", "Return True if the HMAC signature matches the payload.", "def dispatch(event_type: str, payload: dict) -> None:"]
 
+# QB-096: import-block collapsing benchmarks. Each sample is small on purpose
+# (a real-world file this size would rarely warrant its own filter) so the
+# import block dominates the file's own token count, making the collapsing
+# effect directly visible rather than diluted by unrelated body compression.
+
+[[case]]
+id = "cat-python-stdlib-heavy-utility"
+category = "cat-python"
+ecosystem = "Python"
+command = "cat src/utils/config.py"
+sample_file = "samples/cat-python/003_stdlib_heavy_utility.txt"
+expected_filter = "cat-python"
+min_reduction_pct = 55.0
+must_contain = ["Imports (20)", "Standard library:", "- os", "(+10 more)", "def read_config(path: str) -> dict:"]
+must_not_contain = ["import shutil"]
+
+[[case]]
+id = "cat-python-thirdparty-heavy-service"
+category = "cat-python"
+ecosystem = "Python"
+command = "cat src/services/analytics.py"
+sample_file = "samples/cat-python/004_thirdparty_heavy_service.txt"
+expected_filter = "cat-python"
+min_reduction_pct = 40.0
+must_contain = ["Imports (14)", "Third-party:", "- numpy as np", "(+4 more)", "def fetch_report(url: str) -> pd.DataFrame:"]
+must_not_contain = ["import pandas as pd"]
+
 # ---------------------------------------------------------------------------
 # QB-005E: JavaScript/TypeScript/TSX AST summarization benchmarks
 # (cat-javascript/cat-typescript/cat-tsx, QB-005B–QB-005D). Mirrors the
@@ -791,6 +818,25 @@ sample_file = "samples/cat-typescript/006_parsing_overloads.ts"
 expected_filter = "cat-typescript"
 min_reduction_pct = 15.0
 must_contain = ["export function parseAmount(input: number): number;", "export function parseAmount(input: string): number;", "export class QueryBuilder {", "where(field: string, value: string): this;"]
+
+# QB-096: import-block collapsing benchmark.
+
+[[case]]
+id = "cat-typescript-import-heavy-orders-module"
+category = "cat-typescript"
+ecosystem = "TypeScript"
+command = "cat src/orders/orders.service.ts"
+sample_file = "samples/cat-typescript/007_import_heavy_orders_module.ts"
+expected_filter = "cat-typescript"
+min_reduction_pct = 32.0
+must_contain = [
+    "Imports (14)",
+    "@nestjs/common: Injectable, Logger, NotFoundException",
+    "./order.entity: Order, OrderStatus",
+    "dayjs: * as dayjs",
+    "export class OrdersService {",
+]
+must_not_contain = ["import { Injectable, Logger, NotFoundException } from \"@nestjs/common\";"]
 
 [[case]]
 id = "cat-tsx-shopping-cart-component"
@@ -914,6 +960,26 @@ must_contain = [
     "interface NotificationChannel {",
 ]
 must_not_contain = ["System.err.println(\"notification dispatch failed: \" + ex.getMessage());", "channel.send(event);"]
+
+# QB-096: import-block collapsing benchmark.
+
+[[case]]
+id = "cat-java-import-heavy-report-generator"
+category = "cat-java"
+ecosystem = "Java"
+command = "cat src/main/java/com/example/storefront/reports/ReportGenerator.java"
+sample_file = "samples/cat-java/003_import_heavy_report_generator.java"
+expected_filter = "cat-java"
+min_reduction_pct = 38.0
+must_contain = [
+    "Imports (16)",
+    "java.util:",
+    "- List",
+    "java.util.stream: Collectors",
+    "com.example.storefront.orders: Order, OrderRepository",
+    "public class ReportGenerator {",
+]
+must_not_contain = ["import java.util.List;", "import java.time.LocalDate;"]
 
 [[case]]
 id = "cat-rust-cart-service"

@@ -33,17 +33,30 @@ import pytest
 
 from quor.pipeline.ast_summarize.csharp import analyze_csharp
 from quor.pipeline.ast_summarize.go import analyze_go
-from quor.pipeline.ast_summarize.java import analyze_java
-from quor.pipeline.ast_summarize.javascript import analyze_javascript
-from quor.pipeline.ast_summarize.python import analyze_python
+from quor.pipeline.ast_summarize.import_collapse import (
+    collapse_import_runs,
+    group_import_runs,
+    render_import_block,
+)
+from quor.pipeline.ast_summarize.import_model import ImportedName, ImportStatement
+from quor.pipeline.ast_summarize.java import analyze_java, collapse_imports_java
+from quor.pipeline.ast_summarize.javascript import analyze_javascript, collapse_imports_javascript
+from quor.pipeline.ast_summarize.python import analyze_python, collapse_imports_python
 from quor.pipeline.ast_summarize.registry import (
     _ANALYZERS,
+    _IMPORT_COLLAPSERS,
     get_analyzer,
+    get_import_collapser,
     is_language_available,
     registered_languages,
 )
 from quor.pipeline.ast_summarize.rust import analyze_rust
-from quor.pipeline.ast_summarize.typescript import analyze_tsx, analyze_typescript
+from quor.pipeline.ast_summarize.typescript import (
+    analyze_tsx,
+    analyze_typescript,
+    collapse_imports_tsx,
+    collapse_imports_typescript,
+)
 
 # ---------------------------------------------------------------------------
 # Registry routing
@@ -337,6 +350,372 @@ class TestAnalyzePython:
 
     def test_docstring_only_body_returns_empty_set(self) -> None:
         assert analyze_python('def f():\n    """Just a docstring."""\n') == set()
+
+
+# ---------------------------------------------------------------------------
+# import_collapse.py — QB-096, shared/language-agnostic logic tested directly
+# via hand-built ImportStatement fixtures (no parser dependency; per-language
+# extraction correctness is covered separately below by
+# TestCollapseImportsPython/Java/JavaScript/TypeScript).
+# ---------------------------------------------------------------------------
+
+
+class TestGroupImportRuns:
+    def test_empty_statements_returns_empty_list(self) -> None:
+        assert group_import_runs([], [], "#") == []
+
+    def test_adjacent_statements_form_one_run(self) -> None:
+        stmts = [
+            ImportStatement(line=1, end_line=1, module=None, names=(ImportedName("os"),)),
+            ImportStatement(line=2, end_line=2, module=None, names=(ImportedName("sys"),)),
+        ]
+        source_lines = ["import os", "import sys"]
+        runs = group_import_runs(stmts, source_lines, "#")
+        assert len(runs) == 1
+        assert runs[0] == stmts
+
+    def test_blank_line_gap_does_not_break_run(self) -> None:
+        stmts = [
+            ImportStatement(line=1, end_line=1, module=None, names=(ImportedName("os"),)),
+            ImportStatement(line=3, end_line=3, module=None, names=(ImportedName("sys"),)),
+        ]
+        source_lines = ["import os", "", "import sys"]
+        runs = group_import_runs(stmts, source_lines, "#")
+        assert len(runs) == 1
+
+    def test_comment_line_gap_does_not_break_run(self) -> None:
+        stmts = [
+            ImportStatement(line=1, end_line=1, module=None, names=(ImportedName("os"),)),
+            ImportStatement(line=3, end_line=3, module=None, names=(ImportedName("sys"),)),
+        ]
+        source_lines = ["import os", "# third-party below", "import sys"]
+        runs = group_import_runs(stmts, source_lines, "#")
+        assert len(runs) == 1
+
+    def test_real_code_gap_breaks_run(self) -> None:
+        """A non-blank, non-comment line between two imports must never be
+        silently folded into a collapsed block — that would hide real,
+        executable code."""
+        stmts = [
+            ImportStatement(line=1, end_line=1, module=None, names=(ImportedName("os"),)),
+            ImportStatement(line=3, end_line=3, module=None, names=(ImportedName("sys"),)),
+        ]
+        source_lines = ["import os", "x = 1", "import sys"]
+        runs = group_import_runs(stmts, source_lines, "#")
+        assert len(runs) == 2
+        assert runs[0] == [stmts[0]]
+        assert runs[1] == [stmts[1]]
+
+    def test_multiline_statement_end_line_respected(self) -> None:
+        """A statement spanning multiple physical lines (end_line > line)
+        must use its own end_line, not line, as the gap's starting point."""
+        stmts = [
+            ImportStatement(
+                line=1, end_line=3, module="pkg", names=(ImportedName("a"), ImportedName("b"))
+            ),
+            ImportStatement(line=4, end_line=4, module=None, names=(ImportedName("os"),)),
+        ]
+        source_lines = ["from pkg import (", "    a,", "    b)", "import os"]
+        runs = group_import_runs(stmts, source_lines, "#")
+        assert len(runs) == 1
+
+
+class TestRenderImportBlock:
+    def test_bare_imports_classified_stdlib_vs_thirdparty(self) -> None:
+        run = [
+            ImportStatement(line=1, end_line=1, module=None, names=(ImportedName("os"),)),
+            ImportStatement(line=2, end_line=2, module=None, names=(ImportedName("numpy", "np"),)),
+        ]
+        text = render_import_block(run, stdlib_check=lambda n: n == "os")
+        assert "Standard library:\n- os" in text
+        assert "Third-party:\n- numpy as np" in text
+        assert text.startswith("Imports (2)")
+
+    def test_from_imports_small_group_renders_inline(self) -> None:
+        """A module group of _MAX_INLINE_MODULE_NAMES (3) or fewer names
+        renders as one line, not a heading + bulleted list — a heading plus
+        one to three bullets is visually heavier than the single line(s) it
+        replaces (product review finding, QB-096 follow-up)."""
+        run = [
+            ImportStatement(line=1, end_line=1, module="quor.pipeline", names=(ImportedName("mask"),)),
+            ImportStatement(line=2, end_line=2, module="quor.pipeline", names=(ImportedName("stages"),)),
+        ]
+        text = render_import_block(run)
+        assert text == "Imports (2)\n\nquor.pipeline: mask, stages"
+
+    def test_from_imports_large_group_stays_bulleted(self) -> None:
+        """A module group with more than _MAX_INLINE_MODULE_NAMES (3) names
+        still gets the vertical, scannable heading + bulleted list — inline
+        only helps small groups, it must not flatten a genuinely long list
+        into one unreadable line."""
+        run = [
+            ImportStatement(line=i + 1, end_line=i + 1, module="quor.pipeline", names=(ImportedName(n),))
+            for i, n in enumerate(["mask", "stages", "registry", "engine"])
+        ]
+        text = render_import_block(run)
+        assert text == "Imports (4)\n\nquor.pipeline:\n- mask\n- stages\n- registry\n- engine"
+
+    def test_wildcard_renders_compact_module_star(self) -> None:
+        run = [ImportStatement(line=1, end_line=1, module="x", is_wildcard=True)]
+        text = render_import_block(run)
+        assert text == "Imports (1)\n\nx.*"
+
+    def test_relative_module_dots_preserved(self) -> None:
+        run = [ImportStatement(line=1, end_line=1, module="..core", names=(ImportedName("parser"),))]
+        text = render_import_block(run)
+        assert "..core: parser" in text
+
+    def test_alias_preserved(self) -> None:
+        run = [ImportStatement(line=1, end_line=1, module=None, names=(ImportedName("numpy", "np"),))]
+        text = render_import_block(run, stdlib_check=lambda n: False)
+        assert "- numpy as np" in text
+
+    def test_group_truncated_beyond_cap_with_more_count(self) -> None:
+        names = tuple(ImportedName(f"mod{i}") for i in range(15))
+        run = [ImportStatement(line=1, end_line=1, module=None, names=names)]
+        text = render_import_block(run, stdlib_check=lambda n: False)
+        assert text.count("- mod") == 10
+        assert "(+5 more)" in text
+        assert text.startswith("Imports (15)")
+
+    def test_duplicate_imports_both_survive(self) -> None:
+        run = [
+            ImportStatement(line=1, end_line=1, module=None, names=(ImportedName("os"),)),
+            ImportStatement(line=2, end_line=2, module=None, names=(ImportedName("os"),)),
+        ]
+        text = render_import_block(run, stdlib_check=lambda n: True)
+        assert text.count("- os") == 2
+        assert text.startswith("Imports (2)")
+
+    def test_side_effect_only_import_renders_bare_module_line(self) -> None:
+        run = [ImportStatement(line=1, end_line=1, module="./polyfill")]
+        text = render_import_block(run)
+        assert text == "Imports (1)\n\n./polyfill"
+
+    def test_mixed_bare_and_from_styles_all_sections_present(self) -> None:
+        run = [
+            ImportStatement(line=1, end_line=1, module=None, names=(ImportedName("os"),)),
+            ImportStatement(line=2, end_line=2, module="pkg", names=(ImportedName("thing"),)),
+        ]
+        text = render_import_block(run, stdlib_check=lambda n: n == "os")
+        assert "Standard library:\n- os" in text
+        assert "pkg: thing" in text
+
+
+class TestCollapseImportRuns:
+    def test_no_statements_returns_empty_list(self) -> None:
+        assert collapse_import_runs([], [], "#") == []
+
+    def test_single_short_import_left_unfolded(self) -> None:
+        stmts = [ImportStatement(line=1, end_line=1, module=None, names=(ImportedName("os"),))]
+        source_lines = ["import os"]
+        assert collapse_import_runs(stmts, source_lines, "#", stdlib_check=lambda n: True) == []
+
+    def test_large_run_folds(self) -> None:
+        names = [f"module_{i}" for i in range(20)]
+        stmts = [
+            ImportStatement(line=i + 1, end_line=i + 1, module=None, names=(ImportedName(n),))
+            for i, n in enumerate(names)
+        ]
+        source_lines = [f"import {n}" for n in names]
+        replacements = collapse_import_runs(stmts, source_lines, "#", stdlib_check=lambda n: False)
+        assert len(replacements) == 1
+        assert replacements[0].start_line == 1
+        assert replacements[0].end_line == 20
+        assert replacements[0].text.startswith("Imports (20)")
+
+
+# ---------------------------------------------------------------------------
+# collapse_imports_python — QB-096, real ast.parse()-backed extraction. Every
+# case the task's own "Tests" section names is covered explicitly here.
+# ---------------------------------------------------------------------------
+
+
+class TestCollapseImportsPython:
+    def test_no_imports_returns_empty_list(self) -> None:
+        assert collapse_imports_python("x = 1\n") == []
+
+    def test_single_import_left_unchanged(self) -> None:
+        assert collapse_imports_python("import os\n") == []
+
+    def test_small_import_block_left_unchanged(self) -> None:
+        assert collapse_imports_python("import os\nimport sys\n") == []
+
+    def test_large_stdlib_block_collapses_with_classification(self) -> None:
+        modules = [
+            "os", "sys", "json", "pathlib", "tempfile", "shutil",
+            "subprocess", "logging", "asyncio", "re", "io", "csv",
+        ]
+        source = "\n".join(f"import {m}" for m in modules) + "\n"
+        replacements = collapse_imports_python(source)
+        assert len(replacements) == 1
+        text = replacements[0].text
+        assert text.startswith(f"Imports ({len(modules)})")
+        assert "Standard library:" in text
+        assert "Third-party:" not in text
+        assert "os" in text and "asyncio" in text
+
+    def test_small_bare_import_counts_never_collapse(self) -> None:
+        """Product review follow-up: 2/3/4 bare imports must look exactly
+        like the original source, not a 'collapsed' block that's actually
+        harder to scan than three plain `import` lines."""
+        for count in (2, 3, 4):
+            modules = ["os", "sys", "json", "re"][:count]
+            source = "\n".join(f"import {m}" for m in modules) + "\n"
+            assert collapse_imports_python(source) == [], f"{count} bare imports should stay unchanged"
+
+    def test_small_from_import_group_renders_as_one_natural_line(self) -> None:
+        """A single module referenced 2-3 times collapses to one inline
+        line, not a heading + bulleted list — see import_collapse.py's
+        _MAX_INLINE_MODULE_NAMES for why."""
+        source = "from quor.pipeline import mask\nfrom quor.pipeline import stages\n"
+        replacements = collapse_imports_python(source)
+        assert len(replacements) == 1
+        assert replacements[0].text == "Imports (2)\n\nquor.pipeline: mask, stages"
+
+    def test_thirdparty_imports_bucketed_separately(self) -> None:
+        modules = ["numpy", "pandas", "requests", "flask", "django", "pytest", "click", "attrs"]
+        source = "\n".join(f"import {m}" for m in modules) + "\n"
+        replacements = collapse_imports_python(source)
+        assert len(replacements) == 1
+        text = replacements[0].text
+        assert "Third-party:" in text
+        assert "Standard library:" not in text
+
+    def test_aliases_preserved(self) -> None:
+        source = (
+            "import numpy as np\n"
+            "import pandas as pd\n"
+            "import matplotlib as mpl\n"
+            "import matplotlib.pyplot as plt\n"
+            "import requests\n"
+            "import scipy as sp\n"
+        )
+        replacements = collapse_imports_python(source)
+        assert len(replacements) == 1
+        assert "- numpy as np" in replacements[0].text
+        assert "- pandas as pd" in replacements[0].text
+
+    def test_wildcard_imports_preserved(self) -> None:
+        source = (
+            "from alpha import one\n"
+            "from beta import two\n"
+            "from gamma import *\n"
+            "from delta import three\n"
+        )
+        replacements = collapse_imports_python(source)
+        assert len(replacements) == 1
+        assert "gamma.*" in replacements[0].text
+
+    def test_relative_imports_preserved(self) -> None:
+        source = (
+            "from ..core import parser\n"
+            "from ..core import lexer\n"
+            "from . import utils\n"
+            "from .helpers import formatter\n"
+        )
+        replacements = collapse_imports_python(source)
+        assert len(replacements) == 1
+        text = replacements[0].text
+        assert "..core: parser, lexer" in text
+        assert ".helpers: formatter" in text
+
+    def test_duplicate_imports_both_preserved(self) -> None:
+        source = (
+            "\n".join(
+                ["import os"] * 3
+                + ["import sys"] * 3
+                + ["import json"] * 3
+                + ["import pathlib"] * 3
+            )
+            + "\n"
+        )
+        replacements = collapse_imports_python(source)
+        assert len(replacements) == 1
+        text = replacements[0].text
+        assert text.count("- os") == 3
+        assert text.count("- sys") == 3
+        assert text.startswith("Imports (12)")
+
+    def test_mixed_import_styles(self) -> None:
+        source = (
+            "import os\n"
+            "import sys\n"
+            "from pathlib import Path\n"
+            "from quor.pipeline import mask\n"
+            "from quor.pipeline import stages\n"
+            "from x import *\n"
+            "import numpy as np\n"
+        )
+        replacements = collapse_imports_python(source)
+        assert len(replacements) == 1
+        text = replacements[0].text
+        assert "Standard library:" in text
+        assert "Third-party:" in text
+        assert "pathlib: Path" in text
+        assert "quor.pipeline: mask, stages" in text
+        assert "x.*" in text
+
+    def test_multiline_parenthesized_from_import(self) -> None:
+        source = (
+            "from pkg import (\n"
+            "    alpha,\n"
+            "    beta,\n"
+            "    gamma,\n"
+            "    delta,\n"
+            ")\n"
+            "from pkg2 import (epsilon, zeta, eta)\n"
+        )
+        replacements = collapse_imports_python(source)
+        assert len(replacements) == 1
+        assert replacements[0].start_line == 1
+        assert replacements[0].end_line == 7
+        text = replacements[0].text
+        # pkg has 4 names (over the inline threshold) -> stays bulleted, even
+        # though the original statement was itself multi-line/parenthesized.
+        assert "pkg:\n- alpha\n- beta\n- gamma\n- delta" in text
+        # pkg2 has 3 names (at the inline threshold) -> one line.
+        assert "pkg2: epsilon, zeta, eta" in text
+
+    def test_deeply_nested_module_path_collapses_to_one_scannable_line(self) -> None:
+        """Product review concern: a deeply-dotted `from a.b.c.d.e import
+        (Foo, Bar, Baz)` (6 physical lines once parenthesized) must not
+        become *harder* to scan than the original — it should collapse to
+        one line, not a heading followed by three bullets."""
+        source = "from a.b.c.d.e import (\n    Foo,\n    Bar,\n    Baz,\n)\n"
+        replacements = collapse_imports_python(source)
+        assert len(replacements) == 1
+        assert replacements[0].text == "Imports (3)\n\na.b.c.d.e: Foo, Bar, Baz"
+
+    def test_deeply_relative_single_import_alongside_others(self) -> None:
+        """A deeply-relative single-name import (`from .subpackage.internal.
+        utils import helper`) groups inline like any other small group —
+        the leading dots are preserved verbatim, never normalized."""
+        source = (
+            "from .subpackage.internal.utils import helper\n"
+            "from .subpackage.internal.utils import other_helper\n"
+            "from . import top_level_thing\n"
+        )
+        replacements = collapse_imports_python(source)
+        assert len(replacements) == 1
+        text = replacements[0].text
+        assert ".subpackage.internal.utils: helper, other_helper" in text
+        assert ".: top_level_thing" in text
+
+    def test_real_code_between_imports_breaks_run(self) -> None:
+        modules = ["os", "sys", "json", "pathlib", "tempfile", "shutil", "subprocess", "logging"]
+        source = "\n".join(f"import {m}" for m in modules[:4])
+        source += "\nDEBUG = True\n"
+        source += "\n".join(f"import {m}" for m in modules[4:])
+        source += "\n"
+        replacements = collapse_imports_python(source)
+        # Each half is too small to fold on its own (cost gate), and the
+        # assignment in between must never be swallowed into either run.
+        assert replacements == []
+
+    def test_syntax_error_propagates(self) -> None:
+        with pytest.raises(SyntaxError):
+            collapse_imports_python("import os\nimport sys\ndef broken(:\n")
 
 
 # ---------------------------------------------------------------------------
@@ -1555,3 +1934,159 @@ class TestAnalyzeCSharp:
 
         assert result == set()
         assert any("quor[csharp]" in str(w.message) for w in caught)
+
+
+# ---------------------------------------------------------------------------
+# collapse_imports_java / collapse_imports_javascript / collapse_imports_ts*
+# — QB-096, real tree-sitter-backed extraction.
+# ---------------------------------------------------------------------------
+
+
+class TestCollapseImportsJava:
+    def test_no_imports_returns_empty_list(self) -> None:
+        assert collapse_imports_java("class Foo {}\n") == []
+
+    def test_small_block_left_unchanged(self) -> None:
+        assert collapse_imports_java("import java.util.List;\n") == []
+
+    def test_grouped_by_package(self) -> None:
+        source = (
+            "import java.util.List;\n"
+            "import java.util.Map;\n"
+            "import java.util.Set;\n"
+            "import java.util.ArrayList;\n"
+            "import java.util.HashMap;\n"
+        )
+        replacements = collapse_imports_java(source)
+        assert len(replacements) == 1
+        text = replacements[0].text
+        assert "java.util:" in text
+        assert "- List" in text
+        assert "- Map" in text
+        assert "- Set" in text
+
+    def test_wildcard_import_preserved(self) -> None:
+        source = (
+            "import java.util.List;\n"
+            "import java.util.Map;\n"
+            "import java.util.Set;\n"
+            "import java.io.*;\n"
+            "import java.util.ArrayList;\n"
+        )
+        replacements = collapse_imports_java(source)
+        assert len(replacements) == 1
+        assert "java.io.*" in replacements[0].text
+
+    def test_multiple_packages_grouped_separately(self) -> None:
+        source = (
+            "import java.util.List;\n"
+            "import java.util.Map;\n"
+            "import java.io.File;\n"
+            "import java.io.InputStream;\n"
+            "import java.io.OutputStream;\n"
+        )
+        replacements = collapse_imports_java(source)
+        assert len(replacements) == 1
+        text = replacements[0].text
+        assert "java.util:" in text
+        assert "java.io:" in text
+
+    def test_missing_dependency_fails_open(self) -> None:
+        import builtins
+
+        real_import = builtins.__import__
+
+        def _blocked(name: str, *args: object, **kwargs: object) -> object:
+            if name in ("tree_sitter", "tree_sitter_java"):
+                raise ImportError(f"simulated missing dependency: {name}")
+            return real_import(name, *args, **kwargs)  # type: ignore[arg-type]
+
+        with patch("builtins.__import__", side_effect=_blocked), warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            result = collapse_imports_java("import java.util.List;\n")
+
+        assert result == []
+        assert any("quor[java]" in str(w.message) for w in caught)
+
+
+class TestCollapseImportsJavaScript:
+    def test_no_imports_returns_empty_list(self) -> None:
+        assert collapse_imports_javascript("const x = 1;\n") == []
+
+    def test_named_imports_grouped_by_module(self) -> None:
+        """A module with more than 3 names stays bulleted; one with 3 or
+        fewer renders inline (QB-096 follow-up — see import_collapse.py's
+        _MAX_INLINE_MODULE_NAMES)."""
+        source = 'import {A, B, C, D} from "./foo";\nimport {E, F} from "./bar";\n'
+        replacements = collapse_imports_javascript(source)
+        assert len(replacements) == 1
+        text = replacements[0].text
+        assert "./foo:\n- A\n- B\n- C\n- D" in text
+        assert "./bar: E, F" in text
+
+    def test_default_and_namespace_imports(self) -> None:
+        source = (
+            'import Foo from "./foo";\n'
+            'import * as bar from "./bar";\n'
+            'import {X, Y} from "./baz";\n'
+        )
+        replacements = collapse_imports_javascript(source)
+        assert len(replacements) == 1
+        text = replacements[0].text
+        assert "./foo: Foo" in text
+        assert "* as bar" in text
+
+    def test_side_effect_import_preserved(self) -> None:
+        source = (
+            'import "./polyfill-a";\n'
+            'import "./polyfill-b";\n'
+            'import {X, Y, Z} from "./real";\n'
+        )
+        replacements = collapse_imports_javascript(source)
+        assert len(replacements) == 1
+        text = replacements[0].text
+        assert "./polyfill-a" in text
+        assert "./polyfill-b" in text
+
+
+class TestCollapseImportsTypeScript:
+    def test_no_imports_returns_empty_list(self) -> None:
+        assert collapse_imports_typescript("const x: number = 1;\n") == []
+
+    def test_named_imports_grouped_by_module(self) -> None:
+        source = 'import {A, B, C} from "./foo";\nimport {D, E} from "./bar";\n'
+        replacements = collapse_imports_typescript(source)
+        assert len(replacements) == 1
+        text = replacements[0].text
+        assert "./foo:" in text
+        assert "./bar:" in text
+
+    def test_tsx_variant_also_works(self) -> None:
+        source = 'import {A, B, C} from "./foo";\nimport {D, E} from "./bar";\n'
+        replacements = collapse_imports_tsx(source)
+        assert len(replacements) == 1
+
+
+# ---------------------------------------------------------------------------
+# get_import_collapser — QB-096 registry routing
+# ---------------------------------------------------------------------------
+
+
+class TestRegistryImportCollapser:
+    def test_registered_languages_have_a_collapser(self) -> None:
+        for language in ("python", "java", "javascript", "typescript", "tsx"):
+            assert get_import_collapser(language) is not None
+
+    def test_unregistered_language_returns_none(self) -> None:
+        assert get_import_collapser("cobol") is None
+
+    def test_languages_without_import_collapsing_return_none(self) -> None:
+        """go/rust/csharp have analyzers but no import collapser (QB-096's
+        own scope) — a real, distinct 'not yet supported' case, not a bug."""
+        for language in ("go", "rust", "csharp"):
+            assert get_analyzer(language) is not None
+            assert get_import_collapser(language) is None
+
+    def test_import_collapsers_dict_matches_getter(self) -> None:
+        for language, fn in _IMPORT_COLLAPSERS.items():
+            assert get_import_collapser(language) is fn

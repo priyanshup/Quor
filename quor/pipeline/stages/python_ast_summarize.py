@@ -33,12 +33,22 @@ unmodified against this refactor (see backlog.md's QB-005B entry for the
 explicit before/after equivalence proof).
 
 `ast` is used for PARSING ONLY. This stage never regenerates, reformats, or
-rewrites source text (no `ast.unparse()`, no reformatting of kept lines) —
-every kept line is the original line, byte-for-byte. Compressed lines are
-marked COMPRESS (dropped at render, per every other stage's convention);
-nothing is ever replaced or synthesized, unlike group_repeated's repeat-count
-marker — this stage follows the more common "silent drop" pattern most
-built-in stages already use.
+rewrites source text for BODY compression (no `ast.unparse()`, no
+reformatting of kept lines) — every kept body line is the original line,
+byte-for-byte. Compressed body lines are marked COMPRESS (dropped at render,
+per every other stage's convention); nothing is replaced or synthesized for
+bodies, unlike group_repeated's repeat-count marker.
+
+QB-096: this stage's *import*-collapsing half is the one deliberate
+exception, documented in `quor/pipeline/mask.py`'s own module docstring —
+`get_import_collapser("python")` (`quor/pipeline/ast_summarize/python.py`'s
+`collapse_imports_python()`) may replace a whole run of consecutive,
+module-level import statements with one synthesized, multi-line summary
+block, applied via `quor.pipeline.stages._utils._apply_ast_summary()` (the
+merge helper this stage shares with `code_ast_summarize.py`). Gated by the
+same token-cost comparison `collapse_unchanged_context`/`path_prefix_fold`
+already use — a run collapses only when doing so is estimated strictly
+cheaper, never on a fixed import-count threshold.
 
 Fail-open: a SyntaxError (or any other ast.parse() failure — a null byte, a
 file that isn't actually Python) is deliberately NOT caught here, nor in
@@ -59,9 +69,9 @@ from typing import ClassVar
 
 from pydantic import ConfigDict
 
-from quor.pipeline.ast_summarize.registry import get_analyzer
-from quor.pipeline.mask import ContentMask, Decision, LineMask
-from quor.pipeline.stages._utils import _compile, matches_any
+from quor.pipeline.ast_summarize.registry import get_analyzer, get_import_collapser
+from quor.pipeline.mask import ContentMask
+from quor.pipeline.stages._utils import _apply_ast_summary, _compile
 from quor.pipeline.stages.base import StageConfig
 
 
@@ -103,34 +113,23 @@ class PythonAstSummarizeStage:
             raise RuntimeError(
                 "python analyzer unexpectedly missing from ast_summarize registry"
             )
-        compress_lines = analyzer("\n".join(lm.line for lm in mask.lines))
-        if not compress_lines:
+        source = "\n".join(lm.line for lm in mask.lines)
+        compress_lines = analyzer(source)
+
+        # get_import_collapser("python") is, like get_analyzer("python"),
+        # always registered (QB-096) — never a runtime unknown here.
+        import_collapser = get_import_collapser("python")
+        import_replacements = import_collapser(source) if import_collapser is not None else []
+
+        if not compress_lines and not import_replacements:
             return mask
 
         compiled_preserve = [_compile(p) for p in config.preserve_patterns]
-        new_lines: list[LineMask] = []
-        for idx, lm in enumerate(mask.lines):
-            line_number = idx + 1  # ast line numbers are 1-indexed
-
-            if lm.decision is Decision.PROTECT:
-                new_lines.append(lm)
-                continue
-
-            if lm.decision is Decision.COMPRESS:
-                new_lines.append(lm)
-                continue
-
-            if compiled_preserve and matches_any(lm.line, compiled_preserve):
-                new_lines.append(
-                    LineMask(lm.line, Decision.PROTECT, "matches preserve_pattern", self.stage_type)
-                )
-                continue
-
-            if line_number in compress_lines:
-                new_lines.append(
-                    LineMask(lm.line, Decision.COMPRESS, "function/method body", self.stage_type)
-                )
-            else:
-                new_lines.append(lm)
-
-        return ContentMask(tuple(new_lines))
+        return _apply_ast_summary(
+            mask,
+            compress_lines,
+            import_replacements,
+            compiled_preserve,
+            self.stage_type,
+            body_reason="function/method body",
+        )
