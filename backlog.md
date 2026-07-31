@@ -6384,6 +6384,81 @@ separate staleness gap, out of scope for a README-only rewrite; `docs/BENCHMARKS
 
 ---
 
+#### QB-090 — Repository-Intelligence Onboarding Nudge
+
+**Effort:** Medium · **Value:** High · **Risk:** Low · **Category:** Feature
+
+**Status:** Implemented (2026-07-31).
+
+<details>
+<summary>Technical details</summary>
+
+**The gap this closes:** a real user's first `quor init --claude` install produced no mention
+anywhere that `quor map`/`symbols`/`graph` exist — the Read-hook features built on top of that
+cache (QB-079's Repository Context block, QB-081's Relevant files block) were silently inert for
+anyone who didn't already know to run one of those commands first. Raised directly by the project
+owner after their own first install produced zero indication of this, with an explicit, detailed
+user-journey spec: nudge at install time (skipped outside a git repo), nudge from the shared,
+global hook the first time it fires against a *different*, not-yet-indexed repository, and an
+occasional staleness re-check gated by both elapsed time and how much actually changed — deliberately
+simple, "not a big state machine," after an initial richer consent/preference design was reviewed
+and rejected in favor of a throttled-tip-only approach with no per-repo preference storage.
+
+**Two surfaces, matching two genuinely different execution contexts (see ADR-046 for the full
+architectural reasoning):**
+- **`quor init --claude`** (`_maybe_offer_repo_intelligence_setup()`, `init.py`) — interactive,
+  real TTY: shown once, only inside a git repo with no cache yet, with a real file count and a
+  clearly-labeled rough time estimate (`nudge.estimate_build_cost()`), builds immediately via
+  `ensure_repo_intelligence()` on "yes." `--yes` skips it entirely.
+- **The Read hook** (`_maybe_prepend_repo_intel_nudge()`, `claude_read.py`, backed by new module
+  `quor/pipeline/repo_profile/nudge.py`) — passive, non-interactive "Repository Tip" text. Never-
+  built: shown at most 5 times total (same throttle philosophy as `pipeline/onboarding.py`'s
+  existing, unrelated onboarding message). Stale: checked at most once per 24 hours (a cheap
+  `git rev-parse HEAD` compare plus, only on a real difference, one `git diff --shortstat` call —
+  never `ensure_repo_intelligence()`/`walk_repository()`, holding to the exact hot-path guarantee
+  QB-079/QB-081 already established), shown once per check that finds ≥20 changed files.
+
+**Two real findings from building this, not assumed up front:**
+1. An early version gated the hook nudge on repo-identity alone and fired inside this codebase's
+   own test suite — any Read-hook test that doesn't `monkeypatch.chdir()` runs with `Path.cwd()`
+   pointing at the real Quor checkout (a real git repo, no isolated cache), breaking several tests'
+   "pure passthrough is a true no-op" assertions. Fixed by also requiring `transcript_path` — the
+   same "real interactive session, not a synthetic call" signal QB-081's relevant-files feature
+   already relies on — which is both the test fix and, independently, the more correct scope for a
+   tip aimed at a human in conversation.
+2. Deliberately explored, then rejected: a full per-repo accept/decline/remind-later preference
+   state machine (the project owner's own original spec). Simplified on direct instruction to a
+   throttle-only design with zero stored preferences — "no state machine," per that review.
+
+**Deliberately not built:** any preference/consent persistence beyond the throttle counters
+themselves; a richer staleness signal than git-commit-based comparison (would require the same
+filesystem-wide fingerprint walk `ensure_repo_intelligence()` already does, at hot-path cost this
+feature explicitly avoids — see ADR-046's own documented limitation); showing the file-count/time
+estimate from the hook path (would require a real `walk_repository()` call on every Read until
+throttled — kept exclusive to the CLI-facing, already-walk-tolerant `quor init --claude` flow).
+
+**Testing:** `tests/unit/test_repo_intel_nudge.py` (throttling, staleness thresholds, the 24-hour
+gate, git-head comparison, corrupted-state fail-open, non-git skip), `tests/unit/
+test_read_hook_repo_intel_nudge.py` (real stdin/stdout hook roundtrip: never-built tip appears and
+throttles, silent once built, silent without `transcript_path`, fails open on an internal error),
+`tests/unit/test_cli.py`'s new `TestRepoIntelligenceOnboarding` class (prompt appears/skips
+correctly across `--yes`, non-git cwd, already-built cache, accept, and decline). Full gate: `ruff
+check quor/ tests/` clean; `mypy quor/` clean; full `pytest tests/unit/` green (batched per this
+repo's own hook self-timeout — a real, mildly amusing constraint hit while validating this exact
+feature, since this session's own `quor init --claude` install made the dev shell's `python -m
+pytest` invocations subject to Quor's own 25s dispatcher timeout); `pytest tests/integration/ -m
+integration` green; `quor verify` unchanged at 204/204; benchmark suite unchanged at 35.9%/18,962
+tokens (no compression logic touched).
+
+**Files changed:** `quor/pipeline/repo_profile/nudge.py` (new), `quor/adapters/claude_read.py`,
+`quor/cli/commands/init.py`, `tests/unit/test_repo_intel_nudge.py` (new), `tests/unit/
+test_read_hook_repo_intel_nudge.py` (new), `tests/unit/test_cli.py`, `docs/final/DECISIONS.md`
+(ADR-046).
+
+</details>
+
+---
+
 ### Historical (superseded)
 
 *Kept for the record — not resolved work in its own right, but the original request that later,

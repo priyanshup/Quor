@@ -91,6 +91,7 @@ from quor.filters.registry import FilterRegistry
 from quor.pipeline.extract.registry import extract
 from quor.pipeline.repo_profile import intel_store
 from quor.pipeline.repo_profile.intel_model import FileIntelligenceEntry
+from quor.pipeline.repo_profile.nudge import compute_hook_nudge
 from quor.pipeline.repo_profile.query_extract import extract_query_terms
 from quor.pipeline.repo_profile.search import merge_search
 from quor.pipeline.repo_profile.search_render import render_relevant_files_block
@@ -287,6 +288,11 @@ def _handle_text(raw: str, tracking: TrackingDB | None) -> bytes:
     )
     if with_relevant_files is not None:
         compressed = with_relevant_files
+    with_repo_intel_nudge = _maybe_prepend_repo_intel_nudge(
+        hook_input, compressed if compressed is not None else original_response
+    )
+    if with_repo_intel_nudge is not None:
+        compressed = with_repo_intel_nudge
     if compressed is not None:
         if not compressed.startswith(CONCISE_INSTRUCTION):
             compressed = CONCISE_INSTRUCTION + compressed
@@ -915,4 +921,52 @@ def _maybe_prepend_relevant_files(hook_input: PostToolUseHookInput, base: str | 
         return render_relevant_files_block(matches) + base
     except Exception as exc:  # noqa: BLE001 — fail-open: never let this enhancement surface an error
         warnings.warn(f"[quor] Relevant repository files lookup error: {exc}", stacklevel=2)
+        return None
+
+
+def _maybe_prepend_repo_intel_nudge(hook_input: PostToolUseHookInput, base: str | None) -> str | None:
+    """Prepend a one-time-per-throttle "Repository Tip" onto `base` (QB-090)
+    if repository intelligence has never been built for this repo, or has
+    drifted noticeably stale — `None` the instant there's nothing to say,
+    mirroring `_maybe_prepend_relevant_files()`'s own contract exactly
+    (never returns `base` unchanged on a no-op).
+
+    Deliberately the last of the three Read-hook enhancements to run
+    (`_compress_read_output` -> `_maybe_prepend_relevant_files` ->
+    this) — it's an administrative aside, not content the model needs to
+    do its actual task, so it never displaces more directly useful
+    material earlier in the response.
+
+    Requires `transcript_path` to be present, same signal
+    `_maybe_prepend_relevant_files()` already uses to mean "a real Claude
+    Code session, not a synthetic tool call" — a script or another
+    integration constructing a bare PostToolUse payload by hand never sets
+    this, and shouldn't get an onboarding tip meant for an interactive
+    human. This is also what keeps this feature from firing inside this
+    codebase's own test suite: a real regression found while building
+    this, since a repo-identity-gated (not transcript-gated) version of
+    this check fired against whichever directory `pytest` happened to be
+    invoked from, silently breaking unrelated tests' "pure passthrough is a
+    true no-op" assertions the moment that directory was a git repo with no
+    isolated repo-intelligence cache — which describes most of them.
+
+    All real decision logic (throttling, staleness) lives in
+    `quor.pipeline.repo_profile.nudge.compute_hook_nudge()`, which never
+    calls `ensure_repo_intelligence()` or `walk_repository()` — same
+    hot-path guarantee `_maybe_prepend_repo_context()`/
+    `_maybe_prepend_relevant_files()` already give (see that module's own
+    docstring for exactly what "cheap" means here: at most an O(1) state
+    read, plus — rate-limited to once per 24 hours — two fast git
+    subprocess calls, never a repository walk)."""
+    if base is None:
+        return None
+    if not hook_input.transcript_path:
+        return None
+    try:
+        nudge = compute_hook_nudge(Path.cwd())
+        if nudge is None:
+            return None
+        return nudge + base
+    except Exception as exc:  # noqa: BLE001 — fail-open: never let this enhancement surface an error
+        warnings.warn(f"[quor] Repository intelligence nudge error: {exc}", stacklevel=2)
         return None
