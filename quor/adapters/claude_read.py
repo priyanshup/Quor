@@ -254,9 +254,14 @@ def run_hook(*, tracking: TrackingDB | None = None) -> None:
     than we saved" gate `dispatcher.py`'s `_with_concise_instruction()` now
     applies, since this Read path previously prepended the fixed 17-token
     nudge unconditionally, silently flipping a small real compression win
-    into a net loss the same way the Bash tee footer once did). `None`
-    (passthrough/fail-open — original Read result kept) is left untouched,
-    exactly as before.
+    into a net loss the same way the Bash tee footer once did) — **except**
+    for `.docx`/`.pdf` extraction (`_EXTRACTION_EXTENSIONS`), which always
+    gets the nudge unconditionally: binary extraction has no meaningful
+    pre-compression text baseline (`tool_response` is whatever placeholder
+    Claude Code sent for the binary file, not text Quor compressed), so the
+    gate doesn't apply there — see `_handle_text()`'s own comment for the
+    full reasoning. `None` (passthrough/fail-open — original Read result
+    kept) is left untouched, exactly as before.
     """
     raw = sys.stdin.read()
     sys.stdout.buffer.write(_handle_text(raw, tracking))
@@ -299,15 +304,33 @@ def _handle_text(raw: str, tracking: TrackingDB | None) -> bytes:
     )
     if with_repo_intel_nudge is not None:
         compressed = with_repo_intel_nudge
-    if compressed is not None:
-        if (
-            CONCISE_INSTRUCTION_ENABLED
-            and not compressed.startswith(CONCISE_INSTRUCTION)
-            and isinstance(original_response, str)
-        ):
+    needs_instruction = (
+        compressed is not None
+        and CONCISE_INSTRUCTION_ENABLED
+        and not compressed.startswith(CONCISE_INSTRUCTION)
+    )
+    if needs_instruction:
+        # Binary extraction (.docx/.pdf, _EXTRACTION_EXTENSIONS) has no
+        # meaningful pre-compression text baseline: `extract()` reads the
+        # file straight off disk, so `original_response` (tool_response) is
+        # whatever placeholder Claude Code sent for a binary file, not text
+        # Quor compressed — comparing the nudge's cost against it isn't the
+        # QB-052 "don't cost more than the filter saved" case, it's apples
+        # to oranges, and would suppress the nudge on essentially every
+        # extraction. The token-cost gate below applies only to the genuine
+        # text-compression paths (markdown/source-code/structured-data),
+        # where `original_response` really is the raw text being compressed.
+        is_extraction = (
+            Path(hook_input.tool_input.file_path).suffix.lower() in _EXTRACTION_EXTENSIONS
+        )
+        if is_extraction or not isinstance(original_response, str):
+            compressed = CONCISE_INSTRUCTION + compressed
+        else:
             with_instruction = CONCISE_INSTRUCTION + compressed
             if count_tokens(with_instruction) <= count_tokens(original_response):
                 compressed = with_instruction
+
+    if compressed is not None:
         hook_specific["updatedToolOutput"] = compressed
 
     return orjson.dumps({"hookSpecificOutput": hook_specific})
