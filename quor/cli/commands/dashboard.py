@@ -34,6 +34,13 @@ from rich.panel import Panel
 from rich.table import Table
 
 from quor.cli.format_utils import format_count, format_duration, format_percentage
+from quor.cli.gain_presentation import (
+    build_stats_table,
+    build_top_filters_table,
+    eligible_compression_line,
+    filter_display_name,
+    low_sample_caveat,
+)
 from quor.tracking.db import GainReport, RecentInvocation, query_gain, query_recent_invocations
 
 console = Console(highlight=False)
@@ -56,7 +63,8 @@ _WAITING_MESSAGE = (
 _FOOTER_NOTE = (
     "[dim]· Token counts are estimated via the char/4 approximation, ±20% versus a "
     "real tokenizer. Estimated cost uses a fixed reference price and is not a "
-    "guaranteed figure.[/dim]"
+    "guaranteed figure. This view only covers activity since this dashboard started — "
+    "`quor gain` shows a longer (30-day, by default) window.[/dim]"
 )
 
 
@@ -92,15 +100,43 @@ def dashboard_command(
 
     try:
         with Live(console=console, screen=False, auto_refresh=False) as live:
+            # QB-091: tracked across ticks purely to draw the ▲/▼ trend
+            # marker next to the headline percentage — so a number that
+            # visibly changed between two glances at the live view reads as
+            # expected motion rather than a surprise. `quor gain` (a single
+            # snapshot, no "previous tick" to compare against) has no
+            # equivalent of this.
+            previous_fraction: float | None = None
             while True:
-                live.update(_render(db_path, project_path, session_start), refresh=True)
+                report = query_gain(db_path, project_path, since=session_start)
+                live.update(
+                    _render(
+                        db_path,
+                        project_path,
+                        session_start,
+                        previous_fraction=previous_fraction,
+                        report=report,
+                    ),
+                    refresh=True,
+                )
+                previous_fraction = (
+                    report.tokens_saved / report.tokens_before if report.tokens_before else None
+                )
                 time.sleep(refresh)
     except KeyboardInterrupt:
         pass
 
 
-def _render(db_path: Path, project_path: Path, session_start: datetime) -> Group:
-    report = query_gain(db_path, project_path, since=session_start)
+def _render(
+    db_path: Path,
+    project_path: Path,
+    session_start: datetime,
+    previous_fraction: float | None = None,
+    *,
+    report: GainReport | None = None,
+) -> Group:
+    if report is None:
+        report = query_gain(db_path, project_path, since=session_start)
     elapsed = (datetime.now(UTC) - session_start).total_seconds()
     header = (
         f"[bold]Quor Dashboard[/bold]   {project_path}   "
@@ -114,16 +150,13 @@ def _render(db_path: Path, project_path: Path, session_start: datetime) -> Group
         db_path, project_path, since=session_start, limit=_RECENT_LIMIT
     )
 
-    parts: list[RenderableType] = [
-        header,
-        "",
-        _headline_text(report),
-        _stats_table(report),
-        _cost_line(report),
-        "",
-    ]
+    parts: list[RenderableType] = [header, "", _headline_text(report, previous_fraction)]
+    eligible_line = eligible_compression_line(report)
+    if eligible_line is not None:
+        parts.append(eligible_line)
+    parts += [build_stats_table(report), _cost_line(report), ""]
 
-    top_filters = _top_filters_table(report)
+    top_filters = build_top_filters_table(report)
     if top_filters is not None:
         parts += ["[bold]Top filters this session[/bold]", top_filters, ""]
 
@@ -135,35 +168,33 @@ def _render(db_path: Path, project_path: Path, session_start: datetime) -> Group
     return Group(*parts)
 
 
-def _headline_text(report: GainReport) -> str:
+def _trend_marker(current_fraction: float, previous_fraction: float | None) -> str:
+    """A tiny live-only indicator showing whether the headline percentage
+    moved since the last refresh tick (QB-091) — so a number that visibly
+    changes between two glances at the dashboard reads as expected live
+    motion, not a surprise. `None`/no previous tick yet renders nothing."""
+    if previous_fraction is None:
+        return ""
+    delta = current_fraction - previous_fraction
+    if abs(delta) < 0.005:  # under half a percentage point — treat as flat, avoid jitter
+        return " [dim]·[/dim]"
+    arrow, color = ("▲", "green") if delta > 0 else ("▼", "yellow")
+    return f" [{color}]{arrow}[/{color}]"
+
+
+def _headline_text(report: GainReport, previous_fraction: float | None = None) -> str:
     saved_fraction = report.tokens_saved / report.tokens_before if report.tokens_before else 0.0
+    caveat = low_sample_caveat(report)
+    trend = _trend_marker(saved_fraction, previous_fraction) if not caveat else ""
     if report.tokens_saved < 0:
         return (
             f"[bold]NET TOKENS[/bold]   [bold yellow]~{format_count(report.tokens_saved)} "
-            f"tokens ({format_percentage(saved_fraction)})[/bold yellow]"
+            f"tokens ({format_percentage(saved_fraction)})[/bold yellow]{trend}{caveat}"
         )
     return (
         f"[bold]SAVED SO FAR[/bold]   [bold green]~{format_count(report.tokens_saved)} "
-        f"tokens ({format_percentage(saved_fraction)})[/bold green]"
+        f"tokens ({format_percentage(saved_fraction)})[/bold green]{trend}{caveat}"
     )
-
-
-def _stat_table() -> Table:
-    """A borderless, headerless two-column table: label left, value right —
-    same shape `quor gain` already uses (`gain.py::_stat_table`)."""
-    table = Table(show_header=False, box=None, padding=(0, 2, 0, 0))
-    table.add_column("label")
-    table.add_column("value", justify="right")
-    return table
-
-
-def _stats_table(report: GainReport) -> Table:
-    stats = _stat_table()
-    stats.add_row("Commands processed", f"[cyan]{format_count(report.total_invocations)}[/cyan]")
-    stats.add_row("Filter hit rate", f"[cyan]{format_percentage(report.filter_hit_rate)}[/cyan]")
-    stats.add_row("Tokens before", f"[cyan]~{format_count(report.tokens_before)}[/cyan]")
-    stats.add_row("Tokens after", f"[cyan]~{format_count(report.tokens_after)}[/cyan]")
-    return stats
 
 
 def _estimated_cost_saved(tokens_saved: int) -> float:
@@ -176,23 +207,6 @@ def _cost_line(report: GainReport) -> str:
         f"[dim]Estimated cost saved: ~${cost:,.2f} "
         f"(reference: ${_REFERENCE_PRICE_PER_MILLION_INPUT_TOKENS:.2f}/M input tokens)[/dim]"
     )
-
-
-def _top_filters_table(report: GainReport) -> Table | None:
-    visible = [(name, saved) for name, saved in report.top_filters if saved > 0]
-    if not visible:
-        return None
-    table = _stat_table()
-    table.add_column("pct", justify="right")
-    denominator = report.gross_savings or report.tokens_saved
-    for name, saved in visible:
-        fraction = saved / denominator if denominator else 0.0
-        table.add_row(
-            name,
-            f"[cyan]{format_count(saved)}[/cyan]",
-            f"[dim]({format_percentage(fraction)})[/dim]",
-        )
-    return table
 
 
 def _recent_table(rows: list[RecentInvocation]) -> Table | None:
@@ -208,7 +222,7 @@ def _recent_table(rows: list[RecentInvocation]) -> Table | None:
         table.add_row(
             time_label,
             _truncate(r.command, 40),
-            r.filter_name or "[dim](passthrough)[/dim]",
+            filter_display_name(r.filter_name) if r.filter_name else "[dim](passthrough)[/dim]",
             f"{format_count(r.original_tokens)} → {format_count(r.final_tokens)}",
         )
     return table

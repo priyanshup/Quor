@@ -12,6 +12,7 @@ from typer.testing import CliRunner
 from quor.cli.commands.dashboard import (
     _estimated_cost_saved,
     _render,
+    _trend_marker,
     _truncate,
 )
 from quor.cli.main import app
@@ -100,6 +101,128 @@ class TestRender:
         )
         text = _plain(_render(db_path, tmp_path, since))
         assert "Waiting for activity" in text
+
+    def test_passthrough_row_shown_in_stats(self, tmp_path: Path) -> None:
+        """QB-091: `quor dashboard` previously omitted the Passthrough stat
+        `quor gain` already showed — regression guard against that drift,
+        now impossible since both share gain_presentation.build_stats_table()."""
+        db_path = tmp_path / "quor.db"
+        since = datetime(2026, 7, 31, 12, 0, 0, tzinfo=UTC)
+        _seed(
+            db_path,
+            tmp_path,
+            [
+                {
+                    "filter_name": None,
+                    "was_passthrough": 1,
+                    "original_tokens": 30,
+                    "final_tokens": 30,
+                    "recorded_at": since.isoformat(timespec="seconds"),
+                },
+                {
+                    "filter_name": "git",
+                    "was_passthrough": 0,
+                    "original_tokens": 100,
+                    "final_tokens": 20,
+                    "recorded_at": since.isoformat(timespec="seconds"),
+                },
+            ],
+        )
+        text = _plain(_render(db_path, tmp_path, since))
+        assert "Passthrough" in text
+
+    def test_eligible_line_shown_when_passthrough_present(self, tmp_path: Path) -> None:
+        db_path = tmp_path / "quor.db"
+        since = datetime(2026, 7, 31, 12, 0, 0, tzinfo=UTC)
+        _seed(
+            db_path,
+            tmp_path,
+            [
+                {
+                    "filter_name": None,
+                    "was_passthrough": 1,
+                    "original_tokens": 30,
+                    "final_tokens": 30,
+                    "recorded_at": since.isoformat(timespec="seconds"),
+                },
+                {
+                    "filter_name": "git",
+                    "was_passthrough": 0,
+                    "original_tokens": 100,
+                    "final_tokens": 20,
+                    "recorded_at": since.isoformat(timespec="seconds"),
+                },
+            ],
+        )
+        text = _plain(_render(db_path, tmp_path, since))
+        assert "a filter could apply to" in text
+
+    def test_low_sample_caveat_shown_for_small_session(self, tmp_path: Path) -> None:
+        db_path = tmp_path / "quor.db"
+        since = datetime(2026, 7, 31, 12, 0, 0, tzinfo=UTC)
+        _seed(db_path, tmp_path, [{"recorded_at": since.isoformat(timespec="seconds")}])
+        text = _plain(_render(db_path, tmp_path, since))
+        assert "early read" in text
+
+    def test_no_low_sample_caveat_once_stable(self, tmp_path: Path) -> None:
+        db_path = tmp_path / "quor.db"
+        since = datetime(2026, 7, 31, 12, 0, 0, tzinfo=UTC)
+        _seed(
+            db_path,
+            tmp_path,
+            [{"recorded_at": since.isoformat(timespec="seconds")} for _ in range(5)],
+        )
+        text = _plain(_render(db_path, tmp_path, since))
+        assert "early read" not in text
+
+    def test_trend_marker_appears_once_stable_with_previous_fraction(
+        self, tmp_path: Path
+    ) -> None:
+        db_path = tmp_path / "quor.db"
+        since = datetime(2026, 7, 31, 12, 0, 0, tzinfo=UTC)
+        _seed(
+            db_path,
+            tmp_path,
+            [{"recorded_at": since.isoformat(timespec="seconds")} for _ in range(5)],
+        )
+        # Default seeded rows save (100-20)/100 = 80% each; a previous
+        # fraction well above that should render a down arrow.
+        text = _plain(_render(db_path, tmp_path, since, previous_fraction=0.95))
+        assert "▼" in text
+
+    def test_no_trend_marker_on_first_render(self, tmp_path: Path) -> None:
+        db_path = tmp_path / "quor.db"
+        since = datetime(2026, 7, 31, 12, 0, 0, tzinfo=UTC)
+        _seed(
+            db_path,
+            tmp_path,
+            [{"recorded_at": since.isoformat(timespec="seconds")} for _ in range(5)],
+        )
+        text = _plain(_render(db_path, tmp_path, since))
+        assert "▼" not in text
+        assert "▲" not in text
+
+
+# ---------------------------------------------------------------------------
+# _trend_marker() — pure function
+# ---------------------------------------------------------------------------
+
+
+class TestTrendMarker:
+    def test_no_previous_returns_empty(self) -> None:
+        assert _trend_marker(0.5, None) == ""
+
+    def test_increase_shows_up_arrow(self) -> None:
+        assert "▲" in _trend_marker(0.5, 0.3)
+
+    def test_decrease_shows_down_arrow(self) -> None:
+        assert "▼" in _trend_marker(0.3, 0.5)
+
+    def test_tiny_delta_shows_flat_dot_not_arrow(self) -> None:
+        marker = _trend_marker(0.501, 0.500)
+        assert "▲" not in marker
+        assert "▼" not in marker
+        assert "·" in marker
 
 
 # ---------------------------------------------------------------------------

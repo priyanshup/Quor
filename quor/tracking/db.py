@@ -132,12 +132,27 @@ class GainReport:
     percentage purely as a function of how often they're run, not because
     real compression got worse. See query_gain()'s own comment at the
     aggregate SQL for the exact exclusion.
+
+    QB-091 (gain/dashboard UX clarity): `eligible_before` is the same kind
+    of presentation-only decomposition — `tokens_before` restricted to rows
+    where a filter actually had a chance to run (`was_passthrough = 0`),
+    among whatever's left after the QB-092 exclusion above. Passthrough
+    rows always have `original_tokens == final_tokens` (nothing ran on
+    them), so `tokens_saved / eligible_before` is the compression rate on
+    content Quor could act on, undiluted by shell commands (`ps`, `grep`,
+    ...) that were never filter candidates in the first place — a
+    different axis from QB-092's exclusion (synthesis commands that were
+    never *compression* candidates at all). This is what makes the single
+    blended `tokens_saved / tokens_before` percentage swing hard as
+    passthrough commands accumulate — both numbers are correct, they just
+    answer different questions. See quor/cli/gain_presentation.py.
     """
 
     total_invocations: int
     tokens_saved: int              # sum(original_tokens - final_tokens) — unchanged formula
     tokens_before: int             # sum(original_tokens) — for display only
     tokens_after: int              # sum(final_tokens) — for display only
+    eligible_before: int           # sum(original_tokens) over was_passthrough=0 rows only
     gross_savings: int             # sum of positive (original - final) rows only
     gross_overhead: int            # sum of positive (final - original) rows only
     negative_row_count: int        # count of rows where final_tokens > original_tokens
@@ -561,6 +576,7 @@ def query_gain(
             tokens_saved=0,
             tokens_before=0,
             tokens_after=0,
+            eligible_before=0,
             gross_savings=0,
             gross_overhead=0,
             negative_row_count=0,
@@ -659,6 +675,9 @@ def query_gain(
                  COALESCE(SUM(original_tokens - final_tokens), 0) AS saved,
                  COALESCE(SUM(original_tokens), 0)     AS before_sum,
                  COALESCE(SUM(final_tokens), 0)         AS after_sum,
+                 COALESCE(SUM(CASE WHEN was_passthrough = 0
+                                    THEN original_tokens ELSE 0 END), 0)
+                                                        AS eligible_before_sum,
                  COALESCE(SUM(CASE WHEN original_tokens - final_tokens > 0
                                     THEN original_tokens - final_tokens ELSE 0 END), 0)
                                                         AS gross_savings,
@@ -682,6 +701,7 @@ def query_gain(
         saved = int(row["saved"])
         tokens_before = int(row["before_sum"])
         tokens_after = int(row["after_sum"])
+        eligible_before = int(row["eligible_before_sum"])
         gross_savings = int(row["gross_savings"])
         gross_overhead = int(row["gross_overhead"])
         negative_row_count = int(row["negative_rows"])
@@ -726,6 +746,7 @@ def query_gain(
         tokens_saved=saved,
         tokens_before=tokens_before,
         tokens_after=tokens_after,
+        eligible_before=eligible_before,
         gross_savings=gross_savings,
         gross_overhead=gross_overhead,
         negative_row_count=negative_row_count,

@@ -6499,7 +6499,8 @@ net-zero contribution); no new `GainReport` field or second "eligible" percentag
 presentation-layer fix along those lines was already drafted independently on an unmerged branch
 for a related-but-distinct passthrough-dilution problem — `ps`/`grep`/one-line `git diff`s with no
 filter at all — and was intentionally left alone rather than reconciled here, at the project
-owner's explicit direction to patch `main` standalone); no config toggle (ANTI_GOALS.md #14).
+owner's explicit direction to patch `main` standalone; see QB-091 immediately below, which merges
+that branch and reconciles the two); no config toggle (ANTI_GOALS.md #14).
 
 **Testing:** `tests/unit/test_tracking.py`'s new `TestQueryGainExcludesSynthesisRows` class — a
 large `quor map` row no longer dilutes a real filter's percentage (the exact reported scenario),
@@ -6511,6 +6512,104 @@ self-timeout).
 
 **Files changed:** `quor/tracking/db.py` (`SYNTHESIS_FILTER_LABELS` + `query_gain()` exclusion +
 `GainReport` docstring), `tests/unit/test_tracking.py` (new `TestQueryGainExcludesSynthesisRows`).
+
+</details>
+
+---
+
+#### QB-091 — `quor gain`/`quor dashboard` UX clarity pass
+
+**Effort:** Medium · **Value:** High · **Risk:** Low · **Category:** UX
+
+**Status:** Implemented (2026-07-31). Developed in parallel with QB-092 on a separate branch, per
+the project owner's explicit direction to patch `main` standalone for QB-092 first; merged and
+reconciled with QB-092 afterward (both touch `query_gain()`'s aggregate SQL, on genuinely disjoint
+lines — QB-092 excludes synthesis rows from every SUM(), QB-091 adds a further eligible/passthrough
+split among whatever's left — so the two compose cleanly with no logic conflict).
+
+<details>
+<summary>Technical details</summary>
+
+**The problem this closes:** a real user watched `quor gain`'s headline percentage read 87% after
+a couple of commands, then 7% after ~45 — and reasonably assumed something was broken. It wasn't:
+the percentage is a running aggregate (`tokens_saved / tokens_before` across every recorded
+command), not a per-command score. One large compressible read early in a session dominates a
+small sample; as more commands run — many of them shell output (`ps`, `grep`, `kill`) with no
+filter to apply to it at all — the same absolute savings gets divided by a much bigger denominator.
+Both readings were arithmetically correct the whole time; nothing in the UI said so. Raised
+directly by the project owner via a product-design review of `quor gain`/`quor dashboard`, which
+also asked, item by item, whether each number/label/word actually earns its place — this entry is
+the resulting punch list, all bundled into one branch/PR at the owner's explicit direction (a
+deliberate, one-time exception to "one backlog item per branch").
+
+**Nine items reviewed, eight implemented (the ninth — command/help-panel naming — was judged
+already good and left alone):**
+
+1. **`quor dashboard` now shows "Passthrough"** — it silently omitted the exact stat `quor gain`
+   already showed, purely because each command kept its own copy of the stats-table code. Fixed
+   structurally, not by patching the omission: both commands now call one shared builder
+   (`gain_presentation.build_stats_table()`), so this class of drift can't recur.
+2. **A second, narrower compression figure** for when part of a session was passthrough commands:
+   `eligible_compression_line()` reports `tokens_saved / eligible_before` (a new `GainReport` field
+   — `original_tokens` summed over `was_passthrough = 0` rows only), i.e. compression on just the
+   content a filter could actually touch, alongside the existing blended headline. This is the
+   direct fix for the 87%→7% swing: both numbers are shown, clearly scoped, instead of one blended
+   number doing double duty. Omitted when there's no passthrough activity to disambiguate.
+3. **A sample-size caveat below `LOW_SAMPLE_THRESHOLD` (5 commands)** — `low_sample_caveat()`
+   appends "early read (N commands) — this settles as more commands run" rather than presenting a
+   2-command reading with the same visual confidence as a 45-command one. Additive only (the
+   `"~80 tokens (80%)"` shape is untouched), so it never hides the underlying number.
+4. **Internal filter ids translated to user-facing labels** — `filter_display_name()` covers only
+   the generic `cat`/`cat-<language>` family (an implementation detail: "read + AST-aware-compress
+   this file type") plus `generic`/`document-text`. Deliberately *not* a full rename pass: most
+   filter names (`pytest`, `eslint`, `docker`, `git-diff`, ~100 others) already are the exact tool
+   name this audience would type and need no translation — renaming those would have been
+   busywork, not clarity.
+5. **First-run framing** — folded into item 3 (`low_sample_caveat()`); no separate mechanism needed.
+6. **A live trend marker in `quor dashboard`** (▲/▼/·) next to the headline percentage, comparing
+   each refresh tick to the previous one — so a number that visibly moves between two glances at
+   the live view reads as expected motion, not a surprise. `_trend_marker()` treats sub-0.5-point
+   deltas as flat (a `·`) to avoid jitter noise. Dashboard-only: `quor gain` is a single snapshot
+   with no "previous tick" to compare against, so no trend marker there. Suppressed during the
+   item-3 caveat window (arrow motion on a reading already labeled "too early to trust" would just
+   compound the noise it exists to reduce).
+7. **A README FAQ line** answering "why did my percentage swing a lot," in plain language, right
+   after "The Numbers" — since this is now a known, recurring point of confusion, not just this
+   one user's experience.
+8. **Cross-reference note between the two windows** — `quor dashboard`'s footer now states it's
+   session-only and points to `quor gain` for a longer view, since comparing the two without
+   knowing they cover different windows is its own source of "these numbers don't match" confusion.
+9. **Command naming / `--help` panel structure** — reviewed, left unchanged. Panel grouping
+   (Installation/Analysis/Utilities), one-line descriptions, and command names (`gain`, `dashboard`,
+   `explain`, `doctor`) were judged already clear and jargon-free; no action taken.
+
+**Deliberately not built:** a `quor config`-style toggle for any of this (ANTI_GOALS.md #14); any
+change to what gets *computed* — `tokens_saved`, `gross_savings`/`gross_overhead`, and
+`filter_hit_rate` are all unchanged formulas, this is presentation-only, same discipline
+`quor/cli/format_utils.py` already follows; a full rename table for all ~110 filter ids (see item 4
+above — most need no translation, and inventing display names for well-known tool names would be
+noise, not clarity).
+
+**New module:** `quor/cli/gain_presentation.py` — shared presentation logic between `quor gain` and
+`quor dashboard` (stats table, top-filters table, filter-name translation, low-sample caveat,
+eligible-compression line). Both commands previously kept separate copies of the same rendering
+code; centralizing it is what makes item 1's fix structural rather than a one-off patch.
+
+**Testing:** `tests/unit/test_gain_presentation.py` (new — direct unit tests for every helper in the
+new shared module); `tests/unit/test_tracking.py` (new `eligible_before` tests: excludes passthrough
+rows, zero when all-passthrough, zero on empty DB); `tests/unit/test_dashboard.py` (Passthrough row
+present, eligible line shown/omitted correctly, low-sample caveat shown/absent at the threshold,
+trend marker shown once stable / absent on first render, plus a new `_trend_marker()` unit-test
+class); `tests/unit/test_cli.py` (`TestGain`: low-sample caveat, eligible line shown/omitted,
+`cat-python` → "Python file read" translation). Full gate: `ruff check quor/ tests/` clean; `mypy
+quor/` clean; full `pytest tests/unit/` and `pytest tests/integration/ -m integration` green; `quor
+verify` unchanged; benchmark suite unchanged (no compression logic touched — this is presentation
+only, per GainReport's own QB-017/QB-091 docstring discipline).
+
+**Files changed:** `quor/cli/gain_presentation.py` (new), `quor/tracking/db.py` (`GainReport.
+eligible_before` + SQL aggregate), `quor/cli/commands/gain.py`, `quor/cli/commands/dashboard.py`,
+`README.md`, `tests/unit/test_gain_presentation.py` (new), `tests/unit/test_tracking.py`, `tests/
+unit/test_dashboard.py`, `tests/unit/test_cli.py`.
 
 </details>
 

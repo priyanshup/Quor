@@ -33,6 +33,12 @@ from rich.console import Console
 from rich.table import Table
 
 from quor.cli.format_utils import format_count, format_percentage
+from quor.cli.gain_presentation import (
+    build_stats_table,
+    build_top_filters_table,
+    eligible_compression_line,
+    low_sample_caveat,
+)
 from quor.config.loader import load_user_config
 from quor.tracking.db import GainReport, query_gain
 
@@ -101,14 +107,6 @@ def _print_header(report: GainReport, *, project_path: Path, mode: str) -> None:
             "the compression numbers below always reflect real, applied "
             "compression regardless of mode)[/dim]"
         )
-
-
-def _stat_table() -> Table:
-    """A borderless, headerless two-column table: label left, value right."""
-    table = Table(show_header=False, box=None, padding=(0, 2, 0, 0))
-    table.add_column("label")
-    table.add_column("value", justify="right")
-    return table
 
 
 def _print_report(report: GainReport) -> None:
@@ -183,7 +181,9 @@ def _print_headline(report: GainReport) -> None:
     same headline, not a distinct statistic.
     """
     if report.negative_row_count > 0:
-        breakdown = _stat_table()
+        breakdown = Table(show_header=False, box=None, padding=(0, 2, 0, 0))
+        breakdown.add_column("label")
+        breakdown.add_column("value", justify="right")
         breakdown.add_row(
             "Compression achieved", f"[cyan]~{format_count(report.gross_savings)} tokens[/cyan]"
         )
@@ -197,18 +197,28 @@ def _print_headline(report: GainReport) -> None:
     saved_fraction = (
         report.tokens_saved / report.tokens_before if report.tokens_before else 0.0
     )
+    caveat = low_sample_caveat(report)
     if report.tokens_saved < 0:
         # Bold "YOU SAVED -12 tokens" would read as a bug even though it
         # isn't one — styled and worded as a net figure instead of a win.
         console.print(
             f"[bold]NET TOKENS[/bold]   [bold yellow]~{format_count(report.tokens_saved)} "
-            f"tokens ({format_percentage(saved_fraction)})[/bold yellow]"
+            f"tokens ({format_percentage(saved_fraction)})[/bold yellow]{caveat}"
         )
     else:
         console.print(
             f"[bold]YOU SAVED[/bold]   [bold green]~{format_count(report.tokens_saved)} "
-            f"tokens ({format_percentage(saved_fraction)})[/bold green]"
+            f"tokens ({format_percentage(saved_fraction)})[/bold green]{caveat}"
         )
+    # QB-091: a second, narrower figure for when part of the window was
+    # commands a filter could never have applied to (shell output like
+    # `ps`/`grep`) — the blended headline above answers "how much of my
+    # total traffic shrank," this answers "how good is compression on
+    # what could actually be compressed." Omitted when there's nothing to
+    # disambiguate (see eligible_compression_line()'s own docstring).
+    eligible_line = eligible_compression_line(report)
+    if eligible_line is not None:
+        console.print(eligible_line)
     console.print()
 
 
@@ -216,38 +226,23 @@ def _print_stats(report: GainReport) -> None:
     """Every secondary number in one compact table instead of three stacked
     ones — faster to scan, same figures. Values share one consistent
     style (bold cyan) so the eye reads "this column is numbers" at a
-    glance; only the headline above earns the celebratory green/yellow."""
-    stats = _stat_table()
-    stats.add_row("Commands processed", f"[cyan]{format_count(report.total_invocations)}[/cyan]")
-    stats.add_row("Filter hit rate", f"[cyan]{format_percentage(report.filter_hit_rate)}[/cyan]")
-    stats.add_row("Passthrough", f"[cyan]{format_count(report.passthrough_count)}[/cyan]")
-    stats.add_row("Tokens before", f"[cyan]~{format_count(report.tokens_before)}[/cyan]")
-    stats.add_row("Tokens after", f"[cyan]~{format_count(report.tokens_after)}[/cyan]")
-    console.print(stats)
+    glance; only the headline above earns the celebratory green/yellow.
+    Shared with `quor dashboard` via gain_presentation.build_stats_table()
+    (QB-091) so the two views can't silently drift apart."""
+    console.print(build_stats_table(report))
     console.print()
 
 
 def _print_top_savings(report: GainReport) -> None:
-    visible_filters = [(name, saved) for name, saved in report.top_filters if saved > 0]
-    if not visible_filters:
+    """Shared with `quor dashboard` via
+    gain_presentation.build_top_filters_table() (QB-091), which also
+    translates internal filter ids (`cat-python`) into user-facing labels
+    (`Python file read`)."""
+    table = build_top_filters_table(report)
+    if table is None:
         return
-
     console.print("[bold]Top savings[/bold]")
-    filters_table = _stat_table()
-    filters_table.add_column("pct", justify="right")
-    # Percentage of *genuine compression achieved* (gross_savings), not
-    # of the net figure — net can be small or negative even when real
-    # per-filter savings are large (QB-017: overhead elsewhere shouldn't
-    # make an unrelated filter's own contribution look distorted).
-    denominator = report.gross_savings or report.tokens_saved
-    for name, saved in visible_filters:
-        filter_fraction = saved / denominator if denominator else 0.0
-        filters_table.add_row(
-            name,
-            f"[cyan]{format_count(saved)}[/cyan]",
-            f"[dim]({format_percentage(filter_fraction)})[/dim]",
-        )
-    console.print(filters_table)
+    console.print(table)
     console.print()
 
 
