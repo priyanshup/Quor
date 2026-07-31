@@ -584,13 +584,21 @@ today.
   "this file's diff is 4,000 lines of generated noise" case and represent it as a one-line summary
   plus the tee recovery link (QB-013) — the file changed, here's proof, here's how to see the rest.
 
-**Status:** Proposed. Not scoped or implemented. Depends conceptually on QB-039 (Balanced/Aggressive
-modes) for the second and third ideas above — the first idea (less context from git itself) doesn't,
-and could ship independently and sooner. A thin slice of QB-047 (more git-diff benchmark samples,
-today only 2) should land alongside this item so it has a real regression baseline before/after,
-not just this project's own `quor gain` numbers. **See QB-055, directly below, for the worked-out
-algorithm design covering the second and third ideas above** — added 2026-07-15 at product-owner
-request so "compress diffs more" has a concrete, safety-constrained mechanism instead of a sketch.
+**Status — corrected 2026-07-31 (housekeeping):** this line previously read "Proposed. Not scoped or
+implemented," which was stale — idea 1 shipped 2026-07-15 and was never reflected here, the same
+class of staleness QB-046's own correction note describes. **Idea 1 (collapse unchanged context lines
+more aggressively) is done**: the `collapse_unchanged_context` stage
+(`quor/pipeline/stages/collapse_unchanged_context.py`), wired into `git-diff`
+(`quor/filters/builtin/git.toml`), 8 inline filter tests plus unit coverage in
+`tests/unit/test_stages.py` (commit `9a31765`). The `preserve_patterns` bug fix documented below also
+shipped the same day (commit `669e1db`). **Idea 2** (summarize a diff's repeated shape across files)
+**and idea 3** (huge-diff/generated-noise one-line summary + tee link) **remain unimplemented** — idea
+2 still depends on QB-039 (Balanced/Aggressive mode) for the general case; a 2026-07-31 investigation
+([QB-093](#qb-093--investigation-cross-file-repeated-edit-deduplication-for-git-diffs-smart-diff))
+found a narrower, safety-legitimate path for one slice of idea 2 but left it evidence-gated, not
+scheduled. Idea 3 has no code at all yet. **See QB-055, directly below, for the worked-out
+algorithm design covering ideas 2 and 3** — added 2026-07-15 at product-owner request so "compress
+diffs more" has a concrete, safety-constrained mechanism instead of a sketch.
 
 **Fix update (2026-07-15) — over-broad `preserve_patterns` bug found via the 12-case corpus (QB-047
 slice already landed):** with QB-055's `collapse_unchanged_context` in place, per-line token tracing
@@ -806,10 +814,20 @@ design are different kinds of work with different review needs.
 - Needs its own benchmark cases before/after (ties directly to QB-047's git-diff corpus slice) so
   "smarter" is measured, not assumed.
 
-**Status:** Proposed. Not scoped or implemented. Added 2026-07-15 at product-owner request during
-the QB-051 roadmap review, positioned immediately after QB-041 (same initiative) and explicitly
-ahead of QB-053 (adaptive compression) — this is concrete, scoped algorithm work, not the more
-architecturally speculative self-tuning QB-053 describes.
+**Status — corrected 2026-07-31 (housekeeping):** this line previously read "Proposed. Not scoped or
+implemented," which was stale. **The "collapse unchanged context" mechanism, including this item's
+own token-cost-based collapse decision (superseding an earlier line-count `min_collapse` heuristic),
+shipped 2026-07-15** (`quor/pipeline/stages/collapse_unchanged_context.py`, commits `9a31765` and
+`b76db70`). **"Collapse repetitive hunks" (the idea covered by this entry's own "Open design
+questions" above) remains unimplemented** — a 2026-07-31 investigation
+([QB-093](#qb-093--investigation-cross-file-repeated-edit-deduplication-for-git-diffs-smart-diff))
+picked up that specific open question, found a safety-legitimate path for a narrow slice of it, and
+left it evidence-gated pending real usage data rather than scheduling it. "Summarize huge unchanged
+regions" (the lockfile/generated-noise case, shared with QB-041's idea 3) also remains unimplemented,
+no code written. Originally added 2026-07-15 at product-owner request during the QB-051 roadmap
+review, positioned immediately after QB-041 (same initiative) and explicitly ahead of QB-053
+(adaptive compression) — this is concrete, scoped algorithm work, not the more architecturally
+speculative self-tuning QB-053 describes.
 
 </details>
 
@@ -1787,6 +1805,180 @@ pre-existing `CONTENT_INTERCEPT` gap.
 </details>
 
 ---
+
+#### QB-093 — Investigation: cross-file repeated-edit deduplication for git diffs ("Smart Diff")
+
+**Effort:** Medium (if built) · **Value:** Uncertain — plausibly High for a narrow workload, near-zero
+for typical usage · **Risk:** Low (mechanism), Medium (unresolved partial-hunk design questions) ·
+**Expected token impact:** Unmeasured — no real-usage or benchmark evidence exists yet (see below) ·
+**Category:** Investigation (no implementation)
+
+**Investigation only, 2026-07-31, at product-owner request. No code written.** Question: can Quor
+deterministically collapse the case where the *same* edit is applied identically across many files
+in one diff — e.g. renaming `Foo`→`Bar` in 48 files, or adding the same import line to 67 files —
+into "here's the edit once, here's every file it also happened in," instead of repeating the full
+edit per file? Must stay fully deterministic: no LLM, no embeddings, no fuzzy matching, no change to
+semantic meaning. This is [QB-041](#qb-041--smarter-diff--delta-compression-git-diffshow-patches)'s
+own "idea 2" ("summarize a diff's own repeated shape") and
+[QB-055](#qb-055--smarter-diff-semantics-context-aware-hunk-compression)'s "collapse repeated hunks"
+— both already on record concluding this "cannot be done" under `ADR-031`'s "PROTECT is absolute"
+rule, since collapsing a repeated hunk means removing `+`/`-` lines, which no stage may do once
+they're PROTECTed. This investigation revisits that conclusion specifically, rather than taking it
+as settled, at product-owner request.
+
+<details>
+<summary>Technical details</summary>
+
+**Finding 1 — the "cannot be done" conclusion was too broad; a safe path exists for one specific
+case.** `ADR-031` forbids *downgrading or rewriting a line already marked PROTECT*. It does not
+forbid a stage from acting *earlier* than the stage that assigns PROTECT in the first place —
+`collapse_unchanged_context` and `group_repeated` already rely on exactly this ordering property
+today (both only ever touch lines still marked plain KEEP, and both are documented in `mask.py` as
+sanctioned exceptions allowed to rewrite one line per collapsed run). A cross-file dedup stage could
+do the same: run *before* `strip_lines` in `git-diff`'s stage chain (`quor/filters/builtin/git.toml`),
+while every diff line is still undecided KEEP text, and decide there whether an edit is a duplicate
+of one already shown. Nothing already-PROTECTed is ever touched — the mechanism is architecturally
+legitimate under the existing rules, not a new exception to them.
+
+**Finding 2 — real, working prior art exists, and it's exactly the deterministic approach the ticket
+asks for.** [CleverDiff](https://pypi.org/project/cleverdiff/) (PyPI, unrelated to AI tooling — built
+for comparing config-file variants) already solves this: it diffs each file pair, then groups
+*edit bodies* (the removed/added line sequences, not the surrounding context) by exact text
+equality, printing each unique edit once with a list of every other location — including the
+"same diff but different line numbers" case — where it recurred. No fuzzy matching, no semantic
+interpretation, just exact string equality after ignoring line-number position (which is bookkeeping,
+not content). This is confirmation, not just a hunch, that the target scenario is a solved problem in
+a non-AI context using pure determinism. Git's own rename detection (`-M`, `similarity index`) is a
+*similarity-threshold heuristic* (pairwise, O(candidates²), already flagged by Git's own docs as
+expensive enough to need candidate pre-filtering) — a different, fuzzier, more expensive technique
+than exact-match grouping; not a model for this feature, more a cautionary contrast (exact match is
+both safer and cheaper).
+
+**Finding 3 — no current AI-coding-agent competitor does this.** Checked Headroom AI (general
+`ContentRouter`-based compression, no diff-specific cross-file logic found), Aider (repo-map graph
+ranking, not diff compression), Claude Code and OpenAI Codex CLI (rely on provider-side/server
+compaction — non-deterministic, not comparable), Gemini CLI (relies on a large context window instead
+of compression), and `squeez` (a closer direct competitor — same "hook-based token compressor across
+AI CLI hosts" category as Quor). `squeez` does cross-*call* dedup (hashing whole command outputs
+against the last 16 calls) and same-line-repeated-≥3-times collapsing *within* one output, but its
+own docs confirm no cross-file/hunk pattern extraction within a single diff — `git_diff_max_lines`
+is its only diff-specific handling, plain truncation. This would be a genuine differentiator, not a
+catch-up feature.
+
+**Finding 4 — this is new infrastructure, not an extension of anything that exists.** Verified
+exhaustively (grep across `quor/`, all filters, all stages, `repo_profile/`, all tests): nothing in
+the codebase today parses a multi-file diff into file/hunk boundaries. `content_type.py`'s
+`_DIFF_HEADER_RE` only *detects* "this blob is a diff" (one boolean `re.search`), never enumerates
+boundaries. `mask.lines` is one flat sequence with no file-index metadata. `deduplicate_consecutive`
+and `structured_data_summarize` both operate on a single undifferentiated line stream, no notion of
+"which file." No `unidiff`/`whatthepatch`/`difflib` dependency exists anywhere in `quor/`. Repo
+intelligence (`quor/pipeline/repo_profile/`, QB-072) has the *closest*-sounding capability — rename
+detection — but it works by content-hashing two `walk_repository()` file-list snapshots
+(`intel_diff.py`), never by parsing `git diff`'s own text output; it's also explicitly documented
+(`repo_profile/__init__.py`) as "a parallel capability sitting beside the ContentMask pipeline, not
+inside it," with a *full-repo-recompute* lifecycle (`intel.py`'s own stated design principle: "no
+sound way to recompute just the part affected by file X") that's the opposite of what a
+single-invocation streaming diff stage needs. It is also, per QB-092, unconditionally classified as
+"synthesis, not compression" for `quor gain` accounting — placing a diff-compression feature there
+would misreport its own savings. **Conclusion: repo-intel is the wrong home; this belongs as a new
+built-in `StageHandler`, positioned first (before `strip_lines`) in `git-diff`'s own stage chain,**
+exactly like `collapse_unchanged_context` already is positioned second.
+
+**Candidate algorithm (recommended if this is ever built):** Segment the diff (re-scanning line text
+for `^diff --git `/`^@@ ` boundaries, the same regex primitive `content_type.py` already uses for
+detection, generalized into a real splitter) into per-file segments, then per-file hunks, then
+"edit-chunks" (maximal contiguous runs of `-`/`+` lines within a hunk, i.e. one coherent
+removed/added block, ignoring surrounding context). Hash each edit-chunk's exact line-text sequence.
+**v1 scope, recommended:** only collapse a file whose *entire* diff consists of nothing but one
+edit-chunk shape already seen in an earlier file (the "whole-file-degenerate" case — exactly the
+ticket's own two motivating examples: a one-line rename or one added import line, repeated file after
+file). Keep the first occurrence's full file segment untouched; replace every subsequent matching
+file's entire segment with a shared one-line summary plus its filename, appended to a running list
+("same edit also applied identically in: `file2.py`, `file3.py`, ... " — truncated with a count past
+some length, same instinct as `collapse_unchanged_context`'s window). A file with the repeated edit
+*plus* other unique edits (the "partial-hunk" case) is explicitly **out of v1 scope** — collapsing
+part of a file's diff while keeping the rest raises real, unresolved questions (does the file still
+need its own header shown? does a partial match count at all?) that don't have a safe default yet;
+flagging this as an open design question rather than resolving it here, matching how QB-055 already
+flags open questions rather than forcing answers.
+
+**Recovery link:** no new work needed — `quor/pipeline/tee.py` (ADR-023) already writes the full raw
+output content-addressed and the dispatcher (`quor/adapters/dispatcher.py::_apply_tee`) already
+appends a `[full output: <path>]` footer automatically whenever compressed output differs from raw
+output, which a dedup this aggressive certainly would.
+
+**Alternatives considered and rejected:**
+- *Natural-language transformation summaries* ("renamed `Foo` to `Bar` across 48 files," per the
+  ticket's own "transformation summaries" option) — rejected for v1. Requires an interpretive layer
+  on top of exact matching (labeling *what kind* of edit occurred) that adds real surface area for a
+  misleading label, for no informational gain over showing the one kept instance verbatim — a reader
+  can already see it's a rename.
+- *Edit-script / structural delta encoding against a baseline* — rejected. Reframes this as "diff of
+  diffs," effectively building a second diffing engine on top of git's own; disproportionate
+  complexity for the same target scenario the simpler exact-chunk-grouping approach already covers.
+- *Patch normalization (whitespace/formatting-insensitive matching)* — rejected. Any normalization
+  beyond ignoring position headers risks conflating a whitespace-sensitive edit with a materially
+  different one, and edges toward the "fuzzy matching" the investigation was explicitly told to avoid.
+
+**Complexity:** a single linear pass to segment + hash edit-chunks (O(n) in diff lines), dict-based
+grouping (O(n) amortized) — no pairwise comparison needed, a real advantage over similarity-based
+approaches (git's own rename detection is O(candidates²) before its own pre-filtering).
+
+**Safety / failure modes (per the ticket's own list):** slightly-different edits never match (exact
+hash equality naturally rejects any single-character difference, no special-casing needed);
+contextual differences between recurrences are preserved in spirit, not erased — every location the
+edit occurred is still enumerated by filename, only the redundant repetition of identical line text
+is removed (lossless-with-provenance, the same class of guarantee `group_repeated`/
+`deduplicate_consecutive` already give for repeated lines elsewhere, not a budget-driven drop like
+`max_tokens`'s PROTECT-respecting-but-lossy behavior); conflict markers should be excluded from
+matching entirely (rare, always high-stakes, mirrors git-status's existing `CONFLICT`/`Unmerged`
+caution); partial renames are unaffected since git's own `similarity index`/`rename from`/`rename to`
+metadata (already unconditionally preserved by `git.toml`) operates at a different layer entirely;
+mixed hunks are handled by v1's own scope limit (only whole-file-degenerate matches collapse, so a
+"mostly unique, partly repeated" hunk is simply never touched).
+
+**Expected benefit — genuinely unmeasured, stated plainly rather than guessed:**
+- **No prior backlog or `docs/archive/` research anywhere mentions this scenario** beyond QB-041/
+  QB-055's own "cannot be done" line — confirmed via exhaustive grep (`"rename"`, `"48 files"`,
+  `"repeated hunk"`, `"cross-file"`, `"monorepo"`).
+- **The existing 12-case git-diff benchmark corpus has no case resembling this scenario.** Even the
+  one case with "many files" in its name (`git-diff-large-refactor-many-files`,
+  `004_large_refactor_many_files.txt`) has only 6 files, each with a *distinct* edit — verified
+  directly.
+- **Real usage evidence (`quor.db`, this project's own live tracking DB) does not support or refute
+  this at any useful scale.** Only 9 `git-diff`-filtered invocations exist in the entire DB (267 rows
+  total, ~8 hours of one developer's solo local use, one repo); 6 of the 9 are `--stat`/`--name-only`
+  (no per-file hunks at all); the remaining 2 full-content diffs are single-commit `git show` calls,
+  neither resembling a many-files-identical-edit pattern. The tracking schema has no files-changed
+  column at all, so this couldn't be measured even with more data as-is.
+- Illustrative-only math, clearly not a measurement: a 48-file identical one-line rename, ~8 lines
+  per file's hunk (header + context + edit), is ~384 lines raw; collapsed under v1's scope to one
+  full first-occurrence hunk (~8 lines) plus a summary line plus 47 filenames — order-of-magnitude
+  reduction *on that specific diff*, but the honest open question is how often that specific diff
+  shape occurs for real Quor users at all, which nothing in this repository currently measures.
+
+**Benchmarks required before this could ever be evidence-justified (not built as part of this
+investigation):** two new hand-authored cases in `tests/benchmarks/samples/git-diff/` — a
+48-file identical rename and a 67-file identical import addition — plus matching `[[case]]` entries
+in `tests/benchmarks/manifest.toml` (purely additive; no runner/report code changes needed per the
+manifest's own design). These would prove the *mechanism's* ceiling on synthetic data; they still
+would not answer the *frequency* question above.
+
+**Recommendation:** neither "build now" nor "reject" — the mechanism is sound, safe, deterministic,
+and has real non-AI prior art (CleverDiff) proving exact-match grouping works; but building it today
+would mean shipping meaningful new parsing infrastructure with zero evidence — not benchmark, not
+real-usage — that the triggering scenario (many files, one identical edit) occurs with any frequency
+for Quor's actual users. That's the inverse of how QB-041's own "idea 1" got prioritized: it was
+promoted specifically *because* `quor gain` showed real measured volume first. This item should stay
+evidence-gated: (1) extend [QB-054](#qb-054--telemetry-driven-optimization-operationalize-the-tracking-db-as-continuous-feedback)'s
+tracking-DB work to record a files-changed count for `git-diff` invocations, since the current schema
+can't measure this at all; (2) add the two synthetic benchmark cases above regardless, cheaply, to
+have the mechanism's ceiling on record; (3) only schedule real implementation once (1) shows this
+pattern actually recurs for real users. Recorded here, evidence-gated, rather than in
+[Research](#research) — this isn't a determinism-trading idea like the R-0x items below, it's a fully
+deterministic, safe design with an open frequency question, a different kind of "not yet."
+
+</details>
 
 ---
 

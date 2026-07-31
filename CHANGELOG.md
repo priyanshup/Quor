@@ -5,6 +5,22 @@ All notable changes to Quor are documented here. Format loosely follows
 
 ## [0.5.0] — 2026-07-31
 
+- **Added: collapse long unchanged context runs in `git diff`/`git show` output (QB-041, QB-055).**
+  `git-diff.toml`'s `preserve_patterns` protects every `+`/`-`/`@@` line by design (ADR-031) — correct,
+  but it left long runs of ordinary unchanged context lines uncompressed on large diffs, with nothing
+  done about it. New `collapse_unchanged_context` stage
+  (`quor/pipeline/stages/collapse_unchanged_context.py`), wired into `git-diff` right after
+  `strip_lines`: keeps a small window of context immediately adjacent to each edit/protected
+  boundary and collapses the middle of the run to a placeholder, deciding whether to collapse at
+  all by comparing estimated token cost (the middle's vs. the placeholder's) rather than a fixed
+  line-count threshold, so it doesn't fire needlessly on long runs of short lines or skip short
+  runs of token-dense ones. Also fixed a bug this work surfaced in the same file: `preserve_patterns`
+  included bare `'conflict'`/`'Error'` substring
+  matches that never protected a real conflict marker or tool-emitted error line (both are already
+  `+`/`-`-prefixed and covered by `^\+`/`^-`), but did force-protect ordinary context lines merely
+  mentioning an `Error`-suffixed identifier (`ValueError`, etc.), fragmenting otherwise-collapsible
+  runs around them. Removed both patterns. Measured on the 12-case git-diff benchmark corpus:
+  17.1%→18.5% category compression (+97 tokens), 4 cases improved, 0 regressions.
 - **Added: cross-platform Gemini hook launcher (QB-083).** `quor init --agent gemini` only ever
   generated a PowerShell (`.ps1`) launcher — correct on Windows, but a silent "command not found"
   failure on macOS/Linux, since neither `powershell` nor `pwsh` exists there by default. The same
