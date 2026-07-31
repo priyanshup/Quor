@@ -510,14 +510,97 @@ here rather than silently worked around.
 #### QB-097 — Numeric range compression
 
 **Effort:** Small · **Value:** Medium · **Risk:** Low · **Expected token impact:** Small but free ·
-**Category:** Enhancement
+**Category:** Feature (new compression stage)
 
-Render a `group_repeated` location-normalized summary's consecutive/near-consecutive integer
-locations as a range (`lines 12-18`) instead of listing each one — a small, self-contained rendering
-improvement to `_location_summary_line` in `group_repeated.py`, not a new stage.
+**Status:** Implemented (2026-07-31), branch `feature/qb-097-numeric-range-compression`. Not
+committed — presented for review per this item's own instructions.
 
-**Status:** Proposed 2026-07-31 (compression-technique research pass), queued directly behind
-QB-095/QB-096, ahead of QB-098.
+<details>
+<summary>Technical details</summary>
+
+**Scope superseded this entry's original placeholder.** The proposal line above (kept for history)
+scoped this as a rendering tweak to `group_repeated`'s `_location_summary_line` — that only reaches
+comma-joined locations already embedded inside one summary line, never the actual reported shape
+(standalone integer lines scattered directly in tool output: line-number listings, coverage/warning/
+test/issue IDs, log sequence numbers). The full spec this item actually shipped against explicitly
+authorized creating a new stage if warranted ("If a new stage is warranted, create one"), so this is
+implemented as **`numeric_range_compression`**, a new stage, not a `group_repeated` change.
+
+**Design:** a run of consecutive KEEP lines that are each *nothing but* an integer (`^\d+$`, matched
+with the stdlib `re` module — a hardcoded, non-user-configurable pattern, same convention
+`remove_ansi` uses) folds to one `start-end` line when doing so is strictly cheaper by the same
+QB-055 token-cost comparison every collapsing stage in this document uses. No `patterns` config,
+unlike `path_prefix_fold`/`group_repeated`: "the whole line is only digits" is a precise structural
+fact, not a shape guess, so there is nothing for a filter author to declare. Rendering reuses
+`group_repeated`'s/`collapse_unchanged_context`'s existing mask.py exception (rewrite the run's first
+line, `COMPRESS` the rest) rather than `path_prefix_fold`'s "insert a header" one — a range fully
+replaces the run, so total line count is unchanged and no new mask.py exception category was needed.
+Wired into `z_generic.toml`, after `path_prefix_fold` (so a numeric suffix `path_prefix_fold` just
+produced, e.g. `run/42`/`run/43` → header + `42`/`43`, is itself foldable) and before `max_tokens`
+(same reasoning `path_prefix_fold` already documents there).
+
+**Design decisions:**
+- **Standalone numeric lines only, not `"Line 101"`.** Merging a constant prefix with a varying
+  numeric suffix is a different problem (re-implements `path_prefix_fold`'s shared-prefix logic on a
+  trailing, not `separator`-delimited, boundary) — out of scope; flagged as a possible follow-up.
+- **Negative numbers are explicitly rejected, not merged.** `-` is this stage's own range separator,
+  so `-5` through `-1` rendered as `-5--1` would be genuinely ambiguous to read left to right. A
+  negative line simply never matches the (sign-less) integer pattern, so it's always an isolated KEEP
+  line — covered by `test_negative_numbers_never_merge`.
+- **Ascending-by-exactly-1 only.** Duplicates (`12, 12, 13`) and descending runs (`5, 4, 3`) never
+  merge — consistent with "never reorder data" / "never merge non-consecutive values". Covered by
+  `test_descending_numbers_never_merge` / `test_duplicate_numbers_never_merge`.
+- **Leading-zero fidelity via one uniform-width rule.** A run only merges lines that all share the
+  same string length as the run's first entry. This single rule both preserves zero-padding exactly
+  (`"001"/"002"/"003"` → `"001-003"`, and zero-padding each integer in `[1, 3]` to width 3 reproduces
+  every original line byte-for-byte) and conservatively declines some safe, unpadded, width-crossing
+  runs (`"9"/"10"/"11"` never merge) — a deliberate trade of a small amount of missed compression for
+  one simple, easy-to-verify invariant instead of two separate padded/unpadded code paths. A future
+  item could special-case the unpadded case; not attempted here.
+- **A real inconsistency in this item's own worked examples, resolved in favor of the explicit gate
+  rule.** Two equal-width lines joined with `-` (`"12-13"`) are, by construction, always *exactly* as
+  many characters as the same two lines joined by `\n` (`"12\n13"`) — `-` and `\n` are both one
+  character — so a same-width 2-line run can never be *strictly* cheaper under any length-based token
+  estimate, only tie. This item's own spec states elsewhere, twice, that a tie must never compress
+  ("never compress if the savings are zero"; "must only fire when strictly cheaper"), which makes two
+  of its own worked examples (a `12`/`13` pair, and the `14`/`15` pair in the "do NOT merge" example)
+  mathematically unreachable as written. This item honors the explicit, repeated gate rule over the
+  illustrative arithmetic — see `test_two_digit_pair_ties_and_is_left_unfolded` for the concrete case,
+  and `test_single_digit_pair_folds_when_strictly_cheaper` for the (narrower) case where a 2-line run
+  genuinely can fold.
+
+**Testing:** `tests/unit/test_stages.py` — `TestNumericRangeCompression` (empty input, single number,
+no-match, long run, multiple runs, interrupted run, large range, two-digit tie vs. single-digit fold,
+gap non-merge, descending, duplicates, negatives, leading zeros incl. a width-mismatch case,
+width-crossing natural numbers, line-count-unchanged invariant, COMPRESS-not-deleted invariant,
+PROTECT/COMPRESS run boundaries, `preserve_patterns`, mixed-text non-match, wrong-config-type). Inline
+filter tests added to `z_generic.toml` (long run folds, non-numeric/non-consecutive output untouched,
+short run left unfolded).
+
+**Benchmark numbers** (`python -m tests.benchmarks.run_benchmarks`): 4 new `generic`-category cases
+exercising this item's own requested sample shapes — `generic-coverage-uncovered-lines` (25.0%
+reduction, a coverage-style uncovered-line listing), `generic-grep-line-numbers-only` (28.6%, a
+`grep -n ... | cut -d: -f1` line-number pipeline), `generic-long-line-listing` (35.0%, a long-line
+linter listing), `generic-lint-diagnostic-line-numbers` (18.8%, a lint-diagnostic line listing). No
+regression on existing benchmarks: `generic-find-path-heavy-listing` (the case immediately upstream
+of this stage in `z_generic.toml`) reports unchanged (49.3%, ±0.0pp) — its sample has no standalone-
+digit lines, so this stage never touches it. Overall suite: 132 → 136 cases, 36.3% → 36.2% overall
+(the dip is arithmetic, not a regression — averaging in 4 new cases whose reduction is lower than the
+suite's prior mean; no individual case regressed). Baseline not yet updated, matching QB-095's own
+precedent: this item isn't merged yet, and new cases need no `--update-baseline` run (only
+already-baselined cases regressing would).
+
+**Verification:** `ruff check quor/pipeline/stages/numeric_range_compression.py quor/pipeline/mask.py
+quor/filters/registry.py tests/unit/test_stages.py` clean; `mypy quor/` clean; `quor verify` 210/210
+(up from 207 — the 3 new `generic` inline tests); full `tests/unit/test_stages.py` suite green (226
+tests, all pass, zero regressions — the only warnings present are pre-existing, unrelated
+`TestMatchOutput` ones); benchmark suite green (136 cases, no regressions). Targeted regression sweep
+(registry/early-exit/filter-safety/fail-open/node-routing/document-filter suites — the files that
+exercise `FilterRegistry`/`_STAGE_HANDLERS`/`z_generic` most directly) also green; the remaining
+slow, real-subprocess-spawning CLI test files were not run locally, same constraint and same
+reasoning QB-095 already recorded ([[project_quor_self_hook_timeout]]).
+
+</details>
 
 ---
 

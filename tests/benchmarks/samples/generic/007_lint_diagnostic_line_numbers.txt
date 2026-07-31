@@ -1,0 +1,10 @@
+Syntax warnings detected on lines:
+10
+11
+12
+40
+41
+42
+43
+44
+90

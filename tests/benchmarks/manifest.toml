@@ -1046,6 +1046,50 @@ min_reduction_pct = 20.0
 must_contain = ["src/quor/pipeline/stages/ (13 entries):", "base.py", "path_prefix_fold.py"]
 must_not_contain = ["src/quor/pipeline/stages/base.py"]
 
+[[case]]
+id = "generic-coverage-uncovered-lines"
+category = "generic"
+ecosystem = "Generic"
+command = "coverage-annotate src/quor/payments/processor.py"
+sample_file = "samples/generic/004_coverage_uncovered_lines.txt"
+expected_filter = "generic"
+min_reduction_pct = 20.0
+must_contain = ["Uncovered lines in src/quor/payments/processor.py:", "45-51", "88", "102-105", "118"]
+must_not_contain = ["\n46\n", "\n103\n"]
+
+[[case]]
+id = "generic-grep-line-numbers-only"
+category = "generic"
+ecosystem = "Generic"
+command = "grep -n 'TODO' src/quor/legacy/queue.py | cut -d: -f1"
+sample_file = "samples/generic/005_grep_line_numbers_only.txt"
+expected_filter = "generic"
+min_reduction_pct = 15.0
+must_contain = ["12-14", "47", "89-92", "150"]
+must_not_contain = ["\n13\n", "\n90\n"]
+
+[[case]]
+id = "generic-long-line-listing"
+category = "generic"
+ecosystem = "Generic"
+command = "line-length-check src/quor/pipeline/engine.py"
+sample_file = "samples/generic/006_long_line_listing.txt"
+expected_filter = "generic"
+min_reduction_pct = 25.0
+must_contain = ["Lines exceeding 100 characters:", "23-32", "75", "201-203"]
+must_not_contain = ["\n24\n", "\n202\n"]
+
+[[case]]
+id = "generic-lint-diagnostic-line-numbers"
+category = "generic"
+ecosystem = "Generic"
+command = "protoc --lint src/api/schema.proto"
+sample_file = "samples/generic/007_lint_diagnostic_line_numbers.txt"
+expected_filter = "generic"
+min_reduction_pct = 15.0
+must_contain = ["Syntax warnings detected on lines:", "10-12", "40-44", "90"]
+must_not_contain = ["\n11\n", "\n41\n"]
+
 # ---------------------------------------------------------------------------
 # QB-007B: Markdown / plain-text document filters. `command` here is not a
 # shell command — it is a bare file path string, matched by FilterRegistry

@@ -45,6 +45,19 @@ patterns = ['^\S+/\S*$']
 separator = "/"
 
 [[filter.stages]]
+# QB-097: fold consecutive standalone-integer lines (line-number listings,
+# coverage/warning/test/issue IDs, log sequence numbers) into an inclusive
+# range. Runs after path_prefix_fold so a numeric suffix path_prefix_fold
+# just produced (e.g. "run/42"/"run/43" -> header + "42"/"43") is itself a
+# candidate for further folding, and before max_tokens for the same reason
+# path_prefix_fold is: the tail-truncation budget below should apply to the
+# already-folded content, not the other way around. No `patterns` config —
+# "the whole line is nothing but digits" is a precise structural check, not
+# a shape guess, so unlike path_prefix_fold there is no ambiguity for a
+# filter author to scope with a regex.
+type = "numeric_range_compression"
+
+[[filter.stages]]
 type = "max_tokens"
 limit = 1000
 strategy = "tail"
@@ -87,3 +100,21 @@ description = "QB-095: short path-like run left unfolded when the header wouldn'
 input = "src/a.py\nsrc/b.py"
 must_contain = ["src/a.py", "src/b.py"]
 must_not_contain = ["entries):"]
+
+[[filter.tests]]
+description = "QB-097: a long run of consecutive line numbers folds to a range"
+input = "Errors on lines:\n201\n202\n203\n204\n205"
+must_contain = ["Errors on lines:", "201-205"]
+must_not_contain = ["202", "203", "204"]
+
+[[filter.tests]]
+description = "QB-097: non-consecutive numbers and non-numeric output are never touched"
+input = "hello\n1\n3\n5\nworld"
+must_contain = ["hello", "1", "3", "5", "world"]
+must_not_contain = ["-"]
+
+[[filter.tests]]
+description = "QB-097: a short run left unfolded when the range wouldn't pay for itself"
+input = "42\n43"
+must_contain = ["42", "43"]
+must_not_contain = ["42-43"]
