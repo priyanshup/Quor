@@ -6459,6 +6459,63 @@ test_read_hook_repo_intel_nudge.py` (new), `tests/unit/test_cli.py`, `docs/final
 
 ---
 
+#### QB-092 — Exclude repo-intelligence synthesis rows from `quor gain`'s headline percentage
+
+**Effort:** Small · **Value:** High · **Risk:** Low · **Category:** Correctness / metrics integrity
+
+**Status:** Implemented (2026-07-31).
+
+<details>
+<summary>Technical details</summary>
+
+**The problem this closes:** the project owner reported real `quor gain` savings dropping from a
+historical ~36-37% to ~12% after adopting the repository-intelligence commands (`quor map`,
+`symbols`, `graph`, `search` — QB-061/066/067/080 and the QB-090 onboarding nudge that surfaces
+them more often), despite compression itself getting no worse. Root cause: those commands are
+synthesis, not compression — `_track_map_invocation()` and its five siblings record
+`original=filtered` (a deliberate net-zero contribution, per each command's own docstring in
+`quor/tracking/db.py`), but `query_gain()`'s aggregate SQL summed every row's `original_tokens`/
+`final_tokens` with no exclusion for them. As repo-intelligence usage grows relative to real
+Bash/Read traffic, their zero-savings, often-large output inflates the denominator
+(`tokens_before`) far more than the numerator (`tokens_saved`), dragging the headline
+`tokens_saved / tokens_before` percentage down — a metric-mixing artifact, not a filter
+regression. `flag_low_performers` (`quor/analytics/filter_divergence.py`) already excluded these
+same six labels from its own "low performer" analysis for the identical reason; `query_gain`'s
+headline had no equivalent exclusion until now.
+
+**The fix:** `SYNTHESIS_FILTER_LABELS` (new frozenset in `quor/tracking/db.py`, grouping the six
+existing `REPO_*_FILTER_LABEL` constants) is now excluded via `AND filter_name NOT IN (...)` from
+every `SUM()`/`COUNT()` in `query_gain()`'s main aggregate query — `total_invocations`,
+`tokens_saved`, `tokens_before`, `tokens_after`, `gross_savings`, `gross_overhead`,
+`negative_row_count`, and `passthrough_count`/`filter_hit_rate` all now reflect only rows a real
+ContentMask filter could have acted on. `query_filter_analytics()` (the `--filters` per-filter
+breakdown) is deliberately untouched — showing `repo-profile`/`repo-search`/etc. as their own
+labeled bucket there is correct and already handled by `flag_low_performers`'s exclusion; only the
+single blended headline ratio needed the fix.
+
+**Deliberately not built:** any change to what `quor map`/`symbols`/`graph`/`repo`/`explore`/
+`search` themselves record (`original=filtered` stays exactly as-is — still the honest, by-design
+net-zero contribution); no new `GainReport` field or second "eligible" percentage (a narrower,
+presentation-layer fix along those lines was already drafted independently on an unmerged branch
+for a related-but-distinct passthrough-dilution problem — `ps`/`grep`/one-line `git diff`s with no
+filter at all — and was intentionally left alone rather than reconciled here, at the project
+owner's explicit direction to patch `main` standalone); no config toggle (ANTI_GOALS.md #14).
+
+**Testing:** `tests/unit/test_tracking.py`'s new `TestQueryGainExcludesSynthesisRows` class — a
+large `quor map` row no longer dilutes a real filter's percentage (the exact reported scenario),
+each of the six synthesis labels is excluded individually, an all-synthesis DB reports the same
+zeros as an empty one, and real filter rows are completely unaffected. Full gate: `ruff check
+quor/tracking/db.py tests/unit/test_tracking.py` clean; `mypy quor/tracking/db.py` clean; full
+`pytest tests/unit/` green (batched per QB-090's own note on this repo's 25s dispatcher
+self-timeout).
+
+**Files changed:** `quor/tracking/db.py` (`SYNTHESIS_FILTER_LABELS` + `query_gain()` exclusion +
+`GainReport` docstring), `tests/unit/test_tracking.py` (new `TestQueryGainExcludesSynthesisRows`).
+
+</details>
+
+---
+
 ### Historical (superseded)
 
 *Kept for the record — not resolved work in its own right, but the original request that later,

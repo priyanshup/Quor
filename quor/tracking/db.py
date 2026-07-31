@@ -123,6 +123,15 @@ class GainReport:
     considered and deliberately not added (it would require changing the
     dispatcher's tracking call, which is out of scope — see ADR-023/
     ADR-031 on the tee mechanism this overhead most commonly comes from).
+
+    QB-092: every field below excludes rows recorded under a
+    SYNTHESIS_FILTER_LABELS filter_name (`quor map`/`symbols`/`graph`/
+    `repo`/`explore`/`search`). Those commands are synthesis, not
+    compression — they always record original_tokens == final_tokens by
+    design — so pooling them into these SUMs would dilute the headline
+    percentage purely as a function of how often they're run, not because
+    real compression got worse. See query_gain()'s own comment at the
+    aggregate SQL for the exact exclusion.
     """
 
     total_invocations: int
@@ -635,6 +644,15 @@ def query_gain(
         # for `saved` into its positive and negative parts before summing —
         # a presentation-only decomposition of the existing net figure, not
         # a new measurement (see GainReport's docstring).
+        #
+        # QB-092: rows recorded under a SYNTHESIS_FILTER_LABELS filter_name
+        # (`quor map`/`symbols`/`graph`/`repo`/`explore`/`search`) are
+        # excluded from every SUM() here — they're synthesis, not
+        # compression, and always contribute original_tokens == final_tokens.
+        # Left in, they'd dilute the headline percentage purely as a
+        # function of how often those commands run, independent of how well
+        # real filters compress anything.
+        synthesis_placeholders = ",".join("?" for _ in SYNTHESIS_FILTER_LABELS)
         row = conn.execute(
             f"""SELECT
                  COUNT(*)                              AS total,
@@ -654,8 +672,10 @@ def query_gain(
                FROM invocations
                WHERE {project_filter}
                  AND recorded_at  >= {cutoff_expr}
+                 AND (filter_name IS NULL
+                      OR filter_name NOT IN ({synthesis_placeholders}))
             """,
-            (project_key, subdir_pattern, cutoff_param),
+            (project_key, subdir_pattern, cutoff_param, *SYNTHESIS_FILTER_LABELS),
         ).fetchone()
 
         total = int(row["total"])
@@ -870,6 +890,28 @@ REPO_EXPLORE_FILTER_LABEL = "repo-explore"
 # `final_tokens` are recorded equal by design, and `flag_low_performers`
 # must exclude this label too.
 REPO_SEARCH_FILTER_LABEL = "repo-search"
+
+# QB-092: the six synthesis-not-compression labels above, grouped for
+# query_gain()'s aggregate. Each always records original_tokens ==
+# final_tokens by design (see each label's own docstring) — pooling them
+# into the same SUM()s as real ContentMask filters means their *share of
+# total invocations* directly dilutes `quor gain`'s headline percentage as
+# repo-intelligence commands (`map`/`symbols`/`graph`/`repo`/`explore`/
+# `search`) get used more, with nothing about real compression having
+# changed. `flag_low_performers` (filter_divergence.py) already excludes
+# this same set from per-filter "low performer" analysis for the identical
+# reason; query_gain's headline aggregate needs the same exclusion, which
+# it did not have before QB-092.
+SYNTHESIS_FILTER_LABELS = frozenset(
+    {
+        REPO_PROFILE_FILTER_LABEL,
+        REPO_SYMBOLS_FILTER_LABEL,
+        REPO_GRAPH_FILTER_LABEL,
+        REPO_DASHBOARD_FILTER_LABEL,
+        REPO_EXPLORE_FILTER_LABEL,
+        REPO_SEARCH_FILTER_LABEL,
+    }
+)
 
 
 @dataclass(frozen=True)
