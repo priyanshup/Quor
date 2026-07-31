@@ -17,9 +17,29 @@ Invariants (enforced by Pipeline.execute, not by individual stages):
   from the first two: it never discards a line's content (every original
   filename is reconstructible from header + child, byte-for-byte), it never
   introduces an alias/reference a reader has to resolve elsewhere, and the
-  rewrite is pure, mechanical substring-stripping — no judgment call. A
-  future stage wanting a fourth exception should be held to that same bar,
-  not treated as an open door.
+  rewrite is pure, mechanical substring-stripping — no judgment call.
+- python_ast_summarize/code_ast_summarize (QB-096) gain a fourth exception,
+  narrower than path_prefix_fold's in a different way. Import-block
+  collapsing may replace a whole run of consecutive, top-level import
+  statements with one synthesized block whose content contains embedded
+  newlines (a placeholder that itself renders as several lines, not one) —
+  the run's first line is rewritten to hold it, every other line in the run
+  is COMPRESSed; unlike path_prefix_fold, the mask's total line count is
+  unchanged (no new LineMask is inserted — this exception reuses
+  group_repeated's/collapse_unchanged_context's "rewrite the first line,
+  compress the rest" shape, not path_prefix_fold's "insert a header" one).
+  This does NOT meet path_prefix_fold's byte-for-byte reconstructibility
+  bar either — the collapsed block re-expresses each import's module/name/
+  alias, not its exact original formatting (spacing, the literal `import`
+  keyword, comma placement) — so it is justified on different grounds
+  instead: every individual module, name, alias, relative dot-prefix, and
+  wildcard from the run survives *somewhere* in the block (nothing is
+  silently dropped, hidden, or inferred away), the transform is fully
+  deterministic given the language's own real parser (never a guess at what
+  "looks like" an import), and it is gated by the same token-cost
+  comparison as every collapsing stage above — never fires unless
+  demonstrably cheaper. A future stage wanting a fifth exception should be
+  held to one of these two bars explicitly, not treated as an open door.
 """
 
 from __future__ import annotations

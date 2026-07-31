@@ -1,15 +1,23 @@
 """Shared helpers for compression stages.
 
-_compile:      lru_cache-backed pattern compilation (satisfies "compile once at
-               filter load time, not per line").
-_search:       thin wrapper around pat.search() with timeout — exists as a
-               separate function so tests can patch it without touching the C
-               extension.
-_sub:          thin wrapper around pat.sub() with timeout, for regex_replace.
-_fullmatch:    thin wrapper around pat.fullmatch() with timeout, for
-               match_output's whole-output matching.
-matches_any:   returns True if any compiled pattern matches the line;
-               on TimeoutError it warns and moves on (fail-open).
+_compile:            lru_cache-backed pattern compilation (satisfies "compile
+                     once at filter load time, not per line").
+_search:             thin wrapper around pat.search() with timeout — exists
+                     as a separate function so tests can patch it without
+                     touching the C extension.
+_sub:                thin wrapper around pat.sub() with timeout, for
+                     regex_replace.
+_fullmatch:          thin wrapper around pat.fullmatch() with timeout, for
+                     match_output's whole-output matching.
+matches_any:         returns True if any compiled pattern matches the line;
+                     on TimeoutError it warns and moves on (fail-open).
+_apply_ast_summary:  merges a language analyzer's body-compress line numbers
+                     and import-block replacements (QB-096) into a new
+                     ContentMask — shared by python_ast_summarize.py and
+                     code_ast_summarize.py so the merge logic (PROTECT/
+                     COMPRESS passthrough, preserve_patterns, import-block
+                     splicing, body compression) exists exactly once, not
+                     twice with two chances to drift.
 """
 
 from __future__ import annotations
@@ -18,6 +26,9 @@ import functools
 import warnings
 
 import regex
+
+from quor.pipeline.ast_summarize.import_model import ImportBlockReplacement
+from quor.pipeline.mask import ContentMask, Decision, LineMask
 
 _PATTERN_TIMEOUT: float = 1.0  # seconds; override in tests via monkeypatch
 
@@ -62,3 +73,96 @@ def matches_any(line: str, patterns: list[regex.Pattern[str]]) -> bool:
                 stacklevel=3,
             )
     return False
+
+
+def _apply_ast_summary(
+    mask: ContentMask,
+    compress_lines: set[int],
+    import_replacements: list[ImportBlockReplacement],
+    compiled_preserve: list[regex.Pattern[str]],
+    stage_type: str,
+    body_reason: str,
+) -> ContentMask:
+    """Return a new ContentMask combining `compress_lines` (function/method
+    body lines to COMPRESS, exactly as before QB-096) with
+    `import_replacements` (QB-096 import-block collapsing).
+
+    Order of operations, and why:
+    1. `preserve_patterns` is applied first, as its own pass over the
+       original lines — same "pre-pass, not interleaved" convention
+       `group_repeated`/`strip_lines`/`path_prefix_fold` already use, so a
+       line a filter author explicitly protects is PROTECT before anything
+       else looks at it.
+    2. Any `import_replacements` entry whose line range now overlaps a
+       newly-PROTECTed line is dropped entirely — not partially applied,
+       not shrunk to avoid the protected line, the whole run is left
+       unfolded. `import_replacements` is computed by a language analyzer
+       with no knowledge of this filter's `preserve_patterns` at all (it
+       operates on raw source text, not a ContentMask), so this is the
+       merge point where that conflict must be resolved — conservatively,
+       per this project's standing "when uncertain, don't collapse" rule
+       (the same one `path_prefix_fold`'s token-cost gate already leans on
+       when in doubt, applied here to a correctness conflict instead of a
+       cost one).
+    3. Every surviving replacement's first line is rewritten to its
+       (possibly multi-line) synthesized text and kept; every other line in
+       its range is COMPRESSed — the same "rewrite first line, compress the
+       rest" technique `group_repeated`/`collapse_unchanged_context` already
+       use, extended by `path_prefix_fold` to rewrite every line in a run
+       instead of just the first, and by this function to rewrite the first
+       line to a block that itself contains embedded newlines (see
+       `quor/pipeline/mask.py`'s module docstring for the exact, narrow
+       invariant this represents for `python_ast_summarize`/
+       `code_ast_summarize`).
+    4. Everything else falls through to the pre-QB-096 behavior: a
+       `compress_lines` line is COMPRESSed with `body_reason`; anything else
+       is left exactly as it was.
+    """
+    lines = list(mask.lines)
+
+    protected_line_numbers: set[int] = set()
+    if compiled_preserve:
+        pass1: list[LineMask] = []
+        for idx, lm in enumerate(lines):
+            if lm.decision is not Decision.PROTECT and matches_any(lm.line, compiled_preserve):
+                pass1.append(LineMask(lm.line, Decision.PROTECT, "matches preserve_pattern", stage_type))
+                protected_line_numbers.add(idx + 1)
+            else:
+                pass1.append(lm)
+        lines = pass1
+
+    valid_replacements = [
+        r
+        for r in import_replacements
+        if not protected_line_numbers & set(range(r.start_line, r.end_line + 1))
+    ]
+    replacement_by_start = {r.start_line: r for r in valid_replacements}
+    replacement_lines: set[int] = set()
+    for r in valid_replacements:
+        replacement_lines.update(range(r.start_line, r.end_line + 1))
+
+    result: list[LineMask] = []
+    for idx, lm in enumerate(lines):
+        line_number = idx + 1
+
+        if lm.decision is Decision.PROTECT:
+            result.append(lm)
+            continue
+        if lm.decision is Decision.COMPRESS:
+            result.append(lm)
+            continue
+
+        replacement = replacement_by_start.get(line_number)
+        if replacement is not None:
+            result.append(LineMask(replacement.text, Decision.KEEP, "collapsed import block", stage_type))
+            continue
+        if line_number in replacement_lines:
+            result.append(LineMask(lm.line, Decision.COMPRESS, "collapsed import block", stage_type))
+            continue
+
+        if line_number in compress_lines:
+            result.append(LineMask(lm.line, Decision.COMPRESS, body_reason, stage_type))
+        else:
+            result.append(lm)
+
+    return ContentMask(tuple(result))

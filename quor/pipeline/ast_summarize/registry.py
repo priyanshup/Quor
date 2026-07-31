@@ -75,18 +75,22 @@ from quor.pipeline.ast_summarize.csharp import (
     extract_symbols_csharp,
 )
 from quor.pipeline.ast_summarize.go import analyze_go, extract_relationships_go, extract_symbols_go
+from quor.pipeline.ast_summarize.import_model import ImportBlockReplacement
 from quor.pipeline.ast_summarize.java import (
     analyze_java,
+    collapse_imports_java,
     extract_relationships_java,
     extract_symbols_java,
 )
 from quor.pipeline.ast_summarize.javascript import (
     analyze_javascript,
+    collapse_imports_javascript,
     extract_relationships_javascript,
     extract_symbols_javascript,
 )
 from quor.pipeline.ast_summarize.python import (
     analyze_python,
+    collapse_imports_python,
     extract_relationships_python,
     extract_symbols_python,
 )
@@ -100,6 +104,8 @@ from quor.pipeline.ast_summarize.symbol_model import Symbol
 from quor.pipeline.ast_summarize.typescript import (
     analyze_tsx,
     analyze_typescript,
+    collapse_imports_tsx,
+    collapse_imports_typescript,
     extract_relationships_tsx,
     extract_relationships_typescript,
     extract_symbols_tsx,
@@ -179,6 +185,28 @@ _RELATIONSHIP_EXTRACTORS: dict[str, Callable[[str], list[Relationship]]] = {
 }
 
 
+# Language name -> import-collapser callable (QB-096). A fourth, parallel
+# dict — same reasoning as `_SYMBOL_EXTRACTORS`/`_RELATIONSHIP_EXTRACTORS`:
+# "what would a cheaper, still-lossless rendering of this file's import
+# block look like" is independently correct from what the other three
+# families answer, serves the same two consumers (`python_ast_summarize`/
+# `code_ast_summarize`) `_ANALYZERS` already serves, and must not be
+# derived from `_RELATIONSHIP_EXTRACTORS`'s import facts — those
+# deliberately skip wildcards (QB-067's "ambiguous binding" exclusion,
+# which does not apply here; see `import_model.py`'s own docstring).
+# Only four languages today ("python"/"java"/"javascript"/"typescript"/
+# "tsx" — QB-096's own scope): "go"/"rust"/"csharp" have no entry, so
+# `get_import_collapser()` returns `None` for them, the same "unsupported
+# language, not an error" contract as every other getter below.
+_IMPORT_COLLAPSERS: dict[str, Callable[[str], list[ImportBlockReplacement]]] = {
+    "python": collapse_imports_python,
+    "java": collapse_imports_java,
+    "javascript": collapse_imports_javascript,
+    "typescript": collapse_imports_typescript,
+    "tsx": collapse_imports_tsx,
+}
+
+
 # Extension -> `ast_summarize` registry language key (QB-067) — promoted
 # here from `quor/pipeline/repo_profile/symbols.py`'s originally-private
 # table so both `quor symbols` and `quor graph`'s orchestrators (QB-066/
@@ -237,6 +265,14 @@ def get_relationship_extractor(language: str) -> Callable[[str], list[Relationsh
     language, not an error" contract as `get_analyzer()`/
     `get_symbol_extractor()`, applied to the QB-067 relationship family."""
     return _RELATIONSHIP_EXTRACTORS.get(language)
+
+
+def get_import_collapser(language: str) -> Callable[[str], list[ImportBlockReplacement]] | None:
+    """Return the import-collapser callable registered for `language`, or
+    `None` if none is registered — same "unsupported language, not an
+    error" contract as every other getter in this module, applied to the
+    QB-096 import-collapsing family."""
+    return _IMPORT_COLLAPSERS.get(language)
 
 
 def registered_languages() -> frozenset[str]:

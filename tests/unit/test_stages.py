@@ -1771,6 +1771,59 @@ class TestPythonAstSummarize:
         assert result.lines[1].decision is Decision.PROTECT
         assert result.lines[2].decision is Decision.COMPRESS
 
+    # -- QB-096: import-block collapsing, via the real stage/ContentMask
+    # path. Shared grouping/rendering/cost-gate logic is exercised directly
+    # in tests/unit/test_ast_summarize.py; these tests prove it composes
+    # correctly with this stage's own body-compression and
+    # preserve_patterns handling.
+
+    def test_import_block_collapsed_and_body_compressed_together(self) -> None:
+        source = (
+            "import os\nimport sys\nimport json\nimport pathlib\nimport tempfile\n"
+            "import shutil\nimport subprocess\nimport logging\nimport asyncio\n"
+            "import numpy as np\n\n\ndef main():\n    print(os.getcwd())\n"
+        )
+        mask = ContentMask.from_text(source)
+        result = self.stage.apply(mask, self._config())
+        rendered = result.render()
+        assert rendered.startswith("Imports (10)")
+        assert "Standard library:" in rendered
+        assert "Third-party:\n- numpy as np" in rendered
+        assert "import os" not in rendered
+        assert "def main():" in rendered
+        assert "print(os.getcwd())" not in rendered
+
+    def test_import_replacement_line_count_unchanged(self) -> None:
+        """The QB-096 exception documented in mask.py: no new LineMask is
+        inserted for import collapsing (unlike path_prefix_fold's header
+        insertion) — total line count must stay exactly the same."""
+        source = "\n".join(f"import module_{i}" for i in range(15)) + "\n"
+        mask = ContentMask.from_text(source)
+        result = self.stage.apply(mask, self._config())
+        assert "Imports (15)" in result.render()
+        assert len(result.lines) == len(mask.lines)
+
+    def test_preserve_pattern_on_import_line_prevents_its_run_from_folding(self) -> None:
+        source = "\n".join(f"import module_{i}" for i in range(15)) + "\n"
+        mask = ContentMask.from_text(source)
+        config = self._config(preserve=["module_7"])
+        result = self.stage.apply(mask, config)
+        rendered = result.render()
+        assert "import module_7" in rendered
+        assert "Imports (" not in rendered  # whole run left unfolded
+        protected = [lm for lm in result.lines if lm.decision is Decision.PROTECT]
+        assert len(protected) == 1
+        assert protected[0].line == "import module_7"
+
+    def test_small_import_block_stays_unchanged(self) -> None:
+        source = "import os\nimport sys\n\n\ndef f():\n    return 1\n"
+        mask = ContentMask.from_text(source)
+        result = self.stage.apply(mask, self._config())
+        assert result.lines[0].line == "import os"
+        assert result.lines[0].decision is Decision.KEEP
+        assert result.lines[1].line == "import sys"
+        assert result.lines[1].decision is Decision.KEEP
+
 
 # ---------------------------------------------------------------------------
 # code_ast_summarize (QB-005B — generic, multi-language parser framework)
@@ -1843,6 +1896,13 @@ class TestCodeAstSummarize:
         result = self.stage.apply(mask, config)
         assert result.lines[1].decision is Decision.PROTECT
         assert result.lines[2].decision is Decision.COMPRESS
+
+    def test_import_block_collapsed_qb096(self) -> None:
+        source = "\n".join(f"import module_{i}" for i in range(15)) + "\n"
+        mask = ContentMask.from_text(source)
+        result = self.stage.apply(mask, self._config(language="python"))
+        assert "Imports (15)" in result.render()
+        assert len(result.lines) == len(mask.lines)
 
     # -- Equivalence with python_ast_summarize --------------------------
     #
@@ -2002,6 +2062,20 @@ class TestCodeAstSummarizeJavaScript:
         for idx, lm in enumerate(result.lines):
             if lm.decision is not Decision.COMPRESS:
                 assert lm.line == original_lines[idx], f"line {idx} was modified"
+
+    def test_import_block_collapsed_qb096(self) -> None:
+        source = (
+            'import {A, B, C, D} from "./foo";\n'
+            'import {E, F} from "./bar";\n'
+            'import Default from "./baz";\n'
+            'import * as ns from "./qux";\n'
+        )
+        result = self.stage.apply(ContentMask.from_text(source), self._config())
+        rendered = result.render()
+        assert "./foo:\n- A\n- B\n- C\n- D" in rendered
+        assert "./bar: E, F" in rendered
+        assert "* as ns" in rendered
+        assert len(result.lines) == len(ContentMask.from_text(source).lines)
 
 
 class TestCodeAstSummarizeGo:
@@ -2209,6 +2283,20 @@ class TestCodeAstSummarizeJava:
         for idx, lm in enumerate(result.lines):
             if lm.decision is not Decision.COMPRESS:
                 assert lm.line == original_lines[idx], f"line {idx} was modified"
+
+    def test_import_block_collapsed_qb096(self) -> None:
+        source = (
+            "import java.util.List;\n"
+            "import java.util.Map;\n"
+            "import java.util.Set;\n"
+            "import java.io.File;\n"
+            "import java.io.InputStream;\n"
+        )
+        result = self.stage.apply(ContentMask.from_text(source), self._config())
+        rendered = result.render()
+        assert "java.util:" in rendered
+        assert "java.io:" in rendered
+        assert len(result.lines) == len(ContentMask.from_text(source).lines)
 
 
 class TestCodeAstSummarizeRust:
@@ -2541,6 +2629,18 @@ class TestCodeAstSummarizeTypeScript:
         for idx, lm in enumerate(result.lines):
             if lm.decision is not Decision.COMPRESS:
                 assert lm.line == original_lines[idx], f"line {idx} was modified"
+
+    def test_import_block_collapsed_qb096(self) -> None:
+        source = (
+            'import {A, B, C} from "./foo";\n'
+            'import {D, E} from "./bar";\n'
+            'import Default from "./baz";\n'
+        )
+        result = self.stage.apply(ContentMask.from_text(source), self._config())
+        rendered = result.render()
+        assert "./foo:" in rendered
+        assert "./bar:" in rendered
+        assert len(result.lines) == len(ContentMask.from_text(source).lines)
 
 
 class TestCodeAstSummarizeTsx:

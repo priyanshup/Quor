@@ -1,0 +1,29 @@
+import numpy as np
+import pandas as pd
+import requests
+import flask
+import django
+import pytest
+import click
+import attrs
+import pydantic
+import sqlalchemy
+import boto3
+import redis
+import celery
+import gunicorn
+
+DEFAULT_TIMEOUT_SECONDS = 30
+
+
+def fetch_report(url: str) -> pd.DataFrame:
+    """Fetch a CSV report from `url` and load it into a DataFrame."""
+    response = requests.get(url, timeout=DEFAULT_TIMEOUT_SECONDS)
+    response.raise_for_status()
+    return pd.read_csv(io_from_bytes(response.content))
+
+
+def normalize_matrix(matrix: np.ndarray) -> np.ndarray:
+    """Scale every row of `matrix` to unit length."""
+    norms = np.linalg.norm(matrix, axis=1, keepdims=True)
+    return matrix / np.where(norms == 0, 1, norms)

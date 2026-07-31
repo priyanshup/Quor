@@ -29,7 +29,14 @@ should follow this same contract: raise on a genuine parse failure for
 from __future__ import annotations
 
 import ast
+import sys
 
+from quor.pipeline.ast_summarize.import_collapse import collapse_import_runs
+from quor.pipeline.ast_summarize.import_model import (
+    ImportBlockReplacement,
+    ImportedName,
+    ImportStatement,
+)
 from quor.pipeline.ast_summarize.relationship_model import Relationship
 from quor.pipeline.ast_summarize.symbol_model import ENTRY_POINT_NAMES, Symbol, SymbolKind
 
@@ -347,6 +354,63 @@ def _visit_class_body_calls(stmts: list[ast.stmt], relationships: list[Relations
             _collect_calls(stmt, stmt.name, relationships)
         elif isinstance(stmt, ast.ClassDef):
             _visit_class_body_calls(stmt.body, relationships)
+
+
+def _is_stdlib_module(top_level_name: str) -> bool:
+    """True if `top_level_name` (the first dotted segment of an imported
+    module, e.g. `"os"` from `"os.path"`) is one of this interpreter's own
+    standard-library modules — `sys.stdlib_module_names` (3.10+, always
+    available under this project's 3.11+ floor) is an authoritative,
+    version-specific ground truth, not a guess or a hardcoded list that
+    could drift from the Python version actually running."""
+    return top_level_name in sys.stdlib_module_names
+
+
+def collect_import_statements_python(tree: ast.Module) -> list[ImportStatement]:
+    """Return every module-level `import`/`from ... import ...` statement,
+    in source order (QB-096). Deliberately top-level only — an import
+    conditionally executed inside a function/`try`/`if` block is a different
+    kind of fact (it may never run, or run only sometimes) than a module's
+    unconditional import list, and collapsing it into the same summary would
+    misrepresent which imports are unconditional; mirrors this module's own
+    `_compressible_body_lines()` restricting *its* recursion to specific,
+    well-understood conditional-definition containers rather than collapsing
+    everything indiscriminately.
+    """
+    statements: list[ImportStatement] = []
+    for stmt in tree.body:
+        if isinstance(stmt, ast.Import):
+            end = stmt.end_lineno or stmt.lineno
+            names = tuple(ImportedName(name=alias.name, alias=alias.asname) for alias in stmt.names)
+            statements.append(ImportStatement(line=stmt.lineno, end_line=end, module=None, names=names))
+        elif isinstance(stmt, ast.ImportFrom):
+            end = stmt.end_lineno or stmt.lineno
+            module = "." * stmt.level + (stmt.module or "")
+            if len(stmt.names) == 1 and stmt.names[0].name == "*":
+                statements.append(
+                    ImportStatement(line=stmt.lineno, end_line=end, module=module, is_wildcard=True)
+                )
+            else:
+                names = tuple(ImportedName(name=alias.name, alias=alias.asname) for alias in stmt.names)
+                statements.append(ImportStatement(line=stmt.lineno, end_line=end, module=module, names=names))
+    return statements
+
+
+def collapse_imports_python(source: str) -> list[ImportBlockReplacement]:
+    """Return the collapsed replacement for every token-cheaper run of
+    consecutive, module-level import statements (QB-096) — see
+    `import_collapse.py`'s module docstring for the shared run-detection,
+    rendering, and cost-gate rules this delegates to.
+
+    Raises SyntaxError/ValueError exactly as `ast.parse()` does on
+    unparseable input, same fail-open contract as `analyze_python()` — see
+    this module's own docstring.
+    """
+    tree = ast.parse(source)
+    statements = collect_import_statements_python(tree)
+    if not statements:
+        return []
+    return collapse_import_runs(statements, source.split("\n"), comment_prefix="#", stdlib_check=_is_stdlib_module)
 
 
 def _collect_calls(node: ast.AST, source_name: str, relationships: list[Relationship]) -> None:

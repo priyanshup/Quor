@@ -65,8 +65,11 @@ from typing import TYPE_CHECKING
 from quor.pipeline.ast_summarize._treesitter_utils import (
     add_candidate,
     collect_error_ranges,
+    extract_es_import_statements,
     iter_descendants,
 )
+from quor.pipeline.ast_summarize.import_collapse import collapse_import_runs
+from quor.pipeline.ast_summarize.import_model import ImportBlockReplacement
 from quor.pipeline.ast_summarize.relationship_model import Relationship
 from quor.pipeline.ast_summarize.symbol_model import ENTRY_POINT_NAMES, Symbol, SymbolKind
 
@@ -205,6 +208,50 @@ def _analyze_with_grammar(source: str, *, tsx: bool) -> set[int]:
     lines: set[int] = set()
     _visit_top_level(root, error_ranges, lines)
     return lines
+
+
+def collapse_imports_typescript(source: str) -> list[ImportBlockReplacement]:
+    """Return the collapsed replacement for every token-cheaper run of
+    consecutive top-level `import` statements in a `.ts` file (QB-096),
+    using the plain `language_typescript()` grammar — see
+    `import_collapse.py`'s module docstring for the shared run-detection,
+    rendering, and cost-gate rules this delegates to. Fail-open contract
+    identical to `analyze_typescript()`."""
+    return _collapse_imports_with_grammar(source, tsx=False)
+
+
+def collapse_imports_tsx(source: str) -> list[ImportBlockReplacement]:
+    """Return the collapsed replacement for every token-cheaper run of
+    consecutive top-level `import` statements in a `.tsx` file (QB-096),
+    using the `language_tsx()` grammar. Fail-open contract identical to
+    `analyze_tsx()`."""
+    return _collapse_imports_with_grammar(source, tsx=True)
+
+
+def _collapse_imports_with_grammar(source: str, *, tsx: bool) -> list[ImportBlockReplacement]:
+    try:
+        import tree_sitter
+        import tree_sitter_typescript
+    except ImportError:
+        warnings.warn(
+            "[quor] tree-sitter/tree-sitter-typescript is not installed; "
+            "install quor[javascript] to enable TypeScript import collapsing "
+            "(falling back to no compression for this file)",
+            stacklevel=2,
+        )
+        return []
+
+    grammar = (
+        tree_sitter_typescript.language_tsx() if tsx else tree_sitter_typescript.language_typescript()
+    )
+    language = tree_sitter.Language(grammar)
+    parser = tree_sitter.Parser(language)
+    tree = parser.parse(source.encode("utf-8"))
+
+    statements = extract_es_import_statements(tree.root_node)
+    if not statements:
+        return []
+    return collapse_import_runs(statements, source.split("\n"), comment_prefix="//")
 
 
 def _visit_top_level(node: Node, error_ranges: list[tuple[int, int]], lines: set[int]) -> None:

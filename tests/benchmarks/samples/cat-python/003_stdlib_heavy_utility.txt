@@ -1,0 +1,41 @@
+import os
+import sys
+import json
+import re
+import io
+import csv
+import time
+import math
+import uuid
+import shutil
+import logging
+import tempfile
+import argparse
+import subprocess
+import itertools
+import functools
+import collections
+import contextlib
+import dataclasses
+import pathlib as pl
+
+DEFAULT_ENCODING = "utf-8"
+
+
+def read_config(path: str) -> dict:
+    """Read a JSON config file, returning an empty dict if it does not exist."""
+    config_path = pl.Path(path)
+    if not config_path.exists():
+        return {}
+    with open(config_path, encoding=DEFAULT_ENCODING) as handle:
+        return json.load(handle)
+
+
+def run_pipeline(steps: list) -> bool:
+    """Run each step in a subprocess, returning False on the first failure."""
+    for step in steps:
+        result = subprocess.run(step, shell=True, capture_output=True)
+        if result.returncode != 0:
+            logging.error("step failed: %s", step)
+            return False
+    return True
