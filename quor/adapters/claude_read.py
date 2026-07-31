@@ -85,7 +85,7 @@ from typing import Any
 import orjson
 
 from quor.adapters.base import PostToolUseHookInput
-from quor.adapters.dispatcher import CONCISE_INSTRUCTION
+from quor.adapters.dispatcher import CONCISE_INSTRUCTION, CONCISE_INSTRUCTION_ENABLED
 from quor.config.model import FilterConfig
 from quor.filters.registry import FilterRegistry
 from quor.pipeline.extract.registry import extract
@@ -95,7 +95,7 @@ from quor.pipeline.repo_profile.nudge import compute_hook_nudge
 from quor.pipeline.repo_profile.query_extract import extract_query_terms
 from quor.pipeline.repo_profile.search import merge_search
 from quor.pipeline.repo_profile.search_render import render_relevant_files_block
-from quor.tracking.db import TrackingDB, track_invocation
+from quor.tracking.db import TrackingDB, count_tokens, track_invocation
 
 # ---------------------------------------------------------------------------
 # Hook script template — written by `quor init --claude` (QB-007A)
@@ -249,8 +249,19 @@ def run_hook(*, tracking: TrackingDB | None = None) -> None:
     `CONCISE_INSTRUCTION` the Bash dispatcher prepends
     (`quor/adapters/dispatcher.py`) is prepended here too, so the assistant
     gets a consistent nudge regardless of which path produced the compressed
-    text. `None` (passthrough/fail-open — original Read result kept) is left
-    untouched, exactly as before.
+    text — but only when doing so doesn't push the total token count above
+    the original `tool_response`'s (QB-052 follow-on: same "never spend more
+    than we saved" gate `dispatcher.py`'s `_with_concise_instruction()` now
+    applies, since this Read path previously prepended the fixed 17-token
+    nudge unconditionally, silently flipping a small real compression win
+    into a net loss the same way the Bash tee footer once did) — **except**
+    for `.docx`/`.pdf` extraction (`_EXTRACTION_EXTENSIONS`), which always
+    gets the nudge unconditionally: binary extraction has no meaningful
+    pre-compression text baseline (`tool_response` is whatever placeholder
+    Claude Code sent for the binary file, not text Quor compressed), so the
+    gate doesn't apply there — see `_handle_text()`'s own comment for the
+    full reasoning. `None` (passthrough/fail-open — original Read result
+    kept) is left untouched, exactly as before.
     """
     raw = sys.stdin.read()
     sys.stdout.buffer.write(_handle_text(raw, tracking))
@@ -293,9 +304,32 @@ def _handle_text(raw: str, tracking: TrackingDB | None) -> bytes:
     )
     if with_repo_intel_nudge is not None:
         compressed = with_repo_intel_nudge
-    if compressed is not None:
-        if not compressed.startswith(CONCISE_INSTRUCTION):
+    if (
+        compressed is not None
+        and CONCISE_INSTRUCTION_ENABLED
+        and not compressed.startswith(CONCISE_INSTRUCTION)
+    ):
+        # Binary extraction (.docx/.pdf, _EXTRACTION_EXTENSIONS) has no
+        # meaningful pre-compression text baseline: `extract()` reads the
+        # file straight off disk, so `original_response` (tool_response) is
+        # whatever placeholder Claude Code sent for a binary file, not text
+        # Quor compressed — comparing the nudge's cost against it isn't the
+        # QB-052 "don't cost more than the filter saved" case, it's apples
+        # to oranges, and would suppress the nudge on essentially every
+        # extraction. The token-cost gate below applies only to the genuine
+        # text-compression paths (markdown/source-code/structured-data),
+        # where `original_response` really is the raw text being compressed.
+        is_extraction = (
+            Path(hook_input.tool_input.file_path).suffix.lower() in _EXTRACTION_EXTENSIONS
+        )
+        if is_extraction or not isinstance(original_response, str):
             compressed = CONCISE_INSTRUCTION + compressed
+        else:
+            with_instruction = CONCISE_INSTRUCTION + compressed
+            if count_tokens(with_instruction) <= count_tokens(original_response):
+                compressed = with_instruction
+
+    if compressed is not None:
         hook_specific["updatedToolOutput"] = compressed
 
     return orjson.dumps({"hookSpecificOutput": hook_specific})

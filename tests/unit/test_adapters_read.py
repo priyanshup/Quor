@@ -214,6 +214,27 @@ class TestRunHookCompression:
         result = _run_hook_with(_make_read_payload())
         assert "updatedToolOutput" not in result["hookSpecificOutput"]
 
+    def test_instruction_suppressed_when_it_would_cost_more_than_the_filter_saved(
+        self,
+    ) -> None:
+        """QB-052 follow-on: mirrors the Bash dispatcher's own gate
+        (`dispatcher._with_concise_instruction`) — a small real compression
+        win must not be silently turned into a net loss by the fixed
+        17-token nudge. `_compress_read_output` is patched directly so this
+        exercises the gating math in `_handle_text()` itself, independent of
+        any one filter's actual compression behavior."""
+        original = "line one of text\nline two of text\nline three\n"
+        compressed = "line one of text\nline two\nline three\n"
+        payload = _make_read_payload(file_path="notes.md", tool_response=original)
+        with patch(
+            "quor.adapters.claude_read._compress_read_output", return_value=compressed
+        ):
+            result = _run_hook_with(payload)
+
+        updated = result["hookSpecificOutput"]["updatedToolOutput"]
+        assert updated == compressed
+        assert not updated.startswith(CONCISE_INSTRUCTION)
+
 
 # ---------------------------------------------------------------------------
 # run_hook() — BOM handling

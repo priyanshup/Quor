@@ -15,10 +15,14 @@ The concise-output instruction is likewise dispatcher-level only: it is
 prepended to the already-assembled output right before the final
 `sys.stdout.write`, never fed back into ContentMask/tee/plugins, and only
 applied when filtering actually changed the output (`filtered != captured`)
-— true passthrough (`filter_config is None`) and a no-op filter match (e.g.
-the generic fallback on already-clean output) both stay byte-identical to
-`captured`, preserving the existing "original, unfiltered output" fail-open
-contract. See CONCISE_INSTRUCTION_ENABLED below.
+*and* doing so doesn't cost more tokens than the filter saved (QB-052
+follow-on — same gate `_apply_tee()`'s footer already uses) — true
+passthrough (`filter_config is None`), a no-op filter match (e.g. the
+generic fallback on already-clean output), and a nudge that would flip a
+real win into a real loss all stay byte-identical to `captured`/`filtered`,
+preserving the existing "original, unfiltered output" fail-open contract.
+`track_invocation()` runs *after* this gate so tracked numbers reflect what
+actually reaches stdout. See CONCISE_INSTRUCTION_ENABLED below.
 """
 
 from __future__ import annotations
@@ -61,11 +65,20 @@ CONCISE_INSTRUCTION_ENABLED = True
 CONCISE_INSTRUCTION = "Respond concisely and avoid repeating information already stated.\n\n"
 
 
-def _with_concise_instruction(text: str) -> str:
-    """Prepend CONCISE_INSTRUCTION to `text` when enabled; no-op otherwise."""
+def _with_concise_instruction(text: str, *, raw: str) -> str:
+    """Prepend CONCISE_INSTRUCTION to `text` when enabled — and only when
+    doing so doesn't push the total token count above `raw`'s. Same "never
+    spend more than we saved" rule `_apply_tee()`'s footer already applies
+    (QB-052): a small, mostly-non-repetitive real output can have the fixed
+    17-token nudge outweigh genuine filter savings, silently turning a real
+    win into a real loss. No-op (returns `text` unchanged) when disabled or
+    when the gate fails."""
     if not CONCISE_INSTRUCTION_ENABLED:
         return text
-    return CONCISE_INSTRUCTION + text
+    with_instruction = CONCISE_INSTRUCTION + text
+    if count_tokens(with_instruction) > count_tokens(raw):
+        return text
+    return with_instruction
 
 
 if TYPE_CHECKING:
@@ -182,24 +195,30 @@ def run_dispatch(args: list[str], tracking: TrackingDB | None = None) -> int:
         filter_config, captured=captured, final_output=filtered, get_user_config=get_user_config
     )
 
+    # Gated the same way as the tee footer above: only add the nudge if it
+    # doesn't cost more than the filter saved (QB-052 follow-on). Computed
+    # before tracking so track_invocation() below measures what actually
+    # reaches stdout, not a pre-nudge intermediate — quor gain must not be
+    # able to report a saving the assistant never received.
+    output = _with_concise_instruction(filtered, raw=captured) if content_changed else filtered
+
     _teardown_plugins(plugin_registry, plugin_ctx)
     track_invocation(
         tracking,
         command=cmd_str,
         original=captured,
-        filtered=filtered,
+        filtered=output,
         filter_name=filter_config.name,
         was_passthrough=False,
         t0=t0,
     )
-    _scan_secrets_safe(filtered)
+    _scan_secrets_safe(output)
     _maybe_print_onboarding_tip_safe(
         filter_name=filter_config.name,
         original_tokens=count_tokens(captured),
-        final_tokens=count_tokens(filtered),
+        final_tokens=count_tokens(output),
     )
 
-    output = _with_concise_instruction(filtered) if content_changed else filtered
     sys.stdout.write(output)
     sys.stdout.flush()
     return proc.returncode

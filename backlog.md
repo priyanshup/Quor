@@ -241,14 +241,22 @@ roadmap review conducted after v0.5.0 shipped (QB-083/084/085). Three things cha
    (README) without the matching retention mechanism behind it wastes the acquisition work QB-085
    just did. Moved here from Later.
 
-**New final order:** QB-052 → QB-047 → QB-041 → QB-086 → QB-034 → QB-055 → QB-054 → QB-049 →
-QB-039 → QB-053. Rationale for the three moves ahead of the 2026-07-15 order:
+**Housekeeping correction (2026-07-31, later the same day):** QB-052 was found to already be
+resolved — both known causes (tee footer, concise-output nudge) verified fixed and regression-tested
+— moved to [Completed](#completed), the same correction QB-046 got above. It no longer occupies a
+slot in this ordering. One genuine new item came out of verifying it: **QB-094** (concise-instruction
+tracking accuracy in the Read-hook path specifically — the one piece of QB-052's fix that couldn't be
+safely done same-day, see QB-094's own entry below), added directly below in QB-052's old #1 slot for
+the same non-negotiable trust reason QB-052 itself was #1 for.
 
-- **QB-052 (mypy/npm expansion bug) → #1, up from #3.** Non-negotiable given QB-085's README now
-  publicly leads with specific compression numbers (35.9% average, up to 89%) as a trust-building
-  device. A live, unfixed case where Quor's own tool *expands* output directly contradicts the one
-  claim every competitor comparison in QB-086 rests on — trustworthiness over raw ratio — and is a
-  materially worse look now than it was pre-README.
+**New final order:** QB-094 → QB-047 → QB-041 → QB-086 → QB-034 → QB-055 → QB-054 → QB-049 →
+QB-039 → QB-053. Rationale for the three moves ahead of the 2026-07-15 order (QB-052, the original
+occupant of the #1 slot below, is superseded by the housekeeping correction just above):
+
+- **QB-094 (Read-hook concise-instruction tracking accuracy) → #1.** Same non-negotiable reasoning
+  QB-052 carried: QB-085's README publicly leads with specific compression numbers, and an unfixed
+  gap where `quor gain` can't see a real cost on the Read-hook path is the same class of
+  trust-damaging defect QB-052 was raised to close.
 - **QB-047 (real benchmark corpus & continuous tracking) → #2, up from #4.** Same reasoning:
   competitors are publishing bold, round numbers (Headroom "60-95%", RTK/LeanCTX "60-90%"). Quor's
   differentiation is defensible, continuously-measured numbers, not bigger numbers — QB-085's README
@@ -423,51 +431,54 @@ down from Now into [Next](#next) — full reasoning is in each item's own entry,
 
 ---
 
-#### QB-052 — Fix negative-compression regression in mypy/npm filters
+#### QB-094 — Read-hook concise-instruction tracking accuracy
 
-**Effort:** Small · **Value:** Medium · **Risk:** Low · **Expected token impact:** Low (small in
-absolute tokens, but corrects a trust-damaging defect) · **Category:** Bug fix
+**Effort:** Small-Medium · **Value:** Medium · **Risk:** Low-Medium · **Expected token impact:** Low
+(same trust-accuracy category as QB-052, not a compression-ratio win) · **Category:** Bug fix /
+Measurement
 
-Real usage data — not the benchmark corpus, which never surfaced this — shows two shipped filters
-making output *bigger*, not smaller, on average: `mypy` (-41.2% avg over 80 real invocations) and
-`npm` (-9.1% avg over 26 real invocations). A compression tool that expands output, even
-occasionally, undermines trust regardless of how small the absolute numbers are.
-
-**Priority update (2026-07-31) — moved to #1 in Now, up from #3:** see the dated note directly
-below and the Now section's own 2026-07-31 re-ranking rationale above — a live expansion bug is
-now a materially worse look given QB-085's README publicly leads with specific compression numbers.
+Found 2026-07-31 while verifying QB-052 was actually resolved (now in [Completed](#completed) — see
+that entry for the full finding). The concise-output instruction nudge's unconditional-prepend bug
+existed in two places: the Bash dispatcher (`dispatcher.py`) and the Claude Code Read hook
+(`claude_read.py`, PostToolUse). Both had the gating bug fixed same-day. Only the dispatcher also got
+its tracking-order fixed (`track_invocation()` now runs after the nudge decision, so tracked numbers
+match what actually reaches stdout) — the Read-hook path's equivalent gap remains open.
 
 <details>
 <summary>Technical details</summary>
 
-**Problem, read directly from `quor/filters/builtin/build.toml`:** the `mypy` filter's
-`group_repeated` stage requires 3 *identical* error shapes (`min_count = 3`) before it collapses
-anything, and `abort_unless = ["error", "Error", "warning", "Warning", "note"]` gates the whole
-pipeline. A typical real mypy run reports a handful of *distinct* errors, not 3+ identical ones —
-so `group_repeated` rarely fires, `strip_lines` only removes a few boilerplate lines
-("Success: no issues found", "Found N error", blank lines), and the tee recovery-footer's
-near-fixed overhead is added regardless — net-negative on already-small output. `npm`'s
-`group_repeated` (`min_count = 2`, `quor/filters/builtin/node.toml`) hits the same dynamic less
-severely, which is why its real average is only mildly negative rather than sharply so.
+**Problem:** In `claude_read.py`, `track_invocation()` is called from three different places —
+inside `_compress_via_named_filter()` and `_compress_extracted_document()`, both several calls deep
+under `_compress_read_output()` — each already returning by the time `_handle_text()` prepends
+`CONCISE_INSTRUCTION` (now gated) and, separately, `_maybe_prepend_relevant_files()` /
+`_maybe_prepend_repo_intel_nudge()`'s own additive content. So `final_tokens` for every Read-hook
+tracking record still reflects a pre-nudge intermediate, not the bytes actually returned via
+`updatedToolOutput` — the same structural gap QB-052 fixed in the Bash dispatcher, just not yet
+here.
 
-**Desired outcome:** Either (a) lower `mypy`'s `group_repeated` threshold and broaden `strip_lines`
-so genuinely-small mypy runs have more to trim, or (b) suppress/shrink the tee recovery footer when
-a filter's own compression didn't save enough to offset it. Option (b) is the general fix — see
-QB-053/QB-054 below, which would let *any* filter self-correct this way, not just mypy/npm — and
-likely obsoletes needing a filter-specific fix, so it should be scoped first.
+**Why this wasn't fixed alongside the dispatcher today:** `dispatcher.py`'s `track_invocation()` call
+is a single call site at the end of one function (`run_dispatch()`), so moving it after the nudge
+decision was a same-file, same-pattern, low-risk change. `claude_read.py`'s three call sites are each
+embedded in a different branch function, each with its own `original`/`filtered`/`command`
+arguments already computed at that point — correctly relocating this needs either plumbing the final,
+fully-assembled `updatedToolOutput` text back down into each branch (awkward, since `_handle_text()`
+computes it after those branches already returned) or restructuring so tracking happens once, at the
+top of `_handle_text()`, after every prepend — a genuine, moderate-risk refactor of code three
+different branches depend on, not the kind of thing to rush into the same change as a verified,
+low-risk gating fix.
 
-**Status:** Proposed. Not scoped or implemented. Found during the 2026-07-15 product-strategy
-review via a direct SQLite query against the real tracking DB — invisible in the benchmark corpus,
-which has no case that exercises this pattern (mypy's 2 benchmark samples both compress fine).
+**Note:** the relevant-files and repo-intel-nudge additions are deliberately additive context
+features (each already has its own "only fire if there's something real to inject" gate, unrelated to
+compression-savings math) — parity with the Bash dispatcher's design only requires the
+concise-instruction nudge's cost to be counted, not those two.
 
-**Product decision (2026-07-31):** re-raised explicitly during the v0.5.0 README rewrite — the
-project owner does not consider a filter that expands output on real usage acceptable, benchmark
-corpus blind spot or not. Reconfirmed as next-priority exploration work, ahead of any further
-benchmark-number-driven marketing (the README's new "Numbers" section deliberately does not
-mention mypy's real-world regression, since it's an unresolved defect, not a proof point — see
-QB-085's README rewrite). No scoping decision made yet; option (b) above (fix generally via
-QB-053/QB-054's negative-savings self-correction) still the leading candidate over a mypy-specific
-patch.
+**Desired outcome:** Restructure `claude_read.py` so exactly one `track_invocation()` call per Read
+happens after all of `_compress_read_output()`, `_maybe_prepend_relevant_files()`, and
+`_maybe_prepend_repo_intel_nudge()` have run — mirroring `dispatcher.py`'s `run_dispatch()` shape —
+without changing any of the existing branch-specific `filter_name`/`was_passthrough` semantics
+documented in `_compress_read_output()`'s own docstring.
+
+**Status:** Proposed. Not scoped or implemented. Opened 2026-07-31 directly out of verifying QB-052.
 
 </details>
 
@@ -4655,6 +4666,68 @@ updates/additions across `tests/unit/test_cli.py`, `tests/unit/test_adapters.py`
 `tests/unit/test_adapters_read.py`, and new `tests/unit/test_hook_manifest.py`.
 
 **Status:** Implemented and merged to `main` (PR #48, `feature/qb-037-product-polish-pass`) — shipped in Quor **v0.4.0** (2026-07-11). *(Correction: this entry originally read "not committed"; verified against `git log` while restructuring this document.)*
+
+</details>
+
+---
+
+#### QB-052 — Fix negative-compression regression in mypy/npm filters
+
+**Effort:** Small · **Value:** Medium · **Category:** Bug fix
+
+Real usage data showed `mypy` and `npm` output sometimes getting *bigger*, not smaller, after
+compression — undermining trust in a compression tool regardless of how small the absolute numbers
+were. Root cause was never the filters' own compression logic: two dispatcher-level additions (the
+tee recovery footer, and — found later, same shape — the concise-output instruction nudge) were
+being appended/prepended unconditionally, with no check that their fixed cost stayed below what the
+filter actually saved. Both are now gated by the same rule: never add a dispatcher-level extra that
+costs more tokens than the filter saved.
+
+<details>
+<summary>Technical details</summary>
+
+**Problem:** `mypy`'s `group_repeated` stage (`quor/filters/builtin/build.toml`) needs 3 *identical*
+error shapes before it collapses anything; a typical real run has a handful of *distinct* errors, so
+`group_repeated` rarely fires and only a few boilerplate lines get stripped by `strip_lines` — a
+small, genuine saving the tee footer's near-fixed cost was then outweighing. `npm`'s equivalent
+threshold is lower, so it was only mildly negative rather than sharply so.
+
+**Fix, shipped over three commits:**
+- `61ca8a4` (2026-07-15) strips the npm version-upgrade notice that was eating npm's small real
+  savings.
+- `09b6f1e` (2026-07-16) gates the tee recovery footer (`dispatcher.py::_apply_tee`) so the visible
+  `"\n[full output: <path>]"` line is only appended when doing so keeps the total token count at or
+  below the true raw output's — the raw file is still always written for recoverability, only the
+  visible footer is conditional.
+- **2026-07-31, found while verifying the above:** the concise-output instruction nudge
+  (`dispatcher.py`'s `CONCISE_INSTRUCTION`, a fixed 17-token string, added 2026-07-14 — one day before
+  the footer fix) had no equivalent gate, and was unconditionally prepended to any output a filter
+  changed at all. Worse, `track_invocation()` ran *before* the nudge was applied, so this cost was
+  structurally invisible to `quor gain` — a real compression win (e.g. mypy 75→63 tokens) could still
+  have the nudge push the actual bytes sent (63+17=80) into a net loss `quor gain` had no way to
+  report. The identical unconditional prepend also existed in the Read-hook path (`claude_read.py`).
+  Fixed in both: `_with_concise_instruction()` (`dispatcher.py`) now takes the same token-count gate
+  the tee footer uses; `track_invocation()` in `dispatcher.py` now runs *after* the nudge decision so
+  tracked numbers match what actually reaches stdout. The Read-hook path's tracking is called deeper
+  in the call stack (three branch functions, all before `_handle_text()` prepends anything) and was
+  left as-is rather than rushed — see **QB-094** for that follow-on.
+
+**Verification:** all pre-existing tee-regression tests pass; new regression tests added —
+`TestConciseInstruction.test_suppressed_when_it_would_cost_more_than_the_filter_saved` and the
+corresponding `TestDispatcherTee` update (`test_adapters.py`), a tracking-accuracy test in
+`TestDispatcherTracking` (`test_tracking.py`), and
+`test_instruction_suppressed_when_it_would_cost_more_than_the_filter_saved`
+(`test_adapters_read.py`) — the prior `TestConciseInstruction` suite only ever asserted the nudge was
+added, never that adding it could flip a real win into a real loss. This project's own live tracking
+DB independently confirms the fix: the 5 real `mypy` invocations logged since `09b6f1e` are all
+positive (75→63 tokens, +16%), and `quor gain --filters` reports 16.0% real compression for `mypy`,
+not the -41.2% this item was originally opened against.
+
+**Status:** Resolved 2026-07-31 (housekeeping correction — this entry previously sat in
+[Now](#now) still reading "Proposed. Not scoped or implemented," the same class of staleness
+QB-046/QB-041/QB-055's own corrections describe; moved here once verified fully done). Originally
+found 2026-07-15 via a direct SQLite query against the real tracking DB — invisible in the benchmark
+corpus, which has no case exercising this pattern.
 
 </details>
 

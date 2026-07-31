@@ -1575,6 +1575,45 @@ class TestDispatcherTracking:
         assert row[0] == 1       # passthrough
         assert row[1] is None    # no filter
 
+    def test_final_tokens_reflects_concise_instruction_when_added(self, tmp_path: Path) -> None:
+        """QB-052 follow-on: the concise-output nudge is applied (dispatcher.py)
+        before track_invocation() runs, so a tracked record's final_tokens
+        must match what was actually written to stdout, nudge included —
+        not a pre-nudge intermediate quor gain would over-report against."""
+        db_path = tmp_path / "quor.db"
+        tracking = TrackingDB(db_path=db_path)
+
+        # Generous PASSED padding so genuine compression savings comfortably
+        # exceed the nudge's fixed cost (same rationale as
+        # TestConciseInstruction._CHANGED_OUTPUT in test_adapters.py).
+        stdout_text = (
+            "".join(f"PASSED tests/test_pad_{i}.py::test_ok\n" for i in range(100))
+            + "FAILED tests/test_b.py::test_y\n"
+            "    AssertionError: got False\n"
+        )
+        proc = MagicMock(spec=subprocess.CompletedProcess)
+        proc.stdout = stdout_text
+        proc.returncode = 1
+
+        captured_stdout = io.StringIO()
+        with (
+            patch("subprocess.run", return_value=proc),
+            patch("sys.stdout", captured_stdout),
+        ):
+            from quor.adapters.dispatcher import run_dispatch
+            run_dispatch(["pytest", "tests/"], tracking=tracking)
+
+        written = captured_stdout.getvalue()
+        tracking.flush()
+        tracking.close()
+
+        with sqlite3.connect(str(db_path)) as conn:
+            row = conn.execute(
+                "SELECT final_tokens FROM invocations LIMIT 1"
+            ).fetchone()
+        assert row is not None
+        assert row[0] == count_tokens(written)
+
 
 # ---------------------------------------------------------------------------
 # Read hook integration with tracking (QB-007D) — Read becomes another
