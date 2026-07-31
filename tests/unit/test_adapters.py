@@ -533,14 +533,24 @@ class TestDispatcher:
 
 
 class TestConciseInstruction:
+    # Generously large PASSED padding (all stripped by the pytest filter) so
+    # the nudge's fixed 17-token cost comfortably stays under genuine
+    # compression savings — mirrors TestDispatcherTee._CHANGED_OUTPUT's own
+    # rationale for the same reason (QB-052 gate applies to both the tee
+    # footer and this nudge now).
+    _CHANGED_OUTPUT = (
+        "".join(f"PASSED tests/test_pad_{i}.py::test_ok\n" for i in range(100))
+        + "FAILED tests/test_b.py::test_y\n"
+        "    AssertionError: got False\n"
+    )
+
+    # QB-052 follow-on: only one short PASSED line is stripped — far less
+    # than the nudge's fixed cost — so adding it would push the total token
+    # count above the true raw output's and must be suppressed.
+    _TINY_CHANGED_OUTPUT = "PASSED tests/test_a.py::test_x\nFAILED tests/test_b.py::test_y\n"
+
     def test_prepended_when_a_filter_compresses_output(self) -> None:
-        proc = _make_proc(
-            stdout=(
-                "PASSED tests/test_a.py::test_x\n"
-                "FAILED tests/test_b.py::test_y\n"
-                "    AssertionError: got False\n"
-            )
-        )
+        proc = _make_proc(stdout=self._CHANGED_OUTPUT)
         captured = io.StringIO()
         with (
             patch("subprocess.run", return_value=proc),
@@ -549,6 +559,25 @@ class TestConciseInstruction:
             run_dispatch(["pytest", "tests/"])
 
         assert captured.getvalue().startswith(CONCISE_INSTRUCTION)
+
+    def test_suppressed_when_it_would_cost_more_than_the_filter_saved(self) -> None:
+        """QB-052 follow-on: a small, mostly-non-repetitive real output (the
+        exact shape that motivated QB-052's tee-footer gate) must not have
+        the fixed-cost nudge silently flip a real compression win into a
+        net loss."""
+        from quor.tracking.db import count_tokens
+
+        proc = _make_proc(stdout=self._TINY_CHANGED_OUTPUT)
+        captured = io.StringIO()
+        with (
+            patch("subprocess.run", return_value=proc),
+            patch("sys.stdout", captured),
+        ):
+            run_dispatch(["pytest", "tests/"])
+
+        output = captured.getvalue()
+        assert not output.startswith(CONCISE_INSTRUCTION)
+        assert count_tokens(output) <= count_tokens(self._TINY_CHANGED_OUTPUT)
 
     def test_absent_on_passthrough(self) -> None:
         """No filter matched: output must stay byte-identical (fail-open
@@ -564,13 +593,7 @@ class TestConciseInstruction:
         assert captured.getvalue() == "hello world\n"
 
     def test_disabled_via_module_flag(self) -> None:
-        proc = _make_proc(
-            stdout=(
-                "PASSED tests/test_a.py::test_x\n"
-                "FAILED tests/test_b.py::test_y\n"
-                "    AssertionError: got False\n"
-            )
-        )
+        proc = _make_proc(stdout=self._CHANGED_OUTPUT)
         captured = io.StringIO()
         with (
             patch("subprocess.run", return_value=proc),
@@ -891,7 +914,12 @@ class TestDispatcherTee:
         footer must be omitted — the printed output must never cost more
         tokens than the true raw output would have — but the tee file is
         still written unconditionally, so the raw output remains recoverable
-        on disk even though stdout doesn't advertise it."""
+        on disk even though stdout doesn't advertise it.
+
+        The concise-output nudge (QB-052 follow-on, see TestConciseInstruction)
+        is gated by the same rule and is suppressed here too: this is the
+        exact tiny-savings shape where the fixed nudge cost would also
+        outweigh what the filter saved."""
         from quor.pipeline.tee import tee_path
 
         proc = _make_proc(stdout=self._TINY_CHANGED_OUTPUT)
@@ -904,7 +932,8 @@ class TestDispatcherTee:
 
         output = captured.getvalue()
         assert "[full output:" not in output
-        assert output == CONCISE_INSTRUCTION + "FAILED tests/test_b.py::test_y\n"
+        assert not output.startswith(CONCISE_INSTRUCTION)
+        assert output == "FAILED tests/test_b.py::test_y\n"
 
         # The tee file was still written for this exact raw content —
         # "always generate the tee file" holds even when the footer is
