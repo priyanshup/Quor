@@ -139,6 +139,112 @@ class TestTokenize:
         assert [t.value for t in tokens] == ["head", "-n", "5", "file"]
 
 
+class TestAdjacentQuoteFragments:
+    """A shell word can be built from several fragments — quoted and
+    unquoted — glued together with no whitespace between them (e.g.
+    --format="%h %ad", foo"bar"baz). Real shell grammar treats these as ONE
+    argument; whitespace is the only word separator. Before this fix,
+    tokenize() treated the quote character itself as a hard token boundary
+    even mid-word, so `--format="%h %ad"` became two tokens (`--format=` and
+    `"%h %ad"`). classify_command()'s reconstruction (`" ".join(args)`) then
+    inserted a literal space between them, turning one shell argument into
+    two — e.g. `git log --format="%h %ad" -1` was rewritten to
+    `... git log --format= "%h %ad" -1`, which a real shell parses as
+    `--format=` (empty) plus a bare positional arg `%h %ad`, and git reports
+    `fatal: bad revision '%h %ad'`. Confirmed against `shlex.split()`
+    (Python's POSIX word-splitting reference) as the ground truth for what
+    a real shell would do.
+    """
+
+    def test_unquoted_then_quoted_merge(self) -> None:
+        tokens = tokenize('git log --format="%h %ad"')
+        assert [t.value for t in tokens] == ["git", "log", '--format="%h %ad"']
+        assert tokens[-1].kind == TokenKind.WORD
+
+    def test_unquoted_then_single_quoted_merge(self) -> None:
+        tokens = tokenize("git log --format='%h %ad'")
+        assert [t.value for t in tokens] == ["git", "log", "--format='%h %ad'"]
+        assert tokens[-1].kind == TokenKind.WORD
+
+    def test_flag_immediately_followed_by_quote(self) -> None:
+        tokens = tokenize('git commit -m"hello world"')
+        assert [t.value for t in tokens] == ["git", "commit", '-m"hello world"']
+
+    def test_flag_eq_immediately_followed_by_quote(self) -> None:
+        tokens = tokenize('git commit -m="hello world"')
+        assert [t.value for t in tokens] == ["git", "commit", '-m="hello world"']
+
+    def test_quoted_then_unquoted_merge(self) -> None:
+        tokens = tokenize('echo "foo"bar')
+        assert [t.value for t in tokens] == ["echo", '"foo"bar']
+
+    def test_unquoted_quoted_unquoted_merge(self) -> None:
+        tokens = tokenize('echo foo"bar"baz')
+        assert [t.value for t in tokens] == ["echo", 'foo"bar"baz']
+
+    def test_env_assign_with_quoted_value_still_detected(self) -> None:
+        """A VAR="value with spaces" prefix must still be recognized as one
+        ENV_ASSIGN token, not split at the quote like the flag case above."""
+        tokens = tokenize('FOO="bar baz" git status')
+        assert tokens[0].kind == TokenKind.ENV_ASSIGN
+        assert tokens[0].value == '"bar baz"'.join(["FOO=", ""])
+
+    def test_standalone_quoted_arg_kind_unaffected(self) -> None:
+        """A quoted arg with whitespace on both sides (the ordinary case)
+        must still get the specific SINGLE_QUOTED/DOUBLE_QUOTED kind, not
+        fall back to a generic WORD merge — only *adjacent*, no-space
+        fragments should merge."""
+        tokens = tokenize("git commit -m 'fix: patch'")
+        assert tokens[-1].kind == TokenKind.SINGLE_QUOTED
+        assert tokens[-1].value == "'fix: patch'"
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            'git log --format="%h %ad"',
+            "git log --format='%h %ad'",
+            'git commit -m"hello world"',
+            'git commit -m="hello world"',
+        ],
+    )
+    def test_word_count_matches_shlex(self, cmd: str) -> None:
+        """parse_args() must produce exactly as many words as a real POSIX
+        shell would (shlex.split is Python's reference implementation of
+        POSIX word-splitting/quote-removal) — the previous bug produced one
+        extra word per adjacent quote fragment."""
+        import shlex
+
+        assert len(parse_args(cmd)) == len(shlex.split(cmd))
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            'git log --format="%h %ad" -1',
+            "git log --format='%h %ad' -1",
+            'git commit -m"hello world"',
+            'git commit -m="hello world"',
+        ],
+    )
+    def test_rewrite_round_trips_to_identical_argv(self, cmd: str) -> None:
+        """End-to-end: rewrite_command()'s output, re-parsed the way a real
+        shell would (shlex), must yield the exact same argv as the original
+        command would have — just with the quor invocation spliced in after
+        the base command. This is the property that was actually broken:
+        the rewritten string used to parse to a DIFFERENT argv than the
+        original, changing what the command meant."""
+        import shlex
+
+        original_argv = shlex.split(cmd)
+        rewritten = rewrite_command(cmd)
+        assert rewritten is not None
+        rewritten_argv = shlex.split(rewritten)
+
+        base = original_argv[0]
+        rest = original_argv[1:]
+        quor_argv = shlex.split(Q)
+        assert rewritten_argv == [*quor_argv, base, *rest]
+
+
 class TestHasHeredoc:
     def test_detects_heredoc(self) -> None:
         assert has_heredoc("git commit -m << EOF") is True
