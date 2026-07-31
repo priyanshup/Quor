@@ -51,6 +51,10 @@ class CommandHead:
     raw_rest: str            # original text after env + transparent prefix
 
 
+_WORD_STOP_CHARS = (" ", "\t", "&", "|", ";", "<", ">")
+_PLAIN_STOP_CHARS = (" ", "\t", "'", '"', "&", "|", ";", "<", ">")
+
+
 def tokenize(cmd: str) -> list[Token]:
     """Tokenize a shell command string into Tokens.
 
@@ -65,26 +69,6 @@ def tokenize(cmd: str) -> list[Token]:
         # Skip whitespace
         if cmd[i] == " " or cmd[i] == "\t":
             i += 1
-            continue
-
-        # Single-quoted string: no escapes inside
-        if cmd[i] == "'":
-            j = i + 1
-            while j < n and cmd[j] != "'":
-                j += 1
-            tokens.append(Token(cmd[i : j + 1], TokenKind.SINGLE_QUOTED))
-            i = j + 1
-            continue
-
-        # Double-quoted string: backslash escapes apply
-        if cmd[i] == '"':
-            j = i + 1
-            while j < n and cmd[j] != '"':
-                if cmd[j] == "\\" and j + 1 < n:
-                    j += 1
-                j += 1
-            tokens.append(Token(cmd[i : j + 1], TokenKind.DOUBLE_QUOTED))
-            i = j + 1
             continue
 
         # <<  heredoc redirect
@@ -149,21 +133,62 @@ def tokenize(cmd: str) -> list[Token]:
             i = j
             continue
 
-        # Plain word (including backslash-escaped chars)
-        j = i
-        while j < n and cmd[j] not in (" ", "\t", "'", '"', "&", "|", ";", "<", ">"):
-            if cmd[j] == "\\" and j + 1 < n:
-                j += 1
-            j += 1
-        word = cmd[i:j]
-        if word:
-            # Distinguish VAR=value from regular words
-            eq = word.find("=")
-            if eq > 0 and word[:eq].replace("_", "").isalnum() and word[0].isalpha():
-                tokens.append(Token(word, TokenKind.ENV_ASSIGN))
+        # Shell word: one argument can be built from several adjacent
+        # fragments — quoted and unquoted — with no whitespace between them
+        # (e.g. --format="%h %ad", foo"bar"baz, KEY="a b"). Real shell
+        # grammar treats these as a SINGLE word; whitespace is the only
+        # argument separator. Scan every contiguous fragment here so a
+        # reconstruction step downstream (`" ".join(...)`) can never insert
+        # a space a real shell would never have parsed — that space is what
+        # previously turned one argument into two (e.g. `--format=` and a
+        # separate `"%h %ad"`, changing what the command meant to the real
+        # shell that finally executes it).
+        start = i
+        fragment_count = 0
+        solo_kind = TokenKind.WORD
+        while i < n and cmd[i] not in _WORD_STOP_CHARS:
+            if cmd[i] == "'":
+                # Single-quoted fragment: no escapes inside.
+                j = i + 1
+                while j < n and cmd[j] != "'":
+                    j += 1
+                i = j + 1
+                solo_kind = TokenKind.SINGLE_QUOTED
+            elif cmd[i] == '"':
+                # Double-quoted fragment: backslash escapes apply.
+                j = i + 1
+                while j < n and cmd[j] != '"':
+                    if cmd[j] == "\\" and j + 1 < n:
+                        j += 1
+                    j += 1
+                i = j + 1
+                solo_kind = TokenKind.DOUBLE_QUOTED
             else:
-                tokens.append(Token(word, TokenKind.WORD))
-        i = j
+                # Unquoted fragment (including backslash-escaped chars).
+                j = i
+                while j < n and cmd[j] not in _PLAIN_STOP_CHARS:
+                    if cmd[j] == "\\" and j + 1 < n:
+                        j += 1
+                    j += 1
+                i = j
+                solo_kind = TokenKind.WORD
+            fragment_count += 1
+
+        word = cmd[start:i]
+        if word:
+            # A lone quoted fragment keeps its specific kind (existing
+            # SINGLE_QUOTED/DOUBLE_QUOTED granularity); anything merged from
+            # more than one fragment — or a bare unquoted run — is WORD or
+            # ENV_ASSIGN, decided the same way regardless of what's inside
+            # (quotes don't stop a VAR=value prefix from being recognized).
+            if fragment_count == 1 and solo_kind in (TokenKind.SINGLE_QUOTED, TokenKind.DOUBLE_QUOTED):
+                tokens.append(Token(word, solo_kind))
+            else:
+                eq = word.find("=")
+                if eq > 0 and word[:eq].replace("_", "").isalnum() and word[0].isalpha():
+                    tokens.append(Token(word, TokenKind.ENV_ASSIGN))
+                else:
+                    tokens.append(Token(word, TokenKind.WORD))
 
     return tokens
 
