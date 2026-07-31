@@ -215,6 +215,55 @@ paragraph explaining exactly what changed and why; nothing was silently reordere
 QB-041 → QB-055 → QB-052 → QB-047 → QB-054 → QB-049 → QB-039 → QB-053 → QB-046 (QB-051 itself is
 already shipped and sits first as the foundation the rest of this ordering rests on).
 
+**Priority order re-set 2026-07-31**, following a head-of-product-style competitive-landscape and
+roadmap review conducted after v0.5.0 shipped (QB-083/084/085). Three things changed the picture:
+
+1. **Housekeeping correction:** QB-046 was discovered to already be fully implemented (Go/Rust/
+   Java/C# AST summarization, benchmark-backfilled) despite still sitting here as the lowest-
+   priority *unstarted* item — moved to [Completed](#completed). It no longer occupies a slot in
+   this ordering at all. Every other Now item's `Status:` line was individually re-checked and
+   confirmed genuinely un-implemented before this reorder — see QB-046's own new Completed entry
+   for the correction note.
+2. **Live competitive refresh** (see new item **QB-086** below) found the market has moved
+   materially since the last research pass: RTK (the dominant incumbent) now claims cross-platform
+   support including Windows (quality unverified, reported "degraded"), eroding part of Quor's
+   original Windows-first differentiation; Headroom AI has grown into a broader compression-
+   infrastructure play (MCP server, multi-agent wrap, reversible cache) rather than just a Python
+   alternative; and entirely new entrants exist (LeanCTX, a deterministic Rust competitor; Token
+   Optimizer, which directly targets the cross-session/compaction-survival space QB-043 also
+   targets; Caveman, which compresses the *assistant's own responses* rather than tool output — a
+   mechanism Quor has never done). Full findings in QB-086.
+3. **v0.5.0 changes the calculus for QB-034** (`quor discover`, previously in
+   [Later](#later), deliberately held back because "there's no real user base to retain yet"): that
+   condition no longer holds — v0.5.0 just shipped with a genuinely marketing-oriented README
+   (QB-085) explicitly designed to drive trial installs. QB-034 is the exact trial-to-adoption
+   conversion mechanism the market leader (RTK) already validated. Shipping a strong front door
+   (README) without the matching retention mechanism behind it wastes the acquisition work QB-085
+   just did. Moved here from Later.
+
+**New final order:** QB-052 → QB-047 → QB-041 → QB-086 → QB-034 → QB-055 → QB-054 → QB-049 →
+QB-039 → QB-053. Rationale for the three moves ahead of the 2026-07-15 order:
+
+- **QB-052 (mypy/npm expansion bug) → #1, up from #3.** Non-negotiable given QB-085's README now
+  publicly leads with specific compression numbers (35.9% average, up to 89%) as a trust-building
+  device. A live, unfixed case where Quor's own tool *expands* output directly contradicts the one
+  claim every competitor comparison in QB-086 rests on — trustworthiness over raw ratio — and is a
+  materially worse look now than it was pre-README.
+- **QB-047 (real benchmark corpus & continuous tracking) → #2, up from #4.** Same reasoning:
+  competitors are publishing bold, round numbers (Headroom "60-95%", RTK/LeanCTX "60-90%"). Quor's
+  differentiation is defensible, continuously-measured numbers, not bigger numbers — QB-085's README
+  is now a public commitment to that, so the measurement infrastructure backing it needs to keep
+  pace.
+- **QB-086 (competitive landscape refresh, new item) → #4.** Cheap (research/writing, no code) and
+  foundational — every other prioritization decision in this document cites the now-partially-stale
+  `docs/archive/product-discovery/competitive-research.md`. Do this before it silently misinforms
+  another round of ranking the way QB-046's stale status just did.
+- **QB-034 (`quor discover`) → #5.** See point 3 above.
+
+QB-041/QB-055/QB-054/QB-049/QB-039/QB-053 keep their relative order from the 2026-07-15 pass — the
+evidence behind that ordering (real-usage volume, sequencing dependencies) is unchanged by this
+review; only the four items above jumped ahead of them, not each other.
+
 ---
 
 #### QB-051 — Compression Analytics & Benchmark Dashboard
@@ -285,7 +334,7 @@ invented items; each still needs its own full scoping pass, this only reorders t
    that already exists is Quor's best lever, and it's currently gated to three languages. Effort:
    Medium (per language, existing tree-sitter pattern). Expected savings: High (mirrors the 43%
    figure above, per newly-covered language). Risk: Low (additive, same fail-open contract).
-   Confidence: High.
+   Confidence: High. *(2026-07-31: shipped — see [Completed](#completed).)*
 2. **QB-041 — Smarter diff & delta compression (git diff/show).** Git sits at 31% ecosystem
    contribution — meaningfully behind JavaScript (52%)/TypeScript (43%)/Python (41%) despite git
    commands being extremely common in a coding session. This is fresh, corpus-measured
@@ -369,6 +418,115 @@ promotion to Now and behind two brand-new items, QB-052 (the mypy/npm fix) and Q
 manual SQL query). See each item's own **Evidence update (2026-07-15)** note below for specifics.
 QB-046, QB-047, and QB-049 have moved up from [Next](#next) into Now; QB-040 and QB-042 have moved
 down from Now into [Next](#next) — full reasoning is in each item's own entry, not repeated here.
+
+</details>
+
+---
+
+#### QB-052 — Fix negative-compression regression in mypy/npm filters
+
+**Effort:** Small · **Value:** Medium · **Risk:** Low · **Expected token impact:** Low (small in
+absolute tokens, but corrects a trust-damaging defect) · **Category:** Bug fix
+
+Real usage data — not the benchmark corpus, which never surfaced this — shows two shipped filters
+making output *bigger*, not smaller, on average: `mypy` (-41.2% avg over 80 real invocations) and
+`npm` (-9.1% avg over 26 real invocations). A compression tool that expands output, even
+occasionally, undermines trust regardless of how small the absolute numbers are.
+
+**Priority update (2026-07-31) — moved to #1 in Now, up from #3:** see the dated note directly
+below and the Now section's own 2026-07-31 re-ranking rationale above — a live expansion bug is
+now a materially worse look given QB-085's README publicly leads with specific compression numbers.
+
+<details>
+<summary>Technical details</summary>
+
+**Problem, read directly from `quor/filters/builtin/build.toml`:** the `mypy` filter's
+`group_repeated` stage requires 3 *identical* error shapes (`min_count = 3`) before it collapses
+anything, and `abort_unless = ["error", "Error", "warning", "Warning", "note"]` gates the whole
+pipeline. A typical real mypy run reports a handful of *distinct* errors, not 3+ identical ones —
+so `group_repeated` rarely fires, `strip_lines` only removes a few boilerplate lines
+("Success: no issues found", "Found N error", blank lines), and the tee recovery-footer's
+near-fixed overhead is added regardless — net-negative on already-small output. `npm`'s
+`group_repeated` (`min_count = 2`, `quor/filters/builtin/node.toml`) hits the same dynamic less
+severely, which is why its real average is only mildly negative rather than sharply so.
+
+**Desired outcome:** Either (a) lower `mypy`'s `group_repeated` threshold and broaden `strip_lines`
+so genuinely-small mypy runs have more to trim, or (b) suppress/shrink the tee recovery footer when
+a filter's own compression didn't save enough to offset it. Option (b) is the general fix — see
+QB-053/QB-054 below, which would let *any* filter self-correct this way, not just mypy/npm — and
+likely obsoletes needing a filter-specific fix, so it should be scoped first.
+
+**Status:** Proposed. Not scoped or implemented. Found during the 2026-07-15 product-strategy
+review via a direct SQLite query against the real tracking DB — invisible in the benchmark corpus,
+which has no case that exercises this pattern (mypy's 2 benchmark samples both compress fine).
+
+**Product decision (2026-07-31):** re-raised explicitly during the v0.5.0 README rewrite — the
+project owner does not consider a filter that expands output on real usage acceptable, benchmark
+corpus blind spot or not. Reconfirmed as next-priority exploration work, ahead of any further
+benchmark-number-driven marketing (the README's new "Numbers" section deliberately does not
+mention mypy's real-world regression, since it's an unresolved defect, not a proof point — see
+QB-085's README rewrite). No scoping decision made yet; option (b) above (fix generally via
+QB-053/QB-054's negative-savings self-correction) still the leading candidate over a mypy-specific
+patch.
+
+</details>
+
+---
+
+#### QB-047 — Real-world benchmark corpus & continuous tracking
+
+**Effort:** Medium · **Value:** High · **Risk:** Medium · **Expected token impact:** None
+directly · **Category:** Engineering / Measurement
+
+The existing benchmark suite (QB-011, expanded by QB-005E) is 60 realistic but hand-written sample
+commands, run on demand, compared against one committed baseline. This item extends it two ways:
+sampling real (anonymized, opt-in) commands from actual usage instead of only hand-authored fixtures,
+and tracking compression numbers as a trend across releases instead of a single point-in-time
+baseline diff.
+
+**Evidence update (2026-07-15) — promoted from [Next](#next), Value raised Medium → High:** the
+product-strategy review found large, previously-invisible gaps between the benchmark corpus and
+real usage — mypy (46.1% benchmark vs. **-41.2% real**), git-log (40.8% benchmark vs. **83.8%
+real**), git-status (52.7% benchmark vs. **6.6% real**), pytest (39.75% benchmark vs. **12.9%
+real**) — for four different filters, in both directions. A corpus with 2 samples per category
+cannot predict real behavior reliably for the highest-volume filters any more than the lowest. This
+is no longer a hypothesis; it's what closing the loop between QB-051's benchmark analytics and
+`quor gain`'s real telemetry actually showed. Recommend scoping a first *slice* (more git-diff,
+generic, and config-file samples specifically, tied to QB-041 and QB-040) rather than the full
+broad corpus rebuild in one pass.
+
+**Priority update (2026-07-31) — moved to #2 in Now, up from #4:** the corpus has already grown
+from 60 to 127 cases since this entry was last touched (QB-046's benchmark backfill among other
+additions), but the underlying ask — real, continuously-tracked numbers, not a static snapshot —
+is more urgent now, not less: `docs/BENCHMARKS.md` itself has already drifted (still describes the
+60-case corpus as of its 2026-07-15 generation date, not the current 127-case/35.9% figures QB-085's
+README now cites directly from a fresh run). See the Now section's own 2026-07-31 re-ranking
+rationale above.
+
+<details>
+<summary>Technical details</summary>
+
+**Problem:** Hand-written benchmark fixtures, however realistic, can't tell us whether real usage
+looks like the corpus — QB-034's own `discover`-command proposal exists specifically because this
+gap is felt keenly ("what would Quor have saved on commands it never saw"). Separately, the
+benchmark suite's regression check compares only against the immediately prior baseline — there's no
+view of whether compression rates are trending up or down release over release.
+
+**Desired outcome:** (1) An opt-in, privacy-conscious mechanism to contribute real command-output
+samples (redacted/anonymized) to the benchmark corpus over time — likely sharing infrastructure with
+QB-034's `discover` command, which already needs to read real session logs. (2) A trend view — even
+a simple committed CSV/JSON of "compression % per category per release" — so a regression that's
+individually below the 2.0pp threshold (QB-011's existing gate) but persistent across several
+releases becomes visible. QB-051 already shipped the data format for this (`tests/benchmarks/
+history.py`'s `history.json`) — this item is what would actually populate it release over release.
+(3) *(Added 2026-07-31)* Regenerate `docs/BENCHMARKS.md`'s own prose against the current 127-case
+corpus — flagged but deliberately not done as part of QB-085's README-only rewrite; a natural
+first deliverable for this item once scoped.
+
+**Open question:** privacy/consent model for (1) needs real product and legal thought before any
+implementation — this is explicitly not "just add telemetry."
+
+**Status:** Proposed. Not scoped or implemented.
 
 </details>
 
@@ -462,6 +620,136 @@ under this task's "never modify existing PROTECT lines" constraint (collapsing a
 
 ---
 
+#### QB-086 — Competitive landscape refresh
+
+**Effort:** Small · **Value:** High · **Risk:** Low · **Expected token impact:** None directly
+(research/positioning) · **Category:** Engineering / Measurement
+
+**New item, added 2026-07-31** during a head-of-product-style competitive-analysis and roadmap
+review conducted after v0.5.0 shipped. `docs/archive/product-discovery/competitive-research.md` —
+cited as the evidentiary basis for QB-032, QB-034, QB-035, and QB-042 — is a one-time snapshot that
+has not been re-verified since it was written, in a market moving fast enough that it's now
+materially stale in several specific, checkable ways.
+
+<details>
+<summary>Technical details</summary>
+
+**What a live check (2026-07-31) found, each a concrete correction to the existing research doc:**
+
+- **RTK (the dominant incumbent, previously cited as Windows-unsupported with "open issues"):** now
+  reports cross-platform support including Windows, though Windows quality is independently
+  described elsewhere as "degraded." Star count and adoption have grown substantially (~70k+ stars,
+  700k+ downloads, ~18k+ active developers as of mid-2026, up from 67,177 stars at the time of the
+  original research). **Implication:** "Windows-first" alone is a weaker standalone differentiator
+  than the original research assumed — Quor's actual advantage is closer to "reliable and
+  pip-installable" than "the only option on Windows." Worth an honest, direct comparison (not
+  assumed) of Quor's Windows CI robustness against RTK's self-described "degraded" experience before
+  leaning further on this angle in marketing.
+- **Headroom AI (previously scoped as "the most sophisticated Python option," 37,000+ stars):**
+  has grown into a broader compression-*infrastructure* play, not just a Python alternative to
+  RTK — ships as a library, a proxy, an agent-wrap for Claude Code/Codex/Cursor/OpenCode, and an
+  MCP server with `headroom_compress`/`headroom_retrieve` tools; routes content through a
+  `ContentRouter` to format-specific compressors (JSON, AST-aware code, ML-based prose). Reported
+  star count in newer sources (~29.5K, June 2026) is actually *lower* than the figure the original
+  research cited — flagged as a discrepancy worth independently re-verifying directly against the
+  GitHub repo, not silently resolved either way here. **Implication:** Headroom's multi-agent breadth
+  (4+ assistants via agent-wrap/MCP) now materially exceeds Quor's own (1 full + 1 partial + 6
+  detection-only) — see QB-035/QB-068/QB-069's own entries for why the six detection-only adapters
+  are upstream-hook-limited, not effort-limited, but this gap is real and worth stating plainly
+  rather than only defending.
+- **Entirely new entrants, absent from the original research:** **LeanCTX** (a local Rust binary,
+  "context intelligence layer," 60–90% claimed reduction — structurally the closest thing to a
+  second RTK); **Token Optimizer** (`alexgreensh/token-optimizer` — nine automatic functions
+  targeting "ghost tokens," explicitly framed around *surviving context compaction across a
+  session* — this is the same problem space as Quor's own unbuilt QB-043, now independently
+  validated as a market worth competing in, not just an internal theory); **Caveman** (a Claude Code
+  *skill*, not a hook tool, that rewrites the *assistant's own verbose responses* into terse output,
+  ~65% average reduction — a mechanism Quor has never built or considered, operating on model output
+  rather than tool output).
+- **Platform-native shift, not previously a factor:** Anthropic's own context compaction
+  (`compact-2026-01-12` API header) now condenses conversation history server-side (one reported
+  case: 132,000 → 2,000 tokens), and prompt caching offers a 90% discount on cached input tokens.
+  Neither replaces per-tool-call output filtering (both are reactive, operating on content already
+  consumed into context; Quor is pre-emptive, operating before content ever enters context at all) —
+  but this is a real, new consideration for how Quor's value proposition is framed, not something
+  the existing research doc accounts for at all. See new item **QB-087** below.
+
+**Desired outcome:** A refreshed pass over `docs/archive/product-discovery/competitive-research.md`
+(or a new dated addendum, if editing the archived original is undesirable) correcting the above,
+re-running the "Opportunity Analysis" and "Positioning vs. Each Competitor" sections against current
+facts, and re-scoping QB-042's competitor list to include LeanCTX/Token Optimizer/Caveman alongside
+RTK/Headroom AI/ZAP.
+
+**Marketing-parity note (2026-07-31, from an external AI review of this same exercise):** Headroom
+AI markets its "CCR" reversible-compression mechanism heavily as a headline feature. Quor already
+has a functionally equivalent guarantee — the tee recovery cache (QB-013), every compressed output
+links back to the full original via `[full output: ...]` — but has never stated it in those
+competitive terms anywhere customer-facing. Cheap addition to this item's scope: when refreshing
+positioning copy, explicitly name this as parity with Headroom's own marketed differentiator,
+not just an internal safety mechanism.
+
+**Independent verification needed:** one of the three external AI reviews (DeepSeek) named a
+different set of "new entrants" than this item found directly (`context-compress`, "Token Optimizer
+MCP") — overlapping partially but not exactly with LeanCTX/Token Optimizer/Caveman above. Different
+AI web searches on fast-moving, low-visibility GitHub projects appear to surface different (and
+possibly conflated or stale) results. Treat every competitor name in this document — including the
+ones this item itself just added — as needing direct, individual re-verification against the real
+repository before being cited anywhere public-facing, not taken on any single search's word alone.
+
+**Status:** Proposed. Not scoped or implemented. Deliberately kept cheap and high in this ranking —
+research/writing only, no code — because every other prioritization decision in this document
+(including this review's own) depends on this foundation being current.
+
+</details>
+
+---
+
+#### QB-034 — Show new users what Quor would have saved them, retroactively
+
+**Effort:** Medium · **Value:** Medium → **High** (re-rated 2026-07-31, see below) · **Risk:** Low ·
+**Expected token impact:** None directly (adoption tool, not a compression change) · **Category:**
+Feature
+
+A proposed `quor discover` command would scan a user's past AI coding sessions and show, in
+hindsight, how many tokens (and therefore cost/context) Quor would have saved on commands it never
+saw. A competitor already has this and uses it to convert casual trials into committed users.
+
+**Moved here from [Later](#later), 2026-07-31 — the condition this item was originally held back
+on no longer holds.** Originally deprioritized on the reasoning "not something that sets Quor
+apart — holding it until there's an actual user base worth retaining." v0.5.0 just shipped with a
+genuinely marketing-oriented README (QB-085) explicitly designed to drive trial installs — the
+acquisition motion QB-034 was waiting for now exists. This is the exact trial-to-adoption
+conversion mechanism the market leader (RTK) already validated (per the original competitive
+research, Opportunity 7: "the single most important adoption feature"). Shipping a strong front
+door without the matching retention mechanism wastes the acquisition work QB-085 just did.
+
+<details>
+<summary>Technical details</summary>
+
+**Problem:** Per the competitive research (Opportunity 7): RTK's `discover` command scans past
+Claude Code session logs (JSONL) to find commands that ran unfiltered/uncompressed, ranks them by
+theoretical savings, and uses that to convert casual installs into committed users — described
+there as "the single most important adoption feature." Quor has no equivalent; `quor gain` only
+reports what *did* get compressed, never what was left on the table.
+
+**Desired outcome:** A command that scans a user's existing Claude Code session logs and surfaces
+commands Quor never saw or never matched a filter for, so a new user can see concretely what
+switching to (or fully adopting) Quor would have saved them.
+
+**Relationship to QB-047:** QB-047's own "Desired outcome" already names this command as likely
+shared infrastructure for its own opt-in real-sample-collection mechanism (both need to parse real
+Claude Code session logs) — worth scoping together rather than twice.
+
+**Status:** Proposed. Not scoped or implemented. Originally "deliberately not scheduled" per the
+competitive research's own ranking (#7, "important but not differentiating" — RTK already has
+this); re-ranked into Now on 2026-07-31 per the note above. Retains its own original caution: this
+is a retention/conversion feature, not a compression-quality one — it should not be allowed to
+crowd out QB-052/QB-047/QB-041 above it.
+
+</details>
+
+---
+
 #### QB-055 — Smarter diff semantics (context-aware hunk compression)
 
 **Effort:** Medium · **Value:** High · **Risk:** Medium · **Expected token impact:** High ·
@@ -522,100 +810,6 @@ design are different kinds of work with different review needs.
 the QB-051 roadmap review, positioned immediately after QB-041 (same initiative) and explicitly
 ahead of QB-053 (adaptive compression) — this is concrete, scoped algorithm work, not the more
 architecturally speculative self-tuning QB-053 describes.
-
-</details>
-
----
-
-#### QB-052 — Fix negative-compression regression in mypy/npm filters
-
-**Effort:** Small · **Value:** Medium · **Risk:** Low · **Expected token impact:** Low (small in
-absolute tokens, but corrects a trust-damaging defect) · **Category:** Bug fix
-
-Real usage data — not the benchmark corpus, which never surfaced this — shows two shipped filters
-making output *bigger*, not smaller, on average: `mypy` (-41.2% avg over 80 real invocations) and
-`npm` (-9.1% avg over 26 real invocations). A compression tool that expands output, even
-occasionally, undermines trust regardless of how small the absolute numbers are.
-
-<details>
-<summary>Technical details</summary>
-
-**Problem, read directly from `quor/filters/builtin/build.toml`:** the `mypy` filter's
-`group_repeated` stage requires 3 *identical* error shapes (`min_count = 3`) before it collapses
-anything, and `abort_unless = ["error", "Error", "warning", "Warning", "note"]` gates the whole
-pipeline. A typical real mypy run reports a handful of *distinct* errors, not 3+ identical ones —
-so `group_repeated` rarely fires, `strip_lines` only removes a few boilerplate lines
-("Success: no issues found", "Found N error", blank lines), and the tee recovery-footer's
-near-fixed overhead is added regardless — net-negative on already-small output. `npm`'s
-`group_repeated` (`min_count = 2`, `quor/filters/builtin/node.toml`) hits the same dynamic less
-severely, which is why its real average is only mildly negative rather than sharply so.
-
-**Desired outcome:** Either (a) lower `mypy`'s `group_repeated` threshold and broaden `strip_lines`
-so genuinely-small mypy runs have more to trim, or (b) suppress/shrink the tee recovery footer when
-a filter's own compression didn't save enough to offset it. Option (b) is the general fix — see
-QB-053/QB-054 below, which would let *any* filter self-correct this way, not just mypy/npm — and
-likely obsoletes needing a filter-specific fix, so it should be scoped first.
-
-**Status:** Proposed. Not scoped or implemented. Found during the 2026-07-15 product-strategy
-review via a direct SQLite query against the real tracking DB — invisible in the benchmark corpus,
-which has no case that exercises this pattern (mypy's 2 benchmark samples both compress fine).
-
-**Product decision (2026-07-31):** re-raised explicitly during the v0.5.0 README rewrite — the
-project owner does not consider a filter that expands output on real usage acceptable, benchmark
-corpus blind spot or not. Reconfirmed as next-priority exploration work, ahead of any further
-benchmark-number-driven marketing (the README's new "Numbers" section deliberately does not
-mention mypy's real-world regression, since it's an unresolved defect, not a proof point — see
-QB-085's README rewrite). No scoping decision made yet; option (b) above (fix generally via
-QB-053/QB-054's negative-savings self-correction) still the leading candidate over a mypy-specific
-patch.
-
-</details>
-
----
-
-#### QB-047 — Real-world benchmark corpus & continuous tracking
-
-**Effort:** Medium · **Value:** High · **Risk:** Medium · **Expected token impact:** None
-directly · **Category:** Engineering / Measurement
-
-The existing benchmark suite (QB-011, expanded by QB-005E) is 60 realistic but hand-written sample
-commands, run on demand, compared against one committed baseline. This item extends it two ways:
-sampling real (anonymized, opt-in) commands from actual usage instead of only hand-authored fixtures,
-and tracking compression numbers as a trend across releases instead of a single point-in-time
-baseline diff.
-
-**Evidence update (2026-07-15) — promoted from [Next](#next), Value raised Medium → High:** the
-product-strategy review found large, previously-invisible gaps between the benchmark corpus and
-real usage — mypy (46.1% benchmark vs. **-41.2% real**), git-log (40.8% benchmark vs. **83.8%
-real**), git-status (52.7% benchmark vs. **6.6% real**), pytest (39.75% benchmark vs. **12.9%
-real**) — for four different filters, in both directions. A corpus with 2 samples per category
-cannot predict real behavior reliably for the highest-volume filters any more than the lowest. This
-is no longer a hypothesis; it's what closing the loop between QB-051's benchmark analytics and
-`quor gain`'s real telemetry actually showed. Recommend scoping a first *slice* (more git-diff,
-generic, and config-file samples specifically, tied to QB-041 and QB-040) rather than the full
-broad corpus rebuild in one pass.
-
-<details>
-<summary>Technical details</summary>
-
-**Problem:** Hand-written benchmark fixtures, however realistic, can't tell us whether real usage
-looks like the corpus — QB-034's own `discover`-command proposal exists specifically because this
-gap is felt keenly ("what would Quor have saved on commands it never saw"). Separately, the
-benchmark suite's regression check compares only against the immediately prior baseline — there's no
-view of whether compression rates are trending up or down release over release.
-
-**Desired outcome:** (1) An opt-in, privacy-conscious mechanism to contribute real command-output
-samples (redacted/anonymized) to the benchmark corpus over time — likely sharing infrastructure with
-QB-034's `discover` command, which already needs to read real session logs. (2) A trend view — even
-a simple committed CSV/JSON of "compression % per category per release" — so a regression that's
-individually below the 2.0pp threshold (QB-011's existing gate) but persistent across several
-releases becomes visible. QB-051 already shipped the data format for this (`tests/benchmarks/
-history.py`'s `history.json`) — this item is what would actually populate it release over release.
-
-**Open question:** privacy/consent model for (1) needs real product and legal thought before any
-implementation — this is explicitly not "just add telemetry."
-
-**Status:** Proposed. Not scoped or implemented.
 
 </details>
 
@@ -824,80 +1018,6 @@ started before its prerequisites exist.
 
 ---
 
-#### QB-046 — AST-aware summarization for more languages (Go, Rust, Java, C#)
-
-**Effort:** Large (per language) · **Value:** Medium · **Risk:** Low · **Expected token impact:**
-Medium · **Category:** Feature
-
-QB-005 shipped structure-aware, signature-preserved reading for Python, JavaScript, TypeScript, and
-TSX. This is the direct continuation for the other languages QB-035's original scope named (Go,
-Rust, Java) plus one it didn't (C#) — using the same `tree-sitter`-based framework QB-005B already
-built and proved reusable across three languages.
-
-**Evidence update (2026-07-15) — kept in [Now](#now) but moved to last, behind all
-telemetry-driven work (product decision, overriding this task's own initial ranking):**
-`code_ast_summarize` remains the single best-*performing* mechanism Quor has (44.1% of all
-benchmark savings, 43.1% avg per fire, consistent with `python_ast_summarize`'s 44.3% avg — same
-quality, different language) — the underlying case for this item is not weaker than it was. What
-changed is sequencing, not merit: real usage on this project shows **zero** invocations of
-`cat-javascript`/`cat-typescript` at all (this is a Python project), so there's no real-world volume
-evidence for a new language the way there is for QB-041/QB-055. The product owner's explicit call:
-the tree-sitter framework this item would use is already proven and not going anywhere — "there's
-no rush until users actually need them" — so this stays behind QB-041/QB-055 (proven volume),
-QB-052 (trust fix), QB-047 (fixes the measurement itself), QB-054 (learns what to prioritize from
-telemetry instead of guessing), QB-049 (cheap), QB-039, and QB-053 (the two items that would
-directly help decide *which* language to add first, using real evidence instead of a guess).
-
-<details>
-<summary>Technical details</summary>
-
-**Problem:** `quor/pipeline/ast_summarize/registry.py` only has analyzers for `python`,
-`javascript`, `typescript`, and `tsx`. A `.go`/`.rs`/`.java`/`.cs` file read through Quor gets no
-structural compression today, falling through to plain `cat`/`Read` passthrough.
-
-**Desired outcome:** One new analyzer per language, each following QB-005B/C/D's now-proven shape:
-a `tree-sitter-<language>` grammar (each is its own new optional dependency, following the
-`quor[javascript]` extras precedent), a node-type mapping for that language's function/method/class
-constructs, and the same ERROR-node-overlap exclusion rule
-(`quor/pipeline/ast_summarize/_treesitter_utils.py`, already generalized by QB-005D specifically so
-a third language wouldn't have to reinvent it).
-
-**Why this supersedes half of QB-035's original scope:** QB-035's own history already tracked this
-exact language-expansion work under its own update notes and closed the JS/TS portion via QB-005.
-This item exists so the *remaining* language work (Go/Rust/Java, plus C#) has a home that isn't
-bundled with QB-035's now-unrelated multi-agent-support half — see QB-035 in
-[Later](#later) for that half.
-
-**Sequencing note:** each language is independently shippable (QB-005C/D's own precedent) — this
-doesn't need to be one large effort, and languages can be prioritized by real usage data once it
-exists (see QB-047, QB-054).
-
-**Correction (documentation consistency pass):** the "Status" line below was stale.
-`pyproject.toml`'s `go`/`java`/`rust`/`csharp` optional extras already declare
-`tree-sitter-go`/`tree-sitter-java`/`tree-sitter-rust`/`tree-sitter-c-sharp` and describe
-implemented, fail-open analyzers (`analyze_go()`, `analyze_java()`, `analyze_rust()`,
-`analyze_csharp()` in `quor/pipeline/ast_summarize/`), each reusing the same
-`tree-sitter<0.26.0`-ceiling and ERROR-node-overlap rule as the shipped JS/TS/TSX analyzers. This
-work is implemented, not proposed — it has not yet been reflected in a `CHANGELOG.md` release entry
-or moved to [Completed](#completed), which should happen in a follow-up pass together with the
-verification detail (dates, test counts, benchmark measurements) that a proper Completed write-up
-needs and that isn't available from `pyproject.toml` alone.
-
-**Status:** Implemented (Go, Rust, Java, C# analyzers and `quor[go]`/`quor[java]`/`quor[rust]`/
-`quor[csharp]` extras all present in `pyproject.toml`) — not yet released/CHANGELOG'd.
-
-**Benchmark backfill (`chore/qb-046-benchmark-corpus-expansion`):** `cat-csharp`/`cat-go`/`cat-java`/
-`cat-rust` shipped with zero benchmark corpus representation (each had only 4 synthetic-snippet
-inline filter tests). Added 8 realistic, multi-method domain-file cases (2 per language, mirroring
-the storefront/payments fictional codebase `cat-python`/`cat-javascript`/`cat-typescript` already
-use) plus `baseline.json` regression coverage. Bundled in the same PR with unrelated realism-
-hardening cases for several already-shipped filters (git-status, git-log, pytest, mypy, pnpm, yarn,
-bun, gcc) generated in the same pass — all pure benchmark-data additions, no source changes.
-
-</details>
-
----
-
 ## Next
 
 *High-value, not yet started — the natural follow-through once [Now](#now) ships.*
@@ -949,6 +1069,111 @@ solving) — this item asks whether and how to introduce session state without u
 pass (in the spirit of QB-005A/QB-035A) before implementation — likely the largest single design
 effort in this document. Sequenced in [Strategic Roadmap](#strategic-roadmap) Phase 3, after quality
 measurement (QB-048) exists to make it safe to evaluate.
+
+**External validation (2026-07-31):** the same roadmap review that produced QB-086/QB-087 was
+independently repeated against three other AI models (Gemini, ChatGPT, DeepSeek) using the same
+prompt. All three, unprompted, converged on this exact gap as the single highest-value opportunity
+remaining — "session memory," "incremental reads," "context fingerprinting," and "cross-command
+deduplication" are all restatements of the same underlying idea this item already describes.
+Four independent reviews landing on the same conclusion is a strong signal this is correctly
+identified as the biggest remaining opportunity — but note it does **not** change this item's own
+Status or its QB-048 gate: most of what was proposed (fuzzy "already saw the gist of this,"
+cross-command semantic matching) still needs proof it can't hurt task success. **See QB-089,
+immediately below, for the one slice of this idea that's safe to build now, without waiting on
+QB-048** — because it relies on exact, not fuzzy, matching.
+
+</details>
+
+---
+
+#### QB-089 — Exact-match session read deduplication (safe first slice of QB-043)
+
+**Effort:** Medium · **Value:** High · **Risk:** Low · **Expected token impact:** High ·
+**Category:** Feature
+
+**New item, added 2026-07-31**, split out of QB-043 after independently re-running this roadmap
+review against three other AI models (Gemini, ChatGPT, DeepSeek) — all three proposed some version
+of "don't resend a file/output Quor has already sent this session," which QB-043 already covers in
+principle but gates behind QB-048 because most of its scope involves a judgment call (fuzzy
+"unchanged" claims). This item is the narrow subset that involves no judgment call at all.
+
+<details>
+<summary>Technical details</summary>
+
+**The key distinction from QB-043:** QB-043's own "Why this is High risk" section is explicit that
+the danger is a *false positive* — claiming no change when something did change. That risk exists
+specifically for fuzzy/inferred "unchanged" claims (e.g. reasoning about file-modification time,
+semantic similarity, or cross-command content matching). It does **not** apply to a literal,
+byte-for-byte content hash: if a file's content hash exactly matches what Quor already returned
+earlier in the same session, "unchanged" is not an inference, it's a deterministic fact — exactly
+the same kind of guarantee every other Quor mechanism already relies on (e.g. `PROTECT` line
+immutability). This sub-slice can therefore skip QB-048's gate; QB-048 is only a prerequisite for
+QB-043's *remaining*, fuzzier scope.
+
+**Desired outcome:** A session-scoped cache (in-memory, per hook-invocation-chain — needs design
+work on what "session" means across separate OS processes, since every hook call is a fresh
+process today) keyed on file path + content hash. On a repeat `Read` of the same file with an
+identical hash, return a short marker (e.g. `[unchanged since last read — see above]`) instead of
+the full content, with the same tee-recovery-link guarantee (QB-013) if the model needs the actual
+content again. A changed file (different hash) is read and compressed normally, with no
+special-casing.
+
+**Open design questions:** what "session" means given every hook invocation is a brand-new process
+(QB-035A's own architecture audit flagged this exact statelessness as deliberate) — likely an
+on-disk cache keyed by a session/transcript identifier already available via `transcript_path`
+(the same field QB-081's relevant-files feature already reads), not genuine in-process memory. Cache
+invalidation and TTL need the same care QB-013's tee cache already applies. Interaction with
+`quor explain`/`quor dashboard` (should a deduplicated read show up as "compressed," and by how
+much) needs a design decision, not an assumption.
+
+**Status:** Proposed. Not scoped or implemented. Recommend fast-tracking design work on this ahead
+of QB-043's own full scope, precisely because it doesn't need QB-048 as a prerequisite the way the
+rest of QB-043 does.
+
+</details>
+
+---
+
+#### QB-088 — MCP server distribution
+
+**Effort:** Large · **Value:** High · **Risk:** Medium · **Expected token impact:** None directly
+(reach/distribution, not compression depth) · **Category:** Feature / Architecture
+
+**New item, added 2026-07-31**, surfaced independently by one of the three external AI reviews
+(DeepSeek) and cross-checked against QB-086's own competitive findings: Headroom AI already ships
+as an MCP (Model Context Protocol) server (`headroom_compress`/`headroom_retrieve` tools) alongside
+its library/proxy/agent-wrap forms — a distribution mechanism Quor has never considered, since
+every existing adapter (QB-035/068/069) integrates via a specific tool's own hook system.
+
+<details>
+<summary>Technical details</summary>
+
+**Why this might matter more than a fourth adapter would:** MCP is a single, tool-agnostic protocol
+that a growing number of AI coding assistants and desktop clients already speak natively, unlike a
+`PreToolUse`/`PostToolUse`-style hook, which every one of the six `DetectionOnlyAdapter` agents
+(Codex CLI, Cursor, VS Code Copilot, Windsurf, Aider, Continue.dev) either doesn't have or only
+offers in an allow/deny-only shape (see QB-068/QB-069's own research). If any of those clients
+support *calling* an MCP tool even without a real modify/replace hook, exposing Quor's compression
+pipeline as an MCP server could be a genuinely different integration surface than the hook-adapter
+architecture — not a replacement for it, a second front door.
+
+**Desired outcome, not yet designed:** An MCP server exposing Quor's existing, already
+agent-agnostic `FilterRegistry`/`Pipeline` core (confirmed 100% agent-agnostic by QB-035A's own
+audit) as one or more callable tools — e.g. "compress this text/command output" — reusing the exact
+same compression logic every hook adapter already calls, not a second implementation.
+
+**Open questions, unstudied:** whether this fits `ANTI_GOALS.md`'s constraints (an MCP server is a
+long-running process, a real departure from every existing adapter's "fresh process per hook call"
+model — needs to be checked against the local-only/no-network anti-goal, since MCP servers commonly
+run over a local socket or stdio, which should be fine, but needs explicit verification, not
+assumption); what a "compress this" MCP tool call's input/output shape should be, since MCP tools
+don't have a `tool_name`/`tool_input` shape the way a coding-assistant hook payload does; whether
+this is better scoped as its own adapter-like component or something structurally new.
+
+**Status:** Proposed. Not scoped or implemented. Real strategic upside (per QB-086's competitive
+findings) but Large effort and genuinely new architectural territory — recommend a QB-005A/QB-035A-
+style design-first pass before any code, same as this project's standing practice for anything this
+size.
 
 </details>
 
@@ -1031,6 +1256,13 @@ errors/warnings, no new stage types required.
 **Status:** Proposed. Not scoped or implemented. Lowest-risk item in this section — almost entirely
 a matter of writing new filter `.toml` files using stages that already exist and are already
 well-tested.
+
+**Scope note (2026-07-31):** one of the three external AI reviews (ChatGPT) that repeated this
+roadmap exercise listed Terraform, Kubernetes/Helm, Bazel, Cargo, and Ansible as additional
+uncovered ecosystems — cross-checked directly against `quor/filters/builtin/`'s actual file listing,
+confirmed genuinely absent today (that same check also found the same review incorrectly believed
+Gradle/Maven were uncovered — both already ship, in `java.toml`). Terraform/K8s/Helm/Bazel/Cargo/
+Ansible are real, verified gaps and belong in this item's scope when it's picked up, not a new item.
 
 </details>
 
@@ -1153,6 +1385,57 @@ can be.
 that case this item's scope narrows to "keep the competitive research doc itself on a review
 cadence" rather than automated head-to-head numbers. Worth scoping which is realistic before
 committing effort here.
+
+**Scope update (2026-07-31):** QB-086 (Now) found three new entrants absent from this item's
+original named list — **LeanCTX** (deterministic Rust, closest direct RTK-style comparator),
+**Token Optimizer** (targets the same cross-session/compaction-survival space as QB-043), and
+**Caveman** (compresses assistant responses, not tool output — a different mechanism, may not be
+directly benchmarkable on the same corpus at all). Whenever this item is scoped, its named
+competitor list should be RTK/Headroom AI/LeanCTX at minimum, not just the original RTK/Headroom
+AI/ZAP (ZAP itself was already established, pre-QB-086, as a non-independent RTK fork — see
+QB-086's own source research — and may not warrant separate benchmarking).
+
+**Status:** Proposed. Not scoped or implemented.
+
+</details>
+
+---
+
+#### QB-087 — Positioning and interaction with native LLM-provider context compaction
+
+**Effort:** Small · **Value:** Medium · **Risk:** Low · **Expected token impact:** None directly
+(positioning/research) · **Category:** Research / Positioning
+
+**New item, added 2026-07-31** alongside QB-086's competitive refresh. Anthropic now ships its own
+server-side conversation-history compaction (the `compact-2026-01-12` API header, condensing a
+reported 132,000-token conversation to 2,000) and prompt caching (a 90% discount on cached input
+tokens). Neither existed as a consideration anywhere in Quor's prior competitive research or
+positioning documents, and both are genuinely new platform-level capabilities that a prospective
+user could reasonably ask "why do I need Quor if Claude already compacts my context?" about.
+
+<details>
+<summary>Technical details</summary>
+
+**The honest answer, not yet written down anywhere customer-facing:** native compaction is
+*reactive* — it runs periodically on conversation history that has already been fully consumed
+(every token already counted against the context window and billed at least once before
+compaction ever runs). Quor is *pre-emptive* — it filters a tool's output before it ever enters
+context, on every single call, so there is less to compact in the first place. The two are
+complementary, not competing: a session using Quor should need native compaction less often and
+later, not never. Prompt caching is a different axis entirely (repeated identical prefixes, e.g. a
+system prompt) and doesn't overlap with Quor's per-call output filtering at all.
+
+**What's genuinely unstudied, not just unwritten:** whether Quor's tee/recovery-cache links
+(`[full output: ...]`) remain meaningful after Anthropic's own compaction has condensed the
+conversation turn that originally contained one — does the link still resolve correctly from the
+user's perspective, or does compaction ever remove the surrounding context needed to know what the
+link refers to? This is a real technical question, not just a marketing one, and hasn't been
+tested against the real API behavior.
+
+**Desired outcome:** (1) A short, honest positioning writeup (candidate home: `docs/FAQ.md`,
+which already handles similar "why not just X" questions) explaining the pre-emptive/reactive
+distinction above. (2) A small, targeted technical check of the tee-link-after-compaction question,
+using a real Claude Code session if practically reproducible.
 
 **Status:** Proposed. Not scoped or implemented.
 
@@ -1504,37 +1787,6 @@ pre-existing `CONTENT_INTERCEPT` gap.
 </details>
 
 ---
-
-#### QB-034 — Show new users what Quor would have saved them, retroactively
-
-**Effort:** Medium · **Value:** Medium · **Risk:** Low · **Expected token impact:** None directly (adoption tool, not a compression change) · **Category:** Feature
-
-A proposed `quor discover` command would scan a user's past AI coding sessions and show, in
-hindsight, how many tokens (and therefore cost/context) Quor would have saved on commands it never
-saw. A competitor already has this and uses it to convert casual trials into committed users. Good
-adoption value, but not something that sets Quor apart — holding it until there's an actual user
-base worth retaining.
-
-<details>
-<summary>Technical details</summary>
-
-**Problem:** Per the competitive research (Opportunity 7): RTK's `discover` command scans past
-Claude Code session logs (JSONL) to find commands that ran unfiltered/uncompressed, ranks them by
-theoretical savings, and uses that to convert casual installs into committed users — described
-there as "the single most important adoption feature." Quor has no equivalent; `quor gain` only
-reports what *did* get compressed, never what was left on the table.
-
-**Desired outcome:** A command that scans a user's existing Claude Code session logs and surfaces
-commands Quor never saw or never matched a filter for, so a new user can see concretely what
-switching to (or fully adopting) Quor would have saved them.
-
-**Status:** Deliberately not scheduled. Per the competitive research's own ranking (#7, "important
-but not differentiating" — RTK already has this) and Opportunity 1's framing (Quor's actual
-differentiators are Windows-first/plugin-system/transparency, not feature parity with RTK), this is
-real retention value but not worth pulling forward ahead of genuinely uncontested items. Revisit as
-a retention/adoption investment once there's an actual user base to retain.
-
-</details>
 
 ---
 
@@ -5907,6 +6159,72 @@ unchanged — see that item's own module docstring for why).
 
 ---
 
+#### QB-046 — AST-aware summarization for more languages (Go, Rust, Java, C#)
+
+**Effort:** Large (per language) · **Value:** Medium · **Risk:** Low · **Expected token impact:**
+Medium · **Category:** Feature
+
+**Status:** Implemented (Go, Rust, Java, C# analyzers and `quor[go]`/`quor[java]`/`quor[rust]`/
+`quor[csharp]` extras all present in `pyproject.toml`, benchmark corpus backfilled) — not yet called
+out in its own `CHANGELOG.md` release entry.
+
+**Housekeeping correction (2026-07-31, found during a competitive-landscape/roadmap prioritization
+pass):** this item was still sitting in [Now](#now), listed as the *lowest*-priority not-yet-started
+item, when in fact it was already fully implemented — moved here to Completed where it belongs.
+Left uncorrected, a stale "not done" entry like this actively misleads prioritization work: it was
+about to consume a slot in a freshly re-ranked roadmap for work that doesn't need doing. No other
+Now/Next/Later item was found in the same state during this pass (QB-041/052/047/054/049/039/053/055
+`Status:` lines were individually re-checked and confirmed genuinely "Proposed. Not scoped or
+implemented").
+
+<details>
+<summary>Technical details</summary>
+
+QB-005 shipped structure-aware, signature-preserved reading for Python, JavaScript, TypeScript, and
+TSX. This is the direct continuation for the other languages QB-035's original scope named (Go,
+Rust, Java) plus one it didn't (C#) — using the same `tree-sitter`-based framework QB-005B already
+built and proved reusable across three languages.
+
+**Problem:** `quor/pipeline/ast_summarize/registry.py` only had analyzers for `python`,
+`javascript`, `typescript`, and `tsx`. A `.go`/`.rs`/`.java`/`.cs` file read through Quor got no
+structural compression, falling through to plain `cat`/`Read` passthrough.
+
+**What shipped:** One new analyzer per language, each following QB-005B/C/D's proven shape: a
+`tree-sitter-<language>` grammar (each its own new optional dependency, following the
+`quor[javascript]` extras precedent), a node-type mapping for that language's function/method/class
+constructs, and the same ERROR-node-overlap exclusion rule
+(`quor/pipeline/ast_summarize/_treesitter_utils.py`, already generalized by QB-005D specifically so
+a third language wouldn't have to reinvent it). `analyze_go()`/`analyze_java()`/`analyze_rust()`/
+`analyze_csharp()`, each reusing the same `tree-sitter<0.26.0` ceiling and ERROR-node-overlap rule
+as the shipped JS/TS/TSX analyzers.
+
+**Why this supersedes half of QB-035's original scope:** QB-035's own history already tracked this
+exact language-expansion work under its own update notes and closed the JS/TS portion via QB-005.
+This item exists so the *remaining* language work (Go/Rust/Java, plus C#) has a home that isn't
+bundled with QB-035's now-unrelated multi-agent-support half — see QB-035 in [Later](#later) for
+that half.
+
+**Benchmark backfill (`chore/qb-046-benchmark-corpus-expansion`):** `cat-csharp`/`cat-go`/`cat-java`/
+`cat-rust` shipped with zero benchmark corpus representation (each had only 4 synthetic-snippet
+inline filter tests). Added 8 realistic, multi-method domain-file cases (2 per language, mirroring
+the storefront/payments fictional codebase `cat-python`/`cat-javascript`/`cat-typescript` already
+use) plus `baseline.json` regression coverage. Bundled in the same PR with unrelated realism-
+hardening cases for several already-shipped filters (git-status, git-log, pytest, mypy, pnpm, yarn,
+bun, gcc) generated in the same pass — all pure benchmark-data additions, no source changes. Real
+per-language compression, confirmed against the current 127-case benchmark run (2026-07-31): C#
+41.4%, Go 27.0%, Java 55.6% (category average; best single case 88.6%), Rust 37.6% — see QB-085's
+README rewrite for where these numbers are now surfaced publicly.
+
+**Outstanding housekeeping (not done in this pass):** a dedicated `CHANGELOG.md` entry for this
+work has still not been written — unclear which past version actually shipped it in git history.
+Recommend a follow-up pass to identify the correct version and backfill the entry, since the
+`CHANGELOG.md`/`pyproject.toml` version history is otherwise treated as authoritative elsewhere in
+this document.
+
+</details>
+
+---
+
 #### QB-083 — Cross-Platform Gemini Hook Launcher
 
 **Effort:** Small · **Value:** Medium · **Risk:** Low · **Category:** Bug Fix
@@ -6061,6 +6379,81 @@ separate staleness gap, out of scope for a README-only rewrite; `docs/BENCHMARKS
 127-case corpus.
 
 **Files changed:** `README.md`, `backlog.md` (this entry, plus the QB-052 product-decision note).
+
+</details>
+
+---
+
+#### QB-090 — Repository-Intelligence Onboarding Nudge
+
+**Effort:** Medium · **Value:** High · **Risk:** Low · **Category:** Feature
+
+**Status:** Implemented (2026-07-31).
+
+<details>
+<summary>Technical details</summary>
+
+**The gap this closes:** a real user's first `quor init --claude` install produced no mention
+anywhere that `quor map`/`symbols`/`graph` exist — the Read-hook features built on top of that
+cache (QB-079's Repository Context block, QB-081's Relevant files block) were silently inert for
+anyone who didn't already know to run one of those commands first. Raised directly by the project
+owner after their own first install produced zero indication of this, with an explicit, detailed
+user-journey spec: nudge at install time (skipped outside a git repo), nudge from the shared,
+global hook the first time it fires against a *different*, not-yet-indexed repository, and an
+occasional staleness re-check gated by both elapsed time and how much actually changed — deliberately
+simple, "not a big state machine," after an initial richer consent/preference design was reviewed
+and rejected in favor of a throttled-tip-only approach with no per-repo preference storage.
+
+**Two surfaces, matching two genuinely different execution contexts (see ADR-046 for the full
+architectural reasoning):**
+- **`quor init --claude`** (`_maybe_offer_repo_intelligence_setup()`, `init.py`) — interactive,
+  real TTY: shown once, only inside a git repo with no cache yet, with a real file count and a
+  clearly-labeled rough time estimate (`nudge.estimate_build_cost()`), builds immediately via
+  `ensure_repo_intelligence()` on "yes." `--yes` skips it entirely.
+- **The Read hook** (`_maybe_prepend_repo_intel_nudge()`, `claude_read.py`, backed by new module
+  `quor/pipeline/repo_profile/nudge.py`) — passive, non-interactive "Repository Tip" text. Never-
+  built: shown at most 5 times total (same throttle philosophy as `pipeline/onboarding.py`'s
+  existing, unrelated onboarding message). Stale: checked at most once per 24 hours (a cheap
+  `git rev-parse HEAD` compare plus, only on a real difference, one `git diff --shortstat` call —
+  never `ensure_repo_intelligence()`/`walk_repository()`, holding to the exact hot-path guarantee
+  QB-079/QB-081 already established), shown once per check that finds ≥20 changed files.
+
+**Two real findings from building this, not assumed up front:**
+1. An early version gated the hook nudge on repo-identity alone and fired inside this codebase's
+   own test suite — any Read-hook test that doesn't `monkeypatch.chdir()` runs with `Path.cwd()`
+   pointing at the real Quor checkout (a real git repo, no isolated cache), breaking several tests'
+   "pure passthrough is a true no-op" assertions. Fixed by also requiring `transcript_path` — the
+   same "real interactive session, not a synthetic call" signal QB-081's relevant-files feature
+   already relies on — which is both the test fix and, independently, the more correct scope for a
+   tip aimed at a human in conversation.
+2. Deliberately explored, then rejected: a full per-repo accept/decline/remind-later preference
+   state machine (the project owner's own original spec). Simplified on direct instruction to a
+   throttle-only design with zero stored preferences — "no state machine," per that review.
+
+**Deliberately not built:** any preference/consent persistence beyond the throttle counters
+themselves; a richer staleness signal than git-commit-based comparison (would require the same
+filesystem-wide fingerprint walk `ensure_repo_intelligence()` already does, at hot-path cost this
+feature explicitly avoids — see ADR-046's own documented limitation); showing the file-count/time
+estimate from the hook path (would require a real `walk_repository()` call on every Read until
+throttled — kept exclusive to the CLI-facing, already-walk-tolerant `quor init --claude` flow).
+
+**Testing:** `tests/unit/test_repo_intel_nudge.py` (throttling, staleness thresholds, the 24-hour
+gate, git-head comparison, corrupted-state fail-open, non-git skip), `tests/unit/
+test_read_hook_repo_intel_nudge.py` (real stdin/stdout hook roundtrip: never-built tip appears and
+throttles, silent once built, silent without `transcript_path`, fails open on an internal error),
+`tests/unit/test_cli.py`'s new `TestRepoIntelligenceOnboarding` class (prompt appears/skips
+correctly across `--yes`, non-git cwd, already-built cache, accept, and decline). Full gate: `ruff
+check quor/ tests/` clean; `mypy quor/` clean; full `pytest tests/unit/` green (batched per this
+repo's own hook self-timeout — a real, mildly amusing constraint hit while validating this exact
+feature, since this session's own `quor init --claude` install made the dev shell's `python -m
+pytest` invocations subject to Quor's own 25s dispatcher timeout); `pytest tests/integration/ -m
+integration` green; `quor verify` unchanged at 204/204; benchmark suite unchanged at 35.9%/18,962
+tokens (no compression logic touched).
+
+**Files changed:** `quor/pipeline/repo_profile/nudge.py` (new), `quor/adapters/claude_read.py`,
+`quor/cli/commands/init.py`, `tests/unit/test_repo_intel_nudge.py` (new), `tests/unit/
+test_read_hook_repo_intel_nudge.py` (new), `tests/unit/test_cli.py`, `docs/final/DECISIONS.md`
+(ADR-046).
 
 </details>
 

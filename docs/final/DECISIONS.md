@@ -2256,3 +2256,95 @@ next to Install.
 - The estimated-cost figure is the one genuinely new kind of number this project shows a user;
   flagged in-command with its own caveat, not blended into the ±20% token-count disclaimer.
 - See `backlog.md`'s `QB-084` entry for the implementation record.
+
+---
+
+## ADR-046: Repository-Intelligence Onboarding Nudge (QB-090)
+
+**Status:** Decided and shipped
+**Date:** 2026-07-31
+
+**Context:**
+A real user's first `quor init --claude` install produced zero mention anywhere — not in the
+install output, not in a hook-generated message — that `quor map`/`quor symbols`/`quor graph`
+existed at all. This wasn't a bug in the strict sense: `ensure_repo_intelligence()` (QB-072) was
+always designed to auto-onboard only when a user *already* ran one of those three commands or
+`quor repo`/`quor explore`/`quor search`. But the two Read-hook features built on top of that cache
+(QB-079's "Repository Context" block, QB-081's "Relevant files" block) had no discovery path of
+their own — a new user with no reason to already know `quor map` exists gets neither feature,
+silently, forever, unless they read the README closely enough to go try it. The project owner's own
+framing: "great features don't help if users never realize they exist."
+
+**Decision, in two parts corresponding to two genuinely different execution contexts:**
+
+1. **`quor init --claude`'s interactive flow** (`_maybe_offer_repo_intelligence_setup()`,
+   `quor/cli/commands/init.py`) — run once, right after `quor doctor`, only when `cwd` is a real
+   git repository (`nudge.is_git_repo()`) and no repository-intelligence cache exists yet for it.
+   Shows the real file count and a rough, explicitly-labeled time estimate
+   (`nudge.estimate_build_cost()` — a genuine `walk_repository()` call, exactly as cheap here as it
+   already is for `quor map` itself, since this is a foreground CLI command with a real TTY, not
+   the hook path), asks a plain `[Y/n]`, and — on yes — calls `ensure_repo_intelligence()` directly
+   with the same progress/summary presentation `quor map` uses. `--yes` (scripted/non-interactive
+   installs) skips this prompt entirely; `quor map` remains one command away regardless.
+2. **The Read hook** (`_maybe_prepend_repo_intel_nudge()`, `quor/adapters/claude_read.py`, backed
+   by `quor/pipeline/repo_profile/nudge.py`) — a passive, non-interactive "Repository Tip" block,
+   for the far more common case: a hook that's already installed and shared globally across every
+   project on the machine, firing for the first time against a *different* repository than the one
+   `quor init --claude` was originally run in. Two states: **never built** (shown at most
+   `MAX_NEVER_BUILT_SHOWS` = 5 times total, ever, mirroring `pipeline/onboarding.py`'s identical
+   throttle philosophy for its own unrelated onboarding message) and **stale** (checked at most
+   once per `STALE_CHECK_INTERVAL` = 24 hours, shown once per check that finds real drift).
+
+**Deliberately not the consent/preference state machine originally sketched.** The initial design
+discussion considered a full per-repo accept/decline/remind-later preference system. Rejected on
+direct product-owner instruction after weighing it against the value: "no user preferences, no
+permanent opt-outs, no multi-state workflow" — a user who wants the tip gone runs `quor map` once
+(never-built case) or ignores one line (stale case, which naturally goes quiet for 24 hours
+regardless of the outcome, non-interactive). Every removed piece of state was a place a bug could
+hide for something this low-stakes.
+
+**Why the Read hook can't literally "ask for consent," despite early framing suggesting it should.**
+A `PostToolUse`/`PreToolUse` hook is a subprocess that must return its JSON response within
+Claude Code's hook latency budget (this project's own target: single-digit milliseconds) — it has
+no live terminal channel to block on for a human keypress. The only real interactive surfaces are
+foreground CLI commands (`quor init --claude`, `quor map` itself). The hook's "ask" is necessarily
+just informational text injected into a Read result, which the assistant reading that result can
+relay to the human in conversation and act on with an ordinary follow-up command — not something
+Quor's own process captures a yes/no answer for directly.
+
+**Hot-path cost, held to the same standard `_maybe_prepend_repo_context()`/
+`_maybe_prepend_relevant_files()` (QB-079/QB-081) already established:** `compute_hook_nudge()`
+never calls `ensure_repo_intelligence()` or `walk_repository()`. The never-built check is a single
+O(1) state-file read. The staleness check compares `RepoIntelState.git_head` (already stored,
+free) against a fresh `git rev-parse HEAD` (one fast subprocess call) and, only when they differ,
+`git diff --shortstat` for a changed-file count (a second fast call, bounded by the size of the
+change, not the size of the repository) — both gated behind the 24-hour timestamp check, so this
+cost is paid at most once per day per repository, not on every Read call. **Documented, accepted
+limitation:** this is git-commit-based only — a real, if pathological, gap `intel_diff.py`'s own
+`RepoIntelState.git_head` docstring already flags ("HEAD alone can't see uncommitted working-tree
+changes"). A false negative here (staying silent when uncommitted changes alone made the cache
+stale) is an acceptable trade-off for never touching the filesystem-wide fingerprint machinery from
+the hook path; the real rebuild decision (`ensure_repo_intelligence()`'s own `diff_repository()`)
+is unaffected and still fully accurate whenever `quor map`/`symbols`/`graph`/`repo` actually runs.
+
+**Gating on `transcript_path`, not just repo identity — a real regression found and fixed while
+building this.** An early version gated the hook nudge only on "is a git repo + no cache" and
+fired inside this codebase's own test suite: any Read-hook unit test that doesn't `monkeypatch.
+chdir()` runs with `Path.cwd()` pointing at the real Quor repository checkout (a real git repo,
+with no repository-intelligence cache under the test's own isolated `platformdirs` location) —
+breaking several tests' "pure passthrough is a true no-op" assertions. Fixed by additionally
+requiring `hook_input.transcript_path` (the same field `_maybe_prepend_relevant_files()` already
+uses as its own "this is a genuine interactive Claude Code session, not a synthetic tool call"
+signal) — a real production Read call always carries it; a hand-built test payload generally
+doesn't. This is not merely a test-isolation workaround: it's the correct scope for an onboarding
+tip aimed at a human in conversation, not at whatever process happens to construct a bare
+PostToolUse payload.
+
+**Consequences:**
+- No new dependency, no daemon, no watcher, no polling loop — every check is synchronous, inside
+  either a real CLI command invocation or one Read-hook call, matching `intel.py`'s own "no
+  watchers, no daemon, no background service" guarantee for the cache it builds on top of.
+- `quor doctor`/`quor gain`/`quor dashboard` are all unaffected — this feature adds no new tracked
+  metric and no new persisted artifact beyond one small `nudge_state.json` per repository, a
+  sibling of the existing `repo_intel/<repo_key>/` cache files.
+- See `backlog.md`'s `QB-090` entry for the implementation record.

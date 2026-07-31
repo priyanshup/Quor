@@ -1842,6 +1842,122 @@ class TestInit:
 
 
 # ---------------------------------------------------------------------------
+# quor init --claude — repository-intelligence onboarding prompt (QB-090)
+# ---------------------------------------------------------------------------
+
+
+class TestRepoIntelligenceOnboarding:
+    @pytest.fixture(autouse=True)
+    def _fast_execution_policy_check(self) -> Iterator[None]:
+        """Unlike every other class in this file, this one patches the
+        higher-level `_warn_if_execution_policy_restricted()` function
+        directly rather than `subprocess.run` itself — this class's own
+        tests exercise *real* `git` subprocess calls (via `is_git_repo()`/
+        `git_head()`, and real `git init`/`add`/`commit` in the
+        `git_repo_cwd` fixture below), and `patch("...init.subprocess.run")`
+        would patch the single shared `subprocess` module object process-
+        wide (import binds a reference to the same module, not a copy),
+        silently faking out those real git calls too — exactly the bug this
+        class found while being written."""
+        with patch("quor.cli.commands.init._warn_if_execution_policy_restricted"):
+            yield
+
+    @pytest.fixture
+    def git_repo_cwd(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+        """A real, minimal git repo, chdir'd into for the duration of the
+        test — deliberately separate from `tmp_path` itself so this
+        fixture's own `git add .` never picks up the isolated
+        `platformdirs.user_data_dir` cache `tests/conftest.py` also nests
+        under `tmp_path` (see `nudge.py`'s own tests for the same care)."""
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        (repo / "a.py").write_text("pass\n", encoding="utf-8")
+        subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+        subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo, check=True)
+        subprocess.run(["git", "config", "user.name", "Test"], cwd=repo, check=True)
+        subprocess.run(["git", "add", "."], cwd=repo, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=repo, check=True)
+        monkeypatch.chdir(repo)
+        return repo
+
+    def test_yes_flag_skips_the_prompt_entirely(self, git_repo_cwd: Path, tmp_path: Path) -> None:
+        settings_path = tmp_path / "settings.json"
+        with patch("platformdirs.user_data_dir", return_value=str(tmp_path / "data")):
+            result = runner.invoke(
+                app, ["init", "--claude", "--yes", "--settings-path", str(settings_path)]
+            )
+        assert result.exit_code == 0
+        assert "hasn't been indexed yet" not in result.output
+
+    def test_non_git_directory_skips_the_prompt(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        bare_dir = tmp_path / "not_a_repo"
+        bare_dir.mkdir()
+        monkeypatch.chdir(bare_dir)
+        settings_path = tmp_path / "settings.json"
+        with patch("platformdirs.user_data_dir", return_value=str(tmp_path / "data")):
+            result = runner.invoke(
+                app,
+                ["init", "--claude", "--settings-path", str(settings_path)],
+                input="y\n",
+            )
+        assert result.exit_code == 0
+        assert "hasn't been indexed yet" not in result.output
+
+    def test_prompt_appears_and_accepting_builds_repo_intelligence(
+        self, git_repo_cwd: Path, tmp_path: Path
+    ) -> None:
+        settings_path = tmp_path / "settings.json"
+        from quor.pipeline.repo_profile import intel_store
+
+        with patch("platformdirs.user_data_dir", return_value=str(tmp_path / "data")):
+            result = runner.invoke(
+                app,
+                ["init", "--claude", "--settings-path", str(settings_path)],
+                input="y\ny\n",
+            )
+            assert result.exit_code == 0
+            assert "hasn't been indexed yet" in result.output
+            assert "1 file" in result.output
+            assert "repository intelligence built" in result.output
+            assert intel_store.state_exists(git_repo_cwd)
+
+    def test_declining_prints_manual_instructions_and_builds_nothing(
+        self, git_repo_cwd: Path, tmp_path: Path
+    ) -> None:
+        settings_path = tmp_path / "settings.json"
+        from quor.pipeline.repo_profile import intel_store
+
+        with patch("platformdirs.user_data_dir", return_value=str(tmp_path / "data")):
+            result = runner.invoke(
+                app,
+                ["init", "--claude", "--settings-path", str(settings_path)],
+                input="y\nn\n",
+            )
+            assert result.exit_code == 0
+            assert "quor map" in result.output
+            assert "later at any time" in result.output
+            assert not intel_store.state_exists(git_repo_cwd)
+
+    def test_already_built_cache_skips_the_prompt(self, git_repo_cwd: Path, tmp_path: Path) -> None:
+        data_dir = tmp_path / "data"
+        with patch("platformdirs.user_data_dir", return_value=str(data_dir)):
+            from quor.pipeline.repo_profile.intel import ensure_repo_intelligence
+
+            ensure_repo_intelligence(git_repo_cwd)
+
+            settings_path = tmp_path / "settings.json"
+            result = runner.invoke(
+                app,
+                ["init", "--claude", "--settings-path", str(settings_path)],
+                input="y\n",
+            )
+        assert result.exit_code == 0
+        assert "hasn't been indexed yet" not in result.output
+
+
+# ---------------------------------------------------------------------------
 # quor init --claude — PostToolUse/Read hook registration (QB-007A)
 # ---------------------------------------------------------------------------
 

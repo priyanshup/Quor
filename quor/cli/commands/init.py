@@ -38,6 +38,8 @@ from quor.adapters.hook_manifest import (
 from quor.atomic_io import write_json_atomic as _write_json_atomic
 from quor.atomic_io import write_text_atomic as _write_text_atomic
 from quor.errors import ConfigError, ExitCode
+from quor.pipeline.repo_profile import intel_store
+from quor.pipeline.repo_profile.nudge import estimate_build_cost, is_git_repo
 
 console = Console()
 
@@ -137,6 +139,58 @@ def _init_claude(*, yes: bool, settings_path: Path | None) -> None:
     from quor.cli.commands.doctor import _run_doctor
 
     _run_doctor(settings_path=settings_file)
+
+    _maybe_offer_repo_intelligence_setup(yes=yes)
+
+
+def _maybe_offer_repo_intelligence_setup(*, yes: bool) -> None:
+    """QB-090: a first-time nudge toward `quor map`/`symbols`/`graph`, run
+    once at the end of a successful `quor init --claude` — the moment a
+    setup question is expected, per this feature's own design note (see
+    `quor/pipeline/repo_profile/nudge.py`'s module docstring for the
+    Read-hook half of this same feature).
+
+    Silently does nothing in three cases, checked cheapest-first: `cwd`
+    isn't a git repository at all (an install run from a bare home
+    directory has nothing sensible to index — this feature's own explicit
+    scope); repository intelligence already exists for this repo (nothing
+    to offer); `--yes` was passed (a scripted/non-interactive install must
+    never block on a prompt this feature introduces — `quor map` itself
+    remains one command away regardless).
+
+    Deliberately does **not** reuse `Path.cwd()` state indirectly through
+    `nudge.py`'s hook-facing functions — this is the CLI-facing half
+    (`estimate_build_cost()`/`ensure_repo_intelligence()`, a real walk is
+    expected and fine here), not the hot-path-constrained half."""
+    root = Path.cwd()
+    if yes or not is_git_repo(root) or intel_store.state_exists(root):
+        return
+
+    file_count, estimated_seconds = estimate_build_cost(root)
+    console.print("\n[bold]This repository hasn't been indexed yet.[/bold]")
+    console.print(
+        "Repository intelligence improves compression, search, and relevant-file suggestions.\n"
+    )
+    console.print(f"  • {file_count} file{'s' if file_count != 1 else ''}")
+    console.print(f"  • Estimated one-time cost: ~{estimated_seconds}s\n")
+    console.print("Benefits:")
+    console.print("  ✓ Better Read compression")
+    console.print("  ✓ Relevant file suggestions")
+    console.print("  ✓ Semantic repository search\n")
+
+    if not typer.confirm("Run now?", default=True):
+        console.print("\nNo problem. You can run:\n\n  quor map\n\nlater at any time.")
+        return
+
+    import time as _time
+
+    from quor.cli.repo_progress import print_build_summary, progress_echo
+    from quor.pipeline.repo_profile.intel import ensure_repo_intelligence
+
+    console.print()
+    t0 = _time.monotonic()
+    intel = ensure_repo_intelligence(root, echo=progress_echo)
+    print_build_summary(intel, "repository intelligence built", elapsed_seconds=_time.monotonic() - t0)
 
 
 def _install_claude(ctx: InstallContext) -> InstallResult:
