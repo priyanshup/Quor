@@ -36,6 +36,10 @@ from quor.pipeline.stages.deduplicate_consecutive import (
 from quor.pipeline.stages.group_repeated import GroupRepeatedConfig, GroupRepeatedStage
 from quor.pipeline.stages.match_output import MatchOutputConfig, MatchOutputStage
 from quor.pipeline.stages.max_tokens import MaxTokensConfig, MaxTokensStage
+from quor.pipeline.stages.numeric_range_compression import (
+    NumericRangeCompressionConfig,
+    NumericRangeCompressionStage,
+)
 from quor.pipeline.stages.path_prefix_fold import PathPrefixFoldConfig, PathPrefixFoldStage
 from quor.pipeline.stages.python_ast_summarize import (
     PythonAstSummarizeConfig,
@@ -991,6 +995,192 @@ class TestPathPrefixFold:
 
     def test_wrong_config_type_raises(self) -> None:
         with pytest.raises(TypeError, match="PathPrefixFoldConfig"):
+            self.stage.apply(ContentMask.from_text("x"), RemoveAnsiConfig(type="remove_ansi"))
+
+
+class TestNumericRangeCompression:
+    stage = NumericRangeCompressionStage()
+
+    def _config(self, preserve: list[str] | None = None) -> NumericRangeCompressionConfig:
+        return NumericRangeCompressionConfig(
+            type="numeric_range_compression",
+            preserve_patterns=preserve or [],
+        )
+
+    def test_empty_input(self) -> None:
+        result = self.stage.apply(ContentMask.from_text(""), self._config())
+        assert result.render() == ""
+
+    def test_single_number_unchanged(self) -> None:
+        mask = ContentMask.from_text("42")
+        result = self.stage.apply(mask, self._config())
+        assert result.render() == "42"
+        assert result.lines[0].decision is Decision.KEEP
+
+    def test_no_numeric_lines_all_kept_unchanged(self) -> None:
+        mask = ContentMask.from_text("line_a\nline_b\nline_c")
+        result = self.stage.apply(mask, self._config())
+        assert result.render() == mask.render()
+        assert all(lm.decision is Decision.KEEP for lm in result.lines)
+
+    def test_long_run_folded_to_range(self) -> None:
+        mask = ContentMask.from_text("101\n102\n103\n104\n105")
+        result = self.stage.apply(mask, self._config())
+        assert result.render() == "101-105"
+
+    def test_multiple_runs_separated_by_gap_fold_independently(self) -> None:
+        """Example 2 from QB-097's spec: two separate 3-item runs of
+        2-digit numbers, broken by the 14 -> 18 gap."""
+        mask = ContentMask.from_text("12\n13\n14\n18\n19\n20")
+        result = self.stage.apply(mask, self._config())
+        assert result.render() == "12-14\n18-20"
+
+    def test_interrupted_run_isolates_the_non_consecutive_tail(self) -> None:
+        """Example 4 from QB-097's spec: mixed text ahead of a foldable run
+        (the header line itself never matches the all-digits pattern, so it
+        is just an ordinary run boundary, not special-cased)."""
+        mask = ContentMask.from_text("Errors on lines:\n201\n202\n203")
+        result = self.stage.apply(mask, self._config())
+        assert result.render() == "Errors on lines:\n201-203"
+
+    def test_large_range_folds(self) -> None:
+        numbers = [str(n) for n in range(1001, 1051)]
+        mask = ContentMask.from_text("\n".join(numbers))
+        result = self.stage.apply(mask, self._config())
+        assert result.render() == "1001-1050"
+
+    def test_two_digit_pair_ties_and_is_left_unfolded(self) -> None:
+        """Documented design decision (see the stage's module docstring):
+        joining two equal-width lines with '-' is always exactly as many
+        characters as joining them with '\\n', so a same-width 2-line run
+        can never be *strictly* cheaper — only tie. The gate requires
+        strictly cheaper, so this never folds."""
+        mask = ContentMask.from_text("42\n43")
+        result = self.stage.apply(mask, self._config())
+        assert result.render() == "42\n43"
+
+    def test_single_digit_pair_folds_when_strictly_cheaper(self) -> None:
+        """The two-line case *can* fold: single-digit numbers are floored to
+        1 token each (2 total), while '4-5' is short enough to stay at 1."""
+        mask = ContentMask.from_text("4\n5")
+        result = self.stage.apply(mask, self._config())
+        assert result.render() == "4-5"
+
+    def test_never_merges_across_a_gap(self) -> None:
+        """Example 5 from QB-097's spec ('do NOT merge'): 12 is isolated by
+        the gap to 14 and must never be folded into a 12-15-style range."""
+        mask = ContentMask.from_text("12\n14\n15")
+        result = self.stage.apply(mask, self._config())
+        assert "12-15" not in result.render()
+        assert "12" in result.render().splitlines()
+
+    def test_descending_numbers_never_merge(self) -> None:
+        mask = ContentMask.from_text("43\n42\n41")
+        result = self.stage.apply(mask, self._config())
+        assert result.render() == "43\n42\n41"
+
+    def test_duplicate_numbers_never_merge(self) -> None:
+        mask = ContentMask.from_text("12\n12\n13")
+        result = self.stage.apply(mask, self._config())
+        assert result.render() == "12\n12\n13"
+
+    def test_negative_numbers_never_merge(self) -> None:
+        """Explicit design decision: '-' is the range separator, so merging
+        negatives would be ambiguous ('-5--1'); negative lines are simply
+        never run candidates, always left isolated."""
+        mask = ContentMask.from_text("-3\n-2\n-1")
+        result = self.stage.apply(mask, self._config())
+        assert result.render() == "-3\n-2\n-1"
+
+    def test_leading_zeros_preserved_and_reconstructible(self) -> None:
+        mask = ContentMask.from_text("001\n002\n003")
+        result = self.stage.apply(mask, self._config())
+        assert result.render() == "001-003"
+
+    def test_leading_zero_width_mismatch_never_merges(self) -> None:
+        """'01' (width 2) can't safely join a width-3 padded run without
+        reformatting a line to a width it wasn't written in — left alone."""
+        mask = ContentMask.from_text("01\n002\n003")
+        result = self.stage.apply(mask, self._config())
+        assert result.render() == "01\n002\n003"
+
+    def test_width_crossing_natural_numbers_never_merge(self) -> None:
+        """Documented conservative trade-off: a uniform-width run is
+        required even though '9-11' would be an unambiguous, safe range —
+        traded for one simple invariant instead of two code paths."""
+        mask = ContentMask.from_text("9\n10\n11")
+        result = self.stage.apply(mask, self._config())
+        assert result.render() == "9\n10\n11"
+
+    def test_line_count_unchanged_by_folding(self) -> None:
+        """Unlike path_prefix_fold, this stage never inserts a new LineMask
+        — the run's first line is rewritten in place and the rest COMPRESS,
+        so total line count is preserved (mask.py's group_repeated/
+        collapse_unchanged_context exception, not a new one)."""
+        mask = ContentMask.from_text("101\n102\n103\n104\n105")
+        result = self.stage.apply(mask, self._config())
+        assert len(result.lines) == len(mask.lines)
+
+    def test_folded_lines_are_compressed_not_deleted(self) -> None:
+        mask = ContentMask.from_text("101\n102\n103\n104\n105")
+        result = self.stage.apply(mask, self._config())
+        assert result.lines[0].line == "101-105"
+        assert result.lines[0].decision is Decision.KEEP
+        assert [lm.decision for lm in result.lines[1:]] == [Decision.COMPRESS] * 4
+        assert [lm.line for lm in result.lines[1:]] == ["102", "103", "104", "105"]
+
+    def test_protect_lines_bound_run_and_are_never_modified(self) -> None:
+        lines = (
+            LineMask(line="101"),
+            _protect("102"),
+            LineMask(line="103"),
+        )
+        mask = ContentMask(lines=lines)
+        result = self.stage.apply(mask, self._config())
+        assert result.lines[1].decision is Decision.PROTECT
+        assert result.lines[1].line == "102"
+        assert "101-103" not in result.render()
+
+    def test_compress_lines_are_run_boundaries(self) -> None:
+        lines = (
+            LineMask(line="101"),
+            LineMask(line="102"),
+            LineMask(line="103"),
+            _compress("104"),
+            LineMask(line="201"),
+            LineMask(line="202"),
+            LineMask(line="203"),
+        )
+        mask = ContentMask(lines=lines)
+        result = self.stage.apply(mask, self._config())
+        rendered = result.render()
+        assert "101-103" in rendered
+        assert "201-203" in rendered
+
+    def test_preserve_patterns_excludes_line_and_can_prevent_folding(self) -> None:
+        lines = (
+            LineMask(line="101"),
+            LineMask(line="102"),
+            LineMask(line="103"),
+        )
+        mask = ContentMask(lines=lines)
+        result = self.stage.apply(mask, self._config(preserve=[r"^102$"]))
+        assert result.lines[1].decision is Decision.PROTECT
+        assert result.lines[1].line == "102"
+        # 101 and 103 are now two separate length-1 runs, split by the
+        # PROTECT line — neither can fold.
+        assert "-" not in result.render()
+
+    def test_mixed_text_lines_are_never_folded(self) -> None:
+        """Documented scope decision: only standalone numeric lines are
+        candidates. 'Line 101'-style lines with a constant text prefix are
+        out of scope for this stage (see the module docstring)."""
+        mask = ContentMask.from_text("Line 101\nLine 102\nLine 103")
+        result = self.stage.apply(mask, self._config())
+        assert result.render() == "Line 101\nLine 102\nLine 103"
+
+    def test_wrong_config_type_raises(self) -> None:
+        with pytest.raises(TypeError, match="NumericRangeCompressionConfig"):
             self.stage.apply(ContentMask.from_text("x"), RemoveAnsiConfig(type="remove_ansi"))
 
 

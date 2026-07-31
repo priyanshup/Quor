@@ -8,7 +8,12 @@ Invariants (enforced by Pipeline.execute, not by individual stages):
 - Line content is never modified by stages that set COMPRESS/KEEP decisions.
   group_repeated and collapse_unchanged_context are two exceptions: each may
   replace one line in a collapsed run with a summary/placeholder string
-  (e.g. "msg (xN)" or "... N unchanged lines omitted ...").
+  (e.g. "msg (xN)" or "... N unchanged lines omitted ..."). numeric_range_
+  compression (QB-097) is a third user of this same exception, not a new
+  category: a run of consecutive same-width standalone integer lines has its
+  first line rewritten to an inclusive "start-end" range, the rest COMPRESSed
+  — no new LineMask is inserted, so the mask's total line count is unchanged,
+  unlike path_prefix_fold below.
 - path_prefix_fold (QB-095) is a third, narrower exception: it may rewrite
   every line in a matched run (not just the first) to its separator-trimmed
   suffix, and insert one new header LineMask ahead of the run announcing the
