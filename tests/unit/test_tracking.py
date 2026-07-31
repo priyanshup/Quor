@@ -18,6 +18,9 @@ import pytest
 
 from quor.tracking.db import (
     PASSTHROUGH_LABEL,
+    REPO_GRAPH_FILTER_LABEL,
+    REPO_PROFILE_FILTER_LABEL,
+    REPO_SEARCH_FILTER_LABEL,
     InvocationRecord,
     TrackingDB,
     count_tokens,
@@ -993,6 +996,103 @@ class TestQueryGain:
     def test_read_hook_invocations_zero_on_empty_db(self, tmp_path: Path) -> None:
         report = query_gain(tmp_path / "missing.db", tmp_path)
         assert report.read_hook_invocations == 0
+
+
+class TestQueryGainExcludesSynthesisRows:
+    """QB-092: `quor map`/`symbols`/`graph`/`repo`/`explore`/`search` are
+    synthesis, not compression — they always record original_tokens ==
+    final_tokens by design (see SYNTHESIS_FILTER_LABELS' own docstring in
+    quor/tracking/db.py). Pooling them into query_gain()'s aggregate SUMs
+    would dilute the headline percentage purely as a function of how often
+    they run, independent of real filter compression — this class pins that
+    they're excluded entirely from the aggregate."""
+
+    def _populate(self, db_path: Path, records: list[dict]) -> None:
+        with sqlite3.connect(str(db_path)) as conn:
+            schema_sql = (
+                Path(__file__).parent.parent.parent
+                / "quor" / "tracking" / "schema.sql"
+            ).read_text(encoding="utf-8")
+            conn.executescript(schema_sql)
+            for r in records:
+                conn.execute(
+                    """INSERT INTO invocations
+                       (command, project_path, original_tokens, final_tokens,
+                        filter_name, was_passthrough, duration_ms, recorded_at, schema_version)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        r.get("command", "git status"),
+                        r.get("project_path", "/proj"),
+                        r.get("original_tokens", 100),
+                        r.get("final_tokens", 20),
+                        r.get("filter_name", "git"),
+                        r.get("was_passthrough", 0),
+                        r.get("duration_ms", 10.0),
+                        r.get("recorded_at", datetime.now(UTC).isoformat()),
+                        1,
+                    ),
+                )
+            conn.commit()
+
+    def test_large_map_invocation_does_not_dilute_headline(self, tmp_path: Path) -> None:
+        """The exact reported scenario: a large `quor map` render sitting
+        alongside real compression must not drag the headline percentage
+        down — before QB-092 it would, since map's 5000 "before" tokens
+        (with zero saved) landed in the same denominator as git's real 80
+        saved out of 100."""
+        db_path = tmp_path / "quor.db"
+        self._populate(db_path, [
+            {"command": "git status", "original_tokens": 100, "final_tokens": 20,
+             "filter_name": "git", "project_path": "/proj"},
+            {"command": "Map: /proj", "original_tokens": 5000, "final_tokens": 5000,
+             "filter_name": REPO_PROFILE_FILTER_LABEL, "project_path": "/proj"},
+        ])
+        report = query_gain(db_path, Path("/proj"))
+        assert report.total_invocations == 1
+        assert report.tokens_before == 100
+        assert report.tokens_after == 20
+        assert report.tokens_saved == 80
+        assert report.tokens_saved / report.tokens_before == 0.8
+
+    def test_each_synthesis_label_excluded(self, tmp_path: Path) -> None:
+        db_path = tmp_path / "quor.db"
+        self._populate(db_path, [
+            {"command": "git status", "original_tokens": 100, "final_tokens": 20,
+             "filter_name": "git", "project_path": "/proj"},
+            {"command": "Graph: /proj", "original_tokens": 300, "final_tokens": 300,
+             "filter_name": REPO_GRAPH_FILTER_LABEL, "project_path": "/proj"},
+            {"command": "Search: query", "original_tokens": 400, "final_tokens": 400,
+             "filter_name": REPO_SEARCH_FILTER_LABEL, "project_path": "/proj"},
+        ])
+        report = query_gain(db_path, Path("/proj"))
+        assert report.total_invocations == 1
+        assert report.tokens_before == 100
+
+    def test_all_synthesis_rows_yields_same_zero_result_as_empty(self, tmp_path: Path) -> None:
+        db_path = tmp_path / "quor.db"
+        self._populate(db_path, [
+            {"command": "Map: /proj", "original_tokens": 5000, "final_tokens": 5000,
+             "filter_name": REPO_PROFILE_FILTER_LABEL, "project_path": "/proj"},
+        ])
+        report = query_gain(db_path, Path("/proj"))
+        assert report.total_invocations == 0
+        assert report.tokens_before == 0
+        assert report.tokens_saved == 0
+
+    def test_real_filters_unaffected(self, tmp_path: Path) -> None:
+        """Regular filter rows (not a synthesis label) must be counted
+        exactly as before — this is an exclusion, not a behavior change for
+        real compression."""
+        db_path = tmp_path / "quor.db"
+        self._populate(db_path, [
+            {"original_tokens": 100, "final_tokens": 20, "filter_name": "git",
+             "project_path": "/proj"},
+            {"original_tokens": 200, "final_tokens": 50, "filter_name": "pytest",
+             "project_path": "/proj"},
+        ])
+        report = query_gain(db_path, Path("/proj"))
+        assert report.total_invocations == 2
+        assert report.tokens_saved == 230
 
 
 class TestQueryGainSince:
