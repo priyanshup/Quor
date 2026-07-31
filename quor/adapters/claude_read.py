@@ -304,12 +304,11 @@ def _handle_text(raw: str, tracking: TrackingDB | None) -> bytes:
     )
     if with_repo_intel_nudge is not None:
         compressed = with_repo_intel_nudge
-    needs_instruction = (
+    if (
         compressed is not None
         and CONCISE_INSTRUCTION_ENABLED
         and not compressed.startswith(CONCISE_INSTRUCTION)
-    )
-    if needs_instruction:
+    ):
         # Binary extraction (.docx/.pdf, _EXTRACTION_EXTENSIONS) has no
         # meaningful pre-compression text baseline: `extract()` reads the
         # file straight off disk, so `original_response` (tool_response) is
