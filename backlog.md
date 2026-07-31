@@ -680,6 +680,22 @@ re-running the "Opportunity Analysis" and "Positioning vs. Each Competitor" sect
 facts, and re-scoping QB-042's competitor list to include LeanCTX/Token Optimizer/Caveman alongside
 RTK/Headroom AI/ZAP.
 
+**Marketing-parity note (2026-07-31, from an external AI review of this same exercise):** Headroom
+AI markets its "CCR" reversible-compression mechanism heavily as a headline feature. Quor already
+has a functionally equivalent guarantee — the tee recovery cache (QB-013), every compressed output
+links back to the full original via `[full output: ...]` — but has never stated it in those
+competitive terms anywhere customer-facing. Cheap addition to this item's scope: when refreshing
+positioning copy, explicitly name this as parity with Headroom's own marketed differentiator,
+not just an internal safety mechanism.
+
+**Independent verification needed:** one of the three external AI reviews (DeepSeek) named a
+different set of "new entrants" than this item found directly (`context-compress`, "Token Optimizer
+MCP") — overlapping partially but not exactly with LeanCTX/Token Optimizer/Caveman above. Different
+AI web searches on fast-moving, low-visibility GitHub projects appear to surface different (and
+possibly conflated or stale) results. Treat every competitor name in this document — including the
+ones this item itself just added — as needing direct, individual re-verification against the real
+repository before being cited anywhere public-facing, not taken on any single search's word alone.
+
 **Status:** Proposed. Not scoped or implemented. Deliberately kept cheap and high in this ranking —
 research/writing only, no code — because every other prioritization decision in this document
 (including this review's own) depends on this foundation being current.
@@ -1054,6 +1070,111 @@ pass (in the spirit of QB-005A/QB-035A) before implementation — likely the lar
 effort in this document. Sequenced in [Strategic Roadmap](#strategic-roadmap) Phase 3, after quality
 measurement (QB-048) exists to make it safe to evaluate.
 
+**External validation (2026-07-31):** the same roadmap review that produced QB-086/QB-087 was
+independently repeated against three other AI models (Gemini, ChatGPT, DeepSeek) using the same
+prompt. All three, unprompted, converged on this exact gap as the single highest-value opportunity
+remaining — "session memory," "incremental reads," "context fingerprinting," and "cross-command
+deduplication" are all restatements of the same underlying idea this item already describes.
+Four independent reviews landing on the same conclusion is a strong signal this is correctly
+identified as the biggest remaining opportunity — but note it does **not** change this item's own
+Status or its QB-048 gate: most of what was proposed (fuzzy "already saw the gist of this,"
+cross-command semantic matching) still needs proof it can't hurt task success. **See QB-089,
+immediately below, for the one slice of this idea that's safe to build now, without waiting on
+QB-048** — because it relies on exact, not fuzzy, matching.
+
+</details>
+
+---
+
+#### QB-089 — Exact-match session read deduplication (safe first slice of QB-043)
+
+**Effort:** Medium · **Value:** High · **Risk:** Low · **Expected token impact:** High ·
+**Category:** Feature
+
+**New item, added 2026-07-31**, split out of QB-043 after independently re-running this roadmap
+review against three other AI models (Gemini, ChatGPT, DeepSeek) — all three proposed some version
+of "don't resend a file/output Quor has already sent this session," which QB-043 already covers in
+principle but gates behind QB-048 because most of its scope involves a judgment call (fuzzy
+"unchanged" claims). This item is the narrow subset that involves no judgment call at all.
+
+<details>
+<summary>Technical details</summary>
+
+**The key distinction from QB-043:** QB-043's own "Why this is High risk" section is explicit that
+the danger is a *false positive* — claiming no change when something did change. That risk exists
+specifically for fuzzy/inferred "unchanged" claims (e.g. reasoning about file-modification time,
+semantic similarity, or cross-command content matching). It does **not** apply to a literal,
+byte-for-byte content hash: if a file's content hash exactly matches what Quor already returned
+earlier in the same session, "unchanged" is not an inference, it's a deterministic fact — exactly
+the same kind of guarantee every other Quor mechanism already relies on (e.g. `PROTECT` line
+immutability). This sub-slice can therefore skip QB-048's gate; QB-048 is only a prerequisite for
+QB-043's *remaining*, fuzzier scope.
+
+**Desired outcome:** A session-scoped cache (in-memory, per hook-invocation-chain — needs design
+work on what "session" means across separate OS processes, since every hook call is a fresh
+process today) keyed on file path + content hash. On a repeat `Read` of the same file with an
+identical hash, return a short marker (e.g. `[unchanged since last read — see above]`) instead of
+the full content, with the same tee-recovery-link guarantee (QB-013) if the model needs the actual
+content again. A changed file (different hash) is read and compressed normally, with no
+special-casing.
+
+**Open design questions:** what "session" means given every hook invocation is a brand-new process
+(QB-035A's own architecture audit flagged this exact statelessness as deliberate) — likely an
+on-disk cache keyed by a session/transcript identifier already available via `transcript_path`
+(the same field QB-081's relevant-files feature already reads), not genuine in-process memory. Cache
+invalidation and TTL need the same care QB-013's tee cache already applies. Interaction with
+`quor explain`/`quor dashboard` (should a deduplicated read show up as "compressed," and by how
+much) needs a design decision, not an assumption.
+
+**Status:** Proposed. Not scoped or implemented. Recommend fast-tracking design work on this ahead
+of QB-043's own full scope, precisely because it doesn't need QB-048 as a prerequisite the way the
+rest of QB-043 does.
+
+</details>
+
+---
+
+#### QB-088 — MCP server distribution
+
+**Effort:** Large · **Value:** High · **Risk:** Medium · **Expected token impact:** None directly
+(reach/distribution, not compression depth) · **Category:** Feature / Architecture
+
+**New item, added 2026-07-31**, surfaced independently by one of the three external AI reviews
+(DeepSeek) and cross-checked against QB-086's own competitive findings: Headroom AI already ships
+as an MCP (Model Context Protocol) server (`headroom_compress`/`headroom_retrieve` tools) alongside
+its library/proxy/agent-wrap forms — a distribution mechanism Quor has never considered, since
+every existing adapter (QB-035/068/069) integrates via a specific tool's own hook system.
+
+<details>
+<summary>Technical details</summary>
+
+**Why this might matter more than a fourth adapter would:** MCP is a single, tool-agnostic protocol
+that a growing number of AI coding assistants and desktop clients already speak natively, unlike a
+`PreToolUse`/`PostToolUse`-style hook, which every one of the six `DetectionOnlyAdapter` agents
+(Codex CLI, Cursor, VS Code Copilot, Windsurf, Aider, Continue.dev) either doesn't have or only
+offers in an allow/deny-only shape (see QB-068/QB-069's own research). If any of those clients
+support *calling* an MCP tool even without a real modify/replace hook, exposing Quor's compression
+pipeline as an MCP server could be a genuinely different integration surface than the hook-adapter
+architecture — not a replacement for it, a second front door.
+
+**Desired outcome, not yet designed:** An MCP server exposing Quor's existing, already
+agent-agnostic `FilterRegistry`/`Pipeline` core (confirmed 100% agent-agnostic by QB-035A's own
+audit) as one or more callable tools — e.g. "compress this text/command output" — reusing the exact
+same compression logic every hook adapter already calls, not a second implementation.
+
+**Open questions, unstudied:** whether this fits `ANTI_GOALS.md`'s constraints (an MCP server is a
+long-running process, a real departure from every existing adapter's "fresh process per hook call"
+model — needs to be checked against the local-only/no-network anti-goal, since MCP servers commonly
+run over a local socket or stdio, which should be fine, but needs explicit verification, not
+assumption); what a "compress this" MCP tool call's input/output shape should be, since MCP tools
+don't have a `tool_name`/`tool_input` shape the way a coding-assistant hook payload does; whether
+this is better scoped as its own adapter-like component or something structurally new.
+
+**Status:** Proposed. Not scoped or implemented. Real strategic upside (per QB-086's competitive
+findings) but Large effort and genuinely new architectural territory — recommend a QB-005A/QB-035A-
+style design-first pass before any code, same as this project's standing practice for anything this
+size.
+
 </details>
 
 ---
@@ -1135,6 +1256,13 @@ errors/warnings, no new stage types required.
 **Status:** Proposed. Not scoped or implemented. Lowest-risk item in this section — almost entirely
 a matter of writing new filter `.toml` files using stages that already exist and are already
 well-tested.
+
+**Scope note (2026-07-31):** one of the three external AI reviews (ChatGPT) that repeated this
+roadmap exercise listed Terraform, Kubernetes/Helm, Bazel, Cargo, and Ansible as additional
+uncovered ecosystems — cross-checked directly against `quor/filters/builtin/`'s actual file listing,
+confirmed genuinely absent today (that same check also found the same review incorrectly believed
+Gradle/Maven were uncovered — both already ship, in `java.toml`). Terraform/K8s/Helm/Bazel/Cargo/
+Ansible are real, verified gaps and belong in this item's scope when it's picked up, not a new item.
 
 </details>
 
