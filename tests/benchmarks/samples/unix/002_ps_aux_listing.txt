@@ -1,0 +1,7 @@
+USER       PID  %CPU %MEM    VSZ   RSS TTY      STAT START   TIME COMMAND
+root         1   0.0   0.1 168000 11000 ?        Ss   08:00   0:02 /sbin/init
+root        88   0.0   0.0      0     0 ?        S    08:00   0:00 [kworker/0:1]
+user      1234   2.5   1.2 812000 98000 pts/0    Sl   09:15   1:23 node server.js
+user      1250   0.3   0.5 245000 41000 pts/0    S    09:15   0:05 postgres -D /var/lib/postgresql/data
+user      1301   0.1   0.2 102000 16000 pts/1    S    09:20   0:01 redis-server *:6379
+user      1420  15.2   3.4 1450000 276000 pts/0  Rl   10:02   4:12 python train_model.py --epochs 100

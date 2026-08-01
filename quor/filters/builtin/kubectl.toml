@@ -1,0 +1,48 @@
+# quor built-in filter: kubectl state-inspection commands (QB-101)
+#
+# `kubectl get`/`kubectl get pods -A` are NOT currently reachable through
+# Quor's hook: `quor/rewrite/rules.py`'s `is_known_command()` gates
+# `kubectl` to only the `logs` subcommand ("every other kubectl subcommand
+# (get, describe, apply, ...) passes through untouched" is the existing
+# code's own comment). Routing `get` live would need its own change to
+# that gate plus reliable detection of kubectl's `-o`/`--output`
+# json/yaml/wide flags (so `kubectl get pods -o json` is never rewritten) —
+# a separate, higher-risk piece of work, deliberately out of scope for this
+# ticket (see backlog.md's QB-101 entry, same reasoning as docker.toml).
+# These filters are real and fully tested/benchmarked ahead of that
+# decision, exercised today via `FilterRegistry` directly — they simply
+# aren't hook-reachable yet.
+schema_version = 1
+
+[[filter]]
+name = "kubectl-get"
+match_command = '^kubectl\s+get\b'
+
+[[filter.stages]]
+type = "remove_ansi"
+
+[[filter.stages]]
+type = "column_padding_compression"
+patterns = ['\s{2,}']
+
+[[filter.stages]]
+type = "max_tokens"
+limit = 800
+strategy = "tail"
+
+[[filter.tests]]
+description = "QB-101: kubectl get pods column padding collapsed; every field and row preserved"
+input = "NAME                     READY   STATUS    RESTARTS   AGE\nfrontend-7d9f8c6b5d-xyz  1/1     Running   0          2d\nbackend-6b5c4d3e2f-abc   1/1     Running   1          2d"
+must_contain = ["NAME READY STATUS RESTARTS AGE", "frontend-7d9f8c6b5d-xyz 1/1 Running 0 2d", "backend-6b5c4d3e2f-abc 1/1 Running 1 2d"]
+must_not_contain = ["NAME                     READY"]
+
+[[filter.tests]]
+description = "QB-101: kubectl get pods -A's extra NAMESPACE column is preserved and its own padding collapsed the same way"
+input = "NAMESPACE     NAME                       READY   STATUS    RESTARTS   AGE\nkube-system   coredns-5dd5756b68-abc12   1/1     Running   0          5d\ndefault       frontend-7d9f8c6b5d-xyz34  1/1     Running   0          2d"
+must_contain = ["NAMESPACE NAME READY STATUS RESTARTS AGE", "kube-system coredns-5dd5756b68-abc12 1/1 Running 0 5d"]
+must_not_contain = ["NAMESPACE     NAME"]
+
+[[filter.tests]]
+description = "QB-101: CrashLoopBackOff / non-zero restart counts survive verbatim, not stripped as noise"
+input = "NAME             READY   STATUS             RESTARTS      AGE\nbroken-7f6d5c4b  0/1     CrashLoopBackOff   14 (2m ago)   3h"
+must_contain = ["broken-7f6d5c4b 0/1 CrashLoopBackOff 14 (2m ago) 3h"]

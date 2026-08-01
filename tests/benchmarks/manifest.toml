@@ -1071,13 +1071,19 @@ must_contain = [
 must_not_contain = ["println!(\"charging account {} for {}\", account_id, amount);"]
 
 [[case]]
+# QB-101: `ls -la` now correctly routes to the new, purpose-built `ls-long`
+# filter instead of falling through to `generic` — a real, intentional
+# routing change (unix.toml sorts before z_generic.toml, and a specific
+# filter is supposed to win over the catch-all), not a regression. Kept its
+# original id (not renamed) so the benchmark history shows the improvement
+# (0.0% -> 8.3%) rather than starting fresh with no baseline.
 id = "generic-ls-la"
 category = "generic"
 ecosystem = "Generic"
 command = "ls -la"
 sample_file = "samples/generic/001_ls_la_output.txt"
-expected_filter = "generic"
-min_reduction_pct = 0.0
+expected_filter = "ls-long"
+min_reduction_pct = 5.0
 must_contain = ["README.md", "pyproject.toml"]
 
 [[case]]
@@ -1843,3 +1849,101 @@ must_contain = [
     "Started Storefront API.",
 ]
 must_not_contain = ["2026-07-31T10:22:17+0000"]
+
+# ---------------------------------------------------------------------------
+# QB-101: column_padding_compression
+# ---------------------------------------------------------------------------
+# The first three cases (docker-ps, kubectl-get-pods, unix ls/ps/df) exercise
+# filters that are not yet reachable via the hook's rewrite classifier (see
+# docker.toml/kubectl.toml/unix.toml's own header comments) — the benchmark
+# harness reaches them the same way every case here does, directly through
+# FilterRegistry, independent of hook routing. pip-list/poetry-show/
+# git-branch-vv are already-live filters.
+
+[[case]]
+id = "docker-ps-running-containers"
+category = "docker-ps"
+ecosystem = "Containers"
+command = "docker ps"
+sample_file = "samples/docker/003_ps_running_containers.txt"
+expected_filter = "docker-ps"
+min_reduction_pct = 15.0
+must_contain = ["a1b2c3d4e5f6 nginx:latest", "0.0.0.0:80->80/tcp web", "Restarting (1) 5 seconds ago"]
+must_not_contain = ["CONTAINER ID   IMAGE"]
+
+[[case]]
+id = "kubectl-get-pods-all-namespaces"
+category = "kubectl-get"
+ecosystem = "Containers"
+command = "kubectl get pods -A"
+sample_file = "samples/kubectl/001_get_pods_all_namespaces.txt"
+expected_filter = "kubectl-get"
+min_reduction_pct = 15.0
+must_contain = ["kube-system coredns-5dd5756b68-abc12 1/1 Running 0 15d", "CrashLoopBackOff", "14 (2m ago)"]
+must_not_contain = ["NAMESPACE     NAME"]
+
+[[case]]
+id = "unix-ls-long-listing"
+category = "ls-long"
+ecosystem = "Generic"
+command = "ls -la"
+sample_file = "samples/unix/001_ls_long_listing.txt"
+expected_filter = "ls-long"
+min_reduction_pct = 10.0
+must_contain = ["-rw-r--r-- 1 dev staff 187 Jul 1 22:41 .gitignore", "-rw-r--r-- 1 dev staff 15234 Jul 2 09:10 CHANGELOG.md"]
+must_not_contain = ["drwxr-xr-x   9 dev"]
+
+[[case]]
+id = "unix-ps-aux-listing"
+category = "ps"
+ecosystem = "Generic"
+command = "ps aux"
+sample_file = "samples/unix/002_ps_aux_listing.txt"
+expected_filter = "ps"
+min_reduction_pct = 15.0
+must_contain = ["python train_model.py --epochs 100", "postgres -D /var/lib/postgresql/data"]
+must_not_contain = ["USER       PID"]
+
+[[case]]
+id = "unix-df-h-listing"
+category = "df"
+ecosystem = "Generic"
+command = "df -h"
+sample_file = "samples/unix/003_df_h_listing.txt"
+expected_filter = "df"
+min_reduction_pct = 15.0
+must_contain = ["/dev/sdb1 500G 312G 163G 66% /home", "/var/lib/docker/overlay2/abc123"]
+must_not_contain = ["Filesystem      Size"]
+
+[[case]]
+id = "pip-list-installed-packages"
+category = "pip"
+ecosystem = "Python Packaging"
+command = "pip list"
+sample_file = "samples/pip/004_pip_list.txt"
+expected_filter = "pip"
+min_reduction_pct = 15.0
+must_contain = ["pydantic-core 2.16.2", "typing-extensions 4.9.0"]
+must_not_contain = ["Package                       Version"]
+
+[[case]]
+id = "poetry-show-dependency-descriptions"
+category = "poetry"
+ecosystem = "Python Packaging"
+command = "poetry show"
+sample_file = "samples/poetry/003_poetry_show.txt"
+expected_filter = "poetry"
+min_reduction_pct = 10.0
+must_contain = ["Internationalized Domain Names in Applications (IDNA).", "HTTP library with thread-safe connection pooling."]
+must_not_contain = ["certifi                       2024.2.2"]
+
+[[case]]
+id = "git-branch-verbose-listing"
+category = "git-branch"
+ecosystem = "Git"
+command = "git branch -vv"
+sample_file = "samples/git-branch/001_verbose_branch_listing.txt"
+expected_filter = "git-branch"
+min_reduction_pct = 7.0
+must_contain = ["Merge pull request #99 from priyanshup/feature/qb-098", "Fix TrackingDB.flush() silent timeout"]
+must_not_contain = ["* main                       a1b2c3d"]

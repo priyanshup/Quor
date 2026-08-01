@@ -1,0 +1,131 @@
+# quor built-in filter: bare Unix table-shaped commands (QB-101)
+#
+# `ps`/`df`/`ls -l` are NOT currently reachable through Quor's hook:
+# none of `ps`/`df`/`ls` are in `quor/rewrite/rules.py`'s
+# `_KNOWN_BASE_COMMANDS`. Unlike `journalctl` (added directly in QB-098,
+# a flag-driven command whose output is normally read directly, not piped
+# into another parser), these three are used constantly as the first stage
+# of a shell pipeline (`ls | xargs ...`, `ps aux | grep ...`,
+# `df -h | awk ...`) — rewriting/compressing them live risks breaking a
+# downstream command that expects the tool's real raw output, a materially
+# different risk profile than journalctl's. Deciding whether and how to
+# route these safely (pipe-position detection, not just the
+# `PIPE_INCOMPATIBLE_COMMANDS` next-command check that exists today) is
+# deliberately out of scope for this ticket — see backlog.md's QB-101
+# entry. These filters are real and fully tested/benchmarked ahead of that
+# decision, exercised today via `FilterRegistry` directly.
+#
+# `ls` is scoped to long-format invocations only (`-l`/`-la`/`-al`/...) —
+# bare `ls` piped to a non-TTY prints one entry per line with no column
+# grid at all, so there is nothing for this stage to do there.
+schema_version = 1
+
+[[filter]]
+name = "ps"
+match_command = '^ps\b'
+
+[[filter.stages]]
+type = "remove_ansi"
+
+[[filter.stages]]
+# max_gaps = 10: USER/PID/%CPU/%MEM/VSZ/RSS/TTY/STAT/START/TIME are 10
+# fixed metadata tokens before COMMAND — the 11th, trailing field, which is
+# free text and can legitimately contain its own multi-space runs (an
+# invoked command with a literal double space in an argument). Bounding
+# here is a hard guarantee: COMMAND survives past the 10th collapsed gap
+# completely untouched, not "probably fine."
+type = "column_padding_compression"
+patterns = ['\s{2,}']
+max_gaps = 10
+
+[[filter.stages]]
+type = "max_tokens"
+limit = 800
+strategy = "tail"
+
+[[filter.tests]]
+description = "QB-101: ps aux column padding collapsed; every field and row preserved"
+input = "USER       PID  %CPU %MEM    VSZ   RSS TTY      STAT START   TIME COMMAND\nroot         1   0.0  0.1  168000 11000 ?        Ss   08:00   0:02 /sbin/init\nuser      1234   2.5  1.2  812000 98000 pts/0    Sl   09:15   1:23 node server.js"
+must_contain = ["USER PID %CPU %MEM VSZ RSS TTY STAT START TIME COMMAND", "root 1 0.0 0.1 168000 11000 ? Ss 08:00 0:02 /sbin/init"]
+must_not_contain = ["USER       PID"]
+
+[[filter.tests]]
+description = "QB-101: a COMMAND field with its own double-spaced argument survives past max_gaps=10 untouched"
+input = "user  99  0.0  0.1  168000  11000  pts/0  Sl  09:15  1:23  node server.js  --extra-space arg"
+must_contain = ["node server.js  --extra-space arg"]
+
+[[filter.tests]]
+description = "QB-101: single-spaced header (no real padding) left untouched"
+input = "USER PID COMMAND\nroot 1 /sbin/init"
+must_contain = ["USER PID COMMAND", "root 1 /sbin/init"]
+
+[[filter]]
+name = "df"
+match_command = '^df\b'
+
+[[filter.stages]]
+type = "remove_ansi"
+
+[[filter.stages]]
+# max_gaps = 5: Filesystem/Size/Used/Avail/Use% are 5 fixed metadata
+# tokens before the trailing Mounted-on path, which — while rare in
+# practice — is technically legal to contain its own internal spaces.
+type = "column_padding_compression"
+patterns = ['\s{2,}']
+max_gaps = 5
+
+[[filter.stages]]
+type = "max_tokens"
+limit = 400
+strategy = "tail"
+
+[[filter.tests]]
+description = "QB-101: df -h column padding collapsed; every field and row preserved"
+input = "Filesystem      Size  Used Avail Use% Mounted on\n/dev/sda1        50G   22G   26G  46% /\ntmpfs           7.8G     0  7.8G   0% /dev/shm"
+must_contain = ["Filesystem Size Used Avail Use% Mounted on", "/dev/sda1 50G 22G 26G 46% /", "tmpfs 7.8G 0 7.8G 0% /dev/shm"]
+must_not_contain = ["Filesystem      Size"]
+
+[[filter.tests]]
+description = "QB-101: a 100%-full filesystem row (no padding-worthy gaps if columns happen to be narrow) is at minimum left correct, never merged with another row"
+input = "Filesystem Size Used Avail Use% Mounted on\n/dev/sda1  50G  50G  0G   100%  /"
+must_contain = ["/dev/sda1"]
+
+[[filter]]
+name = "ls-long"
+match_command = '^ls\s+-[a-zA-Z]*l[a-zA-Z]*(\s|$)'
+
+[[filter.stages]]
+type = "remove_ansi"
+
+[[filter.stages]]
+# max_gaps = 8: permissions/links/owner/group/size/month/day/time are 8
+# fixed metadata tokens before the trailing filename, which can legally
+# contain its own multiple consecutive spaces. Bounding here is a hard
+# guarantee: the filename survives past the 8th collapsed gap completely
+# untouched, not "probably fine" — see this stage's own module docstring
+# for why an unbounded collapse would be a real correctness bug here, not
+# a compression trade-off.
+type = "column_padding_compression"
+patterns = ['\s{2,}']
+max_gaps = 8
+
+[[filter.stages]]
+type = "max_tokens"
+limit = 800
+strategy = "tail"
+
+[[filter.tests]]
+description = "QB-101: ls -la column padding collapsed; permissions/owner/size/date/name all preserved"
+input = "total 48\ndrwxr-xr-x  9 dev  staff   288 Jul  2 09:14 .\n-rw-r--r--  1 dev  staff   187 Jul  1 22:41 .gitignore\ndrwxr-xr-x  4 dev  staff   128 Jul  2 09:14 src"
+must_contain = ["drwxr-xr-x 9 dev staff 288 Jul 2 09:14 .", "-rw-r--r-- 1 dev staff 187 Jul 1 22:41 .gitignore", "drwxr-xr-x 4 dev staff 128 Jul 2 09:14 src"]
+must_not_contain = ["drwxr-xr-x  9 dev"]
+
+[[filter.tests]]
+description = "QB-101: a filename containing multiple real internal spaces is preserved exactly, not collapsed"
+input = "total 8\n-rw-r--r--  1  dev  staff  42  Jul  1  22:41  my  file  with  spaces.txt"
+must_contain = ["my  file  with  spaces.txt"]
+
+[[filter.tests]]
+description = "QB-101: bare `ls` (no -l flag) never matches this filter at all"
+input = "README.md\nsrc\ntests"
+must_contain = ["README.md", "src", "tests"]
