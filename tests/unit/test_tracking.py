@@ -317,6 +317,120 @@ class TestTrackingDbSqlite:
 
 
 # ---------------------------------------------------------------------------
+# TrackingDB.flush()/close() honest success/failure reporting (QB-100)
+#
+# Root-caused a real, reproducible CI flake
+# (test_unsupported_file_type_tracked, tests/unit/test_tracking.py):
+# flush()/close() previously returned None unconditionally and silently gave
+# up after a fixed 2.0s wait, even when the worker thread's connection setup
+# (WAL pragma + schema creation, see _connect()) hadn't actually finished —
+# indistinguishable, to any caller, from genuine success. Under real OS
+# thread-scheduling pressure (this repo's own suite constructs 50+
+# TrackingDB instances, each spawning a background thread), a brand-new
+# instance's worker thread could miss that fixed window purely from
+# contention, not from any defect in the write itself. See
+# docs/design/QB-100-tracking-db-flush-close-timeout-investigation.md for
+# the full root-cause report, including a direct reproduction.
+#
+# These tests use a controlled Event to block the worker thread
+# deterministically instead of real thread-count pressure or sleep-based
+# timing — this repo's own no-flaky-test convention (see
+# TestTrackingDbSqlite's own transient-lock tests above for the same
+# `patch.object` style) rules out any test whose outcome depends on real
+# wall-clock contention.
+# ---------------------------------------------------------------------------
+
+
+class TestFlushCloseTimeoutReporting:
+    def test_flush_returns_true_on_ordinary_success(self, tmp_path: Path) -> None:
+        db, _ = _make_db(tmp_path)
+        db.record(_sample_record())
+        assert db.flush() is True
+        db.close()
+
+    def test_close_returns_true_on_ordinary_success(self, tmp_path: Path) -> None:
+        db, _ = _make_db(tmp_path)
+        db.record(_sample_record())
+        assert db.close() is True
+
+    def test_default_timeout_is_ten_seconds(self) -> None:
+        """QB-100: raised from 2.0s — see the class docstring's own
+        rationale for why a wider ceiling adds no latency to the fast,
+        uncontended path every real single-invocation `quor <command>`
+        process runs under (join()/wait() both return as soon as the real
+        condition is satisfied)."""
+        import inspect
+
+        assert inspect.signature(TrackingDB.flush).parameters["timeout"].default == 10.0
+        assert inspect.signature(TrackingDB.close).parameters["timeout"].default == 10.0
+
+    def test_flush_returns_false_and_warns_when_worker_has_not_caught_up(
+        self, tmp_path: Path
+    ) -> None:
+        """Deterministically simulate the exact CI failure mode: the worker
+        thread's _connect() (WAL pragma + schema creation) hasn't finished
+        by the time flush()'s timeout elapses — not a hang, just not done
+        yet. Blocked on a controlled Event, not a real scheduling delay."""
+        block = threading.Event()
+        real_connect = TrackingDB._connect
+
+        def blocked_connect(self: TrackingDB) -> sqlite3.Connection:
+            block.wait(timeout=5.0)
+            return real_connect(self)
+
+        db_path = tmp_path / "quor.db"
+        with (
+            patch.object(TrackingDB, "_connect", blocked_connect),
+            warnings.catch_warnings(record=True) as caught,
+        ):
+            warnings.simplefilter("always")
+            db = TrackingDB(db_path=db_path)
+            db.record(_sample_record())
+            result = db.flush(timeout=0.05)
+
+        assert result is False
+        assert any("did not complete within" in str(w.message) for w in caught)
+
+        # Release the worker and let it finish for real, so the record it
+        # was already holding actually lands — flush()/close() returning
+        # False must not mean the write was lost, only that we stopped
+        # waiting for confirmation of it.
+        block.set()
+        assert db.close(timeout=5.0) is True
+        with sqlite3.connect(str(db_path)) as conn:
+            count = conn.execute("SELECT COUNT(*) FROM invocations").fetchone()[0]
+        assert count == 1
+
+    def test_close_returns_false_and_warns_when_worker_has_not_stopped(
+        self, tmp_path: Path
+    ) -> None:
+        block = threading.Event()
+        real_connect = TrackingDB._connect
+
+        def blocked_connect(self: TrackingDB) -> sqlite3.Connection:
+            block.wait(timeout=5.0)
+            return real_connect(self)
+
+        db_path = tmp_path / "quor.db"
+        with (
+            patch.object(TrackingDB, "_connect", blocked_connect),
+            warnings.catch_warnings(record=True) as caught,
+        ):
+            warnings.simplefilter("always")
+            db = TrackingDB(db_path=db_path)
+            result = db.close(timeout=0.05)
+
+        assert result is False
+        assert any("did not stop within" in str(w.message) for w in caught)
+
+        # Cleanup: release the worker so it doesn't linger past this test
+        # (ironic, given QB-100's own root cause — a leaked thread here
+        # would itself add to exactly the pressure this fix addresses).
+        block.set()
+        db._thread.join(timeout=5.0)
+
+
+# ---------------------------------------------------------------------------
 # TrackingDB — batched commits (QB-070)
 # ---------------------------------------------------------------------------
 
