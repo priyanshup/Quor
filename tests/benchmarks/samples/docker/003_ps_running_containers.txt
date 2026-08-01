@@ -1,0 +1,6 @@
+CONTAINER ID   IMAGE                COMMAND                  CREATED         STATUS                   PORTS                    NAMES
+a1b2c3d4e5f6   nginx:latest         "nginx -g 'daemon of…"   2 hours ago     Up 2 hours               0.0.0.0:80->80/tcp       web
+b2c3d4e5f6a7   postgres:15          "docker-entrypoint.s…"   3 hours ago     Up 3 hours               0.0.0.0:5432->5432/tcp   database
+c3d4e5f6a7b8   redis:7-alpine       "docker-entrypoint.s…"   5 hours ago     Up 5 hours               0.0.0.0:6379->6379/tcp   cache
+d4e5f6a7b8c9   myapp/api:latest     "node server.js"         1 day ago       Up 1 day (healthy)       0.0.0.0:3000->3000/tcp   api
+e5f6a7b8c9d0   myapp/worker:latest  "python worker.py"       1 day ago       Restarting (1) 5 seconds ago                       worker

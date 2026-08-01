@@ -57,6 +57,16 @@ Invariants (enforced by Pipeline.execute, not by individual stages):
   floats, never rounded). Gated by the same token-cost comparison as every
   stage above. A future stage wanting a sixth exception should be held to
   one of these five bars explicitly, not treated as an open door.
+- Not a sixth exception, but worth naming here: truncate_lines (a pre-QB-041
+  stage) and column_padding_compression (QB-101) both rewrite a qualifying
+  KEEP line's content in place — the former shortens overlong lines, the
+  latter collapses internal alignment-padding runs. Neither assigns
+  COMPRESS, neither inserts a line, and neither needs a run of multiple
+  lines to act (each qualifying line is independent, unlike every exception
+  above). This is the same "content changes, decision and line count don't"
+  shape, just without a multi-line run to fold — recorded here so a future
+  reader doesn't mistake either stage for an undocumented violation of
+  "line content is never modified."
 """
 
 from __future__ import annotations

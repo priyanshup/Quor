@@ -1,0 +1,11 @@
+NAMESPACE     NAME                                READY   STATUS             RESTARTS      AGE
+kube-system   coredns-5dd5756b68-abc12            1/1     Running            0             15d
+kube-system   coredns-5dd5756b68-def34            1/1     Running            0             15d
+kube-system   etcd-control-plane                  1/1     Running            2             15d
+kube-system   kube-apiserver-control-plane         1/1     Running            2             15d
+kube-system   kube-proxy-xyz56                    1/1     Running            0             15d
+default       frontend-7d9f8c6b5d-mno78           1/1     Running            0             2d
+default       backend-6b5c4d3e2f-pqr90            1/1     Running            1             2d
+default       worker-8f7e6d5c4b-stu12             0/1     CrashLoopBackOff   14 (2m ago)   3h
+monitoring    prometheus-server-9a8b7c6d5-vwx34   1/1     Running            0             30d
+monitoring    grafana-4c3b2a1f0e-yza56            1/1     Running            0             30d

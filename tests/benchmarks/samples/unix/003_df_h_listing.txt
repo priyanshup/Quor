@@ -1,0 +1,7 @@
+Filesystem      Size  Used Avail Use% Mounted on
+/dev/sda1        50G   22G   26G  46% /
+/dev/sda2       200G  180G   10G  95% /var
+tmpfs           7.8G     0  7.8G   0% /dev/shm
+tmpfs           7.8G  1.2M  7.8G   1% /run
+/dev/sdb1       500G  312G  163G  66% /home
+overlay          50G   22G   26G  46% /var/lib/docker/overlay2/abc123

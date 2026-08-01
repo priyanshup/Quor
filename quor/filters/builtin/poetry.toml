@@ -69,6 +69,27 @@ preserve_patterns = [
 ]
 
 [[filter.stages]]
+# QB-101: `poetry show` right-pads the name and version columns so the
+# description column lines up:
+#
+#     certifi             2024.2.2 Python package for providing Mozilla's CA Bundle.
+#     charset-normalizer  3.3.2    The Real First Universal Charset Detector.
+#
+# `patterns` requires a package-name token, then a semver-shaped token
+# (starts with digits/dots — poetry's own version column), then more text —
+# a shape specific enough that it never matches this filter's own
+# install/verbose-mode prose (which never starts "word digit-token ..."
+# after a leading marker like "- Installing "). Runs before
+# deduplicate_consecutive, same precedent as pip.toml.
+# max_gaps = 2: only the name-to-version and version-to-description gaps
+# are real column separators; the description itself is free text that can
+# legitimately contain its own multi-space runs, which must never be
+# touched — a hard guarantee via `count=2`, not a probabilistic one.
+type = "column_padding_compression"
+patterns = ['^\S+\s+\d[\d.]*\s+\S']
+max_gaps = 2
+
+[[filter.stages]]
 type = "deduplicate_consecutive"
 
 [[filter.stages]]
@@ -108,3 +129,19 @@ must_not_contain = [
     "Found: C:\\Python314\\python.EXE",
     "Checking keyring availability",
 ]
+
+[[filter.tests]]
+description = "QB-101: poetry show's padded name/version columns collapsed to a single space; description text untouched"
+input = "certifi                       2024.2.2 Python package for providing Mozilla's CA Bundle.\ncharset-normalizer             3.3.2    The Real First Universal Charset Detector.\n"
+must_contain = ["certifi 2024.2.2 Python package for providing Mozilla's CA Bundle.", "charset-normalizer 3.3.2 The Real First Universal Charset Detector."]
+must_not_contain = ["certifi                       2024.2.2"]
+
+[[filter.tests]]
+description = "QB-101: indented install-progress lines never match the poetry-show row pattern (anchored to a non-whitespace first character)"
+input = "  - Installing certifi (2026.6.17)\n"
+must_contain = ["- Installing certifi (2026.6.17)"]
+
+[[filter.tests]]
+description = "QB-101: a description with its own double-spacing survives past max_gaps=2 untouched"
+input = "certifi  2024.2.2  A package.  With two sentences.\n"
+must_contain = ["A package.  With two sentences."]

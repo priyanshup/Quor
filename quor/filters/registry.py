@@ -33,6 +33,10 @@ from quor.pipeline.stages.collapse_unchanged_context import (
     CollapseUnchangedContextConfig,
     CollapseUnchangedContextStage,
 )
+from quor.pipeline.stages.column_padding_compression import (
+    ColumnPaddingCompressionConfig,
+    ColumnPaddingCompressionStage,
+)
 from quor.pipeline.stages.deduplicate_consecutive import (
     DeduplicateConsecutiveConfig,
     DeduplicateConsecutiveStage,
@@ -92,6 +96,10 @@ _STAGE_HANDLERS: dict[str, tuple[type, type[StageConfig]]] = {
     "relative_timestamp_compression": (
         RelativeTimestampCompressionStage,
         RelativeTimestampCompressionConfig,
+    ),
+    "column_padding_compression": (
+        ColumnPaddingCompressionStage,
+        ColumnPaddingCompressionConfig,
     ),
 }
 

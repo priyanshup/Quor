@@ -1,0 +1,98 @@
+# quor built-in filter: docker state-inspection commands (QB-101)
+#
+# `docker ps`/`docker images` are NOT currently reachable through Quor's
+# hook: `quor/rewrite/rules.py`'s `is_known_command()` gates `docker` to
+# only the `build`/`logs` subcommands (`docker-build` lives in ci.toml;
+# `docker logs` falls through to z_generic.toml's relative_timestamp_
+# compression). Routing `ps`/`images` live would need its own change to
+# that gate plus reliable detection of docker's `--format`/`-f` Go-template
+# structured-output flags (so `docker ps --format '{{json .}}'` is never
+# rewritten) — a separate, higher-risk piece of work, deliberately out of
+# scope for this ticket (see backlog.md's QB-101 entry). These filters are
+# real and fully tested/benchmarked ahead of that decision, exercised today
+# via `FilterRegistry` directly (`quor explain`, the benchmark suite) —
+# they simply aren't hook-reachable yet.
+#
+# Both are single-purpose filters (only ever see one command's fixed-column
+# output), so `patterns` only needs to say "this line has real
+# column-alignment padding somewhere" rather than reconstruct the exact
+# field shape the way pip.toml/poetry.toml (which also see non-tabular
+# prose in the same filter) have to.
+#
+# Neither sets `max_gaps` (see column_padding_compression.py's own
+# docstring for why the *trailing* column of a row needs bounding when it
+# can hold free text): `docker images`' trailing SIZE field and `docker
+# ps`'s trailing NAMES field are both short, space-free identifiers by the
+# tool's own naming rules — nothing in either table's last column can
+# legally contain internal whitespace, so unbounded collapse is safe. The
+# one narrower residual risk — `docker ps`'s *middle* COMMAND field, a
+# quoted, ellipsis-truncated string that could in principle contain a
+# literal double space — is accepted, not fixed: `max_gaps` can only bound
+# from the left, so it cannot protect a middle field regardless, and a
+# literal double space inside a truncated shell-command display is an
+# extremely narrow edge case in practice.
+schema_version = 1
+
+[[filter]]
+name = "docker-ps"
+match_command = '^docker\s+ps\b'
+
+[[filter.stages]]
+type = "remove_ansi"
+
+[[filter.stages]]
+type = "column_padding_compression"
+patterns = ['\s{2,}']
+
+[[filter.stages]]
+type = "max_tokens"
+limit = 800
+strategy = "tail"
+
+[[filter.tests]]
+description = "QB-101: docker ps column padding collapsed; every field and row preserved"
+input = "CONTAINER ID   IMAGE          COMMAND                  CREATED         STATUS          PORTS                    NAMES\na1b2c3d4e5f6   nginx:latest   \"nginx -g 'daemon of\"   2 hours ago     Up 2 hours      0.0.0.0:80->80/tcp      web"
+must_contain = ["CONTAINER ID IMAGE COMMAND CREATED STATUS PORTS NAMES", "a1b2c3d4e5f6 nginx:latest"]
+must_not_contain = ["CONTAINER ID   IMAGE"]
+
+[[filter.tests]]
+description = "QB-101: single-spaced content (no real padding) left untouched"
+input = "CONTAINER ID IMAGE\na1b2c3d4e5f6 nginx:latest"
+must_contain = ["CONTAINER ID IMAGE", "a1b2c3d4e5f6 nginx:latest"]
+
+[[filter.tests]]
+description = "QB-101: leading indentation on a multi-line COMMAND wrap is never touched"
+input = "CONTAINER ID   IMAGE\n  a1b2c3d4e5f6   nginx:latest"
+must_contain = ["  a1b2c3d4e5f6 nginx:latest"]
+
+[[filter]]
+name = "docker-images"
+match_command = '^docker\s+images\b'
+
+[[filter.stages]]
+type = "remove_ansi"
+
+[[filter.stages]]
+type = "column_padding_compression"
+patterns = ['\s{2,}']
+
+[[filter.stages]]
+type = "max_tokens"
+limit = 800
+strategy = "tail"
+
+[[filter.tests]]
+description = "QB-101: docker images column padding collapsed; repository/tag/id/size preserved"
+input = "REPOSITORY   TAG       IMAGE ID       CREATED         SIZE\nnginx        latest    a1b2c3d4e5f6   2 weeks ago     187MB\npostgres     15        b2c3d4e5f6a7   3 weeks ago     412MB"
+must_contain = ["REPOSITORY TAG IMAGE ID CREATED SIZE", "nginx latest a1b2c3d4e5f6 2 weeks ago 187MB", "postgres 15 b2c3d4e5f6a7 3 weeks ago 412MB"]
+must_not_contain = ["REPOSITORY   TAG"]
+
+[[filter.tests]]
+description = "QB-101: an empty image list (header only) is left completely alone if no padding present"
+input = "REPOSITORY TAG IMAGE ID CREATED SIZE"
+must_contain = ["REPOSITORY TAG IMAGE ID CREATED SIZE"]
+
+[[filter.tests]]
+description = "QB-101: <none> tags and repeated identical image IDs across rows are preserved verbatim, not deduplicated by this stage"
+input = "REPOSITORY   TAG       IMAGE ID       CREATED         SIZE\n<none>       <none>    a1b2c3d4e5f6   2 weeks ago     187MB\n<none>       <none>    a1b2c3d4e5f6   2 weeks ago     187MB"
+must_contain = ["<none> <none> a1b2c3d4e5f6 2 weeks ago 187MB"]

@@ -187,3 +187,47 @@ must_contain = [
     "rename to src/notifications/channels.py",
 ]
 must_not_contain = ["unchanged lines omitted"]
+
+[[filter]]
+# QB-101: `git branch -vv` right-pads the branch-name and hash columns so
+# the upstream/subject columns line up — genuinely tabular, and git itself
+# is already a fully-routed base command (_KNOWN_BASE_COMMANDS), so this is
+# live the moment it ships, unlike the docker/kubectl/unix candidates below.
+# `patterns` declares the exact row shape this filter knows to expect
+# (current-branch marker, branch name, a 7-40 hex short/full SHA) rather
+# than guessing "looks tabular" — same convention path_prefix_fold/
+# strip_lines use. `git branch` with no `-v`/`-vv` has no hash column at
+# all and simply never matches; harmless no-op, not a separate filter.
+name = "git-branch"
+match_command = '^git\s+branch\b'
+
+[[filter.stages]]
+# max_gaps = 1: only the name-to-hash gap is a real column separator in
+# real git output (git does not right-pad the hash or anything after it).
+# Bounding here is a hard guarantee, not a probabilistic one — the commit
+# subject frequently contains its own multiple-space runs (double-spacing
+# after a period is common style), which must never be touched.
+type = "column_padding_compression"
+patterns = ['^[* ] \S+\s+[0-9a-f]{7,40}(\s|$)']
+max_gaps = 1
+
+[[filter.tests]]
+description = "QB-101: git branch -vv column padding collapsed; current-branch marker and every field preserved"
+input = "* main                a1b2c3d [origin/main] Merge pull request #99\n  feature/qb-101-cols  b2c3d4e [origin/feature/qb-101-cols: ahead 3] Add column padding stage"
+must_contain = ["* main a1b2c3d [origin/main] Merge pull request #99", "feature/qb-101-cols b2c3d4e [origin/feature/qb-101-cols: ahead 3] Add column padding stage"]
+must_not_contain = ["main                a1b2c3d"]
+
+[[filter.tests]]
+description = "QB-101: current-branch marker column (leading '* ' vs two spaces) is leading whitespace, never touched"
+input = "* main            a1b2c3d Initial commit\n  old-branch       c3d4e5f Old experiment"
+must_contain = ["* main a1b2c3d Initial commit", "  old-branch c3d4e5f Old experiment"]
+
+[[filter.tests]]
+description = "QB-101: a commit subject with its own double-spacing (common after a period) survives past max_gaps=1 untouched"
+input = "* main                a1b2c3d Fix bug.  Also update docs.  See #42."
+must_contain = ["Fix bug.  Also update docs.  See #42."]
+
+[[filter.tests]]
+description = "QB-101: plain `git branch` (no -v, no hash column) has nothing matching the declared row shape and passes through untouched"
+input = "* main\n  feature/other"
+must_contain = ["* main", "  feature/other"]

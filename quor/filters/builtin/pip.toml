@@ -78,6 +78,24 @@ preserve_patterns = [
 ]
 
 [[filter.stages]]
+# QB-101: `pip list`'s default format is a strict two-column table (name,
+# version), right-padded so the Version column lines up:
+#
+#     Package            Version
+#     ------------------ -------
+#     certifi            2024.2.2
+#     idna               3.6
+#
+# `patterns` requires the *whole* line to be exactly two whitespace-
+# separated tokens with a 2+-space gap between them — precise enough that
+# it never matches pip's own install-progress/error prose (multi-word,
+# single-spaced) elsewhere in this same filter's output. Runs before
+# deduplicate_consecutive, same "normalize before dedup" precedent
+# regex_replace's own docstring already documents.
+type = "column_padding_compression"
+patterns = ['^\S+\s{2,}\S+$']
+
+[[filter.stages]]
 type = "deduplicate_consecutive"
 
 [[filter.stages]]
@@ -127,3 +145,14 @@ must_not_contain = ["A new release of pip is available", "To update, run"]
 description = "Force-reinstall's uninstall/reinstall chatter is left untouched (not a targeted noise category)"
 input = "Collecting six\nDownloading six-1.17.0-py2.py3-none-any.whl (11 kB)\nInstalling collected packages: six\n  Attempting uninstall: six\n    Found existing installation: six 1.17.0\n    Uninstalling six-1.17.0:\n      Successfully uninstalled six-1.17.0\nSuccessfully installed six-1.17.0\n"
 must_contain = ["Attempting uninstall: six", "Found existing installation: six 1.17.0", "Uninstalling six-1.17.0:", "Successfully uninstalled six-1.17.0", "Successfully installed six-1.17.0"]
+
+[[filter.tests]]
+description = "QB-101: pip list's padded Package/Version columns collapsed to a single space; every name and version preserved"
+input = "Package                       Version\n------------------------------ -------\ncertifi                       2024.2.2\ncharset-normalizer            3.3.2\nidna                          3.6\n"
+must_contain = ["Package Version", "certifi 2024.2.2", "charset-normalizer 3.3.2", "idna 3.6"]
+must_not_contain = ["certifi                       2024.2.2"]
+
+[[filter.tests]]
+description = "QB-101: pip install prose (multi-word, single-spaced) never matches the strict two-token pip-list row pattern"
+input = "Successfully installed six-1.17.0\n"
+must_contain = ["Successfully installed six-1.17.0"]

@@ -29,6 +29,10 @@ from quor.pipeline.stages.collapse_unchanged_context import (
     CollapseUnchangedContextConfig,
     CollapseUnchangedContextStage,
 )
+from quor.pipeline.stages.column_padding_compression import (
+    ColumnPaddingCompressionConfig,
+    ColumnPaddingCompressionStage,
+)
 from quor.pipeline.stages.deduplicate_consecutive import (
     DeduplicateConsecutiveConfig,
     DeduplicateConsecutiveStage,
@@ -1446,6 +1450,301 @@ class TestRelativeTimestampCompression:
         ]
         result = _rtc._fold_run(run, "relative_timestamp_compression")
         assert [lm.line for lm in result] == ["2026-07-31 10:15:01 a", "+1s b"]
+
+
+# ---------------------------------------------------------------------------
+# column_padding_compression (QB-101)
+# ---------------------------------------------------------------------------
+
+class TestColumnPaddingCompression:
+    stage = ColumnPaddingCompressionStage()
+
+    def _config(
+        self,
+        patterns: list[str] | None = None,
+        max_gaps: int | None = None,
+        preserve: list[str] | None = None,
+    ) -> ColumnPaddingCompressionConfig:
+        return ColumnPaddingCompressionConfig(
+            type="column_padding_compression",
+            patterns=patterns if patterns is not None else [r"\s{2,}"],
+            max_gaps=max_gaps,
+            preserve_patterns=preserve or [],
+        )
+
+    # -- boilerplate parity with sibling stages --------------------------
+
+    def test_empty_input(self) -> None:
+        result = self.stage.apply(ContentMask.from_text(""), self._config())
+        assert result.render() == ""
+
+    def test_no_patterns_configured_returns_mask_unchanged(self) -> None:
+        mask = ContentMask.from_text("a  b\nc  d")
+        result = self.stage.apply(mask, self._config(patterns=[]))
+        assert result.render() == mask.render()
+
+    def test_no_matching_lines_all_kept_unchanged(self) -> None:
+        mask = ContentMask.from_text("line_a\nline_b\nline_c")
+        result = self.stage.apply(mask, self._config(patterns=[r"NEVER_MATCHES"]))
+        assert result.render() == mask.render()
+        assert all(lm.decision is Decision.KEEP for lm in result.lines)
+
+    def test_wrong_config_type_raises(self) -> None:
+        with pytest.raises(TypeError, match="ColumnPaddingCompressionConfig"):
+            self.stage.apply(ContentMask.from_text("x"), RemoveAnsiConfig(type="remove_ansi"))
+
+    def test_line_count_never_changes(self) -> None:
+        """No mask.py exception is needed for this stage (see its own module
+        docstring) — it never inserts a line and never assigns COMPRESS."""
+        mask = ContentMask.from_text(
+            "NAME      READY\nfrontend  1/1\nbackend   1/1"
+        )
+        result = self.stage.apply(mask, self._config())
+        assert len(result.lines) == len(mask.lines)
+        assert all(lm.decision is Decision.KEEP for lm in result.lines)
+
+    def test_never_assigns_compress(self) -> None:
+        mask = ContentMask.from_text("NAME      READY\nfrontend  1/1")
+        result = self.stage.apply(mask, self._config())
+        assert all(lm.decision is Decision.KEEP for lm in result.lines)
+
+    # -- the worked example from the ticket ------------------------------
+
+    def test_kubectl_style_table_collapses_to_single_spaces(self) -> None:
+        text = (
+            "NAME          READY   STATUS             RESTARTS   AGE\n"
+            "frontend      1/1     Running            0          2d\n"
+            "backend       1/1     Running            1          2d\n"
+            "database      1/1     Pending            0          5m"
+        )
+        mask = ContentMask.from_text(text)
+        result = self.stage.apply(mask, self._config())
+        assert result.render() == (
+            "NAME READY STATUS RESTARTS AGE\n"
+            "frontend 1/1 Running 0 2d\n"
+            "backend 1/1 Running 1 2d\n"
+            "database 1/1 Pending 0 5m"
+        )
+
+    # -- required invariants: what must NEVER be touched -----------------
+
+    def test_leading_indentation_preserved(self) -> None:
+        mask = ContentMask.from_text("    NAME      READY")
+        result = self.stage.apply(mask, self._config())
+        assert result.render() == "    NAME READY"
+
+    def test_trailing_whitespace_preserved(self) -> None:
+        mask = ContentMask.from_text("NAME      READY   ")
+        result = self.stage.apply(mask, self._config())
+        assert result.render() == "NAME READY   "
+
+    def test_tabs_never_touched_even_when_adjacent_to_a_space_run(self) -> None:
+        """A tab is not `\\S`, so a run touching a tab on either side never
+        matches — mixed tab+space padding is left completely alone, per
+        this stage's own 'tabs untouched' requirement."""
+        mask = ContentMask.from_text("a  \tb")
+        result = self.stage.apply(mask, self._config())
+        assert result.render() == "a  \tb"
+
+    def test_pure_tab_separated_content_untouched(self) -> None:
+        mask = ContentMask.from_text("origin\thttps://example.com/repo.git (fetch)")
+        result = self.stage.apply(mask, self._config())
+        assert result.render() == "origin\thttps://example.com/repo.git (fetch)"
+
+    def test_markdown_table_untouched_when_filter_pattern_does_not_match_it(self) -> None:
+        """Safety against markdown tables/ASCII art/box-drawing is a matter
+        of filter-author opt-in scoping (see this stage's own module
+        docstring), not stage-internal detection — this proves the
+        practical guarantee: a real filter's declared row shape (here, a
+        kubectl-style pattern requiring a slash-delimited READY-style
+        token) never matches markdown table syntax, so it passes through
+        untouched even though it does contain 2+-space-adjacent content in
+        principle."""
+        mask = ContentMask.from_text("| Name   | Age |\n|--------|-----|\n| Alice  | 30  |")
+        result = self.stage.apply(mask, self._config(patterns=[r"^\S+\s+\d+/\d+\s"]))
+        assert result.render() == mask.render()
+
+    def test_ascii_art_untouched_when_filter_pattern_does_not_match_it(self) -> None:
+        mask = ContentMask.from_text("  /\\_/\\  \n ( o.o ) \n  > ^ <  ")
+        result = self.stage.apply(mask, self._config(patterns=[r"^\S+\s+\d+/\d+\s"]))
+        assert result.render() == mask.render()
+
+    def test_box_drawing_untouched_when_filter_pattern_does_not_match_it(self) -> None:
+        mask = ContentMask.from_text("├── src\n│   └── main.py\n└── tests")
+        result = self.stage.apply(mask, self._config(patterns=[r"^\S+\s+\d+/\d+\s"]))
+        assert result.render() == mask.render()
+
+    def test_code_sample_untouched_when_filter_pattern_does_not_match_it(self) -> None:
+        mask = ContentMask.from_text(
+            "def foo(a,   b):\n    return a  +  b  # aligned comment"
+        )
+        result = self.stage.apply(mask, self._config(patterns=[r"^\S+\s+\d+/\d+\s"]))
+        assert result.render() == mask.render()
+
+    def test_already_single_spaced_unchanged(self) -> None:
+        mask = ContentMask.from_text("NAME READY STATUS")
+        result = self.stage.apply(mask, self._config())
+        assert result.render() == "NAME READY STATUS"
+        assert result.lines[0] is mask.lines[0]
+
+    def test_mixed_spacing_only_multi_space_runs_collapse(self) -> None:
+        mask = ContentMask.from_text("frontend 1/1     Running 0  2d")
+        result = self.stage.apply(mask, self._config())
+        assert result.render() == "frontend 1/1 Running 0 2d"
+
+    # -- cost gate (QB-055, same principle as every sibling stage) -------
+
+    def test_equal_cost_two_space_run_stays_unchanged(self) -> None:
+        """`"a  b"` (4 chars, ceil(4/4)=1 token) -> `"a b"` (3 chars,
+        ceil(3/4)=1 token) — same estimated token count, so the strict
+        "only if cheaper" gate declines, matching numeric_range_
+        compression's identical two-digit-pair precedent."""
+        mask = ContentMask.from_text("a  b")
+        result = self.stage.apply(mask, self._config())
+        assert result.render() == "a  b"
+        assert result.lines[0].decision is Decision.KEEP
+
+    def test_token_gate_declines_when_collapse_does_not_cross_a_token_boundary(self) -> None:
+        mask = ContentMask.from_text("ab  cd")
+        result = self.stage.apply(mask, self._config())
+        # "ab  cd" (6 chars, ceil(6/4)=2) -> "ab cd" (5 chars, ceil(5/4)=2):
+        # still 2 estimated tokens either way, so this also ties and declines.
+        assert result.render() == "ab  cd"
+
+    def test_token_gate_allows_a_collapse_that_crosses_a_token_boundary(self) -> None:
+        mask = ContentMask.from_text("frontend      1/1")
+        result = self.stage.apply(mask, self._config())
+        assert result.render() == "frontend 1/1"
+
+    # -- filter opt-in (no heuristics) ------------------------------------
+
+    def test_filter_opt_in_only_declared_pattern_lines_are_candidates(self) -> None:
+        mask = ContentMask.from_text("NAME      READY\nprose  with  double  spaces  too")
+        result = self.stage.apply(mask, self._config(patterns=[r"^NAME"]))
+        rendered = result.render()
+        assert "NAME READY" in rendered
+        assert "prose  with  double  spaces  too" in rendered
+
+    # -- PROTECT / COMPRESS boundaries ------------------------------------
+
+    def test_protect_lines_never_modified(self) -> None:
+        lines = (
+            LineMask(line="NAME      READY"),
+            _protect("PROTECTED    line"),
+        )
+        mask = ContentMask(lines=lines)
+        result = self.stage.apply(mask, self._config())
+        assert result.lines[1].decision is Decision.PROTECT
+        assert result.lines[1].line == "PROTECTED    line"
+
+    def test_compress_lines_never_modified(self) -> None:
+        lines = (
+            LineMask(line="NAME      READY"),
+            _compress("compressed    line"),
+        )
+        mask = ContentMask(lines=lines)
+        result = self.stage.apply(mask, self._config())
+        assert result.lines[1].decision is Decision.COMPRESS
+        assert result.lines[1].line == "compressed    line"
+
+    def test_preserve_patterns_excludes_a_line_even_if_it_would_otherwise_match(self) -> None:
+        lines = (LineMask(line="NAME      READY"),)
+        mask = ContentMask(lines=lines)
+        result = self.stage.apply(mask, self._config(preserve=[r"NAME"]))
+        assert result.lines[0].decision is Decision.PROTECT
+        assert result.lines[0].line == "NAME      READY"
+
+    # -- max_gaps: the bug found during implementation --------------------
+
+    def test_unbounded_collapse_would_corrupt_a_multi_space_filename(self) -> None:
+        """Without max_gaps, a filename with its own double spaces gets
+        corrupted — this is the real bug max_gaps exists to fix, pinned
+        here as a regression test against reintroducing unbounded collapse
+        on a free-text trailing column by default. Every metadata gap is
+        generously (2-space) padded so this is unambiguous: 8 real
+        metadata gaps precede the filename's own 3 internal gaps."""
+        mask = ContentMask.from_text(
+            "-rw-r--r--  1  dev  staff  42  Jul  1  22:41  my  file  with  spaces.txt"
+        )
+        result = self.stage.apply(mask, self._config())  # max_gaps=None (unbounded)
+        assert "my file with spaces.txt" in result.render()
+        assert "my  file  with  spaces.txt" not in result.render()
+
+    def test_max_gaps_protects_a_trailing_free_text_column(self) -> None:
+        """Same fixture as the unbounded test above, but with max_gaps=8 —
+        exactly the number of real metadata gaps — so the filename's own
+        3 internal gaps are provably never reached by the substitution at
+        all (re.sub's count is exhausted exactly at the boundary), not
+        merely "probably" left alone."""
+        mask = ContentMask.from_text(
+            "-rw-r--r--  1  dev  staff  42  Jul  1  22:41  my  file  with  spaces.txt"
+        )
+        result = self.stage.apply(mask, self._config(max_gaps=8))
+        rendered = result.render()
+        assert rendered.startswith("-rw-r--r-- 1 dev staff 42 Jul 1 22:41 ")
+        assert "my  file  with  spaces.txt" in rendered
+
+    def test_max_gaps_only_bounds_the_count_never_forces_extra_collapses(self) -> None:
+        """A line with fewer real gaps than max_gaps collapses all of them
+        (max_gaps is an upper bound via re.sub's own `count` semantics, not
+        an exact requirement). Long enough tokens that the collapse
+        provably crosses the ceil(len/4) token-estimate boundary, so this
+        exercises max_gaps specifically, not the cost gate."""
+        mask = ContentMask.from_text("alpha  bravo  charlie")
+        result = self.stage.apply(mask, self._config(max_gaps=10))
+        assert result.render() == "alpha bravo charlie"
+
+    def test_max_gaps_one_collapses_only_the_first_gap(self) -> None:
+        mask = ContentMask.from_text("alpha  bravo  charlie")
+        result = self.stage.apply(mask, self._config(max_gaps=1))
+        assert result.render() == "alpha bravo  charlie"
+
+    # -- interaction with sibling fold stages (QB-095/QB-097/QB-098) -----
+
+    def test_interaction_with_path_prefix_fold_header_line_is_left_alone(self) -> None:
+        """A path_prefix_fold header line ("prefix (N entries):") has no
+        multi-space run of its own — running column_padding_compression
+        afterward on the same mask is a clean no-op for that line."""
+        header = LineMask(
+            line="src/quor/pipeline/stages/ (3 entries):",
+            decision=Decision.KEEP,
+            reason="folded 3 lines",
+            stage="path_prefix_fold",
+        )
+        table_row = LineMask(line="frontend      1/1")
+        mask = ContentMask((header, table_row))
+        result = self.stage.apply(mask, self._config())
+        assert result.lines[0].line == "src/quor/pipeline/stages/ (3 entries):"
+        assert result.lines[1].line == "frontend 1/1"
+
+    def test_interaction_with_numeric_range_compression_range_line_is_left_alone(self) -> None:
+        """A numeric_range_compression range line ("101-105") has no space
+        in it at all — nothing for this stage to do, composes cleanly."""
+        range_line = LineMask(
+            line="101-105", decision=Decision.KEEP, reason="merged range", stage="numeric_range_compression"
+        )
+        table_row = LineMask(line="frontend      1/1")
+        mask = ContentMask((range_line, table_row))
+        result = self.stage.apply(mask, self._config())
+        assert result.lines[0].line == "101-105"
+        assert result.lines[1].line == "frontend 1/1"
+
+    def test_interaction_with_relative_timestamp_compression_cleans_up_residual_padding(self) -> None:
+        """relative_timestamp_compression only strips the leading timestamp
+        token — any padding *after* it in the same line is untouched by
+        that stage. Running column_padding_compression afterward (this
+        stage's documented recommended ordering) cleans up exactly that
+        residual padding, a genuine composition, not just a no-op
+        adjacency."""
+        delta_line = LineMask(
+            line="+1s   INFO   Loading plugins",
+            decision=Decision.KEEP,
+            reason="relative timestamp: +1s since previous line",
+            stage="relative_timestamp_compression",
+        )
+        mask = ContentMask((delta_line,))
+        result = self.stage.apply(mask, self._config(patterns=[r"^\+"]))
+        assert result.render() == "+1s INFO Loading plugins"
 
 
 # ---------------------------------------------------------------------------
