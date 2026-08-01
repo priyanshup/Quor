@@ -31,6 +31,7 @@ from __future__ import annotations
 import ast
 import sys
 
+from quor.pipeline.ast_summarize.declaration_model import Declaration
 from quor.pipeline.ast_summarize.import_collapse import collapse_import_runs
 from quor.pipeline.ast_summarize.import_model import (
     ImportBlockReplacement,
@@ -188,6 +189,88 @@ def _symbol_for(
         is_public=not name.startswith("_"),
         is_entry_point=kind == "function" and name in ENTRY_POINT_NAMES,
     )
+
+
+def extract_declarations_python(source: str) -> list[Declaration]:
+    """Return every class/function/method Python declares at module scope
+    (including inside `if`/`try`/`with` wrappers) or one level inside a
+    class body, in source order — the QB-099A declaration-diffing sibling
+    of `extract_symbols_python()` above. Same traversal shape and same set
+    of declarations as that function (deliberately: this project's own
+    "canonical AST representation" design principle — see backlog.md's
+    Vision — means the two must never silently diverge on *which*
+    declarations count), kept as its own traversal rather than a
+    refactor-to-share-one-pass with `_visit_module_body`/`_visit_class_body`
+    specifically to avoid any risk of changing `extract_symbols_python()`'s
+    already-shipped, tested output — one extra `ast.walk`-shaped pass over
+    an already-parsed tree is a far smaller, safer unit of "duplication"
+    than a second parser would be, which is what QB-099A's own scope note
+    actually warns against.
+
+    Raises SyntaxError/ValueError exactly as `ast.parse()` does on
+    unparseable input, same fail-open contract as `analyze_python()`/
+    `extract_symbols_python()` — see module docstring.
+    """
+    tree = ast.parse(source)
+    decls: list[Declaration] = []
+    _visit_module_body_decls(tree.body, None, decls, {})
+    return decls
+
+
+def _decl_slice(node: ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef) -> tuple[int, int]:
+    return node.lineno, node.end_lineno if node.end_lineno is not None else node.lineno
+
+
+def _visit_module_body_decls(
+    stmts: list[ast.stmt],
+    parent: str | None,
+    decls: list[Declaration],
+    counters: dict[tuple[str, str | None], int],
+) -> None:
+    for stmt in stmts:
+        if isinstance(stmt, ast.ClassDef):
+            key = ("class", parent)
+            idx = counters.get(key, 0)
+            counters[key] = idx + 1
+            start, end = _decl_slice(stmt)
+            decls.append(Declaration("class", stmt.name, parent, stmt, idx, start, end))
+            _visit_class_body_decls(stmt.body, stmt.name, decls)
+        elif isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            key = ("function", parent)
+            idx = counters.get(key, 0)
+            counters[key] = idx + 1
+            start, end = _decl_slice(stmt)
+            decls.append(Declaration("function", stmt.name, parent, stmt, idx, start, end))
+            # Deliberately do not recurse into stmt.body — mirrors
+            # `_compressible_body_lines()`'s identical "nested def/class is
+            # implementation detail of the outer one" rule.
+        elif isinstance(stmt, ast.If):
+            _visit_module_body_decls(stmt.body, parent, decls, counters)
+            _visit_module_body_decls(stmt.orelse, parent, decls, counters)
+        elif isinstance(stmt, ast.Try):
+            _visit_module_body_decls(stmt.body, parent, decls, counters)
+            for handler in stmt.handlers:
+                _visit_module_body_decls(handler.body, parent, decls, counters)
+            _visit_module_body_decls(stmt.orelse, parent, decls, counters)
+            _visit_module_body_decls(stmt.finalbody, parent, decls, counters)
+        elif isinstance(stmt, (ast.With, ast.AsyncWith)):
+            _visit_module_body_decls(stmt.body, parent, decls, counters)
+
+
+def _visit_class_body_decls(stmts: list[ast.stmt], class_name: str, decls: list[Declaration]) -> None:
+    """Mirrors `_visit_class_body()`'s exact "one level in, methods and
+    nested classes only" rule."""
+    idx = 0
+    for stmt in stmts:
+        if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            start, end = _decl_slice(stmt)
+            decls.append(Declaration("method", stmt.name, class_name, stmt, idx, start, end))
+            idx += 1
+        elif isinstance(stmt, ast.ClassDef):
+            start, end = _decl_slice(stmt)
+            decls.append(Declaration("class", stmt.name, class_name, stmt, idx, start, end))
+            idx += 1
+            _visit_class_body_decls(stmt.body, stmt.name, decls)
 
 
 def extract_relationships_python(source: str) -> list[Relationship]:

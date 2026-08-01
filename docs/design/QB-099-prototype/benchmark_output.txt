@@ -1,0 +1,75 @@
+case                          baseline_tok  structural_tok  reduction  runtime_ms  deterministic
+----------------------------------------------------------------------------------------------------
+pure_function_reorder                  365              63     82.7%       1.23ms           True
+  -> reordered: send_confirmation (unchanged content, now position 1)
+     reordered: compute_tax (unchanged content, now position 2)
+     reordered: validate_order (unchanged content, now position 3)
+     reordered: apply_discount (unchanged content, now position 5)
+
+import_reorder                         150              16     89.3%      16.89ms           True
+  -> formatting-only change (no AST difference in any declaration)
+
+extracted_helper                       223             134     39.9%       1.09ms           True
+  -> modified: process_order
+         --- 
+         +++ 
+         @@ -3,8 +3,3 @@
+                  raise ValueError("empty order")
+         -    subtotal = sum(item.price * item.qty for item in order.items)
+         -    discount = subtotal * order.discount_pct / 100
+         -    subtotal -= discount
+         -    tax = subtotal * order.tax_rate
+         -    total = subtotal + tax
+         -    order.total = round(total, 2)
+         +    order.total = compute_total(order)
+              order.status = "processed"
+     reordered: cancel_order (unchanged content, now position 3)
+     added: compute_total
+
+large_rename                           242              65     73.1%       0.96ms           True
+  -> modified: print_fibonacci_table
+         --- 
+         +++ 
+         @@ -2,2 +2,2 @@
+              for i in range(limit):
+         -        print(i, calculate_fibonacci_sequence(i))
+         +        print(i, fib_memo(i))
+     renamed: calculate_fibonacci_sequence -> fib_memo (body unchanged)
+
+formatting_only_change                 206              16     92.2%       0.68ms           True
+  -> formatting-only change (no AST difference in any declaration)
+
+moved_class                            255              32     87.5%       1.02ms           True
+  -> reordered: ReceiptFormatter (unchanged content, now position 1)
+     reordered: OrderValidator (unchanged content, now position 2)
+
+method_extraction                      338             171     49.4%       5.98ms           True
+  -> modified: class InvoiceBuilder (members changed, see below)
+     modified: InvoiceBuilder.build
+         --- 
+         +++ 
+         @@ -3,7 +3,4 @@
+                  lines.append(f"Invoice for order {self.order.id}")
+         -        subtotal = 0
+         -        for item in self.order.items:
+         -            line_total = item.price * item.qty
+         -            subtotal += line_total
+         -            lines.append(f"{item.name} x{item.qty}: {line_total}")
+         +        subtotal, item_lines = self._line_items()
+         +        lines.extend(item_lines)
+                  tax = subtotal * self.order.tax_rate
+     reordered: InvoiceBuilder.as_dict (unchanged content, now position 4)
+     added: InvoiceBuilder._line_items
+
+extracted_helper_verbatim_control           201              32     84.1%       1.65ms           True
+  -> extracted: compute_discounted_subtotal extracted from process_order
+     reordered: cancel_order (unchanged content, now position 3)
+
+method_move_across_classes             218              66     69.7%       1.35ms           True
+  -> modified: class LegacyExporter (members changed, see below)
+     modified: class ReportBuilder (members changed, see below)
+     moved: LegacyExporter.to_csv -> ReportBuilder.to_csv (unchanged content)
+     reordered: LegacyExporter.to_json (unchanged content, now position 2)
+
+----------------------------------------------------------------------------------------------------
+TOTAL                                 2198             595     72.9%

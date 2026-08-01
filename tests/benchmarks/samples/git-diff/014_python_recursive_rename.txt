@@ -1,0 +1,12 @@
+diff --git a/src/math/sequences.py b/src/math/sequences.py
+index 4a5b6c7..8d9e0f1 100644
+--- a/src/math/sequences.py
++++ b/src/math/sequences.py
+modified: print_fibonacci_table
+    --- 
+    +++ 
+    @@ -2,2 +2,2 @@
+         for i in range(limit):
+    -        print(i, calculate_fibonacci_sequence(i))
+    +        print(i, fib_memo(i))
+renamed: calculate_fibonacci_sequence -> fib_memo (body unchanged)

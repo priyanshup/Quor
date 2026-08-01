@@ -74,6 +74,7 @@ from quor.pipeline.ast_summarize.csharp import (
     extract_relationships_csharp,
     extract_symbols_csharp,
 )
+from quor.pipeline.ast_summarize.declaration_model import Declaration
 from quor.pipeline.ast_summarize.go import analyze_go, extract_relationships_go, extract_symbols_go
 from quor.pipeline.ast_summarize.import_model import ImportBlockReplacement
 from quor.pipeline.ast_summarize.java import (
@@ -91,6 +92,7 @@ from quor.pipeline.ast_summarize.javascript import (
 from quor.pipeline.ast_summarize.python import (
     analyze_python,
     collapse_imports_python,
+    extract_declarations_python,
     extract_relationships_python,
     extract_symbols_python,
 )
@@ -207,6 +209,23 @@ _IMPORT_COLLAPSERS: dict[str, Callable[[str], list[ImportBlockReplacement]]] = {
 }
 
 
+# Language name -> declaration-extractor callable (QB-099A). A fifth,
+# parallel dict — same reasoning as `_SYMBOL_EXTRACTORS`/
+# `_RELATIONSHIP_EXTRACTORS`/`_IMPORT_COLLAPSERS`: "what does this file
+# declare, in enough structural detail to compare it against another version
+# of itself" is independently correct from what the other four families
+# answer (see `declaration_model.py`'s own docstring for why `Declaration`
+# is not derived from `Symbol` or vice versa). Only `"python"` today —
+# declaration-level structural diffing (QB-099A) is Python-only for now, see
+# `docs/design/QB-099-structural-diff-compression-investigation.md`;
+# `get_declaration_extractor()` returns `None` for every other language, the
+# same "unsupported language, not an error" contract as every other getter
+# in this module.
+_DECLARATION_EXTRACTORS: dict[str, Callable[[str], list[Declaration]]] = {
+    "python": extract_declarations_python,
+}
+
+
 # Extension -> `ast_summarize` registry language key (QB-067) — promoted
 # here from `quor/pipeline/repo_profile/symbols.py`'s originally-private
 # table so both `quor symbols` and `quor graph`'s orchestrators (QB-066/
@@ -273,6 +292,14 @@ def get_import_collapser(language: str) -> Callable[[str], list[ImportBlockRepla
     error" contract as every other getter in this module, applied to the
     QB-096 import-collapsing family."""
     return _IMPORT_COLLAPSERS.get(language)
+
+
+def get_declaration_extractor(language: str) -> Callable[[str], list[Declaration]] | None:
+    """Return the declaration-extractor callable registered for `language`,
+    or `None` if none is registered — same "unsupported language, not an
+    error" contract as every other getter in this module, applied to the
+    QB-099A declaration-diffing family."""
+    return _DECLARATION_EXTRACTORS.get(language)
 
 
 def registered_languages() -> frozenset[str]:

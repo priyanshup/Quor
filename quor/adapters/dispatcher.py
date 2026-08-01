@@ -285,6 +285,8 @@ def _setup_plugins(
     plugin_registry = PluginRegistry()
     plugin_ctx: PluginContext | None = None
 
+    _register_builtin_plugins(plugin_registry)
+
     try:
         from quor.pipeline.plugin_loader import discover_plugins
 
@@ -308,6 +310,24 @@ def _setup_plugins(
         plugin_ctx = None
 
     return plugin_registry, plugin_ctx
+
+
+def _register_builtin_plugins(plugin_registry: PluginRegistry) -> None:
+    """Register Quor's own first-party plugins at the "builtin" tier
+    (`quor.plugins.registry`'s lowest-precedence tier — a project/user
+    plugin of the same `plugin_id` still wins). Distinct from
+    `discover_plugins()` below: these are never entry-point-scanned, always
+    present, and registered directly rather than discovered, exactly like
+    `quor/plugins/builtin/__init__.py`'s own module docstring describes.
+    Fail-open: a construction/registration error here must never block a
+    dispatch — same contract as every other step in this function.
+    """
+    try:
+        from quor.plugins.builtin.git_structural_diff import GitStructuralDiffPlugin
+
+        plugin_registry.register(GitStructuralDiffPlugin(), tier="builtin")
+    except Exception as exc:  # noqa: BLE001
+        warnings.warn(f"[quor] builtin plugin registration error: {exc}", stacklevel=1)
 
 
 def _run_pre_filter_plugins(
