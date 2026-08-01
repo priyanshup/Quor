@@ -4543,6 +4543,62 @@ different extra name would produce the correct hint automatically.
 
 ---
 
+#### QB-100 — `TrackingDB.flush()`/`close()` silent timeout (CI flake root cause)
+
+**Effort:** Small · **Value:** High (test-suite trust — a flaky CI signal that erodes confidence in
+every PR, not a compression-quality item) · **Risk:** Low · **Category:** Bug fix / Test infrastructure
+
+**Status:** Fixed (2026-08-01), on its own branch (`fix/qb-100-tracking-db-flush-close-timeout`) —
+deliberately not folded into the QB-099A/QB-099C PR that surfaced it, since the investigation
+confirmed it is genuinely pre-existing and unrelated to that PR's own diff. Full root-cause
+investigation, including a direct reproduction: `docs/design/QB-100-tracking-db-flush-close-timeout-investigation.md`.
+
+<details>
+<summary>Technical details</summary>
+
+**Symptom:** `tests/unit/test_tracking.py::TestReadTracking::test_unsupported_file_type_tracked`
+intermittently failed in CI with `sqlite3.OperationalError: no such table: invocations`, always near
+the very end of a full, ~2,000+-test single-process `pytest tests/` run; always passed reliably in
+isolation.
+
+**Root cause:** `TrackingDB` is a non-blocking, background-threaded SQLite writer — schema creation
+happens lazily, inside the worker thread, the first time it runs. `flush()`/`close()` were
+unconfirmed, fixed-2.0-second waits (`join(timeout=2.0)`/`Event.wait(timeout=2.0)`, return value
+discarded) — a worker thread that simply hadn't been scheduled yet within that window (not stuck,
+just not yet given CPU time) left both calls returning silently, as if nothing were wrong. This
+repo's own suite constructs 57+ `TrackingDB` instances across ~9 test files, each spawning its own OS
+thread; `close()` never confirms its own worker actually stopped, so a call whose window was missed
+left that thread alive and unmonitored for the rest of the process — accumulating exactly the kind of
+scheduling pressure that could make a much later, otherwise unrelated test's brand-new worker thread
+also miss its own window. Directly reproduced with a standalone script: at 2,000 simulated leaked
+threads, the exact failure recurs from scheduling pressure alone, zero logic changes.
+
+**Constraint the fix had to respect:** `TrackingDB.__init__()` must stay non-blocking —
+`quor/__main__.py`'s own comment is explicit that constructing one unconditionally on the hot
+COMMAND_INTERCEPT path would add real per-invocation overhead, and ADR-008 states "neither write
+blocks the hook response." Moving schema creation into a synchronous constructor (the most
+direct-looking fix) was rejected for this reason.
+
+**Fix (`quor/tracking/db.py`):** raised `flush()`/`close()`'s default timeout 2.0s → 10.0s
+(`join()`/`Event.wait()` both return as soon as the real condition is satisfied, so this adds zero
+latency to the fast, uncontended path every real single-invocation `quor` process runs under); both
+methods now return `bool` (previously `None`) and `warnings.warn()` on a genuine timeout — a silently
+discarded outcome becomes a visible one, this project's standing fail-open-but-visible convention. No
+existing call site checks the return value (grepped directly) — purely additive/backward-compatible.
+`__init__` itself is unchanged.
+
+**Testing:** 5 new deterministic regression tests (`TestFlushCloseTimeoutReporting`,
+`tests/unit/test_tracking.py`) using a controlled `threading.Event` to block the worker thread, not
+real wall-clock/thread-count pressure, per this repo's own no-flaky-test convention. Full
+`tests/unit/test_tracking.py`: 121/121 (116 pre-existing + 5 new). `ruff`/`mypy` on
+`quor/tracking/db.py`: clean. Re-ran the same reproduction script against the fixed code:
+`table_created=True` at every thread count tested, including 2,000 (previously the first failing
+point).
+
+</details>
+
+---
+
 ### Medium Value
 
 ---
