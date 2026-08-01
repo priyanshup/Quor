@@ -380,6 +380,68 @@ approve without a separate design pass).
 **Testing:** unit tests in `tests/unit/test_stages.py` (`TestPathPrefixFold`, same empty-input/
 no-match/all-match/PROTECT-survives/timeout coverage as every other stage in that file), inline
 filter tests in `z_generic.toml`, a `tests/benchmarks/manifest.toml` case + sample file (QB-011).
+**Update (2026-08-01, QB-102):** three more tests added proving `separator` is generic beyond `/`
+(`.` and `::`), and the gradle filter now uses `separator=":"` for Gradle task-path folding — see
+QB-102 below.
+
+</details>
+
+---
+
+#### QB-102 — Qualified-name front-coding — Closed, no new stage
+
+**Effort:** N/A (investigation only) · **Value:** N/A · **Risk:** N/A ·
+**Category:** Investigation → closed, folded into QB-095
+
+**Status:** Closed (2026-08-01). The landscape survey ranked this #1 as a candidate new stage:
+front-code repeated qualified-name prefixes (Python module paths, Java packages, Gradle task paths,
+C++ `::` symbols) the same way QB-095 front-codes filesystem paths. Investigation before
+implementation found **QB-095 already does this — `separator` is a plain configurable string, never
+hardcoded to `/`.** Verified with zero production-code changes that `separator="."` and
+`separator="::"` fold dotted/`::`-qualified names identically to path folding, with the same
+byte-for-byte reconstruction and token-cost gate. What looked like a new algorithm turned out to be
+`separator=":"` on one existing filter — configuration, not a feature. Reframed as a QB-095 hardening
+follow-up rather than a standalone item.
+
+<details>
+<summary>Technical details</summary>
+
+**What shipped from this investigation:**
+- Three new tests in `TestPathPrefixFold` (`tests/unit/test_stages.py`): `test_separator_is_
+  configurable_dot`, `test_separator_is_configurable_multi_char` (proves multi-character separators
+  like `::` work — the cut point is `str.rfind(separator)`, never assumed single-character), and
+  `test_separator_reconstruction_is_lossless_for_non_slash_separator`. This behavior was already
+  correct but untested; now it's protected against regression.
+- Gradle's `> Task :module:task` listings (`ci.toml`) now run `path_prefix_fold` with
+  `separator=":"`, placed before `strip_lines` (whose own `preserve_patterns` PROTECTs `^> Task `
+  lines — same ordering constraint the file's existing `group_repeated` stages already document).
+  Verified against the real `samples/gradle/001_build_success.txt` fixture: two runs of task lines
+  (5 and 4 entries) fold to two headers, raising that case's compression from 62.6% to 68.1%
+  (`tests/benchmarks/baseline.json` and `manifest.toml`'s `gradle-build-success` case updated to
+  match — its old `must_contain` asserted the literal unfolded `"> Task :app:compileJava"` string,
+  which no longer appears). One new inline `[[filter.tests]]` case added to `ci.toml` covering the
+  5-line fold directly; the two pre-existing gradle inline tests were unaffected — both only ever
+  contained 2-line task runs, and 2 lines never clears path_prefix_fold's "strictly cheaper" cost
+  gate (verified empirically before touching anything), so their `must_contain` assertions still
+  hold unchanged.
+
+**What was surveyed and explicitly NOT pursued (evidence bar not met):**
+- **pytest FAILED node-ids** (`tests/test_x.py::test_a` runs sharing a file prefix): real shape,
+  confirmed to fold correctly against synthetic input, but no benchmark sample demonstrates it occurs
+  often enough — today's pytest samples only ever have a single failure. Left alone until a real
+  multi-failure-same-file sample justifies it; do not add without one.
+- Java/C# stack-trace frames, Maven `groupId:artifactId:version` coordinates, GCC system-header
+  include chains: either not a real Quor-routed command today (no `dotnet`/C# runtime filter, no
+  `mvn dependency:tree` handling exists), or the varying part sits at the *end* of the line rather
+  than a shared prefix (stack-frame line numbers), or is already better served by `group_repeated`'s
+  intentionally lossy "(×N)" collapsing (GCC's system-header noise, by design, not an oversight).
+  None of these are `path_prefix_fold` candidates.
+
+**Standing note for future work:** path-prefix folding is intentionally separator-agnostic by
+design. A future tool output with a different qualified-name delimiter needs only a new filter-config
+entry (`patterns` + `separator`), never a new stage — unless the qualified-name shape breaks one of
+QB-095's existing invariants (single-level prefix, char-wise LCP trimmed to the last separator
+boundary, whole-line-declared `patterns`), which none of the candidates surveyed here do.
 
 </details>
 

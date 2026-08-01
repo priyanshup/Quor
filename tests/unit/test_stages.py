@@ -954,6 +954,69 @@ class TestPathPrefixFold:
             "errors.py",
         ]
 
+    def test_separator_is_configurable_dot(self) -> None:
+        """QB-102: `separator` is a plain string, not hardcoded to '/' —
+        dotted qualified names (Python modules, Java packages) front-code
+        identically to filesystem paths, with zero stage-code changes."""
+        text = "\n".join(
+            [
+                "quor.pipeline.stages.foo",
+                "quor.pipeline.stages.bar",
+                "quor.pipeline.stages.baz",
+            ]
+        )
+        mask = ContentMask.from_text(text)
+        result = self.stage.apply(
+            mask, self._config(patterns=[r"^\S+\.\S+$"], separator=".")
+        )
+        rendered = result.render()
+        assert "quor.pipeline.stages. (3 entries):" in rendered
+        assert "foo" in rendered
+        assert "bar" in rendered
+        assert "baz" in rendered
+        assert "quor.pipeline.stages.foo" not in rendered
+
+    def test_separator_is_configurable_multi_char(self) -> None:
+        """QB-102: multi-character separators (C++/Rust '::', Gradle ':')
+        work identically — the cut point is `str.rfind(separator)`, never
+        assumed to be a single character."""
+        text = "\n".join(
+            [
+                "quor::pipeline::mask",
+                "quor::pipeline::stages",
+                "quor::pipeline::registry",
+            ]
+        )
+        mask = ContentMask.from_text(text)
+        result = self.stage.apply(
+            mask, self._config(patterns=[r"^\S+::\S+$"], separator="::")
+        )
+        rendered = result.render()
+        assert "quor::pipeline:: (3 entries):" in rendered
+        assert "mask" in rendered
+        assert "stages" in rendered
+        assert "registry" in rendered
+
+    def test_separator_reconstruction_is_lossless_for_non_slash_separator(self) -> None:
+        """Same byte-for-byte reconstruction guarantee as
+        test_fold_is_reconstructible_byte_for_byte, proven again for a
+        non-'/' separator so the invariant is never accidentally
+        slash-specific."""
+        originals = [
+            "java.util.concurrent.Future",
+            "java.util.concurrent.Executor",
+            "java.util.concurrent.CompletableFuture",
+        ]
+        mask = ContentMask.from_text("\n".join(originals))
+        result = self.stage.apply(
+            mask, self._config(patterns=[r"^\S+\.\S+$"], separator=".")
+        )
+        header = result.lines[0].line
+        assert header.endswith(" (3 entries):")
+        prefix = header[: -len(" (3 entries):")]
+        children = [lm.line for lm in result.lines[1:]]
+        assert [prefix + child for child in children] == originals
+
     def test_protect_lines_bound_run_and_are_never_modified(self) -> None:
         lines = (
             LineMask(line="src/quor/pipeline/stages/foo.py"),

@@ -1290,7 +1290,13 @@ command = "./gradlew build"
 sample_file = "samples/gradle/001_build_success.txt"
 expected_filter = "gradle"
 min_reduction_pct = 20.0
-must_contain = ["> Task :app:compileJava", "> Task :app:test", "BUILD SUCCESSFUL in 12s", "7 actionable tasks: 7 executed"]
+# QB-102: task lines now front-code via path_prefix_fold (separator=":"),
+# so the two runs of task lines (5 and 4 entries) each collapse to a header
+# + suffixes rather than surviving as full "> Task :app:X" lines. (This
+# manifest schema only checks must_contain/min_reduction_pct — the
+# must-not-fold-back regression check lives in ci.toml's own
+# [[filter.tests]] instead, which does support must_not_contain.)
+must_contain = ["> Task :app: (5 entries):", "compileJava", "> Task :app: (4 entries):", "testClasses", "BUILD SUCCESSFUL in 12s", "7 actionable tasks: 7 executed"]
 
 [[case]]
 id = "gradle-build-failure"

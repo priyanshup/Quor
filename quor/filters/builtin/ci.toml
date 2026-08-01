@@ -121,6 +121,24 @@ patterns = ['(?i)^Deprecated Gradle features were used']
 min_count = 2
 
 [[filter.stages]]
+# QB-102: a multi-module build prints one "> Task :module:task" line per
+# task, repeating the module-path prefix on every line — the same
+# repeated-qualified-prefix shape path_prefix_fold (QB-095) already handles
+# for filesystem paths, just with separator=":" instead of "/". QB-095's
+# `separator` was already a plain configurable string with no stage-code
+# change required (verified via TestPathPrefixFold's separator tests in
+# tests/unit/test_stages.py); this is the one candidate QB-102's survey
+# found actual benchmark evidence for — see samples/gradle/
+# 001_build_success.txt, where two runs of 5 and 4 task lines each fold to
+# one header + short suffixes. Must run before strip_lines below: its own
+# preserve_patterns PROTECTs every "^> Task " line, and path_prefix_fold
+# (like group_repeated) never touches PROTECT lines — same ordering
+# already established for the two group_repeated stages above.
+type = "path_prefix_fold"
+patterns = ['^> Task :\S+']
+separator = ":"
+
+[[filter.stages]]
 type = "strip_lines"
 # Dependency-resolution download lines and the live percentage progress bar
 # are pure noise (never diagnostic) — same treatment as npm/pnpm's install
@@ -153,6 +171,12 @@ description = "Successful build: dependency downloads and deprecation CTA stripp
 input = "> Task :app:compileJava\n> Task :app:test\nDownload https://repo.maven.apache.org/maven2/org/junit/jupiter/junit-jupiter/5.10.0/junit-jupiter-5.10.0.pom\nDownload https://repo.maven.apache.org/maven2/org/junit/jupiter/junit-jupiter-api/5.10.0/junit-jupiter-api-5.10.0.pom\n\nBUILD SUCCESSFUL in 12s\n7 actionable tasks: 7 executed\n\nDeprecated Gradle features were used in this build, making it incompatible with Gradle 9.0.\nYou can use '--warning-mode all' to show the individual deprecation warnings.\nSee https://docs.gradle.org/8.5/userguide/command_line_interface.html#sec:command_line_warnings\n"
 must_contain = ["> Task :app:compileJava", "> Task :app:test", "BUILD SUCCESSFUL in 12s", "7 actionable tasks: 7 executed"]
 must_not_contain = ["Download https://repo.maven.apache.org", "warning-mode all", "docs.gradle.org"]
+
+[[filter.tests]]
+description = "QB-102: a multi-module build's run of 5+ consecutive task lines sharing a module prefix folds to one header + short suffixes; a 2-line run (too cheap to pay for a header) stays as-is, matching the 'Successful build' test above"
+input = "> Task :app:compileJava\n> Task :app:processResources\n> Task :app:compileTestJava\n> Task :app:processTestResources\n> Task :app:test\n\nBUILD SUCCESSFUL in 8s\n5 actionable tasks: 5 executed\n"
+must_contain = ["> Task :app: (5 entries):", "compileJava", "processResources", "compileTestJava", "processTestResources", "test", "BUILD SUCCESSFUL in 8s"]
+must_not_contain = ["> Task :app:compileJava", "> Task :app:test\n"]
 
 [[filter.tests]]
 description = "Failed build: task failure, assertion, and failure report preserved"
