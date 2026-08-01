@@ -29,6 +29,7 @@ from reportlab.pdfgen import canvas
 from quor.adapters.claude_read import run_hook
 from quor.adapters.dispatcher import CONCISE_INSTRUCTION
 from quor.filters.registry import FilterRegistry
+from quor.tracking.db import InvocationRecord, count_tokens
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -85,6 +86,40 @@ _SMALL_MARKDOWN = "# Title\n\nJust a short paragraph with nothing special."
 # ---------------------------------------------------------------------------
 # Supported Read operations return updatedToolOutput
 # ---------------------------------------------------------------------------
+
+
+class _FakeTracking:
+    def __init__(self) -> None:
+        self.records: list[InvocationRecord] = []
+
+    def record(self, rec: InvocationRecord) -> None:
+        self.records.append(rec)
+
+
+class TestTrackingAccuracy:
+    """QB-094 regression guard — see
+    tests/unit/test_read_hook_tracking_accuracy.py for the full scenario
+    matrix, including the DOCX/PDF extraction cases this file's own
+    TestDocxPdfExtraction below exercises for compression behavior."""
+
+    def test_tracked_final_tokens_match_updated_tool_output(self) -> None:
+        payload = _read_payload("notes.md", _LARGE_MARKDOWN)
+        raw = orjson.dumps(payload).decode("utf-8")
+        fake_stdout = _FakeStdout()
+        tracking = _FakeTracking()
+        with (
+            patch.object(sys, "stdin", io.StringIO(raw)),
+            patch.object(sys, "stdout", fake_stdout),
+        ):
+            run_hook(tracking=tracking)
+        fake_stdout.buffer.seek(0)
+        result = orjson.loads(fake_stdout.buffer.read())
+        updated = result["hookSpecificOutput"]["updatedToolOutput"]
+
+        assert len(tracking.records) == 1
+        rec = tracking.records[0]
+        assert rec.final_tokens == count_tokens(updated)
+        assert rec.filter_name == "markdown"
 
 
 class TestSupportedTypesCompress:

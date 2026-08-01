@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
 
+import orjson
 import pytest
 
 from quor.tracking.db import (
@@ -1733,40 +1734,56 @@ class TestDispatcherTracking:
 # Read hook integration with tracking (QB-007D) — Read becomes another
 # producer of InvocationRecord via the same track_invocation() helper
 # TestDispatcherTracking above exercises through run_dispatch(). These tests
-# call quor.adapters.claude_read._compress_read_output() directly, the same
-# way TestDispatcherTracking calls run_dispatch() directly, and then read
-# the result back out of the real SQLite store — no Read-specific storage
-# or aggregation exists anywhere in this path.
+# call quor.adapters.claude_read.handle_bytes() — the real bytes-in/bytes-out
+# hook entry point, the same way TestDispatcherTracking calls run_dispatch()
+# directly — and then read the result back out of the real SQLite store; no
+# Read-specific storage or aggregation exists anywhere in this path.
+#
+# QB-094: these tests used to call the internal `_compress_read_output()`
+# helper directly, back when it took `tracking` and called
+# `track_invocation()` itself. That helper no longer touches tracking at
+# all — tracking now happens exactly once, in `_handle_text()`, after
+# `_compress_read_output()` (and any prepend/append layered on afterward)
+# has already produced the final output — so the only way to exercise
+# tracking end to end now is through the real hook entry point, same as
+# TestDispatcherTracking already does for the Bash side one section above.
 # ---------------------------------------------------------------------------
 
 
-def _read_hook_input(file_path: str, tool_response: object) -> Any:
-    from quor.adapters.base import PostToolUseHookInput
+def _read_payload(file_path: str, tool_response: object) -> dict[str, Any]:
+    return {
+        "tool_name": "Read",
+        "tool_input": {"file_path": file_path},
+        "tool_response": tool_response,
+    }
 
-    return PostToolUseHookInput.model_validate(
-        {
-            "tool_name": "Read",
-            "tool_input": {"file_path": file_path},
-            "tool_response": tool_response,
-        }
-    )
+
+def _run_read_hook_tracked(payload: dict[str, Any], tracking: TrackingDB) -> str | None:
+    """Drive `quor.adapters.claude_read.handle_bytes()` — the real
+    bytes-in/bytes-out Read-hook entry point — with a real `TrackingDB`,
+    and return whatever `updatedToolOutput` actually ends up being (or
+    `None` if it was omitted). Mirrors the old `_compress_read_output()`
+    call's `str | None` return shape closely enough that every assertion
+    below reads the same way it always did."""
+    from quor.adapters.claude_read import handle_bytes
+
+    raw = orjson.dumps(payload)
+    response = orjson.loads(handle_bytes(raw, tracking=tracking))
+    return response["hookSpecificOutput"].get("updatedToolOutput")
 
 
 class TestReadTracking:
-    _hook_input = staticmethod(_read_hook_input)
+    _payload = staticmethod(_read_payload)
 
     def test_compressed_read_tracked(self, tmp_path: Path) -> None:
         """An oversized markdown document that genuinely compresses is
         tracked with the matched filter name and was_passthrough=False,
         exactly like a compressed Bash invocation."""
-        from quor.adapters.claude_read import _compress_read_output
-
         db_path = tmp_path / "quor.db"
         tracking = TrackingDB(db_path=db_path)
         large_content = "line of filler text. " * 10_000
-        hook_input = self._hook_input("notes.md", large_content)
 
-        result = _compress_read_output(hook_input, tracking)
+        result = _run_read_hook_tracked(self._payload("notes.md", large_content), tracking)
         assert result is not None
         assert len(result) < len(large_content)
 
@@ -1781,19 +1798,20 @@ class TestReadTracking:
         assert row["filter_name"] == "markdown"
         assert row["was_passthrough"] == 0
         assert row["original_tokens"] > row["final_tokens"]
+        # QB-094: final_tokens must match the actual returned bytes exactly
+        # (including the concise instruction, if the gate let it through) —
+        # not a pre-instruction, filter-only intermediate.
+        assert row["final_tokens"] == count_tokens(result)
 
     def test_unchanged_read_tracked(self, tmp_path: Path) -> None:
         """A small markdown document under the filter's compression budget
         is tracked (filter matched, was_passthrough=False) even though
         updatedToolOutput ends up omitted because nothing changed."""
-        from quor.adapters.claude_read import _compress_read_output
-
         db_path = tmp_path / "quor.db"
         tracking = TrackingDB(db_path=db_path)
         small_content = "# Heading\n\nBody text.\n"
-        hook_input = self._hook_input("notes.md", small_content)
 
-        result = _compress_read_output(hook_input, tracking)
+        result = _run_read_hook_tracked(self._payload("notes.md", small_content), tracking)
         assert result is None  # nothing to report — content unchanged
 
         tracking.flush()
@@ -1819,13 +1837,10 @@ class TestReadTracking:
         prior to QB-005F, .json prior to QB-040; both are now genuinely
         supported extensions — see TestReadSourceCodeTracking below and
         tests/unit/test_read_hook_structured_data.py.)"""
-        from quor.adapters.claude_read import _compress_read_output
-
         db_path = tmp_path / "quor.db"
         tracking = TrackingDB(db_path=db_path)
-        hook_input = self._hook_input("data.xml", "<hello>world</hello>\n")
 
-        result = _compress_read_output(hook_input, tracking)
+        result = _run_read_hook_tracked(self._payload("data.xml", "<hello>world</hello>\n"), tracking)
         assert result is None
 
         tracking.flush()
@@ -1843,13 +1858,10 @@ class TestReadTracking:
         """A file path FilterRegistry cannot route at all (whitespace in the
         path defeats every built-in filter's whitespace-free anchor) is
         also tracked as a passthrough."""
-        from quor.adapters.claude_read import _compress_read_output
-
         db_path = tmp_path / "quor.db"
         tracking = TrackingDB(db_path=db_path)
-        hook_input = self._hook_input("My Documents/notes.md", "content\n")
 
-        result = _compress_read_output(hook_input, tracking)
+        result = _run_read_hook_tracked(self._payload("My Documents/notes.md", "content\n"), tracking)
         assert result is None
 
         tracking.flush()
@@ -1866,17 +1878,14 @@ class TestReadTracking:
     def test_tracking_failure_stays_fail_open(self, tmp_path: Path) -> None:
         """A tracking write failure must never affect what the Read hook
         returns — mirrors dispatcher's own tracking fail-open guarantee."""
-        from quor.adapters.claude_read import _compress_read_output
-
         tracking = TrackingDB(db_path=tmp_path / "quor.db")
         large_content = "line of filler text. " * 10_000
-        hook_input = self._hook_input("notes.md", large_content)
 
         with (
             patch.object(tracking, "record", side_effect=RuntimeError("disk full")),
             pytest.warns(UserWarning, match="tracking record error"),
         ):
-            result = _compress_read_output(hook_input, tracking)
+            result = _run_read_hook_tracked(self._payload("notes.md", large_content), tracking)
 
         tracking.close()
         assert result is not None
@@ -1887,14 +1896,11 @@ class TestReadTracking:
         resolve to the same project_key_normalized — Read reuses
         Path.cwd().as_posix(), the identical project-resolution rule
         dispatcher.py already uses, with no Read-specific logic."""
-        from quor.adapters.claude_read import _compress_read_output
-
         db_path = tmp_path / "quor.db"
         tracking = TrackingDB(db_path=db_path)
 
         with patch("pathlib.Path.cwd", return_value=tmp_path):
-            hook_input = self._hook_input("notes.md", "# Heading\n\nBody text.\n")
-            _compress_read_output(hook_input, tracking)
+            _run_read_hook_tracked(self._payload("notes.md", "# Heading\n\nBody text.\n"), tracking)
             tracking.record(_sample_record(project_path=tmp_path.as_posix()))
 
         tracking.flush()
@@ -1907,16 +1913,13 @@ class TestReadTracking:
         """Several Read calls in the same project sum into one project's
         totals via the exact same query_gain() aggregation Bash rows use —
         no Read-specific aggregation path exists."""
-        from quor.adapters.claude_read import _compress_read_output
-
         db_path = tmp_path / "quor.db"
         tracking = TrackingDB(db_path=db_path)
         large_content = "line of filler text. " * 10_000
 
         with patch("pathlib.Path.cwd", return_value=tmp_path):
             for name in ("a.md", "b.md", "c.txt"):
-                hook_input = self._hook_input(name, large_content)
-                _compress_read_output(hook_input, tracking)
+                _run_read_hook_tracked(self._payload(name, large_content), tracking)
 
         tracking.flush()
         tracking.close()
@@ -1941,8 +1944,6 @@ class TestReadTracking:
         intermediate, extraction-only value."""
         import docx
 
-        from quor.adapters.claude_read import _compress_read_output
-
         d = docx.Document()
         d.add_heading("Design Notes", level=1)
         d.add_paragraph("REQ-1: must survive extraction and compression.")
@@ -1954,9 +1955,8 @@ class TestReadTracking:
         db_path = tmp_path / "quor.db"
         tracking = TrackingDB(db_path=db_path)
         raw_tool_response = "<binary Read result placeholder>"
-        hook_input = self._hook_input(str(docx_path), raw_tool_response)
 
-        result = _compress_read_output(hook_input, tracking)
+        result = _run_read_hook_tracked(self._payload(str(docx_path), raw_tool_response), tracking)
         assert result is not None
 
         tracking.flush()
@@ -1975,8 +1975,6 @@ class TestReadTracking:
     def test_pdf_extraction_and_compression_tracked(self, tmp_path: Path) -> None:
         from reportlab.pdfgen import canvas
 
-        from quor.adapters.claude_read import _compress_read_output
-
         pdf_path = tmp_path / "report.pdf"
         c = canvas.Canvas(str(pdf_path), pagesize=(500, 3000))
         c.setFont("Helvetica-Bold", 20)
@@ -1991,9 +1989,8 @@ class TestReadTracking:
         db_path = tmp_path / "quor.db"
         tracking = TrackingDB(db_path=db_path)
         raw_tool_response = "<binary Read result placeholder>"
-        hook_input = self._hook_input(str(pdf_path), raw_tool_response)
 
-        result = _compress_read_output(hook_input, tracking)
+        result = _run_read_hook_tracked(self._payload(str(pdf_path), raw_tool_response), tracking)
         assert result is not None
 
         tracking.flush()
@@ -2013,17 +2010,14 @@ class TestReadTracking:
         is tracked exactly like "no filter matched" — filter_name=None,
         was_passthrough=True — not as a special extraction-specific
         outcome."""
-        from quor.adapters.claude_read import _compress_read_output
-
         db_path = tmp_path / "quor.db"
         tracking = TrackingDB(db_path=db_path)
         missing_path = tmp_path / "does_not_exist.docx"
         raw_tool_response = "original content"
-        hook_input = self._hook_input(str(missing_path), raw_tool_response)
 
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            result = _compress_read_output(hook_input, tracking)
+            result = _run_read_hook_tracked(self._payload(str(missing_path), raw_tool_response), tracking)
         assert result is None
 
         tracking.flush()
@@ -2045,8 +2039,6 @@ class TestReadTracking:
         for markdown/text."""
         import docx
 
-        from quor.adapters.claude_read import _compress_read_output
-
         d = docx.Document()
         d.add_heading("Notes", level=1)
         for _ in range(150):
@@ -2059,12 +2051,8 @@ class TestReadTracking:
         large_content = "line of filler text. " * 10_000
 
         with patch("pathlib.Path.cwd", return_value=tmp_path):
-            _compress_read_output(
-                self._hook_input(str(docx_path), "placeholder"), tracking
-            )
-            _compress_read_output(
-                self._hook_input(str(tmp_path / "a.md"), large_content), tracking
-            )
+            _run_read_hook_tracked(self._payload(str(docx_path), "placeholder"), tracking)
+            _run_read_hook_tracked(self._payload(str(tmp_path / "a.md"), large_content), tracking)
 
         tracking.flush()
         tracking.close()
@@ -2077,22 +2065,22 @@ class TestReadTracking:
 # ---------------------------------------------------------------------------
 # Source-code Read tracking (QB-005F) — no schema/tracking-side change was
 # needed here either: _compress_via_named_filter() (the helper the
-# source-code path shares with the DOCX/PDF extraction path above) calls
-# track_invocation() exactly the same way. These tests exist to prove that
-# in practice for the new by-name source-code lookup, the same way
+# source-code path shares with the DOCX/PDF extraction path above) is
+# reachable via the same real hook entry point. These tests exist to prove
+# that in practice for the new by-name source-code lookup, the same way
 # TestReadTracking's extraction tests prove it for the by-name document
 # lookup.
 # ---------------------------------------------------------------------------
 
 
 class TestReadSourceCodeTracking:
-    """Uses the module-level `_read_hook_input` helper `TestReadTracking`
+    """Uses the module-level `_read_payload` helper `TestReadTracking`
     above also uses — deliberately not a subclass of `TestReadTracking`,
     since inheriting a test class in pytest re-collects and re-runs every
     inherited test method under the subclass too, which is not the intent
     here (only the tiny payload-building helper is shared)."""
 
-    _hook_input = staticmethod(_read_hook_input)
+    _payload = staticmethod(_read_payload)
 
     _PY_SOURCE = (
         "def fetch_data(url):\n"
@@ -2102,13 +2090,10 @@ class TestReadSourceCodeTracking:
     )
 
     def test_python_read_tracked_with_cat_python_filter(self, tmp_path: Path) -> None:
-        from quor.adapters.claude_read import _compress_read_output
-
         db_path = tmp_path / "quor.db"
         tracking = TrackingDB(db_path=db_path)
-        hook_input = self._hook_input("app.py", self._PY_SOURCE)
 
-        result = _compress_read_output(hook_input, tracking)
+        result = _run_read_hook_tracked(self._payload("app.py", self._PY_SOURCE), tracking)
         assert result is not None
         assert "response = make_request(url)" not in result
 
@@ -2126,8 +2111,6 @@ class TestReadSourceCodeTracking:
         assert row["final_tokens"] == count_tokens(result)
 
     def test_javascript_read_tracked_with_cat_javascript_filter(self, tmp_path: Path) -> None:
-        from quor.adapters.claude_read import _compress_read_output
-
         db_path = tmp_path / "quor.db"
         tracking = TrackingDB(db_path=db_path)
         source = (
@@ -2136,9 +2119,8 @@ class TestReadSourceCodeTracking:
             "  return response.json();\n"
             "}\n"
         )
-        hook_input = self._hook_input("app.js", source)
 
-        result = _compress_read_output(hook_input, tracking)
+        result = _run_read_hook_tracked(self._payload("app.js", source), tracking)
         assert result is not None
 
         tracking.flush()
@@ -2152,8 +2134,6 @@ class TestReadSourceCodeTracking:
         assert row["was_passthrough"] == 0
 
     def test_typescript_read_tracked_with_cat_typescript_filter(self, tmp_path: Path) -> None:
-        from quor.adapters.claude_read import _compress_read_output
-
         db_path = tmp_path / "quor.db"
         tracking = TrackingDB(db_path=db_path)
         source = (
@@ -2162,9 +2142,8 @@ class TestReadSourceCodeTracking:
             "  return response.json();\n"
             "}\n"
         )
-        hook_input = self._hook_input("app.ts", source)
 
-        result = _compress_read_output(hook_input, tracking)
+        result = _run_read_hook_tracked(self._payload("app.ts", source), tracking)
         assert result is not None
 
         tracking.flush()
@@ -2178,8 +2157,6 @@ class TestReadSourceCodeTracking:
         assert row["was_passthrough"] == 0
 
     def test_tsx_read_tracked_with_cat_tsx_filter(self, tmp_path: Path) -> None:
-        from quor.adapters.claude_read import _compress_read_output
-
         db_path = tmp_path / "quor.db"
         tracking = TrackingDB(db_path=db_path)
         source = (
@@ -2188,9 +2165,8 @@ class TestReadSourceCodeTracking:
             "  return <button onClick={handleClick}>{label}</button>;\n"
             "}\n"
         )
-        hook_input = self._hook_input("Button.tsx", source)
 
-        result = _compress_read_output(hook_input, tracking)
+        result = _run_read_hook_tracked(self._payload("Button.tsx", source), tracking)
         assert result is not None
 
         tracking.flush()
@@ -2210,15 +2186,13 @@ class TestReadSourceCodeTracking:
         direct .md rows — no source-code-specific aggregation path exists,
         same guarantee TestReadTracking already proves for markdown/text and
         DOCX/PDF."""
-        from quor.adapters.claude_read import _compress_read_output
-
         db_path = tmp_path / "quor.db"
         tracking = TrackingDB(db_path=db_path)
         large_content = "line of filler text. " * 10_000
 
         with patch("pathlib.Path.cwd", return_value=tmp_path):
-            _compress_read_output(self._hook_input("app.py", self._PY_SOURCE), tracking)
-            _compress_read_output(self._hook_input(str(tmp_path / "a.md"), large_content), tracking)
+            _run_read_hook_tracked(self._payload("app.py", self._PY_SOURCE), tracking)
+            _run_read_hook_tracked(self._payload(str(tmp_path / "a.md"), large_content), tracking)
 
         tracking.flush()
         tracking.close()

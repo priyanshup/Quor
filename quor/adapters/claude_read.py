@@ -71,7 +71,9 @@ guarantees:
   `_compress_read_output` below)
 - A TrackingDB is constructed and passed in as `tracking` (QB-007D), exactly
   as `__main__._run_dispatch()` already does for the Bash path — see
-  `_compress_read_output`'s own docstring for what gets recorded and when.
+  `_handle_text`'s own docstring for what gets recorded and when (QB-094:
+  tracking happens exactly once, in `_handle_text`, after every producer
+  and every prepend/append has already run — never inside a producer).
 """
 
 from __future__ import annotations
@@ -79,6 +81,7 @@ from __future__ import annotations
 import sys
 import time
 import warnings
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -230,6 +233,38 @@ _STRUCTURED_DATA_FILTER_NAMES_BY_BASENAME: dict[str, str] = {
 }
 
 
+@dataclass(frozen=True)
+class _ReadCompressionResult:
+    """What a producer (`_compress_read_output` and its two helpers) hands
+    back to `_handle_text` instead of a bare `str | None` (QB-094).
+
+    Producers no longer call `track_invocation()` themselves — none of them
+    can see the "Relevant repository files" (QB-081), "Repository Tip"
+    (QB-090), or concise-instruction text `_handle_text` still has yet to
+    prepend/append after they return, so tracking from inside a producer
+    always measured an intermediate, not what Claude actually receives.
+    This object exists solely to carry the tracking-relevant facts a
+    producer *does* know — which filter (if any) matched, whether it was a
+    genuine passthrough, and the pre-compression baseline — forward to the
+    one place (`_handle_text`, after every prepend/append has run) that can
+    finally compute the real `filtered` value and call `track_invocation()`
+    exactly once. See `_handle_text`'s own docstring for the full assembly
+    order.
+
+    `rendered` keeps exactly the same "None means no change / omit
+    `updatedToolOutput`" meaning `_compress_read_output`'s return value
+    already had (ADR-030's "omit rather than guess" discipline) — this
+    wrapper only adds metadata around that same value, it doesn't change
+    what `None` means.
+    """
+
+    rendered: str | None
+    original: str
+    filter_name: str | None
+    was_passthrough: bool
+    command: str
+
+
 def run_hook(*, tracking: TrackingDB | None = None) -> None:
     """Process one PostToolUse/Read hook call.
 
@@ -280,7 +315,26 @@ def _handle_text(raw: str, tracking: TrackingDB | None) -> bytes:
     """Shared core of `run_hook()`/`handle_bytes()`: parse a PostToolUse/Read
     payload, compress if applicable, and return the serialized
     `hookSpecificOutput` response bytes. Raises on parse/validation errors —
-    both callers rely on their own outer fail-open guard."""
+    both callers rely on their own outer fail-open guard.
+
+    QB-094: this is the *only* place a Read invocation is tracked. The
+    architecture is deliberately linear —
+
+        producers produce (`_compress_read_output` and its helpers return a
+        `_ReadCompressionResult`, never touching `tracking`)
+          -> `_handle_text` assembles (repo context already folded in by
+             the producer for source-code reads; relevant-files, the
+             repo-intel nudge, and the concise instruction are layered on
+             right here, in that order)
+          -> `_handle_text` tracks once, after `hook_specific
+             ["updatedToolOutput"]` is set to its final value
+
+    so `track_invocation()`'s `filtered` argument is always the exact
+    string Claude receives (or `result.original` when nothing was ever
+    produced to send), never an intermediate — the same bug class QB-052
+    fixed for the Bash dispatcher, generalized here to a single call site
+    that outlives every producer branch instead of one call per branch.
+    """
     # Strip UTF-8 BOM (single or doubled — Cursor sends doubled BOM on Windows),
     # same as quor/adapters/claude.py.
     raw = raw.lstrip(_UTF8_BOM)
@@ -292,7 +346,9 @@ def _handle_text(raw: str, tracking: TrackingDB | None) -> bytes:
 
     hook_specific: dict[str, Any] = {"hookEventName": "PostToolUse"}
 
-    compressed = _compress_read_output(hook_input, tracking)
+    t0 = time.monotonic()
+    result = _compress_read_output(hook_input)
+    compressed = result.rendered if result is not None else None
     original_response = hook_input.tool_response if isinstance(hook_input.tool_response, str) else None
     with_relevant_files = _maybe_prepend_relevant_files(
         hook_input, compressed if compressed is not None else original_response
@@ -332,21 +388,45 @@ def _handle_text(raw: str, tracking: TrackingDB | None) -> bytes:
     if compressed is not None:
         hook_specific["updatedToolOutput"] = compressed
 
+    # QB-094: single tracking call, after every prepend/append above has
+    # already run. `result is None` means `_compress_read_output` never ran
+    # at all (empty `file_path`) — nothing happened, so nothing is tracked,
+    # exactly as before. Otherwise `compressed` — whatever's actually being
+    # returned to Claude, or `result.original` when nothing was — is the
+    # `filtered` value tracked; `original`/`filter_name`/`was_passthrough`
+    # are carried unchanged from the producer that ran.
+    if result is not None:
+        track_invocation(
+            tracking,
+            command=result.command,
+            original=result.original,
+            filtered=compressed if compressed is not None else result.original,
+            filter_name=result.filter_name,
+            was_passthrough=result.was_passthrough,
+            t0=t0,
+        )
+
     return orjson.dumps({"hookSpecificOutput": hook_specific})
 
 
 def _compress_read_output(
-    hook_input: PostToolUseHookInput, tracking: TrackingDB | None
-) -> str | None:
-    """Return compressed content if (and only if) a filter matched *and*
-    actually changed the content; return None in every other case.
+    hook_input: PostToolUseHookInput,
+) -> _ReadCompressionResult | None:
+    """Return a `_ReadCompressionResult` describing what (if anything) this
+    Read should compress to — or `None` if there is no genuine invocation
+    to report at all.
 
-    None means "the caller must omit updatedToolOutput" — the single
-    fail-open contract this function exists to guarantee, covering:
+    `None` means "the caller must not track this call and must omit
+    `updatedToolOutput`" — the one case that isn't a real Read: `file_path`
+    is empty. `_ReadCompressionResult.rendered` carries the previous
+    function's `str | None` return value with exactly the same "None means
+    omit updatedToolOutput" meaning (ADR-030's "omit rather than guess"
+    discipline); the wrapper only adds the metadata `_handle_text` needs to
+    track this invocation once, after it finishes assembling the final
+    output. Covers, via `rendered=None`:
       - `tool_response` is missing or not a plain string (e.g. a future/
         unknown shape for a binary Read — QB-007B/C are text-only by
         design; see backlog.md's QB-007 entry).
-      - `tool_input.file_path` is empty.
       - No filter matches the file path (unsupported extension, or a path
         containing whitespace — see markdown.toml's routing-anchor
         rationale), or a filter matched but isn't one of the document
@@ -362,15 +442,21 @@ def _compress_read_output(
         other Read call in the same process; mirrors
         `quor/adapters/dispatcher.py`'s own filter-layer try/except.
 
-    Tracking (QB-007D): every branch that represents a genuine Read
-    invocation — i.e. `file_path` is non-empty — calls `track_invocation()`
-    exactly once before returning, mirroring how `dispatcher.py` tracks
-    every Bash invocation it dispatches. The `command` column gets
-    `"Read: {file_path}"` so Read rows are self-describing next to Bash
-    rows in the same table; no schema change, no new storage. A `file_path`
-    of "" is the one case treated as "nothing happened" and left untracked
-    — the same way `dispatcher.run_dispatch([])` returns before dispatching
-    or tracking anything for empty `args`.
+    Tracking (QB-007D, consolidated in QB-094): this function and its two
+    helpers (`_compress_extracted_document`, `_compress_via_named_filter`)
+    no longer call `track_invocation()` at all — none of them can see the
+    "Relevant repository files" (QB-081) / "Repository Tip" (QB-090) /
+    concise-instruction text `_handle_text` layers on *after* they return,
+    so a tracking call from in here would always measure an intermediate,
+    not what Claude actually receives (the bug QB-094 fixed — see that
+    ticket / `_handle_text`'s own docstring for the full before/after). The
+    `command` column still gets `"Read: {file_path}"` so Read rows are
+    self-describing next to Bash rows in the same table; it's carried on
+    `_ReadCompressionResult.command` now instead of being passed to a local
+    `track_invocation()` call. A `file_path` of "" is still the one case
+    treated as "nothing happened" — `_handle_text` leaves it untracked, the
+    same way `dispatcher.run_dispatch([])` returns before dispatching or
+    tracking anything for empty `args`.
 
     The passthrough/filter-name split mirrors `dispatcher.py`'s own
     `_lookup_filter`/`_apply_content_filter` split exactly:
@@ -385,17 +471,17 @@ def _compress_read_output(
 
     QB-007E4: a `.docx`/`.pdf` file path (`_EXTRACTION_EXTENSIONS`) is
     diverted to `_compress_extracted_document` before any of the above —
-    see that function's own docstring for its tracking/fail-open contract,
-    which mirrors this one exactly (extraction failure ≈ "no filter
-    matched"; a successful extraction ≈ "the markdown filter matched").
+    see that function's own docstring for its fail-open contract, which
+    mirrors this one exactly (extraction failure ≈ "no filter matched"; a
+    successful extraction ≈ "the markdown filter matched").
 
     QB-005F: a source-code file path whose extension is a key in
     `_SOURCE_CODE_FILTER_NAMES_BY_EXTENSION` is diverted straight to
     `_compress_via_named_filter` (no extraction step, no separate branch
     function — the shared helper is called directly, since there's nothing
-    else this branch needs to do first). Tracking/fail-open contract is the
-    same shared helper both this path and `_compress_extracted_document`
-    use, so it mirrors both exactly.
+    else this branch needs to do first). Fail-open contract is the same
+    shared helper both this path and `_compress_extracted_document` use, so
+    it mirrors both exactly.
 
     QB-079: once that source-code branch produces genuinely changed
     content, `_maybe_prepend_repo_context()` is given one chance to prepend
@@ -403,39 +489,36 @@ def _compress_read_output(
     `file_intelligence.json` (`intel_store.load_file_intelligence()` — a
     single O(1) dict lookup, never `ensure_repo_intelligence()` or
     `walk_repository()`). It fails open at every step (missing cache, no
-    entry for this path, a stale size/mtime match) back to `compressed`
-    completely unchanged — see that function's own docstring.
+    entry for this path, a stale size/mtime match) back to the rendered
+    text completely unchanged — see that function's own docstring. This
+    still happens here, inside the producer, *before* `_handle_text`'s own
+    prepends — `result.rendered` already includes it by the time
+    `_handle_text` sees this result, exactly as before QB-094.
 
     Every other extension keeps using the exact code below, unmodified.
 
-    QB-081: independently of everything above (and regardless of which
-    branch handles this Read, including the plain passthrough case at the
-    very bottom), `_handle_text()` — not this function — gives
-    `_maybe_prepend_relevant_files()` one chance to prepend a "Relevant
-    repository files" section afterward, built from `quor.pipeline.
-    repo_profile.search.merge_search()` fed with deterministic query terms
-    extracted from the user's own most recent prompt text. See that
-    function's own docstring for its fail-open chain.
+    QB-081/QB-090: independently of everything above (and regardless of
+    which branch handles this Read, including the plain passthrough case
+    at the very bottom), `_handle_text()` — not this function — gives
+    `_maybe_prepend_relevant_files()` and `_maybe_prepend_repo_intel_nudge()`
+    one chance each to prepend further sections afterward. See those
+    functions' own docstrings for their fail-open chains.
     """
     tool_response = hook_input.tool_response
     file_path = hook_input.tool_input.file_path
     if not file_path:
         return None
 
-    t0 = time.monotonic()
     command = f"Read: {file_path}"
 
     if not isinstance(tool_response, str):
-        track_invocation(
-            tracking,
-            command=command,
+        return _ReadCompressionResult(
+            rendered=None,
             original="",
-            filtered="",
             filter_name=None,
             was_passthrough=True,
-            t0=t0,
+            command=command,
         )
-        return None
 
     suffix = Path(file_path).suffix.lower()
 
@@ -443,24 +526,20 @@ def _compress_read_output(
         return _compress_extracted_document(
             file_path=file_path,
             tool_response=tool_response,
-            tracking=tracking,
-            t0=t0,
             command=command,
         )
 
     source_code_filter = _SOURCE_CODE_FILTER_NAMES_BY_EXTENSION.get(suffix)
     if source_code_filter is not None:
-        compressed = _compress_via_named_filter(
+        result = _compress_via_named_filter(
             content=tool_response,
             original=tool_response,
             filter_name=source_code_filter,
-            tracking=tracking,
-            t0=t0,
             command=command,
         )
-        if compressed is not None:
-            compressed = _maybe_prepend_repo_context(file_path, compressed)
-        return compressed
+        if result.rendered is not None:
+            result = replace(result, rendered=_maybe_prepend_repo_context(file_path, result.rendered))
+        return result
 
     named_filter = _STRUCTURED_DATA_FILTER_NAMES_BY_EXTENSION.get(suffix) or _STRUCTURED_DATA_FILTER_NAMES_BY_BASENAME.get(
         Path(file_path).name
@@ -470,8 +549,6 @@ def _compress_read_output(
             content=tool_response,
             original=tool_response,
             filter_name=named_filter,
-            tracking=tracking,
-            t0=t0,
             command=command,
         )
 
@@ -483,16 +560,13 @@ def _compress_read_output(
         filter_config = None
 
     if filter_config is None or filter_config.name not in _READ_SUPPORTED_FILTER_NAMES:
-        track_invocation(
-            tracking,
-            command=command,
+        return _ReadCompressionResult(
+            rendered=None,
             original=tool_response,
-            filtered=tool_response,
             filter_name=None,
             was_passthrough=True,
-            t0=t0,
+            command=command,
         )
-        return None
 
     try:
         rendered = registry.apply(filter_config, tool_response)
@@ -500,29 +574,21 @@ def _compress_read_output(
         warnings.warn(f"[quor] Read filter error: {exc}", stacklevel=2)
         rendered = tool_response
 
-    track_invocation(
-        tracking,
-        command=command,
+    return _ReadCompressionResult(
+        rendered=rendered if rendered != tool_response else None,
         original=tool_response,
-        filtered=rendered,
         filter_name=filter_config.name,
         was_passthrough=False,
-        t0=t0,
+        command=command,
     )
-
-    if rendered == tool_response:
-        return None
-    return rendered
 
 
 def _compress_extracted_document(
     *,
     file_path: str,
     tool_response: str,
-    tracking: TrackingDB | None,
-    t0: float,
     command: str,
-) -> str | None:
+) -> _ReadCompressionResult:
     """DOCX/PDF branch of `_compress_read_output` (QB-007E4).
 
     Desired pipeline (per QB-007E4's own spec):
@@ -547,27 +613,26 @@ def _compress_extracted_document(
     `FilterRegistry.apply()` is called exactly as it already is everywhere
     else.
 
-    Tracking mirrors `_compress_read_output`'s own contract precisely:
+    Returned metadata mirrors `_compress_read_output`'s own contract
+    precisely (QB-094: neither this function nor `_compress_via_named_filter`
+    tracks anymore — both only return a `_ReadCompressionResult` for
+    `_handle_text` to track once, after final assembly):
       - extraction returns `None` → `filter_name=None, was_passthrough=True`
         — nothing was applied, same as "no filter matched" above.
       - extraction succeeds → delegated to `_compress_via_named_filter`,
-        which tracks `filter_name="markdown", was_passthrough=False`
+        which reports `filter_name="markdown", was_passthrough=False`
         whether or not the markdown filter changes the result, or even if
         applying it fails and falls back to the unfiltered extracted text —
         a filter was genuinely attempted, same as the non-extraction path
-        tracks `filter_config.name` even when `_apply_content_filter`-
+        reports `filter_config.name` even when `_apply_content_filter`-
         equivalent handling caught an error.
-      - `original_tokens` is always derived from the *original*
-        `tool_response` (the raw Read result before extraction, passed as
-        `_compress_via_named_filter`'s `original`), and `final_tokens` from
-        whatever is actually returned as `updatedToolOutput` (or, on a
-        filter failure, the unfiltered extracted text that was actually
-        returned) — `track_invocation()` computes both via `count_tokens()`
-        exactly as it already does for every other producer.
+      - `original` is always the *original* `tool_response` (the raw Read
+        result before extraction, passed as `_compress_via_named_filter`'s
+        `original`) — `_handle_text` derives `original_tokens` from it via
+        `count_tokens()` exactly as it does for every other producer.
 
-    Returns `None` (omit `updatedToolOutput`) if extraction failed, or if
-    the final result happens to equal the original `tool_response` byte
-    for byte (mirrors ADR-030's "omit if unchanged" rule) — never raises.
+    Returns a `_ReadCompressionResult` whose `rendered` is `None` (omit
+    `updatedToolOutput`) if extraction failed — never raises.
     """
     try:
         extracted = extract(Path(file_path))
@@ -576,23 +641,18 @@ def _compress_extracted_document(
         extracted = None
 
     if extracted is None:
-        track_invocation(
-            tracking,
-            command=command,
+        return _ReadCompressionResult(
+            rendered=None,
             original=tool_response,
-            filtered=tool_response,
             filter_name=None,
             was_passthrough=True,
-            t0=t0,
+            command=command,
         )
-        return None
 
     return _compress_via_named_filter(
         content=extracted,
         original=tool_response,
         filter_name=_MARKDOWN_FILTER_NAME,
-        tracking=tracking,
-        t0=t0,
         command=command,
     )
 
@@ -602,23 +662,22 @@ def _compress_via_named_filter(
     content: str,
     original: str,
     filter_name: str,
-    tracking: TrackingDB | None,
-    t0: float,
     command: str,
-) -> str | None:
+) -> _ReadCompressionResult:
     """Look up `filter_name` by name (not by `FilterRegistry.find()`'s
-    command/path-pattern match), apply it to `content`, track the
-    invocation, and return the rendered result — or `None` if it's
-    unchanged from `original`. Never raises.
+    command/path-pattern match), apply it to `content`, and return a
+    `_ReadCompressionResult` — `rendered=None` if the result is unchanged
+    from `original`. Never raises, never tracks (QB-094: tracking moved to
+    the single call site in `_handle_text`, after final assembly).
 
     Extracted in QB-005F from `_compress_extracted_document`'s own
     post-extraction tail, once the source-code Read path (below) needed the
-    identical "by-name lookup -> apply -> track -> omit if unchanged"
-    sequence. The only real difference between the two callers is *how*
-    `content` was obtained (extracted from a binary document vs. already
-    plain source text) — everything after that point was byte-for-byte
-    identical duplicated code, so only that shared tail was extracted, not
-    a new generic routing/dispatch layer.
+    identical "by-name lookup -> apply -> omit if unchanged" sequence. The
+    only real difference between the two callers is *how* `content` was
+    obtained (extracted from a binary document vs. already plain source
+    text) — everything after that point was byte-for-byte identical
+    duplicated code, so only that shared tail was extracted, not a new
+    generic routing/dispatch layer.
 
     `content` and `original` are deliberately separate parameters because
     they differ for `_compress_extracted_document` (`content` is the
@@ -641,19 +700,13 @@ def _compress_via_named_filter(
         warnings.warn(f"[quor] Read filter error: {exc}", stacklevel=2)
         rendered = content
 
-    track_invocation(
-        tracking,
-        command=command,
+    return _ReadCompressionResult(
+        rendered=rendered if rendered != original else None,
         original=original,
-        filtered=rendered,
         filter_name=filter_name,
         was_passthrough=False,
-        t0=t0,
+        command=command,
     )
-
-    if rendered == original:
-        return None
-    return rendered
 
 
 def _find_filter_by_name(registry: FilterRegistry, name: str) -> FilterConfig | None:

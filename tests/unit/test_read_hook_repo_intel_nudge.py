@@ -20,6 +20,7 @@ import pytest
 
 from quor.adapters.claude_read import run_hook
 from quor.pipeline.repo_profile.nudge import MAX_NEVER_BUILT_SHOWS
+from quor.tracking.db import InvocationRecord, count_tokens
 
 
 class _FakeStdout:
@@ -76,6 +77,43 @@ def repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     _init_git_repo(root)
     monkeypatch.chdir(root)
     return root
+
+
+class _FakeTracking:
+    def __init__(self) -> None:
+        self.records: list[InvocationRecord] = []
+
+    def record(self, rec: InvocationRecord) -> None:
+        self.records.append(rec)
+
+
+class TestTrackingAccuracy:
+    """QB-094 regression guard: the nudge is prepended in `_handle_text()`,
+    after the producer has already returned — before this fix, a pure
+    passthrough Read the nudge alone turned into real output was tracked
+    as a zero-token no-op. See
+    tests/unit/test_read_hook_tracking_accuracy.py for the full scenario
+    matrix."""
+
+    def test_tracked_final_tokens_include_the_nudge(self, repo: Path) -> None:
+        payload = _read_payload(str(repo / "unrelated.xyz"), "nothing quor filters\n")
+        raw = orjson.dumps(payload).decode("utf-8")
+        fake_stdout = _FakeStdout()
+        tracking = _FakeTracking()
+        with (
+            patch.object(sys, "stdin", io.StringIO(raw)),
+            patch.object(sys, "stdout", fake_stdout),
+        ):
+            run_hook(tracking=tracking)
+        fake_stdout.buffer.seek(0)
+        result = orjson.loads(fake_stdout.buffer.read())
+        updated = result["hookSpecificOutput"]["updatedToolOutput"]
+
+        assert len(tracking.records) == 1
+        rec = tracking.records[0]
+        assert rec.final_tokens == count_tokens(updated)
+        assert rec.was_passthrough is True
+        assert rec.final_tokens > rec.original_tokens
 
 
 class TestNeverBuiltNudgeInReadHook:

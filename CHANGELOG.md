@@ -3,6 +3,18 @@
 All notable changes to Quor are documented here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+- **Fixed: Read-hook tracking accuracy (QB-094).** `quor gain`, dashboard statistics, and per-filter
+  analytics under-reported real token cost for Read-hook invocations that used Repository Context
+  (QB-079), Relevant repository files (QB-081), the repository-intelligence nudge (QB-090), or the
+  concise instruction — `track_invocation()` ran inside `claude_read.py`'s producer functions, before
+  any of those four layers had a chance to prepend content. The same class of bug QB-052 fixed for
+  the Bash dispatcher, generalized here: producers now return a `_ReadCompressionResult` carrying
+  tracking metadata instead of tracking themselves, and `_handle_text()` tracks exactly once, after
+  final assembly. `updatedToolOutput` is unchanged — this is an accounting fix only. See backlog.md's
+  QB-094 entry for the full root-cause writeup and verification.
+
 ## [0.5.0] — 2026-07-31
 
 - **Added: collapse long unchanged context runs in `git diff`/`git show` output (QB-041, QB-055).**
