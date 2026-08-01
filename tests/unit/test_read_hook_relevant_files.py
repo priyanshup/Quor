@@ -22,6 +22,7 @@ import pytest
 from quor.adapters.claude_read import MAX_RELEVANT_FILES, run_hook
 from quor.pipeline.repo_profile import intel_store
 from quor.pipeline.repo_profile.intel_model import FileIntelligenceEntry
+from quor.tracking.db import InvocationRecord, count_tokens
 
 # ---------------------------------------------------------------------------
 # Helpers (mirrors test_read_hook_repo_context.py's own)
@@ -122,6 +123,49 @@ class TestBlockAppears:
         assert "src/auth/login.py" in updated
         assert "Exact symbol: LoginManager" in updated
         assert updated.rstrip().endswith(_UNSUPPORTED_SOURCE.rstrip())
+
+
+class _FakeTracking:
+    def __init__(self) -> None:
+        self.records: list[InvocationRecord] = []
+
+    def record(self, rec: InvocationRecord) -> None:
+        self.records.append(rec)
+
+
+class TestTrackingAccuracy:
+    """QB-094 regression guard: this file's own signature scenario (a
+    passthrough Read that only the "Relevant repository files" block
+    changes) is exactly the case that used to be tracked as a false
+    zero-token delta — see tests/unit/test_read_hook_tracking_accuracy.py
+    for the full scenario matrix."""
+
+    def test_tracked_final_tokens_include_the_relevant_files_block(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "main.rs").write_text(_UNSUPPORTED_SOURCE, encoding="utf-8")
+        _write_entry(tmp_path, "src/auth/login.py", top_symbols=["LoginManager"])
+        transcript = _write_transcript(tmp_path, "Where is LoginManager defined?")
+        payload = _read_payload(str(tmp_path / "main.rs"), _UNSUPPORTED_SOURCE, transcript_path=str(transcript))
+
+        raw = orjson.dumps(payload).decode("utf-8")
+        fake_stdout = _FakeStdout()
+        tracking = _FakeTracking()
+        with (
+            patch.object(sys, "stdin", io.StringIO(raw)),
+            patch.object(sys, "stdout", fake_stdout),
+        ):
+            run_hook(tracking=tracking)
+        fake_stdout.buffer.seek(0)
+        result = orjson.loads(fake_stdout.buffer.read())
+        updated = result["hookSpecificOutput"]["updatedToolOutput"]
+
+        assert len(tracking.records) == 1
+        rec = tracking.records[0]
+        assert rec.final_tokens == count_tokens(updated)
+        assert rec.was_passthrough is True
+        assert rec.final_tokens > rec.original_tokens
 
 
 class TestIdenticalPromptIsDeterministic:

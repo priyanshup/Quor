@@ -26,8 +26,14 @@ from quor.adapters.base import (
     PostToolUseHookOutput,
     ReadToolInput,
 )
-from quor.adapters.claude_read import HOOK_READ_COMMAND, HOOK_READ_PS1_TEMPLATE, run_hook
+from quor.adapters.claude_read import (
+    HOOK_READ_COMMAND,
+    HOOK_READ_PS1_TEMPLATE,
+    _ReadCompressionResult,
+    run_hook,
+)
 from quor.adapters.dispatcher import CONCISE_INSTRUCTION
+from quor.tracking.db import InvocationRecord, count_tokens
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -222,18 +228,77 @@ class TestRunHookCompression:
         win must not be silently turned into a net loss by the fixed
         17-token nudge. `_compress_read_output` is patched directly so this
         exercises the gating math in `_handle_text()` itself, independent of
-        any one filter's actual compression behavior."""
+        any one filter's actual compression behavior. QB-094: the patched
+        return value is now a `_ReadCompressionResult` (the producer
+        contract `_handle_text()` actually consumes), not a bare string."""
         original = "line one of text\nline two of text\nline three\n"
         compressed = "line one of text\nline two\nline three\n"
         payload = _make_read_payload(file_path="notes.md", tool_response=original)
+        fake_result = _ReadCompressionResult(
+            rendered=compressed,
+            original=original,
+            filter_name="markdown",
+            was_passthrough=False,
+            command="Read: notes.md",
+        )
         with patch(
-            "quor.adapters.claude_read._compress_read_output", return_value=compressed
+            "quor.adapters.claude_read._compress_read_output", return_value=fake_result
         ):
             result = _run_hook_with(payload)
 
         updated = result["hookSpecificOutput"]["updatedToolOutput"]
         assert updated == compressed
         assert not updated.startswith(CONCISE_INSTRUCTION)
+
+
+# ---------------------------------------------------------------------------
+# run_hook() — tracking accuracy (QB-094)
+#
+# The regression guard every Read-hook suite gained once QB-094 shipped: no
+# suite here previously asserted anything about what got tracked, which is
+# exactly how a producer-local track_invocation() call measuring an
+# intermediate value (see quor/adapters/claude_read.py's `_handle_text`
+# docstring) shipped unnoticed. tests/unit/test_read_hook_tracking_accuracy.py
+# has the full scenario matrix; this class only pins the one path this file
+# already exercises above (large-markdown compression, no other Read-hook
+# layer active).
+# ---------------------------------------------------------------------------
+
+
+class _FakeTracking:
+    def __init__(self) -> None:
+        self.records: list[InvocationRecord] = []
+
+    def record(self, rec: InvocationRecord) -> None:
+        self.records.append(rec)
+
+
+class TestRunHookTrackingAccuracy:
+    def test_tracked_final_tokens_match_updated_tool_output(self) -> None:
+        large_payload = _make_read_payload(
+            file_path="notes.md", tool_response="line of filler text. " * 10_000
+        )
+        raw = orjson.dumps(large_payload)
+        stdin_text = raw.decode("utf-8")
+        fake_stdout = _FakeStdout()
+        tracking = _FakeTracking()
+
+        with (
+            patch.object(sys, "stdin", io.StringIO(stdin_text)),
+            patch.object(sys, "stdout", fake_stdout),
+        ):
+            run_hook(tracking=tracking)
+
+        fake_stdout.buffer.seek(0)
+        result = orjson.loads(fake_stdout.buffer.read())
+        updated = result["hookSpecificOutput"]["updatedToolOutput"]
+
+        assert len(tracking.records) == 1
+        rec = tracking.records[0]
+        assert rec.final_tokens == count_tokens(updated)
+        assert rec.original_tokens == count_tokens(large_payload["tool_response"])
+        assert rec.filter_name == "markdown"
+        assert rec.was_passthrough is False
 
 
 # ---------------------------------------------------------------------------

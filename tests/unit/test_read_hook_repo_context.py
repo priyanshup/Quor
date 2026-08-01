@@ -26,6 +26,7 @@ import pytest
 from quor.adapters.claude_read import run_hook
 from quor.pipeline.repo_profile import intel_store
 from quor.pipeline.repo_profile.intel_model import FileIntelligenceEntry
+from quor.tracking.db import InvocationRecord, count_tokens
 
 # ---------------------------------------------------------------------------
 # Helpers (mirrors test_read_hook_ast_summarization.py's own)
@@ -109,6 +110,47 @@ def _write_matching_entry(root: Path, rel_path: str, **overrides: object) -> Non
     }
     fields.update(overrides)
     intel_store.save_file_intelligence(root, {rel_path: FileIntelligenceEntry(**fields)})  # type: ignore[arg-type]
+
+
+class _FakeTracking:
+    def __init__(self) -> None:
+        self.records: list[InvocationRecord] = []
+
+    def record(self, rec: InvocationRecord) -> None:
+        self.records.append(rec)
+
+
+class TestTrackingAccuracy:
+    """QB-094 regression guard: the Repository Context block is prepended
+    inside the source-code producer branch, *after* `_compress_via_named_
+    filter()` already returned — before this fix, tracking measured the
+    pre-prepend AST-summarized text only. See
+    tests/unit/test_read_hook_tracking_accuracy.py for the full scenario
+    matrix."""
+
+    def test_tracked_final_tokens_include_the_context_block(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        _write_matching_entry(tmp_path, "app.py")
+        payload = _read_payload(str(tmp_path / "app.py"), _PYTHON_SOURCE)
+
+        raw = orjson.dumps(payload).decode("utf-8")
+        fake_stdout = _FakeStdout()
+        tracking = _FakeTracking()
+        with (
+            patch.object(sys, "stdin", io.StringIO(raw)),
+            patch.object(sys, "stdout", fake_stdout),
+        ):
+            run_hook(tracking=tracking)
+        fake_stdout.buffer.seek(0)
+        result = orjson.loads(fake_stdout.buffer.read())
+        updated = result["hookSpecificOutput"]["updatedToolOutput"]
+
+        assert len(tracking.records) == 1
+        rec = tracking.records[0]
+        assert rec.final_tokens == count_tokens(updated)
+        assert rec.filter_name == "cat-python"
 
 
 class TestRepositoryContextAppears:

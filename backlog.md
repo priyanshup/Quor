@@ -5643,6 +5643,82 @@ corpus, which has no case exercising this pattern.
 
 ---
 
+#### QB-094 — Read-hook tracking accuracy — the same fix as QB-052, generalized
+
+**Effort:** Small · **Value:** Medium · **Category:** Bug fix
+
+QB-052 fixed `quor gain` under-reporting the Bash dispatcher's real token cost by moving
+`track_invocation()` to run after every append (tee footer, concise instruction) instead of before.
+The Read hook (`claude_read.py`) had the identical bug, left open by QB-052 as a follow-on because
+the fix didn't transfer directly: tracking was called from five separate branch functions, each
+before three more cross-cutting layers (Repository Context, Relevant repository files, the
+repository-intelligence nudge, the concise instruction) got a chance to prepend content in a
+different function entirely. `quor gain`, dashboard statistics, and per-filter analytics for any
+project using those features were silently under-reporting real token cost — in the worst case,
+a passthrough Read that only the "Relevant repository files" block changed was recorded as a
+zero-token no-op.
+
+<details>
+<summary>Technical details</summary>
+
+**Root cause:** `_compress_read_output()` (and its two helpers, `_compress_extracted_document()` and
+`_compress_via_named_filter()`) each called `track_invocation()` directly, before returning. None of
+them can see what `_handle_text()` — a different function — prepends afterward: the "Repository
+Context" block (QB-079, source-code reads only), "Relevant repository files" (QB-081), the
+repository-intelligence onboarding nudge (QB-090), or the concise instruction. So `final_tokens`
+always measured an intermediate value, never the bytes actually assigned to `updatedToolOutput`.
+
+**Fix (Option C from the pre-implementation investigation):** producers no longer call
+`track_invocation()` at all. `_compress_read_output()` and its helpers now return a `_ReadCompression
+Result` — a small frozen dataclass carrying `rendered` (the same `str | None` "omit if unchanged"
+value as before), `original`, `filter_name`, `was_passthrough`, and `command`. `_handle_text()`
+unwraps `.rendered` for the exact same prepend/gate sequence it already ran, and calls
+`track_invocation()` exactly once, at the very end, using whatever `compressed` ends up being (or
+`result.original` if nothing was ever produced) as `filtered`. QB-052's approach ("move the one
+call") didn't apply as-is because there was no single call to move — this generalizes it to "track
+once, after every producer and every layer, fed by metadata carried forward instead of
+re-derived."
+
+**Invariants preserved:** `updatedToolOutput` is byte-for-byte unchanged — this is purely an
+accounting fix, no compression/filtering/repo-intelligence/instruction decision changed. Exactly one
+tracking record per invocation (never zero, never two — same "empty `file_path` stays untracked"
+rule as before). `filter_name`/`was_passthrough`/`original` are carried through unchanged; only
+`final_tokens` (and, as a natural side effect of consolidating to one call after full assembly,
+`duration_ms`, which now spans the whole hook rather than stopping before the prepend layers) can
+differ from before. Fail-open is unaffected — `track_invocation()` already swallowed its own
+exceptions, and moving *where* it's called doesn't change that.
+
+**Verification:** `tests/unit/test_read_hook_tracking_accuracy.py` (new) covers the full scenario
+matrix — concise instruction alone, Repository Context alone, Relevant files alone, the nudge alone,
+all four layered together, the "passthrough that still grew" case (`was_passthrough` stays `True`
+while `final_tokens` now correctly exceeds `original_tokens`), pure passthrough, and DOCX/PDF
+extraction success/failure — asserting `final_tokens == count_tokens(updatedToolOutput)` in every
+case. `tests/unit/test_tracking.py`'s `TestReadTracking`/`TestReadSourceCodeTracking` were rewritten
+to drive the real `claude_read.handle_bytes()` entry point (the only place tracking happens now)
+instead of calling the internal `_compress_read_output()` helper directly, and gained the same
+`final_tokens == count_tokens(result)` assertion. A one-line regression-guard test (same assertion)
+was added to every other Read-hook suite that previously validated only `updatedToolOutput`
+(`test_read_hook_relevant_files.py`, `test_read_hook_repo_context.py`,
+`test_read_hook_repo_intel_nudge.py`, `test_read_hook_structured_data.py`,
+`test_read_hook_ast_summarization.py`, `test_read_hook_activation.py`) — the exact gap (no suite
+anywhere asserted on tracked token counts) that let this ship unnoticed in the first place.
+
+**Analytics impact:** rows recorded *before* this fix are not retroactively corrected — only new
+invocations are tracked accurately. `quor gain`'s headline for any project actively using QB-079/081/
+090 will show a real step-down after upgrading (not a regression), and previously-invisible
+negative-delta rows (a passthrough Read that only grew from an enhancement layer) will now surface
+through the same `negative_row_count`/`gross_overhead` UI QB-052's tee-footer case already built.
+`quor explain` is unaffected — it computes its own token counts from a live pipeline run, independent
+of `TrackingDB`.
+
+**Status:** Resolved 2026-08-01, following the dedicated architecture investigation this ticket
+opened with (root-cause trace, five-call-site inventory, and the Option A/B/C comparison that landed
+on C).
+
+</details>
+
+---
+
 ### Low Value
 
 *Still real, shipped work — mostly documentation, process, and engineering-hygiene items whose value

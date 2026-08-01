@@ -29,6 +29,7 @@ import orjson
 import pytest
 
 from quor.adapters.claude_read import run_hook
+from quor.tracking.db import InvocationRecord, count_tokens
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -165,6 +166,42 @@ export function Button({ label, onClick }: ButtonProps) {
 # ---------------------------------------------------------------------------
 # Source-code Read compression, one language at a time
 # ---------------------------------------------------------------------------
+
+
+class _FakeTracking:
+    def __init__(self) -> None:
+        self.records: list[InvocationRecord] = []
+
+    def record(self, rec: InvocationRecord) -> None:
+        self.records.append(rec)
+
+
+class TestTrackingAccuracy:
+    """QB-094 regression guard — the fuller scenario matrix (including
+    filter_name/was_passthrough assertions) lives in
+    tests/unit/test_tracking.py's `TestReadSourceCodeTracking`, which this
+    file's own module docstring already points to; this test only closes
+    the "assert on tracked tokens" gap for this suite's own driver
+    (`run_hook()` via stdin/stdout, not `handle_bytes()`)."""
+
+    def test_tracked_final_tokens_match_updated_tool_output(self) -> None:
+        payload = _read_payload("app.py", _PYTHON_SOURCE)
+        raw = orjson.dumps(payload).decode("utf-8")
+        fake_stdout = _FakeStdout()
+        tracking = _FakeTracking()
+        with (
+            patch.object(sys, "stdin", io.StringIO(raw)),
+            patch.object(sys, "stdout", fake_stdout),
+        ):
+            run_hook(tracking=tracking)
+        fake_stdout.buffer.seek(0)
+        result = orjson.loads(fake_stdout.buffer.read())
+        updated = result["hookSpecificOutput"]["updatedToolOutput"]
+
+        assert len(tracking.records) == 1
+        rec = tracking.records[0]
+        assert rec.final_tokens == count_tokens(updated)
+        assert rec.filter_name == "cat-python"
 
 
 class TestSourceCodeCompresses:
