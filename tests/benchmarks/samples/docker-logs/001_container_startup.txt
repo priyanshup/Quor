@@ -1,0 +1,19 @@
+2026-07-31T10:15:01.102345678Z INFO Starting storefront-api version 3.4.1
+2026-07-31T10:15:01.201345678Z INFO Loading configuration from /etc/storefront/config.yaml
+2026-07-31T10:15:01.350345678Z INFO Connecting to database at db.internal:5432
+2026-07-31T10:15:01.980345678Z INFO Database connection established (pool size: 10)
+2026-07-31T10:15:02.015345678Z INFO Running pending migrations
+2026-07-31T10:15:02.640345678Z INFO Applied migration 0042_add_order_status_index
+2026-07-31T10:15:02.641345678Z INFO Applied migration 0043_add_customer_email_unique
+2026-07-31T10:15:02.642345678Z INFO No further migrations to apply
+2026-07-31T10:15:03.100345678Z INFO Connecting to redis at cache.internal:6379
+2026-07-31T10:15:03.150345678Z INFO Redis connection established
+2026-07-31T10:15:03.400345678Z INFO Loading plugin: payments-gateway
+2026-07-31T10:15:03.550345678Z INFO Loading plugin: notifications
+2026-07-31T10:15:03.700345678Z INFO Loading plugin: inventory-sync
+2026-07-31T10:15:04.000345678Z INFO All plugins loaded (3 total)
+2026-07-31T10:15:04.050345678Z INFO Warming product cache
+2026-07-31T10:15:05.900345678Z INFO Product cache warmed (48213 items)
+2026-07-31T10:15:05.950345678Z INFO Registering health check endpoint at /healthz
+2026-07-31T10:15:06.000345678Z INFO Listening on 0.0.0.0:8080
+2026-07-31T10:15:06.001345678Z INFO Ready to accept connections

@@ -68,6 +68,14 @@ _KNOWN_BASE_COMMANDS: frozenset[str] = frozenset(
                         # (-v/-vv) environment-probe noise and internal
                         # (Cleo/Poetry-framework) traceback frames. See the
                         # "poetry" filter block in poetry.toml.
+        "journalctl",   # QB-098: no subcommand gating needed (journalctl is
+                        # flag-driven, not subcommand-driven, unlike docker/
+                        # kubectl/gh above) — routes to the generic filter's
+                        # relative_timestamp_compression stage for ISO-mode
+                        # output (`-o short-iso`/`--utc`); non-ISO (default
+                        # syslog-style, locale-dependent month names) output
+                        # simply doesn't match any supported timestamp shape
+                        # and passes through the generic filter untouched.
     }
 )
 
@@ -166,24 +174,36 @@ def is_known_command(base: str, args: list[str]) -> bool:
             and args[1] in _KNOWN_PYTHON_SUBCOMMANDS
         )
     if base in ("docker", "docker-compose"):
-        # QB-045: docker has many subcommands (run, ps, logs, ...) that are
-        # out of scope; `docker exec <container> <cmd>` never reaches here at
-        # all (handled earlier as a transparent prefix). Only route the
-        # *build* subcommand, in each of its real invocation shapes.
+        # QB-045: docker has many subcommands (run, ps, ...) that are out of
+        # scope; `docker exec <container> <cmd>` never reaches here at all
+        # (handled earlier as a transparent prefix). Only route the *build*
+        # subcommand, in each of its real invocation shapes, plus — QB-098 —
+        # *logs*: `docker logs [--timestamps] <container>` is exactly the
+        # per-line-timestamp shape `relative_timestamp_compression` targets,
+        # and unlike `run`/`ps`/etc. its output is simple, bounded text (no
+        # separate structured-output concern the way `docker ps --format`
+        # would raise). `docker-compose logs`/`docker compose logs` are the
+        # same shape, routed the same way `build`'s compose variants already
+        # are.
         if not args:
             return False
         if base == "docker-compose":
-            return args[0] == "build"
-        if args[0] == "build":
+            return args[0] in ("build", "logs")
+        if args[0] in ("build", "logs"):
             return True
         if args[0] == "buildx" and len(args) >= 2 and args[1] == "build":
             return True
-        return args[0] == "compose" and len(args) >= 2 and args[1] == "build"
+        return args[0] == "compose" and len(args) >= 2 and args[1] in ("build", "logs")
     if base == "gh":
         # QB-045: only gh's own CI-log-retrieval subcommands are in scope —
         # every other gh subcommand (pr, issue, repo, ...) passes through
         # untouched, same subcommand-gating discipline as python -m above.
         return len(args) >= 2 and args[0] == "run" and args[1] in ("view", "watch")
+    if base == "kubectl":
+        # QB-098: only `kubectl logs` is in scope, same subcommand-gating
+        # discipline as `gh`/`docker` above — every other kubectl subcommand
+        # (get, describe, apply, ...) passes through untouched.
+        return len(args) >= 1 and args[0] == "logs"
     return base in _KNOWN_BASE_COMMANDS
 
 

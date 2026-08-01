@@ -498,6 +498,19 @@ preserve_patterns = [
 [[filter.stages]]
 type = "deduplicate_consecutive"
 
+[[filter.stages]]
+# QB-098: a dev-server watch script run through `npm run <script>` (webpack/
+# vite/nodemon watch mode, etc.) commonly timestamps every rebuild/reload
+# line — npm's own install/audit output never does, so this is a no-op for
+# every other test above and only activates on the watch-mode shape.
+type = "relative_timestamp_compression"
+
+[[filter.tests]]
+description = "QB-098: npm run watch — a dev-server watch script logging with an ISO timestamp prefix (no brackets, in scope) folds to per-line deltas"
+input = "npm run watch\n\n> myapp@1.0.0 watch\n> node scripts/watch.js\n\n2026-07-31T10:15:01Z Compiling...\n2026-07-31T10:15:01Z Compiled successfully\n2026-07-31T10:15:04Z Compiling...\n2026-07-31T10:15:05Z Compiled successfully\n"
+must_contain = ["2026-07-31T10:15:01Z Compiling...", "+0s Compiled successfully", "+3s Compiling...", "+1s Compiled successfully"]
+must_not_contain = ["2026-07-31T10:15:04Z", "2026-07-31T10:15:05Z"]
+
 [[filter.tests]]
 description = "Repeated deprecation warnings collapse; install summary and clean audit result preserved"
 input = "npm warn deprecated inflight@1.0.6: This module is not supported, and leaks memory.\nnpm warn deprecated glob@7.2.3: Glob versions prior to v9 are no longer supported\nnpm warn deprecated rimraf@2.7.1: Rimraf versions prior to v4 are no longer supported\n\nadded 152 packages, and audited 153 packages in 4s\n\n23 packages are looking for funding\n  run `npm fund` for details\n\nfound 0 vulnerabilities\n"

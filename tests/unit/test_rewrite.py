@@ -372,6 +372,44 @@ class TestRules:
         transparent prefix, not a known base command in its own right."""
         assert is_known_command("bunx", ["cowsay"]) is False
 
+    def test_known_command_docker_build_still_routed(self) -> None:
+        """QB-098 added `docker logs` alongside `build` — `build` itself
+        must keep working exactly as QB-045 shipped it."""
+        assert is_known_command("docker", ["build", "-t", "myapp", "."]) is True
+
+    def test_known_command_docker_logs(self) -> None:
+        assert is_known_command("docker", ["logs", "mycontainer"]) is True
+
+    def test_known_command_docker_logs_with_timestamps_flag(self) -> None:
+        assert is_known_command("docker", ["logs", "--timestamps", "mycontainer"]) is True
+
+    def test_known_command_docker_compose_logs(self) -> None:
+        assert is_known_command("docker-compose", ["logs"]) is True
+        assert is_known_command("docker", ["compose", "logs"]) is True
+
+    def test_known_command_docker_other_subcommands_still_out_of_scope(self) -> None:
+        """`run`/`ps`/etc. remain deliberately unrouted — only `build` and
+        (QB-098) `logs` are in scope."""
+        assert is_known_command("docker", ["run", "myimage"]) is False
+        assert is_known_command("docker", ["ps"]) is False
+
+    def test_known_command_kubectl_logs(self) -> None:
+        assert is_known_command("kubectl", ["logs", "mypod"]) is True
+
+    def test_known_command_kubectl_logs_with_timestamps_flag(self) -> None:
+        assert is_known_command("kubectl", ["logs", "--timestamps", "mypod"]) is True
+
+    def test_known_command_kubectl_other_subcommands_out_of_scope(self) -> None:
+        assert is_known_command("kubectl", ["get", "pods"]) is False
+        assert is_known_command("kubectl", ["apply", "-f", "deploy.yaml"]) is False
+
+    def test_known_command_kubectl_bare_false(self) -> None:
+        assert is_known_command("kubectl", []) is False
+
+    def test_known_command_journalctl(self) -> None:
+        assert is_known_command("journalctl", ["-u", "myservice", "-o", "short-iso"]) is True
+        assert is_known_command("journalctl", []) is True
+
     def test_structured_output_json_flag(self) -> None:
         assert has_structured_output_flag(["--json"]) is True
 

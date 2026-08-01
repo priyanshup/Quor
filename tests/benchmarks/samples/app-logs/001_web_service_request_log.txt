@@ -1,0 +1,16 @@
+2026-07-31 08:00:00 INFO Starting server
+2026-07-31 08:00:00 INFO Loading configuration
+2026-07-31 08:00:01 INFO Connected to database
+2026-07-31 08:00:01 INFO Listening on :8080
+2026-07-31 08:14:22 INFO GET /api/orders/8842 200 14ms
+2026-07-31 08:14:23 INFO GET /api/customers/4471 200 8ms
+2026-07-31 08:14:25 INFO POST /api/orders 201 92ms
+2026-07-31 08:14:25 INFO Sending order confirmation email to customer 4471
+2026-07-31 08:14:26 WARN Email delivery slow: 1204ms
+2026-07-31 08:15:01 INFO GET /api/orders/8843 200 11ms
+2026-07-31 08:15:44 ERROR Failed to charge card for order 8843: gateway timeout
+2026-07-31 08:15:44 INFO Retrying charge for order 8843 (attempt 2/3)
+2026-07-31 08:15:46 INFO Charge succeeded for order 8843 on retry
+2026-07-31 08:16:02 INFO GET /api/orders/8844 200 9ms
+2026-07-31 08:16:02 INFO GET /api/orders/8845 200 10ms
+2026-07-31 08:16:03 INFO GET /api/orders/8846 200 7ms

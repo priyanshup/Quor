@@ -1,0 +1,16 @@
+2026-07-31T10:15:01.000000000Z {"level":"info","msg":"starting orders-service"}
+2026-07-31T10:15:01.100000000Z {"level":"info","msg":"loading config from ConfigMap orders-service-config"}
+2026-07-31T10:15:01.250000000Z {"level":"info","msg":"connecting to postgres at orders-db.default.svc.cluster.local:5432"}
+2026-07-31T10:15:01.900000000Z {"level":"info","msg":"postgres connection established"}
+2026-07-31T10:15:02.000000000Z {"level":"info","msg":"connecting to kafka broker at kafka.default.svc.cluster.local:9092"}
+2026-07-31T10:15:02.600000000Z {"level":"info","msg":"kafka producer ready"}
+2026-07-31T10:15:02.650000000Z {"level":"info","msg":"subscribed to topic orders.created"}
+2026-07-31T10:15:02.700000000Z {"level":"info","msg":"subscribed to topic orders.cancelled"}
+2026-07-31T10:15:03.000000000Z {"level":"info","msg":"readiness probe passing"}
+2026-07-31T10:15:03.001000000Z {"level":"info","msg":"liveness probe passing"}
+2026-07-31T10:15:03.500000000Z {"level":"info","msg":"listening on :8443"}
+2026-07-31T10:15:10.200000000Z {"level":"info","msg":"handled GET /orders/8842 in 12ms"}
+2026-07-31T10:15:10.850000000Z {"level":"info","msg":"handled POST /orders in 84ms"}
+2026-07-31T10:15:11.100000000Z {"level":"info","msg":"handled GET /orders/8843 in 9ms"}
+2026-07-31T10:15:11.900000000Z {"level":"warn","msg":"slow query: SELECT * FROM orders WHERE customer_id = $1 took 612ms"}
+2026-07-31T10:15:12.000000000Z {"level":"info","msg":"handled GET /orders?customer_id=4471 in 615ms"}

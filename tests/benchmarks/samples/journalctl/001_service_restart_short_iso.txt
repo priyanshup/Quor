@@ -1,0 +1,17 @@
+2026-07-31T10:15:01+0000 web-03 systemd[1]: Starting Storefront API...
+2026-07-31T10:15:01+0000 web-03 storefront-api[2201]: booting worker 1
+2026-07-31T10:15:01+0000 web-03 storefront-api[2202]: booting worker 2
+2026-07-31T10:15:02+0000 web-03 storefront-api[2201]: worker 1 ready
+2026-07-31T10:15:02+0000 web-03 storefront-api[2202]: worker 2 ready
+2026-07-31T10:15:02+0000 web-03 systemd[1]: Started Storefront API.
+2026-07-31T10:15:45+0000 web-03 storefront-api[2201]: handled request in 12ms
+2026-07-31T10:16:03+0000 web-03 storefront-api[2202]: handled request in 8ms
+2026-07-31T10:16:59+0000 web-03 storefront-api[2201]: handled request in 240ms
+2026-07-31T10:22:14+0000 web-03 kernel: out of memory: kill process 2201 (storefront-api) score 812
+2026-07-31T10:22:14+0000 web-03 systemd[1]: storefront-api.service: Main process exited, code=killed
+2026-07-31T10:22:14+0000 web-03 systemd[1]: storefront-api.service: Failed with result 'signal'
+2026-07-31T10:22:15+0000 web-03 systemd[1]: storefront-api.service: Scheduled restart job
+2026-07-31T10:22:15+0000 web-03 systemd[1]: Starting Storefront API...
+2026-07-31T10:22:16+0000 web-03 storefront-api[2301]: booting worker 1
+2026-07-31T10:22:16+0000 web-03 storefront-api[2302]: booting worker 2
+2026-07-31T10:22:17+0000 web-03 systemd[1]: Started Storefront API.

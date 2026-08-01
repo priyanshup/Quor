@@ -43,8 +43,20 @@ Invariants (enforced by Pipeline.execute, not by individual stages):
   deterministic given the language's own real parser (never a guess at what
   "looks like" an import), and it is gated by the same token-cost
   comparison as every collapsing stage above — never fires unless
-  demonstrably cheaper. A future stage wanting a fifth exception should be
-  held to one of these two bars explicitly, not treated as an open door.
+  demonstrably cheaper.
+- relative_timestamp_compression (QB-098) is a fifth exception, shaped
+  differently from all four above: it rewrites every line in a matched run
+  *except the first* (left completely untouched) to a `+delta` prefix
+  relative to the immediately preceding line, and — unlike every stage
+  above — never assigns COMPRESS to anything and never inserts a new
+  LineMask. Every line in the run stays KEEP; the mask's total line count is
+  unchanged. Reconstructibility comes from arithmetic, not byte-for-byte
+  suffix preservation: the first line gives an absolute reference point, and
+  each subsequent line's absolute timestamp is exactly `previous + this
+  line's delta`, computed with exact integer nanosecond arithmetic (no
+  floats, never rounded). Gated by the same token-cost comparison as every
+  stage above. A future stage wanting a sixth exception should be held to
+  one of these five bars explicitly, not treated as an open door.
 """
 
 from __future__ import annotations

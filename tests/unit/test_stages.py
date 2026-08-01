@@ -50,6 +50,10 @@ from quor.pipeline.stages.regex_replace import (
     RegexReplaceRule,
     RegexReplaceStage,
 )
+from quor.pipeline.stages.relative_timestamp_compression import (
+    RelativeTimestampCompressionConfig,
+    RelativeTimestampCompressionStage,
+)
 from quor.pipeline.stages.remove_ansi import RemoveAnsiConfig, RemoveAnsiStage
 from quor.pipeline.stages.strip_lines import StripLinesConfig, StripLinesStage
 from quor.pipeline.stages.truncate_lines import TruncateLinesConfig, TruncateLinesStage
@@ -1182,6 +1186,266 @@ class TestNumericRangeCompression:
     def test_wrong_config_type_raises(self) -> None:
         with pytest.raises(TypeError, match="NumericRangeCompressionConfig"):
             self.stage.apply(ContentMask.from_text("x"), RemoveAnsiConfig(type="remove_ansi"))
+
+
+# ---------------------------------------------------------------------------
+# relative_timestamp_compression (QB-098)
+# ---------------------------------------------------------------------------
+
+from quor.pipeline.stages import relative_timestamp_compression as _rtc  # noqa: E402
+
+
+class TestRelativeTimestampCompression:
+    stage = RelativeTimestampCompressionStage()
+
+    def _config(self, preserve: list[str] | None = None) -> RelativeTimestampCompressionConfig:
+        return RelativeTimestampCompressionConfig(
+            type="relative_timestamp_compression",
+            preserve_patterns=preserve or [],
+        )
+
+    def test_empty_input(self) -> None:
+        result = self.stage.apply(ContentMask.from_text(""), self._config())
+        assert result.render() == ""
+
+    def test_single_timestamped_line_unchanged(self) -> None:
+        """A single-line log has nothing to compute a delta against."""
+        mask = ContentMask.from_text("2026-07-31 10:15:01 solo line")
+        result = self.stage.apply(mask, self._config())
+        assert result.render() == "2026-07-31 10:15:01 solo line"
+        assert result.lines[0].decision is Decision.KEEP
+
+    def test_no_timestamp_lines_all_kept_unchanged(self) -> None:
+        mask = ContentMask.from_text("line_a\nline_b\nline_c")
+        result = self.stage.apply(mask, self._config())
+        assert result.render() == mask.render()
+        assert all(lm.decision is Decision.KEEP for lm in result.lines)
+
+    def test_space_datetime_run_folds_to_per_line_deltas(self) -> None:
+        mask = ContentMask.from_text(
+            "2026-07-31 10:15:01 INFO Starting server\n"
+            "2026-07-31 10:15:02 INFO Loading plugins\n"
+            "2026-07-31 10:15:03 INFO Ready\n"
+            "2026-07-31 10:15:04 INFO Listening on :8080"
+        )
+        result = self.stage.apply(mask, self._config())
+        assert result.render() == (
+            "2026-07-31 10:15:01 INFO Starting server\n"
+            "+1s INFO Loading plugins\n"
+            "+1s INFO Ready\n"
+            "+1s INFO Listening on :8080"
+        )
+
+    def test_iso_z_with_milliseconds_exact_delta(self) -> None:
+        """QB-098's own worked example: a 250ms then a 750ms gap, exact —
+        never rounded, never approximated."""
+        mask = ContentMask.from_text(
+            "2026-07-31T10:15:01.000Z msg1\n"
+            "2026-07-31T10:15:01.250Z msg2\n"
+            "2026-07-31T10:15:02.000Z msg3"
+        )
+        result = self.stage.apply(mask, self._config())
+        assert result.render() == (
+            "2026-07-31T10:15:01.000Z msg1\n+250ms msg2\n+750ms msg3"
+        )
+
+    def test_largest_exact_unit_chosen_for_hours_then_minutes(self) -> None:
+        mask = ContentMask.from_text(
+            "2026-07-31 10:00:00 a\n2026-07-31 12:00:00 b\n2026-07-31 12:05:00 c"
+        )
+        result = self.stage.apply(mask, self._config())
+        assert result.render() == "2026-07-31 10:00:00 a\n+2h b\n+5m c"
+
+    def test_offset_normalized_to_utc_across_a_dst_style_shift(self) -> None:
+        """Same local clock reading, different UTC offset — the underlying
+        instant is what's compared, so this is a genuine +1h, not +0s."""
+        mask = ContentMask.from_text(
+            "2026-07-31T10:00:00+05:30 event-a\n2026-07-31T10:00:00+04:30 event-b"
+        )
+        result = self.stage.apply(mask, self._config())
+        assert result.render() == "2026-07-31T10:00:00+05:30 event-a\n+1h event-b"
+
+    def test_time_only_run_folds(self) -> None:
+        mask = ContentMask.from_text("10:15:01 a\n10:15:02 b\n10:15:03 c")
+        result = self.stage.apply(mask, self._config())
+        assert result.render() == "10:15:01 a\n+1s b\n+1s c"
+
+    def test_malformed_hour_never_matches_and_never_folds(self) -> None:
+        """QB-098 requirement: 'every timestamp parses successfully' — an
+        out-of-range hour is not a timestamp at all, so it's an ordinary
+        run-breaking line, and the whole input is left untouched."""
+        mask = ContentMask.from_text("10:15:01 ok-a\n25:99:99 broken\n10:15:03 ok-b")
+        result = self.stage.apply(mask, self._config())
+        assert result.render() == mask.render()
+
+    def test_invalid_calendar_date_never_matches(self) -> None:
+        mask = ContentMask.from_text("2026-02-30 10:15:01 bogus\n2026-02-30 10:15:02 also bogus")
+        result = self.stage.apply(mask, self._config())
+        assert result.render() == mask.render()
+
+    def test_mixed_formats_break_the_run(self) -> None:
+        """A run only continues while every line matches the *same* format
+        kind as the run's first line — mixing space_datetime and time_only
+        (even though both are individually valid) never folds together."""
+        mask = ContentMask.from_text(
+            "2026-07-31 10:15:01 a\n10:15:02 b\n2026-07-31 10:15:03 c"
+        )
+        result = self.stage.apply(mask, self._config())
+        assert result.render() == mask.render()
+        assert "+" not in result.render()
+
+    def test_fractional_width_change_breaks_the_run(self) -> None:
+        """Same conservative 'identical width' invariant numeric_range_
+        compression uses for digit width, applied to fractional-second
+        digit count."""
+        mask = ContentMask.from_text(
+            "2026-07-31T10:15:01.1Z a\n2026-07-31T10:15:01.12Z b"
+        )
+        result = self.stage.apply(mask, self._config())
+        assert result.render() == mask.render()
+
+    def test_decreasing_timestamp_breaks_the_run(self) -> None:
+        """A decrease could be clock skew or a log-rotation splice — 'when
+        uncertain, don't collapse' wins; the line before the decrease is
+        left as an isolated 1-line run, but a later ascending pair can still
+        fold on its own."""
+        mask = ContentMask.from_text(
+            "2026-07-31 10:15:05 a\n2026-07-31 10:15:03 b\n2026-07-31 10:15:04 c"
+        )
+        result = self.stage.apply(mask, self._config())
+        assert "2026-07-31 10:15:05 a" in result.render()
+        assert "2026-07-31 10:15:03 b" in result.render()
+        assert "+1s c" in result.render()
+
+    def test_duplicate_timestamps_fold_to_a_zero_delta(self) -> None:
+        mask = ContentMask.from_text("10:15:01 a\n10:15:01 b")
+        result = self.stage.apply(mask, self._config())
+        assert result.render() == "10:15:01 a\n+0s b"
+
+    def test_already_relative_lines_are_never_reinterpreted(self) -> None:
+        mask = ContentMask.from_text("+1s already relative\n+2m also relative")
+        result = self.stage.apply(mask, self._config())
+        assert result.render() == mask.render()
+
+    def test_bracket_wrapped_timestamps_are_out_of_scope(self) -> None:
+        """Documented scope limit: the format must start at column 0."""
+        mask = ContentMask.from_text(
+            "[2026-07-31T10:15:01Z] a\n[2026-07-31T10:15:02Z] b"
+        )
+        result = self.stage.apply(mask, self._config())
+        assert result.render() == mask.render()
+
+    def test_epoch_integers_are_not_matched_by_this_stage(self) -> None:
+        """Bare digit runs stay numeric_range_compression's territory."""
+        mask = ContentMask.from_text("1785499701\n1785499702")
+        result = self.stage.apply(mask, self._config())
+        assert result.render() == "1785499701\n1785499702"
+
+    def test_line_count_unchanged_by_folding(self) -> None:
+        mask = ContentMask.from_text("10:15:01 a\n10:15:02 b\n10:15:03 c")
+        result = self.stage.apply(mask, self._config())
+        assert len(result.lines) == len(mask.lines)
+
+    def test_no_line_is_ever_compressed(self) -> None:
+        """Unlike every sibling folding stage, this one never hides a line
+        behind COMPRESS — every line in a folded run stays KEEP."""
+        mask = ContentMask.from_text("10:15:01 a\n10:15:02 b\n10:15:03 c")
+        result = self.stage.apply(mask, self._config())
+        assert all(lm.decision is Decision.KEEP for lm in result.lines)
+
+    def test_first_line_of_a_fold_is_left_completely_untouched(self) -> None:
+        mask = ContentMask.from_text("10:15:01 a\n10:15:02 b")
+        result = self.stage.apply(mask, self._config())
+        assert result.lines[0] is mask.lines[0]
+
+    def test_protect_lines_bound_run_and_are_never_modified(self) -> None:
+        lines = (
+            LineMask(line="10:15:01 a"),
+            _protect("10:15:02 b"),
+            LineMask(line="10:15:03 c"),
+        )
+        mask = ContentMask(lines=lines)
+        result = self.stage.apply(mask, self._config())
+        assert result.lines[1].decision is Decision.PROTECT
+        assert result.lines[1].line == "10:15:02 b"
+        assert "+" not in result.render()
+
+    def test_compress_lines_are_run_boundaries(self) -> None:
+        lines = (
+            LineMask(line="10:15:01 a"),
+            LineMask(line="10:15:02 b"),
+            _compress("10:15:03 c"),
+            LineMask(line="10:20:00 d"),
+            LineMask(line="10:20:01 e"),
+        )
+        mask = ContentMask(lines=lines)
+        result = self.stage.apply(mask, self._config())
+        rendered = result.render()
+        assert "+1s b" in rendered
+        assert "+1s e" in rendered
+
+    def test_preserve_patterns_excludes_line_and_can_prevent_folding(self) -> None:
+        lines = (
+            LineMask(line="10:15:01 a"),
+            LineMask(line="10:15:02 b"),
+            LineMask(line="10:15:03 c"),
+        )
+        mask = ContentMask(lines=lines)
+        result = self.stage.apply(mask, self._config(preserve=[r"^10:15:02"]))
+        assert result.lines[1].decision is Decision.PROTECT
+        # 10:15:01/10:15:03 are now two separate length-1 runs, split by the
+        # PROTECT line — neither can fold.
+        assert "+" not in result.render()
+
+    def test_wrong_config_type_raises(self) -> None:
+        with pytest.raises(TypeError, match="RelativeTimestampCompressionConfig"):
+            self.stage.apply(ContentMask.from_text("x"), RemoveAnsiConfig(type="remove_ansi"))
+
+    # -- internal helpers, exercised directly (same convention as _utils) --
+
+    def test_format_delta_ns_picks_the_largest_exact_unit(self) -> None:
+        assert _rtc._format_delta_ns(0) == "+0s"
+        assert _rtc._format_delta_ns(1) == "+1ns"
+        assert _rtc._format_delta_ns(1_000) == "+1us"
+        assert _rtc._format_delta_ns(1_000_000) == "+1ms"
+        assert _rtc._format_delta_ns(1_000_000_000) == "+1s"
+        assert _rtc._format_delta_ns(60_000_000_000) == "+1m"
+        assert _rtc._format_delta_ns(3_600_000_000_000) == "+1h"
+        # Doesn't divide evenly by any coarser unit -> falls through to ns.
+        assert _rtc._format_delta_ns(1_000_001) == "+1000001ns"
+
+    def test_parse_line_rejects_out_of_range_components(self) -> None:
+        assert _rtc._parse_line("24:00:00 x") is None
+        assert _rtc._parse_line("10:60:00 x") is None
+        assert _rtc._parse_line("10:00:60 x") is None
+        assert _rtc._parse_line("2026-13-01 10:00:00 x") is None
+        assert _rtc._parse_line("2026-02-30 10:00:00 x") is None
+        assert _rtc._parse_line("2026-07-31T10:00:00+24:00 x") is None
+
+    def test_cost_gate_blocks_a_fold_that_would_cost_more(self) -> None:
+        """Direct test of `_fold_run`'s token-cost gate: an adversarially
+        long, non-round delta against very short original lines must leave
+        the run untouched. This case can't be reached through a real
+        timestamp match (see backlog.md's QB-098 entry: the gate is
+        unreachable via any of the 7 supported formats in practice, since a
+        full timestamp match is always at least 8 characters and every
+        realistic delta encodes shorter than that) — constructed directly
+        against `_fold_run` to still exercise the gate's own logic.
+        """
+        run = [
+            (LineMask(line="aaaaaaaa"), 8, 0),
+            (LineMask(line="bbbbbbbb"), 8, 123_456_789_012_345),
+        ]
+        result = _rtc._fold_run(run, "relative_timestamp_compression")
+        assert [lm.line for lm in result] == ["aaaaaaaa", "bbbbbbbb"]
+
+    def test_cost_gate_allows_a_fold_that_is_strictly_cheaper(self) -> None:
+        run = [
+            (LineMask(line="2026-07-31 10:15:01 a"), 19, 0),
+            (LineMask(line="2026-07-31 10:15:02 b"), 19, 1_000_000_000),
+        ]
+        result = _rtc._fold_run(run, "relative_timestamp_compression")
+        assert [lm.line for lm in result] == ["2026-07-31 10:15:01 a", "+1s b"]
 
 
 # ---------------------------------------------------------------------------

@@ -1,0 +1,16 @@
+2026-07-31 14:02:00 Starting pipeline run #4821 for branch feature/checkout-retry
+2026-07-31 14:02:00 Step: checkout
+2026-07-31 14:02:03 Checked out commit a1b2c3d
+2026-07-31 14:02:03 Step: install dependencies
+2026-07-31 14:02:41 Installed 842 packages
+2026-07-31 14:02:41 Step: lint
+2026-07-31 14:02:58 Lint passed, 0 issues
+2026-07-31 14:02:58 Step: unit tests
+2026-07-31 14:04:32 312 tests passed, 0 failed
+2026-07-31 14:04:32 Step: build
+2026-07-31 14:05:47 Build artifact created: storefront-web-4821.tar.gz (18.4 MB)
+2026-07-31 14:05:47 Step: deploy to staging
+2026-07-31 14:06:15 Deployed to staging.internal
+2026-07-31 14:06:15 Step: smoke tests
+2026-07-31 14:06:52 12 smoke tests passed
+2026-07-31 14:06:52 Pipeline run #4821 succeeded in 4m52s
