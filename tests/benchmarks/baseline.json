@@ -5693,10 +5693,10 @@
       "matched_filter": "gradle",
       "filter_correct": true,
       "original_tokens": 254,
-      "final_tokens": 95,
-      "tokens_saved": 159,
-      "compression_pct": 62.6,
-      "execution_time_ms": 6.242,
+      "final_tokens": 81,
+      "tokens_saved": 173,
+      "compression_pct": 68.11,
+      "execution_time_ms": 3.762,
       "tee_would_fire": true,
       "missing_patterns": [],
       "min_reduction_met": true,
@@ -5730,12 +5730,21 @@
           "tokens_saved": 0
         },
         {
-          "stage_type": "strip_lines",
+          "stage_type": "path_prefix_fold",
           "was_skipped": false,
           "skip_reason": "",
           "error": "",
           "tokens_before": 254,
-          "tokens_after": 95,
+          "tokens_after": 240,
+          "tokens_saved": 14
+        },
+        {
+          "stage_type": "strip_lines",
+          "was_skipped": false,
+          "skip_reason": "",
+          "error": "",
+          "tokens_before": 240,
+          "tokens_after": 81,
           "tokens_saved": 159
         },
         {
@@ -5743,8 +5752,8 @@
           "was_skipped": false,
           "skip_reason": "",
           "error": "",
-          "tokens_before": 95,
-          "tokens_after": 95,
+          "tokens_before": 81,
+          "tokens_after": 81,
           "tokens_saved": 0
         }
       ]
