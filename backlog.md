@@ -93,6 +93,17 @@ engine** — one component of which happens to be command-output compression tod
   full output, never a *substitution* for it — see QB-043's own entry for the mechanism this implies
   (a diff-against-last-seen, reusing `collapse_unchanged_context`'s existing machinery, always kept
   alongside the full current output rather than replacing it).
+- **Every new structural (AST-level) analysis consumes Quor's existing per-language parse/traversal
+  infrastructure — it never builds its own parser or tree representation.** Added 2026-08-01, from
+  the QB-099 structural-diff investigation. `quor/pipeline/ast_summarize/registry.py` and its
+  per-language modules are already the one place each supported language gets parsed
+  (`ast`/tree-sitter); `analyze_*()` (compressible body lines), `extract_symbols_*()` (QB-066),
+  `extract_relationships_*()` (QB-067), and `collapse_imports_*()` (QB-096) are four independently-
+  correct analyses over that *same* parse — not four parsers. QB-099A's declaration extraction
+  follows this exactly (reuses `python.py`'s existing traversal shape; a production version adds it
+  as a fifth capability on the same functions, not a parallel copy — see QB-099A's own entry). The
+  shape to defend as new languages/analyses arrive: **parser → shared AST representation → many
+  deterministic analyses**, never **parser A, parser B, parser C** per capability.
 
 ---
 
@@ -294,7 +305,8 @@ items (deterministic, human-readable, architecture-compatible, no aliases, no hi
 explicitly greenlit to jump the existing queue ahead of QB-051, in this order: **QB-095** (path
 prefix front-coding — this session's pick, in progress now), QB-096 (import block collapsing),
 QB-097 (numeric range compression), QB-098 (relative timestamp compression). Two further candidates were
-scoped as design-first, not build-now: an AST/structural diff capability and a generalized
+scoped as design-first, not build-now: an AST/structural diff capability (**investigated 2026-08-01 as
+QB-099, split into QB-099A/B/C/D below — see that cluster's own entries**) and a generalized
 "diff-against-last-seen" extension of QB-043/QB-089 (cross-invocation compression) — the latter
 explicitly constrained to an **additive annotation, never a substitution**, after the review
 concluded Quor cannot assume anything about what the model still remembers between tool calls (the
@@ -772,6 +784,283 @@ ground truth before this branch's work was finished: `quor/adapters/dispatcher.p
 intentional Quor feature that prepends this exact instruction to compressed tool output. Not a
 security finding; correcting the record here since the earlier flag was made before this was
 confirmed.
+
+</details>
+
+---
+
+#### QB-099A — Declaration-aware structural diff (Python)
+
+**Effort:** Large · **Value:** High · **Risk:** Medium · **Expected token impact:** High on
+declaration-shaped git diffs (reorder/rename/formatting/import changes) · **Category:** Feature (new
+capability, not a `StageHandler`)
+
+**Status:** Implemented (2026-08-01), following the QB-099 investigation
+(`docs/design/QB-099-structural-diff-compression-investigation.md`) and product review of its
+findings. `ruff`/`mypy` clean on every new/touched file; 77 new unit tests, all green; targeted
+regression sweep (dispatcher/plugins/filters/pipeline/early-exit/config/hook-manifest/invocation/gain/
+compression-summary/filter-analytics/ast_summarize suites) green, zero regressions. Verified end to
+end against three real, throwaway git repos (reorder, `--staged`, `git show <sha>`), not just unit
+tests. **`quor verify`: 215/215.** **Benchmark suite: 145/145 (142 unchanged + 3 new, 0 regressions,
+baseline updated)** — see "Both gaps closed" below for what that actually required, including a real
+architectural finding (the benchmark harness cannot exercise the plugin layer at all) and a real bug
+(`collapse_unchanged_context` swallowing a structural-diff summary's own most-informative line) caught
+while closing it. **Not committed** — presented for review, per this project's own "don't commit
+without explicit instruction" default.
+
+<details>
+<summary>Technical details</summary>
+
+**Problem, restated from QB-041's own entry:** a pure function reorder, rename, or moved
+declaration is 100% `+`/`-`-prefixed in today's `git diff` output, so `preserve_patterns` protects
+every line of it and `collapse_unchanged_context` has no unchanged-context run to collapse — no
+existing Quor stage compresses this case at all. The QB-099 prototype measured 73–92% additional
+token reduction on exactly this shape of change; this implementation reproduces the same numbers
+against the real, shipped module (see "Production-vs-prototype parity" below).
+
+**Scope, exactly as approved** (narrower than the investigation's own prototype, deliberately):
+declaration extraction, exact-hash matching (unchanged-in-place / reordered-within-container /
+renamed via identifier-blinding / modified via scoped `difflib`), extract/inline detection restricted
+to the one case it can prove (verbatim copy-paste — never claimed for a realistic, adapted
+extraction), and import-only/formatting-only whole-file short-circuiting. Cross-container relocation
+is explicitly out of scope (QB-099C); extract/inline beyond the verbatim case is explicitly rejected
+(QB-099D).
+
+**What shipped, by layer:**
+- **`quor/pipeline/ast_summarize/declaration_model.py`** (new) — `Declaration`, a fourth sibling data
+  contract alongside `Symbol`/`Relationship`/`ImportStatement`, carrying a live `node` reference
+  (`Any`-typed at this shared-model level) plus `parent`/`index`/`start_line`/`end_line` — see its own
+  docstring for why it's independently correct from `Symbol`, not derived from it (the same call
+  `symbol_model.py` already made once).
+- **`quor/pipeline/ast_summarize/python.py`** — `extract_declarations_python()` + two new traversal
+  helpers (`_visit_module_body_decls`/`_visit_class_body_decls`). Deliberately its own traversal, not
+  a refactor of the existing, shipped `_visit_module_body`/`_visit_class_body` (which
+  `extract_symbols_python()` still uses, byte-for-byte unchanged, confirmed by the full existing
+  `test_ast_summarize_symbols.py` suite passing unmodified) — one extra pass over an already-parsed
+  tree is a far smaller, safer unit of duplication than risking a regression in already-shipped,
+  tested `Symbol` output, which a shared-traversal refactor would have risked for no scope-required
+  reason.
+- **`quor/pipeline/ast_summarize/registry.py`** — `_DECLARATION_EXTRACTORS`/`get_declaration_extractor()`,
+  a fifth parallel family, `"python"` only (per the Design Principle above and QB-099A's own scope).
+- **`quor/pipeline/ast_summarize/structural_diff_python.py`** (new) — the matcher. Genuinely
+  hierarchical (`diff_declarations()` recurses into a class's own members only when the class itself
+  matched by name but not by content — not the investigation prototype's flat two-level list with a
+  post-hoc rendering patch), with `_MIN_LINES_FOR_CONTENT_MATCH = 3` gating Steps 1/2 (exact-match and
+  rename) but not Step 3 (same-name match, where identity already comes from the name, not
+  coincidental content equality — see the module's own comment on why the floor doesn't apply there,
+  found by a real test failure: a below-floor *genuinely unchanged* declaration was initially
+  mislabeled "modified" with an empty diff before Step 3 was taught to check content equality too).
+- **`quor/pipeline/git_diff_enrich.py`** (new) — pure text/command parsing: splits a multi-file diff
+  into per-file chunks, classifies the *invoking command* (not the diff text) into an old/new content
+  plan for the small, explicitly-recognized set of shapes (`git diff`, `git diff --staged`/`--cached`,
+  `git diff <rev>`, `git diff <rev1> <rev2>`, `git show <rev>` — range syntax, `git log -p`, and any
+  unrecognized flag fall through untouched, never guessed), and splices in a structural rendering only
+  for eligible (plain-content-change, non-binary, non-added/deleted, `.py`/`.pyi`, under 256 KiB)
+  Python files. No subprocess/filesystem access — kept unit-testable with plain strings and stubbed
+  fetchers (33 tests).
+- **`quor/plugins/builtin/`** (new package) + **`git_structural_diff.py`** — the resolution to the
+  investigation's own open integration question. **Decision: built the new fetch capability**, not the
+  narrower "only diffs that already carry enough context" alternative — implemented as a genuine
+  `Plugin` (`PluginCategory.PRE_FILTER`, exactly the category this project's own plugin API already
+  documents for "input enrichment that later plugins depend on"), registered at the plugin registry's
+  existing-but-previously-unused **"builtin" tier** by a new `dispatcher._register_builtin_plugins()`,
+  called from `_setup_plugins()` before entry-point discovery. This is the sanctioned extension point,
+  not a new one invented for this item — `PluginCategory`'s own docstring already described this exact
+  use case, and the "builtin" tier already existed in `PluginRegistry` with zero prior occupants.
+  `git show`/working-tree reads run through the real `subprocess`/filesystem, each call capped at 2s,
+  fail-open at three independent levels (per-file inside `enrich_git_diff()`, per-call inside
+  `execute()`, and the plugin executor's own guarantee) — see the module's own docstring for the full
+  chain.
+
+**Two real bugs found only by real-subprocess end-to-end testing, not by any unit test** — recorded
+because both are exactly the class of thing a stubbed-fetcher test structurally cannot catch:
+- **A double-colon `git show` revision spec.** `ContentPlan`'s "use the index" sentinel was originally
+  the literal string `":"`, then unconditionally interpolated as `f"{ref}:{path}"` — producing
+  `"::path"`, which `git show` rejects. `git diff` (the single most common invocation) silently did
+  *nothing* until this was caught running the real dispatcher against a real repo. Fixed by changing
+  the sentinel to `""` (empty string), so the same uniform `f"{ref}:{path}"` construction naturally
+  produces git's own `:path` syntax. `test_git_structural_diff_plugin.py` now exercises real `git show`
+  calls specifically so this class of bug has a regression test that can actually catch it.
+- **A spurious leading blank line on every enriched diff**, even when nothing was actually rewritten —
+  `split_diff_sections()`'s always-present (usually empty) leading preamble chunk was unconditionally
+  rejoined with `"\n".join()`, adding one blank line any multi-chunk diff didn't have. Fixed by only
+  including the preamble when non-empty; a `test_nothing_eligible_round_trips_byte_for_byte` test now
+  pins this.
+
+**Production-vs-prototype parity:** `docs/design/QB-099-prototype/verify_production_module.py` reruns
+the investigation's own 9 benchmark cases against the real, shipped `structural_diff_python` module —
+72.9%→**73.1%** overall reduction (the `method_move_across_classes` case is now honestly reported as
+`removed`+`added` rather than the prototype's `moved:` line, since QB-099A correctly excludes
+cross-container matching — QB-099C's own scope, confirmed working as designed, not a regression).
+
+**Testing:** `tests/unit/test_structural_diff_python.py` (32 tests — registry wiring, extraction,
+qualname/line-count, file-level classification, reorder/rename incl. recursive self-calls, the
+minimum-size floor incl. the "two unrelated trivial stubs never coincidentally match" case, added/
+removed/modified, hierarchical matching's "reported once, not twice" regression test, extract/inline's
+verbatim-positive/realistic-negative pair, cross-container-move-is-out-of-scope, determinism);
+`tests/unit/test_git_diff_enrich.py` (33 tests — chunk splitting, file-section parsing incl. rename/
+added/deleted/binary/no-hunks, command classification for every recognized and rejected shape,
+enrichment incl. fetch-failure/unparseable/oversized/exception fallback, multi-file isolation,
+byte-for-byte round-trip when nothing is eligible, determinism); `tests/unit/test_git_structural_diff_plugin.py`
+(12 tests — real `git show`/working-tree fetch behavior including the index-sentinel case, full
+plugin `execute()` against three real repo scenarios, command non-matching, non-Python-only diffs,
+`project_root=None` fallback).
+
+**Both gaps closed (2026-08-01):**
+- **`quor verify`: 215/215, 0 failures.** Confirmed nothing about this item touched any filter TOML's
+  inline `[[filter.tests]]` — expected, since `quor verify` (like the benchmark harness below) only
+  ever exercises `FilterRegistry` directly, never the plugin layer this item's own capability lives in.
+- **`tests/benchmarks/manifest.toml`: 3 new cases** (`git-diff-python-function-reorder`/
+  `-recursive-rename`/`-cross-class-method-move`), **with a real architectural finding surfaced while
+  adding them, not assumed:** `benchmark_runner.py`'s own docstring confirms it only ever calls
+  `FilterRegistry.apply()` — the exact same plugin-blind boundary `quor verify` has — so a standard
+  sample-file-plus-case-entry cannot exercise this item's plugin at all, and even extending the harness
+  to run plugins would be unsafe (the plugin calls real `git show`/working-tree subprocess commands
+  against a live repo; benchmark cases are static text with no backing repo to fetch from). Resolved,
+  by explicit product decision, as: the three new sample files are the *actual, real output* of
+  `enrich_git_diff()` (generated once via `docs/design/QB-099-prototype/generate_benchmark_samples.py`,
+  not hand-typed) — i.e. exactly what `FilterRegistry` receives in real usage for these files — clearly
+  commented in `manifest.toml` as such, so a future reader never mistakes them for raw `git diff`
+  stdout. This tests a real, different, useful question from the plugin's own dedicated test suite:
+  does the *rest* of the pipeline (`strip_lines`'s `preserve_patterns`, `collapse_unchanged_context`,
+  `max_tokens`) handle a structural-diff rendering correctly, given none of its lines are `+`/`-`/`@@`-
+  prefixed and therefore none are `PROTECT`-exempt. **Caught a real, second finding in the process:**
+  an earlier, busier version of the cross-class-move sample had its own `moved:` line swallowed by
+  `collapse_unchanged_context` into a generic placeholder — not a bug (the collapse is a legitimate,
+  deterministic compression decision, consistent with this project's own Vision), but a genuine
+  interaction worth knowing about before shipping QB-099C's flagship capability: a structural-diff
+  summary short enough to itself look like an "unchanged context run" can have its own most-informative
+  line generically collapsed away in a busy multi-op file. The shipped sample was reshaped (fewer,
+  more focused ops) so its `moved:` line survives, and `must_contain` throughout all three new cases
+  was set from the real, measured post-pipeline output, not assumed from the enrichment step alone.
+  Full suite: 142 → **145 cases**, 36.0% overall (unchanged at this precision), 142/142 pre-existing
+  cases `unchanged` against baseline (0 regressions), baseline updated
+  (`tests/benchmarks/baseline.json`).
+
+</details>
+
+---
+
+#### QB-099B — Deterministic rename detection (reusable identifier-blind matching)
+
+**Effort:** Small (mostly extraction, if 099A already exists) · **Value:** Medium · **Risk:** Low ·
+**Expected token impact:** Included in QB-099A's own measured impact · **Category:** Feature
+(reusable utility)
+
+**Status:** Implemented (2026-08-01) — shipped as part of QB-099A, not built twice, exactly as this
+ticket's own "Scope" below always said it would be (`_canon()`/`_blind_dump()`'s identifier-blinding in
+`quor/pipeline/ast_summarize/structural_diff_python.py`; see `TestReorderAndRename::
+test_recursive_rename_matches_via_self_call_blinding` in `tests/unit/test_structural_diff_python.py`
+for the shipped module's own coverage of the recursive-self-call case). **Checked and confirmed
+(2026-08-01): no second consumer exists yet** — `quor/pipeline/repo_profile/intel_diff.py` has a
+`renamed` concept, but it's a different, coarser mechanism (whole-file content-hash equality for cache
+invalidation, no AST parsing or identifier-blinding). Per explicit product decision, the
+extraction-into-a-shared-utility step below stays deferred rather than built on spec — this ticket is
+closed as "implemented, not extracted," not left open waiting on it.
+
+<details>
+<summary>Technical details</summary>
+
+**What it is:** given two AST subtrees of the same declaration kind, a canonical, position-stripped
+structural dump with exactly one identifier (the declaration's own name, wherever it's referenced —
+including a *recursive* function's own self-calls) replaced by a fixed placeholder before comparison.
+Two declarations with different names but an otherwise byte-identical dump are a deterministic rename
+— no similarity score, no threshold. Validated in the prototype's `large_rename` benchmark case
+(`calculate_fibonacci_sequence` → `fib_memo`, a recursive function, both direct-recursion self-calls
+correctly matched — 74% token reduction, fully deterministic).
+
+**Why its own ticket, not just an implementation detail of QB-099A:** the identifier-blind
+canonicalization primitive has no dependency on "diff" as a concept — it's a general "is this the
+same declaration under a different name" test that could plausibly be reused by a future symbol-
+rename-aware capability (e.g. `quor graph`/`quor symbols` noticing a rename across two scans) without
+being coupled to the diff-rendering code. Kept as a separate, explicitly-tracked ticket so that reuse
+doesn't get missed the way QB-096/QB-097's own shared-helper extraction nearly did until it was asked
+about directly (see QB-098's own "Convergence question" note).
+
+**Scope:** ship as part of QB-099A's implementation (same PR); this ticket exists to record the
+extraction-into-a-shared-utility step as separate, deferred work once a second real consumer exists —
+premature to extract on spec with only one caller, per this project's own standing anti-premature-
+abstraction discipline.
+
+</details>
+
+---
+
+#### QB-099C — Cross-container move detection (method/class relocation)
+
+**Effort:** Small (extends QB-099A's matcher) · **Value:** Medium · **Risk:** Low · **Expected token
+impact:** Medium (narrower real-world frequency than reorder/rename) · **Category:** Feature
+(extension)
+
+**Status:** Implemented (2026-08-01), directly after QB-099A shipped. `ruff`/`mypy` clean; 5 new unit
+tests plus the 3 pre-existing QB-099A tests that exercised the old "out of scope" behavior updated to
+assert the new one; full QB-099/`ast_summarize` regression sweep green (94 tests across
+`test_structural_diff_python.py`/`test_git_diff_enrich.py`/`test_git_structural_diff_plugin.py`/
+`test_ast_summarize*.py`). Not committed — presented for review, same as QB-099A.
+
+<details>
+<summary>Technical details</summary>
+
+**What shipped, and how it differs from this ticket's own original sketch:** the sketch above (written
+before QB-099A's actual matcher existed) assumed "moved" would fall out of relaxing `_match_flat()`'s
+parent-equality check directly. QB-099A shipped with **true hierarchical recursion** instead (see its
+own entry) — `_match_flat()` only ever sees one container's direct children at a time, by
+construction, so there is no single check to relax. QB-099C is instead a new function,
+`_reconcile_cross_container_moves()` (`quor/pipeline/ast_summarize/structural_diff_python.py`), a pure
+post-pass over `diff_declarations()`'s already-complete, already-hierarchical `ops` list: it pairs a
+leftover `"removed"` with a leftover `"added"` when their content is exactly identical (same
+`_MIN_LINES_FOR_CONTENT_MATCH` floor as Steps 1/2) and their kinds are compatible, converting the pair
+into one `"moved"` op. Same-container matching always runs first and claims everything it can — an
+item only ever reaches this pass as a leftover, so it can never steal a legitimate in-place match away
+in favor of a coincidental cross-container one (verified directly:
+`test_same_container_match_takes_priority_over_cross_container_coincidence`). Composes cleanly with
+zero changes to QB-099A's own recursion.
+
+**One real bug found while implementing, not anticipated in the original sketch:** `Declaration.kind`
+labels a plain `ast.FunctionDef` as `"function"` at module scope and `"method"` one level inside a
+class (`_direct_children()`'s own convention) — so a method promoted to module scope, or a function
+demoted into a class, changes this label even though the underlying AST node type never does. An
+initial version gated the reconciliation on exact `kind` equality, which silently rejected every
+promotion/demotion (the two cases this ticket's own title names first). Fixed via `_kind_compatible()`
+— `"function"`/`"method"` treated as the same equivalence class for this purpose, `"class"` never
+matching either. Caught by `test_method_promoted_to_module_scope_is_reported_as_moved`/
+`test_method_demoted_from_module_scope_into_a_class_is_reported_as_moved`, not by the class-to-class
+relocation case alone (which never exercises this label change, since both sides stay `"method"`).
+
+**Production-vs-prototype parity:** `docs/design/QB-099-prototype/verify_production_module.py`'s
+`method_move_across_classes` case now reports `moved: LegacyExporter.to_csv -> ReportBuilder.to_csv
+(unchanged content)` — exactly matching the investigation's own original prototype output, closing the
+one deliberate divergence QB-099A's own entry recorded (73.1% overall reduction across the 9 benchmark
+cases, unchanged from QB-099A's own figure — QB-099C's effect is compositional, not corpus-additive on
+these particular synthetic cases).
+
+</details>
+
+---
+
+#### QB-099D — Extraction / inline-function detection
+
+**Status: Rejected by design (2026-08-01).** Not deferred, not "Research" — closed, with the reasoning
+recorded here so it isn't re-litigated from scratch later.
+
+<details>
+<summary>Technical details</summary>
+
+**Why:** the QB-099 investigation built and benchmarked an honest, best-effort exact-match detector
+(a candidate helper's entire statement list must appear byte-for-byte, in order, replaced by exactly
+one call statement — no partial match, no scoring). Result: 2 of 3 extraction-shaped benchmark cases
+— both modeled on how a real extraction actually gets written (a trailing assignment becomes a
+`return`; an accumulator variable gets renamed once it's pulled into its own function) — were **not**
+detected; only a deliberately literal copy-paste positive control was. This matches the published
+literature directly: the tools that *do* reliably detect real-world extract-method refactors
+(RefactoringMiner, JDeodorant) do so via node-content **similarity scoring against a threshold** —
+which is exactly the "fuzzy similarity"/"heuristic" this project's own Vision and Design Principles
+rule out, not an implementation gap this ticket could close with more engineering time.
+
+**Disposition:** closed. If a future review reopens this (e.g. a fundamentally different, still-
+deterministic technique surfaces that this investigation didn't consider), it should be scoped as a
+brand-new ticket with its own evidence, not a reopening of this one — the evidence gathered here is
+specific to exact-match approaches and shouldn't be assumed to transfer.
 
 </details>
 

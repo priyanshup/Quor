@@ -1,0 +1,7 @@
+diff --git a/src/reports/export.py b/src/reports/export.py
+index 9f8e7d6..1c2b3a4 100644
+--- a/src/reports/export.py
++++ b/src/reports/export.py
+modified: class LegacyExporter (members changed, see below)
+modified: class ReportBuilder (members changed, see below)
+moved: LegacyExporter.to_csv -> ReportBuilder.to_csv (unchanged content)

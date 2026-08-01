@@ -1,0 +1,17 @@
+diff --git a/src/orders/processing.py b/src/orders/processing.py
+index 3f8a1c2..9b7d4e1 100644
+--- a/src/orders/processing.py
++++ b/src/orders/processing.py
+reordered: compute_tax (unchanged content, now position 1)
+reordered: validate_order (unchanged content, now position 2)
+reordered: format_receipt (unchanged content, now position 3)
+reordered: apply_discount (unchanged content, now position 4)
+diff --git a/src/orders/README.md b/src/orders/README.md
+index 1a2b3c4..5d6e7f8 100644
+--- a/src/orders/README.md
++++ b/src/orders/README.md
+@@ -1,3 +1,3 @@
+ # Orders module
+
+-Handles order validation, discounting, and receipt formatting.
++Handles order validation, tax, discounting, and receipt formatting.

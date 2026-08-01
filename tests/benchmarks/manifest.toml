@@ -221,6 +221,61 @@ expected_filter = "git-diff"
 min_reduction_pct = 12.0
 must_contain = ["+  max_retries: 2", "+    def _send_with_retry(self, message):"]
 
+# QB-099A/QB-099C (declaration-level structural diff): samples 013-015 are
+# NOT raw `git diff` stdout like every other sample above — they are the
+# exact output of `enrich_git_diff()` (`quor/pipeline/git_diff_enrich.py`),
+# i.e. what FilterRegistry actually receives in real usage for these files,
+# since Quor's git-structural-diff plugin (`quor/plugins/builtin/
+# git_structural_diff.py`) rewrites eligible Python hunks *before* the
+# git-diff filter ever runs. This harness only ever exercises FilterRegistry
+# (see benchmark_runner.py's own module docstring) — it has no live git repo
+# to back a real plugin invocation, so these three cases can't test the
+# plugin's own fetch/dispatch logic (that's `tests/unit/
+# test_git_structural_diff_plugin.py`, against real repos). What they do
+# test, honestly: does the rest of the pipeline (`strip_lines`'s
+# `preserve_patterns`, `collapse_unchanged_context`, `max_tokens`) handle a
+# structural-diff rendering correctly — none of its lines are `+`/`-`/`@@`-
+# prefixed, so nothing here is `PROTECT`-exempt, and `must_contain` below was
+# picked from the real, measured post-pipeline output, not assumed (case 015
+# specifically was reshaped after finding `collapse_unchanged_context` had
+# swallowed its `moved:` line into a generic placeholder in an earlier,
+# busier version of the sample).
+[[case]]
+id = "git-diff-python-function-reorder"
+category = "git-diff"
+ecosystem = "Git"
+command = "git diff"
+sample_file = "samples/git-diff/013_python_function_reorder.txt"
+expected_filter = "git-diff"
+min_reduction_pct = 30.0
+must_contain = [
+    "reordered: compute_tax (unchanged content, now position 1)",
+    "reordered: apply_discount (unchanged content, now position 4)",
+]
+
+[[case]]
+id = "git-diff-python-recursive-rename"
+category = "git-diff"
+ecosystem = "Git"
+command = "git diff"
+sample_file = "samples/git-diff/014_python_recursive_rename.txt"
+expected_filter = "git-diff"
+min_reduction_pct = 45.0
+must_contain = ["renamed: calculate_fibonacci_sequence -> fib_memo (body unchanged)"]
+
+[[case]]
+id = "git-diff-python-cross-class-method-move"
+category = "git-diff"
+ecosystem = "Git"
+command = "git diff"
+sample_file = "samples/git-diff/015_python_cross_class_method_move.txt"
+expected_filter = "git-diff"
+min_reduction_pct = 25.0
+must_contain = [
+    "modified: class LegacyExporter (members changed, see below)",
+    "moved: LegacyExporter.to_csv -> ReportBuilder.to_csv (unchanged content)",
+]
+
 [[case]]
 id = "pytest-two-failures"
 category = "pytest"
