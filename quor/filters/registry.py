@@ -50,6 +50,10 @@ from quor.pipeline.stages.python_ast_summarize import (
     PythonAstSummarizeStage,
 )
 from quor.pipeline.stages.regex_replace import RegexReplaceConfig, RegexReplaceStage
+from quor.pipeline.stages.relative_timestamp_compression import (
+    RelativeTimestampCompressionConfig,
+    RelativeTimestampCompressionStage,
+)
 from quor.pipeline.stages.remove_ansi import RemoveAnsiConfig, RemoveAnsiStage
 from quor.pipeline.stages.strip_lines import StripLinesConfig, StripLinesStage
 from quor.pipeline.stages.structured_data_summarize import (
@@ -84,6 +88,10 @@ _STAGE_HANDLERS: dict[str, tuple[type, type[StageConfig]]] = {
     "numeric_range_compression": (
         NumericRangeCompressionStage,
         NumericRangeCompressionConfig,
+    ),
+    "relative_timestamp_compression": (
+        RelativeTimestampCompressionStage,
+        RelativeTimestampCompressionConfig,
     ),
 }
 

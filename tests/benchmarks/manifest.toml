@@ -1689,3 +1689,102 @@ sample_file = "samples/ini/002_php_ini_minimal.txt"
 expected_filter = "ini"
 min_reduction_pct = 0.0
 must_contain = ["[PHP]", "memory_limit = 256M", "max_execution_time = 30", "display_errors = Off"]
+
+# ---------------------------------------------------------------------------
+# QB-098: relative timestamp compression. None of docker logs/kubectl logs/
+# journalctl/generic CI console output/application logs have a dedicated
+# filter, so all five route through the generic fallback (z_generic.toml) —
+# the new relative_timestamp_compression stage there is what compresses
+# them. npm-watch is the exception: `npm run watch` matches npm's own
+# dedicated filter (node.toml), which gained the same stage for exactly this
+# scenario (a dev-server watch script timestamping its own rebuild lines).
+# ---------------------------------------------------------------------------
+
+[[case]]
+id = "docker-logs-container-startup"
+category = "docker-logs"
+ecosystem = "Generic"
+command = "docker logs storefront-api --timestamps"
+sample_file = "samples/docker-logs/001_container_startup.txt"
+expected_filter = "generic"
+min_reduction_pct = 25.0
+must_contain = [
+    "2026-07-31T10:15:01.102345678Z INFO Starting storefront-api version 3.4.1",
+    "+1ms INFO Ready to accept connections",
+]
+must_not_contain = ["2026-07-31T10:15:06.001345678Z"]
+
+[[case]]
+id = "kubectl-logs-pod-startup"
+category = "kubectl-logs"
+ecosystem = "Generic"
+command = "kubectl logs orders-service-7d9f8c-abcde --timestamps"
+sample_file = "samples/kubectl-logs/001_pod_startup.txt"
+expected_filter = "generic"
+min_reduction_pct = 18.0
+must_contain = [
+    "2026-07-31T10:15:01.000000000Z",
+    "starting orders-service",
+    "handled GET /orders?customer_id=4471 in 615ms",
+]
+must_not_contain = ["2026-07-31T10:15:12.000000000Z"]
+
+[[case]]
+id = "npm-watch-dev-server-rebuilds"
+category = "npm-watch"
+ecosystem = "JavaScript"
+command = "npm run watch"
+sample_file = "samples/npm-watch/001_dev_server_watch.txt"
+expected_filter = "npm"
+min_reduction_pct = 22.0
+must_contain = [
+    "2026-07-31T09:00:00Z Compiling...",
+    "File changed: src/checkout/PaymentForm.tsx",
+    "Warning: unused variable 'discountCode' in PaymentForm.tsx",
+]
+must_not_contain = ["2026-07-31T09:18:05Z"]
+
+[[case]]
+id = "ci-logs-generic-pipeline-console"
+category = "ci-logs"
+ecosystem = "Generic"
+command = "ci-pipeline run"
+sample_file = "samples/ci-logs/001_generic_pipeline_console.txt"
+expected_filter = "generic"
+min_reduction_pct = 24.0
+must_contain = [
+    "2026-07-31 14:02:00 Starting pipeline run #4821 for branch feature/checkout-retry",
+    "Build artifact created: storefront-web-4821.tar.gz (18.4 MB)",
+    "Pipeline run #4821 succeeded in 4m52s",
+]
+must_not_contain = ["2026-07-31 14:06:52 Pipeline run"]
+
+[[case]]
+id = "app-logs-web-service-requests"
+category = "app-logs"
+ecosystem = "Generic"
+command = "tail -f /var/log/storefront/app.log"
+sample_file = "samples/app-logs/001_web_service_request_log.txt"
+expected_filter = "generic"
+min_reduction_pct = 20.0
+must_contain = [
+    "2026-07-31 08:00:00 INFO Starting server",
+    "ERROR Failed to charge card for order 8843: gateway timeout",
+    "Charge succeeded for order 8843 on retry",
+]
+must_not_contain = ["2026-07-31 08:16:03 INFO GET /api/orders/8846"]
+
+[[case]]
+id = "journalctl-service-restart-short-iso"
+category = "journalctl"
+ecosystem = "Generic"
+command = "journalctl -u storefront-api -o short-iso"
+sample_file = "samples/journalctl/001_service_restart_short_iso.txt"
+expected_filter = "generic"
+min_reduction_pct = 19.0
+must_contain = [
+    "2026-07-31T10:15:01+0000 web-03 systemd[1]: Starting Storefront API...",
+    "kernel: out of memory: kill process 2201 (storefront-api) score 812",
+    "Started Storefront API.",
+]
+must_not_contain = ["2026-07-31T10:22:17+0000"]

@@ -31,6 +31,23 @@ preserve_patterns = [
 type = "deduplicate_consecutive"
 
 [[filter.stages]]
+# QB-098: rewrite consecutive timestamp-prefixed lines (docker/kubectl
+# `--timestamps` logs, ISO-mode journalctl, application logs, generic CI
+# console output — none of which have a dedicated filter, so they all land
+# here) to per-line "+delta" prefixes. Runs before path_prefix_fold/
+# numeric_range_compression: a rewritten "+1s ..." line is never itself a
+# path-like or bare-integer candidate, so ordering relative to those two
+# doesn't matter for correctness, but running the timestamp-shape check
+# first keeps this filter's "recognize a known line shape, narrowest first"
+# stages grouped together, mirroring how ci.toml's github-actions filter
+# also normalizes its own timestamp prefix early, right after remove_ansi.
+# No `patterns` config, same reasoning as numeric_range_compression: a line
+# either matches one of this stage's fixed timestamp shapes or it doesn't —
+# there's no ambiguous "looks like a timestamp" judgment call to scope with
+# a filter-author regex.
+type = "relative_timestamp_compression"
+
+[[filter.stages]]
 # QB-095: fold consecutive path-like lines (find/ripgrep --files/ls -R/
 # coverage listings, repo maps, etc.) sharing a directory prefix. Deliberately
 # narrow, anchored pattern — the whole line must be one non-whitespace token
@@ -118,3 +135,26 @@ description = "QB-097: a short run left unfolded when the range wouldn't pay for
 input = "42\n43"
 must_contain = ["42", "43"]
 must_not_contain = ["42-43"]
+
+[[filter.tests]]
+description = "QB-098: docker/kubectl `--timestamps`-style ISO log lines fold to per-line deltas; first line's absolute timestamp survives"
+input = "2026-07-31T10:15:01.000000000Z INFO Starting server\n2026-07-31T10:15:02.000000000Z INFO Loading plugins\n2026-07-31T10:15:03.000000000Z INFO Ready\n2026-07-31T10:15:04.000000000Z INFO Listening on :8080"
+must_contain = ["2026-07-31T10:15:01.000000000Z INFO Starting server", "+1s INFO Loading plugins", "+1s INFO Ready", "+1s INFO Listening on :8080"]
+must_not_contain = ["2026-07-31T10:15:02.000000000Z", "2026-07-31T10:15:03.000000000Z", "2026-07-31T10:15:04.000000000Z"]
+
+[[filter.tests]]
+description = "QB-098: application-log space-separated datetime prefixes fold the same way"
+input = "2026-07-31 10:15:01 INFO Starting server\n2026-07-31 10:15:02 INFO Loading plugins\n2026-07-31 10:15:03 INFO Ready"
+must_contain = ["2026-07-31 10:15:01 INFO Starting server", "+1s INFO Loading plugins", "+1s INFO Ready"]
+must_not_contain = ["2026-07-31 10:15:02", "2026-07-31 10:15:03"]
+
+[[filter.tests]]
+description = "QB-098: non-timestamp output is never touched by relative_timestamp_compression"
+input = "hello\nworld\nfoo"
+must_contain = ["hello", "world", "foo"]
+must_not_contain = ["+0s", "+1s"]
+
+[[filter.tests]]
+description = "QB-098: a single timestamped line has nothing to fold against and is left unchanged"
+input = "just one line\n2026-07-31 10:15:01 INFO solo event\nafter"
+must_contain = ["2026-07-31 10:15:01 INFO solo event"]

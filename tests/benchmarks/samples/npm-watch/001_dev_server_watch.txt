@@ -1,0 +1,18 @@
+npm run watch
+
+> storefront-web@2.1.0 watch
+> node scripts/watch.js
+
+2026-07-31T09:00:00Z Compiling...
+2026-07-31T09:00:01Z Compiled successfully
+2026-07-31T09:00:01Z Watching for file changes
+2026-07-31T09:04:12Z File changed: src/cart/CartSummary.tsx
+2026-07-31T09:04:12Z Compiling...
+2026-07-31T09:04:14Z Compiled successfully
+2026-07-31T09:11:47Z File changed: src/checkout/PaymentForm.tsx
+2026-07-31T09:11:47Z Compiling...
+2026-07-31T09:11:49Z Compiled with 1 warning
+2026-07-31T09:11:49Z Warning: unused variable 'discountCode' in PaymentForm.tsx
+2026-07-31T09:18:03Z File changed: src/checkout/PaymentForm.tsx
+2026-07-31T09:18:03Z Compiling...
+2026-07-31T09:18:05Z Compiled successfully

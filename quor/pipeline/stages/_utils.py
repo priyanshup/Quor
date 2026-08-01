@@ -18,11 +18,27 @@ _apply_ast_summary:  merges a language analyzer's body-compress line numbers
                      COMPRESS passthrough, preserve_patterns, import-block
                      splicing, body compression) exists exactly once, not
                      twice with two chances to drift.
+line_tokens:         ceil(len(line) / 4) token-cost estimate — shared by
+                     every token-cost-gated stage (`collapse_unchanged_
+                     context`, `max_tokens`, `path_prefix_fold`, `numeric_
+                     range_compression`, `relative_timestamp_compression`).
+                     QB-098 extracted this from five identical copies once
+                     a fifth stage was about to add a sixth — see
+                     backlog.md's QB-098 entry ("convergence" note) for why
+                     this leaf helper was worth sharing while each stage's
+                     own run-detection/rendering logic deliberately stays
+                     independent.
+apply_preserve_patterns: the identical "PROTECT any KEEP line matching one
+                     of `preserve_patterns`, pre-pass, before building runs"
+                     logic shared by `path_prefix_fold`, `numeric_range_
+                     compression`, and `relative_timestamp_compression` —
+                     same QB-098 extraction, same reasoning.
 """
 
 from __future__ import annotations
 
 import functools
+import math
 import warnings
 
 import regex
@@ -73,6 +89,42 @@ def matches_any(line: str, patterns: list[regex.Pattern[str]]) -> bool:
                 stacklevel=3,
             )
     return False
+
+
+def line_tokens(line: str) -> int:
+    """Estimate a line's token cost: ceil(len(line) / 4).
+
+    Extracted (QB-098) from five byte-identical copies (`collapse_unchanged_
+    context`, `max_tokens`, `path_prefix_fold`, `numeric_range_compression`,
+    `relative_timestamp_compression`) — a pure leaf function with no
+    stage-specific behavior, so sharing it costs nothing in readability.
+    """
+    return max(1, math.ceil(len(line) / 4))
+
+
+def apply_preserve_patterns(
+    lines: list[LineMask], preserve_patterns: list[str], stage_type: str
+) -> list[LineMask]:
+    """Mark every not-already-PROTECT line matching any of `preserve_patterns`
+    as PROTECT; every other line is returned unchanged.
+
+    Extracted (QB-098) from three byte-identical copies (`path_prefix_fold`,
+    `numeric_range_compression`, `relative_timestamp_compression`) — same
+    "pre-pass before building runs" convention `group_repeated`/`strip_lines`
+    also use, but those two have their own, slightly different `not
+    Decision.COMPRESS`-agnostic behavior (see `quor/pipeline/engine.py`'s
+    early-exit docstring) and are deliberately NOT folded into this helper —
+    only the three genuinely identical copies were unified.
+    """
+    if not preserve_patterns:
+        return lines
+    compiled = [_compile(p) for p in preserve_patterns]
+    return [
+        LineMask(lm.line, Decision.PROTECT, "matches preserve_pattern", stage_type)
+        if lm.decision is not Decision.PROTECT and matches_any(lm.line, compiled)
+        else lm
+        for lm in lines
+    ]
 
 
 def _apply_ast_summary(

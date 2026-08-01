@@ -85,14 +85,13 @@ no new mask.py exception category is needed.
 
 from __future__ import annotations
 
-import math
 import re
 from typing import ClassVar
 
 from pydantic import ConfigDict
 
 from quor.pipeline.mask import ContentMask, Decision, LineMask
-from quor.pipeline.stages._utils import _compile, matches_any
+from quor.pipeline.stages._utils import apply_preserve_patterns, line_tokens
 from quor.pipeline.stages.base import StageConfig
 
 _INTEGER_LINE = re.compile(r"^\d+$")
@@ -118,16 +117,7 @@ class NumericRangeCompressionStage:
                 f"got {type(config).__name__}"
             )
 
-        lines = list(mask.lines)
-
-        if config.preserve_patterns:
-            compiled_preserve = [_compile(p) for p in config.preserve_patterns]
-            lines = [
-                LineMask(lm.line, Decision.PROTECT, "matches preserve_pattern", self.stage_type)
-                if lm.decision is not Decision.PROTECT and matches_any(lm.line, compiled_preserve)
-                else lm
-                for lm in lines
-            ]
+        lines = apply_preserve_patterns(list(mask.lines), config.preserve_patterns, self.stage_type)
 
         result: list[LineMask] = []
         i = 0
@@ -164,12 +154,6 @@ class NumericRangeCompressionStage:
         return ContentMask(tuple(result))
 
 
-def _line_tokens(line: str) -> int:
-    """Estimate a line's token cost: ceil(len(line) / 4), same as
-    `path_prefix_fold`/`collapse_unchanged_context`/`max_tokens`."""
-    return max(1, math.ceil(len(line) / 4))
-
-
 def _fold_run(run: list[LineMask], stage_type: str) -> list[LineMask]:
     """Fold `run` (2+ consecutive, same-width, ascending-by-1 integer KEEP
     LineMasks) to one `start-end` line, if doing so is estimated to cost
@@ -178,8 +162,8 @@ def _fold_run(run: list[LineMask], stage_type: str) -> list[LineMask]:
         return run
 
     compressed_text = f"{run[0].line}-{run[-1].line}"
-    original_cost = sum(_line_tokens(lm.line) for lm in run)
-    compressed_cost = _line_tokens(compressed_text)
+    original_cost = sum(line_tokens(lm.line) for lm in run)
+    compressed_cost = line_tokens(compressed_text)
     if compressed_cost >= original_cost:
         return run
 

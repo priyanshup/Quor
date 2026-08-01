@@ -116,9 +116,12 @@ place (§1) — the fallback described here is specifically the built-in **gener
 filter loaded and matches any command that *did* pass the rewrite check but has no
 command-specific filter (e.g. a build tool with generic noise that hasn't been given its own
 filter yet). It strips ANSI escapes, deduplicates consecutive lines, front-codes consecutive
-path-like lines sharing a directory prefix (QB-095, `path_prefix_fold`), and caps output at 1000
-tokens (`tail` strategy) — no command-specific pattern knowledge at all. See its row in the
-table below.
+path-like lines sharing a directory prefix (QB-095, `path_prefix_fold`), folds consecutive
+standalone-integer lines into ranges (QB-097, `numeric_range_compression`), rewrites consecutive
+timestamp-prefixed lines to per-line `+delta`s (QB-098, `relative_timestamp_compression` — this is
+what `docker logs --timestamps`, `kubectl logs --timestamps`, and ISO-mode `journalctl` actually
+land on), and caps output at 1000 tokens (`tail` strategy) — no command-specific pattern knowledge
+at all beyond those three structural folds. See its row in the table below.
 
 If a command is rewritten but genuinely *no* filter matches at any tier (which should not
 happen in practice, since the built-in generic filter matches everything) the pipeline records
@@ -162,16 +165,18 @@ for the exact patterns.
 | `cat <file>.env`, `cat <file>.env.<suffix>` | `dotenv` ([cat-dotenv.toml](../../quor/filters/builtin/cat-dotenv.toml)) | Strips comment (`#...`) and blank lines only (QB-040) | Never touches a `KEY=VALUE` line — no inspection or modification of any value, ever, by construction (composes correctly with the PA-F07 secret scanner without needing to coordinate with it) | A `.env` with section-divider comments — comments and blank lines removed, every variable survives untouched | No `max_tokens` — a variable is never dropped for being "beyond budget"; every declared key must survive |
 | `cat <file>.ini` | `ini` ([cat-ini.toml](../../quor/filters/builtin/cat-ini.toml)) | Strips `;`/`#` comment and blank lines only (QB-040) | Never touches a `key = value` line or a `[section]` header | A config with `;`-prefixed comments — comments removed, sections/keys/values untouched | Same "no max_tokens" reasoning as `dotenv` above |
 | `cat <file>` (anything not matched by `cat-python`/`cat-javascript`/`cat-typescript`/`cat-tsx`/`cat-json`/`cat-yaml`/`cat-toml`/`dotenv`/`ini` above) | `cat` ([cat.toml](../../quor/filters/builtin/cat.toml)) | Strips `#`/`//`/`--`/`;`-style comment lines; caps to 800 tokens (`both`) | Never strips shebangs, or lines containing `TODO`/`FIXME`/`HACK`/`XXX`/`NOTE`/`WARN` | A config file with inline comments — comments removed, actual settings kept | Comment-pattern matching is generic across languages; a comment style not covered by `#`/`//`/`--`/`;` (e.g. `/* */` block comments) is not stripped |
-| Anything else that passed the rewrite check (§1) | `generic` ([z_generic.toml](../../quor/filters/builtin/z_generic.toml)) | Strips ANSI escapes; strips framework-internal traceback frames (same `site-packages`/`dist-packages` pattern as `pytest` above — covers a raw script or dev server crashing outside pytest, e.g. `flask run`); dedupes consecutive lines; front-codes consecutive path-like lines sharing a directory prefix (QB-095 — e.g. `find`/`rg --files`/`ls -R`/coverage-report output) to a shared-prefix header + suffixes; caps to 1000 tokens (`tail`) | `Traceback`/`Error`/`Exception` lines are protected; otherwise no command-specific pattern knowledge — nothing else is specially protected beyond what survives dedup/ANSI-strip/fold/budget | A `flask run` crash with an unhandled exception through several Django/Flask internals — the framework `File` lines are removed, the user's own frame and exception survive. Separately, `find src/quor/pipeline/stages` — every result folds to one `src/quor/pipeline/stages/ (N entries):` header + bare filenames | This is the widest net and the least intelligent filter — a command that would benefit from a dedicated filter (e.g. `terraform plan`, `tsc`, `docker build`) still only gets generic treatment until someone writes one; see §5. `path_prefix_fold`'s pattern (`^\S+/\S*$`) requires the whole line to be a single non-whitespace token containing `/` — a listing with trailing metadata per line (e.g. `ls -l`) won't match and is left untouched |
+| Anything else that passed the rewrite check (§1) — including `docker logs`/`docker-compose logs`/`docker compose logs` (QB-098), `kubectl logs` (QB-098), and `journalctl` (QB-098) specifically | `generic` ([z_generic.toml](../../quor/filters/builtin/z_generic.toml)) | Strips ANSI escapes; strips framework-internal traceback frames (same `site-packages`/`dist-packages` pattern as `pytest` above — covers a raw script or dev server crashing outside pytest, e.g. `flask run`); dedupes consecutive lines; rewrites consecutive timestamp-prefixed lines to per-line `+delta`s (QB-098, `relative_timestamp_compression` — 7 deterministic formats, e.g. `docker logs --timestamps`/`kubectl logs --timestamps`'s RFC3339-nano prefix, or ISO-mode `journalctl -o short-iso`); front-codes consecutive path-like lines sharing a directory prefix (QB-095 — e.g. `find`/`rg --files`/`ls -R`/coverage-report output) to a shared-prefix header + suffixes; folds consecutive standalone-integer lines into a range (QB-097 — e.g. line-number/coverage/warning-ID listings); caps to 1000 tokens (`tail`) | `Traceback`/`Error`/`Exception` lines are protected; otherwise no command-specific pattern knowledge — nothing else is specially protected beyond what survives dedup/ANSI-strip/fold/budget | A `flask run` crash with an unhandled exception through several Django/Flask internals — the framework `File` lines are removed, the user's own frame and exception survive. Separately, `find src/quor/pipeline/stages` — every result folds to one `src/quor/pipeline/stages/ (N entries):` header + bare filenames. Separately, `docker logs mycontainer --timestamps` — a run of `2026-07-31T10:15:0NZ ...` lines folds to the first line's absolute timestamp plus `+1s .../+1ms ...` deltas for the rest | This is the widest net and the least intelligent filter — a command that would benefit from a dedicated filter (e.g. `terraform plan`, `docker run`) still only gets generic treatment until someone writes one; see §5. `path_prefix_fold`'s pattern (`^\S+/\S*$`) requires the whole line to be a single non-whitespace token containing `/` — a listing with trailing metadata per line (e.g. `ls -l`) won't match and is left untouched. `relative_timestamp_compression` requires the timestamp to start at column 0 followed by whitespace or end-of-line — a bracket-wrapped (`[10:15:01] msg`) or otherwise-prefixed timestamp is out of scope (fails open, left untouched); journalctl's *default* syslog-style prefix (locale-dependent month names) is also out of scope by design, only ISO-mode output qualifies |
 
-**Not currently supported at all** (not in `_KNOWN_BASE_COMMANDS`, so never rewritten, regardless
-of filter availability): `cargo`, `docker` (as a direct command — only `docker exec <container>
-<known-command>` is peeled as a transparent prefix), `terraform`, `go`, `make`, `bunx` (still a
-transparent prefix, deliberately unchanged by QB-059 — see its own comment in
-`TRANSPARENT_PREFIXES`), and any other build/CLI tool not listed above. These pass
-through completely untouched. (`tsc`, `jest`, `vitest`, `prettier`, `next`, and `turbo` were in
-this list before QB-006C, and `bun` was in this list before QB-059 — see §4 above for their
-current filters.)
+**Not currently supported at all** (not in `_KNOWN_BASE_COMMANDS`/not subcommand-gated in, so never
+rewritten, regardless of filter availability): `cargo`, `docker run`/`docker ps`/`docker` any
+subcommand other than `build`/`buildx build`/`compose build`/`logs`/`compose logs` (`docker exec
+<container> <known-command>` is peeled as a transparent prefix, separately from this gate), `kubectl`
+any subcommand other than `logs`, `terraform`, `go`, `make`, `bunx` (still a transparent prefix,
+deliberately unchanged by QB-059 — see its own comment in `TRANSPARENT_PREFIXES`), and any other
+build/CLI tool not listed above. These pass through completely untouched. (`tsc`, `jest`, `vitest`,
+`prettier`, `next`, and `turbo` were in this list before QB-006C; `bun` was in this list before
+QB-059; `docker logs`/`docker-compose logs`/`docker compose logs`, bare `kubectl logs`, and bare
+`journalctl` were in this list before QB-098 — see §4 above for their current filters.)
 
 ## 5. How new commands are added
 

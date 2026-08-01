@@ -293,7 +293,7 @@ product-style and split into four tiers by build-now/design-first/research-only/
 items (deterministic, human-readable, architecture-compatible, no aliases, no hidden state) were
 explicitly greenlit to jump the existing queue ahead of QB-051, in this order: **QB-095** (path
 prefix front-coding — this session's pick, in progress now), QB-096 (import block collapsing),
-QB-097 (numeric range compression), QB-098 (timestamp delta encoding). Two further candidates were
+QB-097 (numeric range compression), QB-098 (relative timestamp compression). Two further candidates were
 scoped as design-first, not build-now: an AST/structural diff capability and a generalized
 "diff-against-last-seen" extension of QB-043/QB-089 (cross-invocation compression) — the latter
 explicitly constrained to an **additive annotation, never a substitution**, after the review
@@ -604,19 +604,176 @@ reasoning QB-095 already recorded ([[project_quor_self_hook_timeout]]).
 
 ---
 
-#### QB-098 — Timestamp delta encoding
+#### QB-098 — Relative timestamp compression
 
 **Effort:** Medium · **Value:** Medium-High · **Risk:** Low · **Expected token impact:** Medium on
 high-frequency logs (CI, Docker, Kubernetes, build logs) · **Category:** Feature (new compression
 stage)
 
-Print a run's first line's full timestamp, then rewrite subsequent lines' leading timestamp to a
-short delta (`+12ms`) — preserves relative timing information losslessly rather than dropping
-timestamps entirely (the common competitor approach). Requires rewriting every matched line's
-leading segment, the same narrowly-scoped multi-line-rewrite category QB-095 establishes.
+**Status:** Implemented (2026-08-01), branch not yet created (working tree only). Not committed —
+presented for review per this item's own instructions.
 
-**Status:** Proposed 2026-07-31 (compression-technique research pass), queued directly behind
-QB-095/QB-096/QB-097.
+<details>
+<summary>Technical details</summary>
+
+**Architecture decision (this item's own §1 ask):** a new stage, `relative_timestamp_compression`,
+not an extension of an existing one. QB-096's import-block collapsing is the counter-example that
+made this an actual decision rather than a rubber stamp — it extended
+`python_ast_summarize`/`code_ast_summarize` because collapsing imports genuinely needs a real
+per-language parser. Timestamp compression needs no such thing: it's line-oriented, regex-and-
+arithmetic, and applies uniformly to arbitrary command output the same way `path_prefix_fold`
+(QB-095) and `numeric_range_compression` (QB-097) already do — so it belongs alongside them as a
+peer stage, not folded into an unrelated AST-aware one.
+
+**Design:** `quor/pipeline/stages/relative_timestamp_compression.py`. A run of consecutive KEEP
+lines that each start with a timestamp matching one of 7 supported formats
+(`space_datetime`/`iso_z`/`iso_frac_z`/`iso_offset`/`iso_frac_offset`/`time_only`/`time_frac`, all
+deterministic — no locale-dependent month names, no fuzzy parsing) folds to: the first line
+completely untouched, every subsequent line rewritten to `+delta` + the rest of that line
+(timestamp stripped, everything else byte-identical). Deltas are computed with exact integer
+nanosecond arithmetic (fractional digits zero-padded, never rounded) and rendered using the largest
+unit that divides the delta evenly (`+2h`/`+5m`/`+1s`/`+250ms`/`+1us`/`+1ns`) — no floats anywhere
+in the module. A run only extends while every line shares the *same* format kind and (for
+fractional kinds) the same fractional-digit width as the run's first line, and each timestamp is
+no earlier than the previous one — same "one uniform, easy-to-verify invariant, when uncertain
+don't collapse" philosophy `numeric_range_compression`'s width rule already established. No
+`patterns` config, same reasoning as `numeric_range_compression`: matching one of 7 exact timestamp
+shapes is a precise structural check, not an ambiguous "looks like a path" guess, so there's
+nothing for a filter author to scope with a regex — and even a semantically-wrong match (an
+`HH:MM:SS`-shaped string that isn't really a clock reading) is still exactly reconstructible by
+arithmetic, so a false positive costs nothing.
+
+**Deliberately out of scope, by the ticket's own rules, not oversight:**
+- journalctl's *default* syslog prefix (`Jul 31 10:15:01`) — a month name is locale-dependent,
+  natural-language text, exactly what "no locale-dependent parsing" rules out. Only ISO-mode
+  journalctl output (`journalctl -o short-iso`, etc.) is in scope.
+- Bracket-wrapped or otherwise-prefixed timestamps (`[10:15:01] msg`, `pod/container 10:15:01 msg`)
+  — every format is anchored at column 0. A leading `[` is simply a non-match, fail-open, same as
+  any unrecognized line shape.
+- Unix epoch integers — `numeric_range_compression`'s territory, never this stage's (a bare digit
+  run never matches an `HH:MM:SS`-shaped prefix).
+- Leap seconds (`:60`) — rejected as an out-of-range second, same conservative "not a real
+  timestamp" treatment as an hour of 25 or a Feb 30 calendar date.
+
+**New mask.py exception category (a fifth, alongside `group_repeated`/`collapse_unchanged_context`'s
+rewrite-first-compress-rest, `path_prefix_fold`'s insert-a-header, and `python_ast_summarize`/
+`code_ast_summarize`'s import-block splicing):** this stage never assigns `COMPRESS` to anything and
+never inserts a line — every line in a folded run stays `KEEP`, and the mask's total line count is
+unchanged. Reconstructibility comes from arithmetic rather than byte-for-byte suffix preservation:
+line 1 is the absolute reference, and each subsequent line's absolute timestamp is exactly
+`previous + this line's delta`.
+
+**Rendering choice:** each line's delta is relative to the *immediately preceding* line (matching
+this item's own primary worked example), not relative to a fixed start — simpler to compute exactly
+and still fully reconstructible by inspection (addition only, no lookup elsewhere required), which
+is this item's own explicit "reversible by inspection" requirement plus the standing "independently
+understandable" design principle (see [Vision](#vision)) — chained addition never leaves a line
+depending on anything outside the current call's own rendered output.
+
+**Wired into two filters, not one.** `z_generic.toml` (after `deduplicate_consecutive`, before
+`path_prefix_fold`/`numeric_range_compression`/`max_tokens` — same "already-folded content earns the
+tail-truncation budget" reasoning `path_prefix_fold`/`numeric_range_compression` themselves
+document): this is what covers `docker logs --timestamps`, `kubectl logs --timestamps`, ISO-mode
+`journalctl`, generic CI console output, and application logs — none of the five have a dedicated
+filter today, so all of them already fell through to the generic fallback. `node.toml`'s `npm`
+filter also gained the stage (after its own `deduplicate_consecutive`): `npm run <script>` is how a
+dev-server watch process (webpack/vite/a custom watch script) actually gets invoked, and its own
+timestamped rebuild lines pass straight through npm's stdout — a no-op for every one of npm's own
+install/audit output shapes (confirmed: zero change against the existing npm baseline cases), and
+the only path that reaches this item's explicit "npm watch mode" scenario. `docker-build`/`gradle`/
+`maven` (ci.toml) were checked and left untouched: none of their real output has per-line clock
+timestamps (elapsed durations like `12s`, not clock reads). `github-actions` (ci.toml) was also left
+untouched on purpose — it already solves the identical noise problem more aggressively, by fully
+deleting its own fixed-width ISO timestamp via `regex_replace` (predates this item); adding delta
+compression on top would be redundant with an already-shipped, different design choice for the same
+signal, not a gap.
+
+**Convergence question (asked directly for this item): do QB-095/QB-096/QB-097/QB-098 converge
+toward one "deterministic sequence normalization" abstraction?** Answer: partially, and only two
+small, genuinely-identical leaf pieces were worth sharing — not the algorithms themselves.
+- **What *was* extracted** (`quor/pipeline/stages/_utils.py`): `line_tokens()` (`ceil(len/4)`) was a
+  byte-identical copy in **five** places (`collapse_unchanged_context`, `max_tokens`,
+  `path_prefix_fold`, `numeric_range_compression`, and this item's own new stage before the
+  extraction) — pulled into one shared function used by `path_prefix_fold`/`numeric_range_
+  compression`/`relative_timestamp_compression` (the three actually in scope for this item;
+  `max_tokens`/`collapse_unchanged_context` were deliberately left as they were — unrelated, already-
+  shipped stages, touching them would be scope creep beyond what this item asked). Likewise
+  `apply_preserve_patterns()` — the "PROTECT any KEEP line matching `preserve_patterns`, before
+  building runs" pre-pass — was a byte-identical copy across exactly these same three stages, now
+  one function. Both are pure leaf helpers with no stage-specific behavior; sharing them cost nothing
+  in readability and the benchmark suite's exact `36.0%`/20013-tokens-saved/142-case totals were
+  verified unchanged before and after (a pure refactor, confirmed via `--update-baseline`'s "all
+  unchanged" comparison table, not just asserted).
+- **What was deliberately** ***not*** **unified: the run-detection loop and the fold/render step.**
+  All three stages *look* similar at the shape level ("scan consecutive KEEP lines while a per-line
+  predicate holds, then fold if strictly cheaper"), but the predicate and the render are genuinely
+  different every time — `path_prefix_fold` computes a char-wise common prefix and inserts a header
+  line; `numeric_range_compression` checks ascending-by-1 and same string width, then rewrites one
+  line and `COMPRESS`es the rest; this item's own stage checks format-kind/fractional-width/non-
+  decreasing, then rewrites every line but the first and `COMPRESS`es nothing. `mask.py`'s own module
+  docstring already treats these as three (now, with QB-096's import splicing, four; with this item,
+  five) *deliberately distinct, individually-justified* exceptions to "line content is never
+  modified" — collapsing them into one generic "run scanner" would need a callback/generic-type
+  layer just to accommodate the different per-line auxiliary data each stage carries (a plain
+  `LineMask`, vs. `path_prefix_fold`'s same, vs. this item's `(LineMask, match_end, ns)` tuple), and
+  the result would be *harder* to read than three ~20-line loops that already read fine standalone —
+  exactly the "abstraction that doesn't earn its own indirection" this item's own instructions
+  warned against. Three algorithms is also short of a fourth confirming data point either way — two
+  extracted, near-identical leaf functions is what the evidence actually supports; a full "sequence
+  normalization" framework is not.
+
+**Testing:** `tests/unit/test_stages.py` — `TestRelativeTimestampCompression` (28 tests: empty
+input, single-line/no-timestamp passthrough, each format family, exact millisecond/largest-unit
+delta rendering, DST-style offset normalization, malformed hour/invalid-calendar-date rejection,
+mixed-format and fractional-width-change run-breaking, decreasing-timestamp run-breaking, duplicate-
+timestamp `+0s`, already-relative and bracket-wrapped and epoch-integer non-matches, line-count-
+unchanged and no-COMPRESS invariants, first-line-untouched-by-identity, PROTECT/COMPRESS run
+boundaries, `preserve_patterns`, wrong-config-type, plus direct unit coverage of `_format_delta_ns`'s
+unit selection, `_parse_line`'s range/calendar validation, and `_fold_run`'s token-cost gate in both
+directions). Inline filter tests added to `z_generic.toml` (5 new) and `node.toml`'s `npm` filter (1
+new).
+
+**Benchmarks:** 6 new cases spanning every format this item asked for — `docker-logs-container-
+startup` (32.3% measured, floor 25.0%), `kubectl-logs-pod-startup` (23.9%, floor 18.0%), `npm-watch-
+dev-server-rebuilds` (28.7%, floor 22.0%), `ci-logs-generic-pipeline-console` (30.7%, floor 24.0%),
+`app-logs-web-service-requests` (25.7%, floor 20.0%), `journalctl-service-restart-short-iso` (25.1%,
+floor 19.0%) — every point of measured reduction in all 6 traces to `relative_timestamp_compression`
+alone (`path_prefix_fold`/`numeric_range_compression`/`max_tokens` each report 0 additional tokens
+saved on these samples), a clean isolated demonstration of the new stage. No regression on any of
+the 136 pre-existing cases (`--update-baseline`'s comparison table: 136/136 `unchanged`, ±0.0pp).
+**Unrelated gap found and fixed incidentally while updating the baseline:** 4 pre-existing `generic`-
+category cases from QB-097 (`generic-coverage-uncovered-lines`, `generic-grep-line-numbers-only`,
+`generic-long-line-listing`, `generic-lint-diagnostic-line-numbers`) were present in `manifest.toml`
+at `HEAD` but missing from the committed `baseline.json` — a process gap from QB-097's own merge
+(cases added, baseline never updated for them), not caused by this item. This run's
+`--update-baseline` picked them up for free alongside this item's own 6 new cases; flagged here
+rather than silently folded in unremarked. Overall suite: 136 → 142 cases, 36.2% → 36.0% overall
+(the dip is arithmetic — averaging in cases with lower-than-mean reduction — not a regression; see
+QB-097's own entry for the same arithmetic-vs-regression distinction).
+
+**Verification:** `ruff check quor/ tests/` clean; `mypy quor/` clean; `quor verify` 215/215 (up from
+210 — 5 new `generic` tests + 1 new `npm` test); `tests/unit/test_stages.py` full suite green (28 new
+tests, 254 total, zero regressions); targeted regression sweep (`test_filters.py`, `test_pipeline.py`,
+`test_early_exit.py`, `test_plugin_loader.py`, `test_fail_open.py`, `test_filter_safety.py`,
+`test_node_tool_routing.py`, `test_config.py`, `test_hook_manifest.py`, `test_invocation.py`,
+`test_gain_presentation.py`, `test_compression_summary.py`, `test_filter_analytics.py` — the files
+that exercise `FilterRegistry`/`_STAGE_HANDLERS`/`z_generic`/`npm` routing/token-tracking most
+directly) all green; benchmark suite green (142 cases, no regressions, baseline updated). The
+remaining slow, real-subprocess-spawning CLI/adapter test files were not run locally, same
+self-hook-budget constraint QB-095/QB-096/QB-097 already recorded
+([[project_quor_self_hook_timeout]]).
+
+**A stray line noticed twice during Bash tool calls in this session** (`"Respond concisely and
+avoid repeating information already stated."`, prepended to a couple of command outputs)
+initially looked like a possible prompt-injection artifact — flagged to the user in-session out
+of caution, since it didn't match Quor's own `[quor] ...`-prefixed message convention. Traced to
+ground truth before this branch's work was finished: `quor/adapters/dispatcher.py`'s
+`CONCISE_INSTRUCTION` constant (`CONCISE_INSTRUCTION_ENABLED = True`) — a real, pre-existing,
+intentional Quor feature that prepends this exact instruction to compressed tool output. Not a
+security finding; correcting the record here since the earlier flag was made before this was
+confirmed.
+
+</details>
 
 ---
 
