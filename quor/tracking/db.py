@@ -224,6 +224,27 @@ trickle of records still lands promptly rather than waiting indefinitely
 for a batch that may never fill up."""
 
 
+# QB-100: the wait ceiling `flush()`/`close()` give the background worker
+# thread to actually establish its SQLite connection (WAL pragma, schema
+# creation — see `_connect()`) and drain the queue, before giving up.
+# Raised from the original 2.0s after a root-cause investigation
+# (docs/design/QB-100-tracking-db-flush-close-timeout-investigation.md)
+# found the original value could be exceeded by ordinary OS thread-
+# scheduling pressure alone — not a hang, not a bug in the write itself —
+# whenever many other TrackingDB worker threads happen to be alive at once
+# (e.g. a long-running test suite that constructs dozens of instances).
+# `join(timeout=...)`/`Event.wait(timeout=...)` both return as soon as the
+# real condition is satisfied, so raising this ceiling adds no latency to
+# the fast, uncontended case every real single-invocation `quor <command>`
+# process actually runs under (see `quor/__main__.py`'s own comment on why
+# `TrackingDB` construction itself must stay off the hot COMMAND_INTERCEPT
+# path, and ADR-008: "neither write blocks the hook response") — it only
+# changes how long a genuinely contended or still-initializing case is
+# given before this class reports it as failed instead of silently
+# discarding the outcome.
+_STOP_WAIT_TIMEOUT_SECONDS = 10.0
+
+
 class TrackingDB:
     """Non-blocking SQLite writer.
 
@@ -239,7 +260,20 @@ class TrackingDB:
     uncommitted records a hard kill during the old commit-per-row window
     would already have lost if it landed between record() and the write
     actually happening — this was never a strict per-row durability
-    guarantee (see ADR-016: "main hook path never waits for DB writes").
+    guarantee (see ADR-008: "neither write blocks the hook response").
+
+    QB-100: `flush()`/`close()` both return `bool` — `True` once the
+    worker has genuinely caught up (including, for a brand-new instance,
+    having created the schema), `False` if `_STOP_WAIT_TIMEOUT_SECONDS`
+    elapsed first. Neither call raises on a `False` result — this class's
+    documented durability contract (above) is still best-effort, not a
+    hard guarantee — but the outcome is no longer silently discarded: a
+    `False` result also emits a `warnings.warn()`, this project's standing
+    convention for "fail-open, but visible" (see e.g.
+    `quor/adapters/dispatcher.py`'s own `_apply_tee`/`_cleanup_tee_safe`).
+    Callers that only care about durability being *attempted* (every
+    production call site today) are unaffected — a discarded return value
+    behaves exactly as before.
     """
 
     def __init__(self, db_path: Path) -> None:
@@ -258,16 +292,35 @@ class TrackingDB:
         """Enqueue a record for background persistence. Never blocks."""
         self._queue.put(rec)
 
-    def close(self, timeout: float = 2.0) -> None:
-        """Signal worker to stop and wait for it to drain the queue."""
+    def close(self, timeout: float = _STOP_WAIT_TIMEOUT_SECONDS) -> bool:
+        """Signal the worker to stop and wait for it to drain the queue and
+        exit. Returns `True` if the worker thread actually stopped within
+        `timeout`, `False` otherwise (and warns) — see class docstring."""
         self._queue.put(_STOP)
         self._thread.join(timeout=timeout)
+        if self._thread.is_alive():
+            warnings.warn(
+                f"[quor] tracking DB worker did not stop within {timeout}s; "
+                "some records may not have been persisted yet",
+                stacklevel=2,
+            )
+            return False
+        return True
 
-    def flush(self, timeout: float = 2.0) -> None:
-        """Block until the queue is drained (used in tests to verify writes)."""
+    def flush(self, timeout: float = _STOP_WAIT_TIMEOUT_SECONDS) -> bool:
+        """Block until the queue is drained (used in tests to verify
+        writes). Returns `True` if the worker genuinely caught up within
+        `timeout`, `False` otherwise (and warns) — see class docstring."""
         done = threading.Event()
         self._queue.put(done)
-        done.wait(timeout=timeout)
+        completed = done.wait(timeout=timeout)
+        if not completed:
+            warnings.warn(
+                f"[quor] tracking DB flush() did not complete within {timeout}s; "
+                "some records may not have been persisted yet",
+                stacklevel=2,
+            )
+        return completed
 
     # ------------------------------------------------------------------
     # Background worker
