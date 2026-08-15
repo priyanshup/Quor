@@ -12,9 +12,12 @@ import pytest
 
 from quor.analytics.filter_baseline import BenchmarkFilterStats, load_benchmark_filter_stats
 from quor.analytics.filter_divergence import (
+    DEFAULT_NOMINATION_THRESHOLD_PP,
     LowPerformer,
     compute_divergence,
+    find_uncovered_filters,
     flag_low_performers,
+    nominate_for_benchmark_coverage,
 )
 from quor.analytics.filter_history import (
     AnalyticsHistoryEntry,
@@ -24,11 +27,15 @@ from quor.analytics.filter_history import (
     growing_filters,
     load_history,
 )
-from quor.analytics.filter_report import render_filter_analytics_report
+from quor.analytics.filter_report import (
+    render_benchmark_nominations,
+    render_filter_analytics_report,
+)
 from quor.tracking.db import (
     PASSTHROUGH_LABEL,
     REPO_GRAPH_FILTER_LABEL,
     REPO_PROFILE_FILTER_LABEL,
+    REPO_SYMBOLS_FILTER_LABEL,
     FilterAnalyticsReport,
     FilterUsage,
 )
@@ -209,6 +216,128 @@ class TestComputeDivergence:
         }
         diffs = compute_divergence(filters, benchmark)
         assert [d.filter_name for d in diffs] == ["big-gap", "small-gap"]
+
+
+class TestFindUncoveredFilters:
+    """QB-047 Phase 1 — evidence-directed benchmark curation."""
+
+    def test_real_filter_with_no_benchmark_entry_is_uncovered(self) -> None:
+        filters = (_usage("terraform", usage_pct=5.0),)
+        assert [f.filter_name for f in find_uncovered_filters(filters, {})] == ["terraform"]
+
+    def test_covered_filter_is_excluded(self) -> None:
+        filters = (_usage("git-status", usage_pct=5.0),)
+        benchmark = {"git-status": BenchmarkFilterStats("git-status", 3, 2.0, 52.7)}
+        assert find_uncovered_filters(filters, benchmark) == []
+
+    def test_passthrough_bucket_excluded(self) -> None:
+        filters = (_usage(PASSTHROUGH_LABEL, usage_pct=99.0),)
+        assert find_uncovered_filters(filters, {}) == []
+
+    def test_synthesis_labels_excluded(self) -> None:
+        filters = (
+            _usage(REPO_PROFILE_FILTER_LABEL, usage_pct=10.0),
+            _usage(REPO_GRAPH_FILTER_LABEL, usage_pct=10.0),
+            _usage(REPO_SYMBOLS_FILTER_LABEL, usage_pct=10.0),
+        )
+        assert find_uncovered_filters(filters, {}) == []
+
+    def test_sorted_by_usage_share_descending(self) -> None:
+        filters = (
+            _usage("rarely-used", usage_pct=2.0),
+            _usage("heavily-used", usage_pct=40.0),
+        )
+        uncovered = find_uncovered_filters(filters, {})
+        assert [f.filter_name for f in uncovered] == ["heavily-used", "rarely-used"]
+
+    def test_no_uncovered_filters_returns_empty(self) -> None:
+        filters = (_usage("git-status", usage_pct=5.0),)
+        benchmark = {"git-status": BenchmarkFilterStats("git-status", 1, 1.0, 1.0)}
+        assert find_uncovered_filters(filters, benchmark) == []
+
+
+class TestNominateForBenchmarkCoverage:
+    """QB-047 Phase 1 — evidence-directed benchmark curation."""
+
+    def test_below_threshold_not_nominated(self) -> None:
+        filters = (_usage("close-enough", compression_pct=48.0),)
+        benchmark = {"close-enough": BenchmarkFilterStats("close-enough", 1, 0.0, 50.0)}
+        diffs = compute_divergence(filters, benchmark)
+        assert nominate_for_benchmark_coverage(diffs) == []
+
+    def test_at_or_beyond_threshold_is_nominated(self) -> None:
+        filters = (_usage("mypy", compression_pct=-41.2),)
+        benchmark = {"mypy": BenchmarkFilterStats("mypy", 3, 5.0, 46.1)}
+        diffs = compute_divergence(filters, benchmark)
+        nominated = nominate_for_benchmark_coverage(diffs)
+        assert [d.filter_name for d in nominated] == ["mypy"]
+
+    def test_exactly_at_threshold_is_nominated(self) -> None:
+        filters = (_usage("boundary", compression_pct=35.0),)
+        benchmark = {
+            "boundary": BenchmarkFilterStats(
+                "boundary", 1, 0.0, 35.0 - DEFAULT_NOMINATION_THRESHOLD_PP
+            )
+        }
+        diffs = compute_divergence(filters, benchmark)
+        assert len(nominate_for_benchmark_coverage(diffs)) == 1
+
+    def test_custom_threshold_is_respected(self) -> None:
+        filters = (_usage("small-gap", compression_pct=45.0),)
+        benchmark = {"small-gap": BenchmarkFilterStats("small-gap", 1, 0.0, 50.0)}
+        diffs = compute_divergence(filters, benchmark)
+        assert nominate_for_benchmark_coverage(diffs, threshold_pp=10.0) == []
+        assert len(nominate_for_benchmark_coverage(diffs, threshold_pp=4.0)) == 1
+
+    def test_preserves_largest_divergence_first_ordering(self) -> None:
+        filters = (
+            _usage("huge-gap", compression_pct=-41.2),
+            _usage("big-gap", compression_pct=20.0),
+        )
+        benchmark = {
+            "huge-gap": BenchmarkFilterStats("huge-gap", 1, 0.0, 46.1),
+            "big-gap": BenchmarkFilterStats("big-gap", 1, 0.0, 60.0),
+        }
+        diffs = compute_divergence(filters, benchmark)
+        nominated = nominate_for_benchmark_coverage(diffs)
+        assert [d.filter_name for d in nominated] == ["huge-gap", "big-gap"]
+
+
+class TestRenderBenchmarkNominations:
+    def test_empty_when_nothing_nominated(self) -> None:
+        report = FilterAnalyticsReport(
+            total_invocations=1,
+            days=30,
+            filters=(_usage("git-status", usage_pct=5.0, compression_pct=51.0),),
+        )
+        benchmark = {"git-status": BenchmarkFilterStats("git-status", 1, 0.0, 50.0)}
+        text = "\n".join(render_benchmark_nominations(report, benchmark))
+        assert "no filter currently nominated" in text
+
+    def test_reports_uncovered_and_diverging_filters(self) -> None:
+        report = FilterAnalyticsReport(
+            total_invocations=2,
+            days=30,
+            filters=(
+                _usage("terraform", usage_pct=5.0, compression_pct=10.0),
+                _usage("mypy", usage_pct=10.0, compression_pct=-41.2),
+            ),
+        )
+        benchmark = {"mypy": BenchmarkFilterStats("mypy", 3, 5.0, 46.1)}
+        text = "\n".join(render_benchmark_nominations(report, benchmark))
+        assert "terraform" in text
+        assert "No benchmark coverage at all" in text
+        assert "mypy" in text
+        assert "diverges sharply" in text
+
+    def test_wired_into_full_report(self) -> None:
+        report = FilterAnalyticsReport(
+            total_invocations=1,
+            days=30,
+            filters=(_usage("terraform", usage_pct=5.0),),
+        )
+        text = render_filter_analytics_report(report, [], benchmark={})
+        assert "Benchmark coverage nominations" in text
 
 
 # ---------------------------------------------------------------------------

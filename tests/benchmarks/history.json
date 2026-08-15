@@ -1,0 +1,45 @@
+{
+  "entries": [
+    {
+      "version": "0.5.0",
+      "recorded_at": "2026-08-01T14:56:15+00:00",
+      "total_cases": 153,
+      "overall_compression_pct": 35.91,
+      "total_tokens_saved": 20549,
+      "per_stage_contribution_pct": {
+        "code_ast_summarize": 30.1,
+        "strip_lines": 19.51,
+        "max_tokens": 18.64,
+        "group_repeated": 13.66,
+        "structured_data_summarize": 6.78,
+        "collapse_unchanged_context": 3.43,
+        "python_ast_summarize": 2.25,
+        "relative_timestamp_compression": 2.18,
+        "column_padding_compression": 1.8,
+        "regex_replace": 1.08,
+        "path_prefix_fold": 0.41,
+        "numeric_range_compression": 0.09,
+        "deduplicate_consecutive": 0.05,
+        "remove_ansi": 0.01
+      },
+      "per_ecosystem_compression_pct": {
+        "C#": 41.37,
+        "C/C++": 14.75,
+        "CI/Build": 36.19,
+        "Config Files": 53.85,
+        "Containers": 37.74,
+        "Documents": 24.75,
+        "Files": 22.52,
+        "Generic": 26.13,
+        "Git": 22.82,
+        "Go": 26.99,
+        "Java": 54.9,
+        "JavaScript": 49.22,
+        "Python": 37.93,
+        "Python Packaging": 45.39,
+        "Rust": 37.63,
+        "TypeScript": 42.83
+      }
+    }
+  ]
+}

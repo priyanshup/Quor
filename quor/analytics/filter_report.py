@@ -11,7 +11,12 @@ time here.
 from __future__ import annotations
 
 from quor.analytics.filter_baseline import BenchmarkFilterStats, load_benchmark_filter_stats
-from quor.analytics.filter_divergence import compute_divergence, flag_low_performers
+from quor.analytics.filter_divergence import (
+    compute_divergence,
+    find_uncovered_filters,
+    flag_low_performers,
+    nominate_for_benchmark_coverage,
+)
 from quor.analytics.filter_history import AnalyticsHistoryEntry, growing_filters
 from quor.tracking.db import PASSTHROUGH_LABEL, FilterAnalyticsReport, FilterUsage
 
@@ -101,6 +106,51 @@ def render_divergence(
     return lines
 
 
+def render_benchmark_nominations(
+    report: FilterAnalyticsReport,
+    benchmark: dict[str, BenchmarkFilterStats] | None = None,
+) -> list[str]:
+    """QB-047 Phase 1 — evidence-directed benchmark curation. Surfaces which
+    filters are the best candidates for a new hand-written benchmark sample
+    next: real filters with zero benchmark coverage at all, and real
+    filters whose measured compression diverges sharply (>=15pp) from what
+    the benchmark corpus currently expects. This is a nomination list for a
+    human to act on (see `tests/benchmarks/README.md`'s "Evidence-directed
+    benchmark curation" section) — nothing here writes a benchmark case or
+    collects any new data.
+    """
+    if benchmark is None:
+        benchmark = load_benchmark_filter_stats()
+    uncovered = find_uncovered_filters(report.filters, benchmark)
+    diffs = compute_divergence(report.filters, benchmark)
+    nominated = nominate_for_benchmark_coverage(diffs)
+
+    lines = ["Benchmark coverage nominations", "-" * 31, ""]
+    if not uncovered and not nominated:
+        lines.append("(no filter currently nominated for additional benchmark coverage)")
+        lines.append("")
+        return lines
+
+    if uncovered:
+        lines.append("No benchmark coverage at all (add a case first):")
+        for f in uncovered:
+            lines.append(f"  {f.filter_name:<20} {f.usage_pct:>5.1f}% of real usage, "
+                          f"{f.invocation_count} calls")
+        lines.append("")
+
+    if nominated:
+        lines.append("Compression diverges sharply from the benchmark corpus:")
+        for d in nominated:
+            lines.append(
+                f"  {d.filter_name:<20} real {d.real_compression_pct:>6.1f}% vs "
+                f"benchmark {d.benchmark_compression_pct:>6.1f}% "
+                f"({d.compression_delta_pp:+.1f}pp)"
+            )
+        lines.append("")
+
+    return lines
+
+
 def render_growth(history: list[AnalyticsHistoryEntry]) -> list[str]:
     growth = growing_filters(history)
     lines = ["Filters growing over time", "-" * 26, ""]
@@ -125,6 +175,8 @@ def render_filter_analytics_report(
 ) -> str:
     """Assemble the full QB-054 per-filter analytics report as one
     plain-text block, in the order the ticket lists its required views."""
+    if benchmark is None:
+        benchmark = load_benchmark_filter_stats()
     lines: list[str] = [
         f"Per-filter analytics (last {report.days} days, "
         f"{report.total_invocations} invocations)",
@@ -136,5 +188,6 @@ def render_filter_analytics_report(
     lines += render_worst_compression(report)
     lines += render_low_performers(report)
     lines += render_divergence(report, benchmark)
+    lines += render_benchmark_nominations(report, benchmark)
     lines += render_growth(history)
     return "\n".join(lines).rstrip() + "\n"

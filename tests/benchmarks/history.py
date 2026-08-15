@@ -65,9 +65,26 @@ def load_history(path: Path = DEFAULT_HISTORY_PATH) -> list[HistoryEntry]:
 
 def append_entry(entry: HistoryEntry, path: Path = DEFAULT_HISTORY_PATH) -> list[HistoryEntry]:
     """Add or replace `entry` (keyed by `version`) and persist. Returns the
-    full, updated entry list in insertion order."""
-    entries = [e for e in load_history(path) if e.version != entry.version]
-    entries.append(entry)
+    full, updated entry list in chronological (insertion) order.
+
+    A genuinely new version is appended at the end. Re-running an
+    *existing* version replaces its entry **in place** — at its original
+    position — rather than removing and re-appending it. The naive
+    remove-then-append approach would silently move a re-run of an older
+    version to the end of the list, after newer versions already recorded,
+    which breaks both the "chronological order" contract this module
+    documents and `detect_regression()`'s "compare the last two entries"
+    assumption (QB-047 Phase 1 hardening — caught by
+    `tests/unit/test_benchmark_history.py`'s own reorder regression test).
+    """
+    entries = load_history(path)
+    for i, existing in enumerate(entries):
+        if existing.version == entry.version:
+            entries[i] = entry
+            break
+    else:
+        entries.append(entry)
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(
         orjson.dumps({"entries": [asdict(e) for e in entries]}, option=orjson.OPT_INDENT_2)
     )
