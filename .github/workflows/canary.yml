@@ -131,13 +131,17 @@ jobs:
           python -m quor init --claude --yes --settings-path /tmp/canary-claude/settings.json
           python3 -c "
           import json, sys
+          from quor.adapters.hook_manifest import BASH_HOOK_SPEC
           with open('/tmp/canary-claude/settings.json') as f:
               d = json.load(f)
           hooks = d.get('hooks', {}).get('PreToolUse', [])
-          if not any('claude-hook.ps1' in str(h) for entry in hooks for h in entry.get('hooks', [])):
-              print('FAIL: hook not found in settings.json', file=sys.stderr)
+          # script_name resolves per-platform (.ps1 on Windows, .sh on POSIX) —
+          # this runner is ubuntu-latest, so that's claude-hook.sh (QB-082).
+          expected = BASH_HOOK_SPEC.script_name
+          if not any(expected in str(h) for entry in hooks for h in entry.get('hooks', [])):
+              print(f'FAIL: hook {expected!r} not found in settings.json', file=sys.stderr)
               sys.exit(1)
-          print('OK: hook registered in settings.json')
+          print(f'OK: hook {expected!r} registered in settings.json')
           "
 
       - name: Run full test suite
