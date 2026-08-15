@@ -17,6 +17,31 @@ than expected.
 
 ---
 
+## Recently shipped
+
+*Items that were listed as active or upcoming work below as of this page's last full pass —
+moved here now that they're done, rather than left to sit under "Now"/"Next" indefinitely.*
+
+- **Stopped filters that make things bigger, not smaller.** The mypy/npm regression was root-caused
+  (two dispatcher-level additions — the tee recovery footer and the concise-output nudge — were
+  being added unconditionally, without checking they cost less than the filter saved) and fixed.
+  mypy's real-usage compression is now positive and verified against live telemetry.
+- **Turned real usage data into an ongoing early-warning system.** `quor gain --filters` and
+  `quor doctor` now automatically flag any filter whose real compression has gone negative or
+  near-zero, and show real-vs-benchmark divergence for every filter, on demand.
+- **Extended language support for structure-aware compression.** Go, Rust, Java, and C# now get the
+  same signature-preserved, body-compressed treatment Python/JavaScript/TypeScript already had.
+- **Compressed configuration files.** YAML, JSON, and TOML files (including common lockfiles) now
+  get structure-aware compression; `.env` and `.ini` files get comment/blank-line stripping without
+  ever touching a value.
+- **Built the release-tracking half of the "benchmark suite that reflects real usage" item below.**
+  The benchmark corpus now has a release-over-release trend view, and a workflow that turns the
+  early-warning system above into concrete nominations for new, more realistic benchmark samples.
+  The other half of that item — actually sampling real, anonymized usage into the corpus — remains
+  open; see that item's own updated description below for why it's tracked separately now.
+
+---
+
 ## Now
 
 *What we're actively working on next — scoped, evidenced, and ready to build.*
@@ -36,52 +61,6 @@ git commands achieve. This is the single biggest, most evidenced opportunity in 
 change alone — more than any other single item on this roadmap. The approach keeps every actual
 line of added/removed code fully intact; it only gets smarter about the unchanged, repetitive, or
 generated "noise" surrounding those edits.
-
----
-
-### Stop filters that make things bigger, not smaller
-
-**Layman explanation:** A couple of Quor's existing filters — for type-checker and package-manager
-output — are quietly doing the opposite of their job on typical real-world runs: making the output
-*larger* than if Quor hadn't touched it at all.
-
-**Why it matters:** Trust is the whole product. Even a small, rare case where a "compression" tool
-expands output undermines confidence in every other number Quor reports.
-
-**Expected impact:** Small in raw token terms, but high in trust — this closes an embarrassing,
-now-documented gap before it's found by a user instead of by our own data.
-
----
-
-### Build a benchmark suite that reflects real usage
-
-**Layman explanation:** Quor is tested today against roughly 60 hand-picked example commands. That
-test set doesn't match real usage nearly as well as we assumed — several tools perform very
-differently on real sessions than they do on the test set, in both directions.
-
-**Why it matters:** Every other decision on this roadmap — what to prioritize, what to fix, what to
-build next — is only as good as the evidence behind it. Right now that evidence has real, measured
-blind spots.
-
-**Expected impact:** No direct token savings, but it sharpens every future measurement and
-prioritization decision Quor makes — the foundation the rest of this roadmap increasingly depends
-on.
-
----
-
-### Turn real usage data into an ongoing early-warning system
-
-**Layman explanation:** The insight that found the "filters making things bigger" problem above came
-from a one-off, manually-run data query. This item turns that into something that runs continuously
-on its own, automatically flagging any filter that starts underperforming — instead of relying on
-someone to think to go look.
-
-**Why it matters:** This is a foundational step toward a longer-term goal: Quor learning what works
-from real-world outcomes across many sessions, rather than relying purely on hand-tuned rules
-written once and never revisited.
-
-**Expected impact:** No direct savings by itself, but it's the infrastructure that makes several
-future improvements (see "self-tuning compression" below) possible and safe.
 
 ---
 
@@ -127,25 +106,9 @@ on real evidence, without a person having to notice and hand-tune it.
 product — moving from hardcoded assumptions about what to compress toward decisions grounded in
 measured, real-world outcomes.
 
-**Expected impact:** Potentially significant over time, but this is exploratory and depends on the
-continuous monitoring work above existing first.
-
----
-
-### Support more programming languages
-
-**Layman explanation:** Quor already gives Python, JavaScript, and TypeScript files special
-treatment — showing Claude a file's structure and function signatures instead of dumping the whole
-file. This extends the same treatment to more languages (candidates include Go, Rust, Java, and
-C#).
-
-**Why it matters:** This is, by measurement, Quor's single best-performing compression technique
-wherever it's available. The underlying engine is already proven and reusable — the only reason
-this isn't higher on the list is that we don't yet have real evidence of which language to add
-first, since most current usage is on Python projects.
-
-**Expected impact:** High wherever it lands, but intentionally sequenced behind the measurement work
-above so the first new language is chosen using real evidence rather than a guess.
+**Expected impact:** Potentially significant over time, but this is still exploratory — the
+continuous monitoring infrastructure it would build on now exists (see "Recently shipped" above),
+but this item itself remains its own design pass, not yet scoped.
 
 ---
 
@@ -198,23 +161,6 @@ revisiting once the improved benchmark corpus can confirm it.
 
 ---
 
-### Compress configuration files (YAML, JSON, TOML, .env, and similar)
-
-**Layman explanation:** Right now, if Claude reads a config file — a large `package.json`, a
-Kubernetes manifest, a `.env` file — Quor doesn't touch it at all, even when it's mostly repetitive
-boilerplate.
-
-**Why it matters:** These files are common and often large, but this idea currently has no real
-evidence behind it — no test cases exist yet to measure it against, and it doesn't show up
-meaningfully in real usage data yet either.
-
-**Expected impact:** Potentially medium, but deliberately not competing for a build slot against
-better-evidenced work until there's a way to measure it properly. Any implementation here will start
-conservative by design, since a wrong compression in a config file can silently change what it means
-to a computer, not just how it looks to a person.
-
----
-
 ### Track how Quor compares to competitors, continuously
 
 **Layman explanation:** Quor's understanding of how it stacks up against similar tools comes from a
@@ -248,6 +194,23 @@ higher-impact ideas above safe to turn on by default.
 
 *Real, approved ideas — just deliberately lower priority, or waiting on other work to prove out
 first.*
+
+### Sample real usage into the benchmark corpus
+
+**Layman explanation:** The benchmark test set is entirely hand-written today. This would add a
+way to contribute real, anonymized examples of what Quor actually sees in practice — with a
+person's explicit, informed consent — instead of relying only on examples someone wrote by hand.
+
+**Why it matters:** Hand-written examples, however realistic, are still not a random sample of real
+usage — a genuinely representative test set needs some real examples in it.
+
+**Expected impact:** Would meaningfully sharpen every future measurement — but this specifically
+requires its own privacy and legal review before any design work starts, not just an engineering
+decision, since it means handling real command output rather than metadata about it. Intentionally
+kept separate from — and behind — the measurement/tracking work already shipped (see "Recently
+shipped" above), which needed no such review because it never touches real content at all.
+
+---
 
 ### A safe way to try experimental, higher-risk compression ideas
 
@@ -313,17 +276,17 @@ rather than on the roadmap above.
 | Roadmap initiative | Backlog ticket(s) |
 |---|---|
 | Compress git diffs much more aggressively | QB-041, QB-055 |
-| Stop filters that make things bigger, not smaller | QB-052 |
-| Build a benchmark suite that reflects real usage | QB-047 |
-| Turn real usage data into an ongoing early-warning system | QB-054 |
+| Stop filters that make things bigger, not smaller | QB-052 (shipped) |
+| Sample real usage into the benchmark corpus / release-tracking half | QB-047 (Phase 1 shipped; real-content sampling still open) |
+| Turn real usage data into an ongoing early-warning system | QB-054 (shipped) |
 | Make Quor explain itself better | QB-049 |
 | Let users choose how aggressive compression should be | QB-039 |
 | Teach Quor to tune itself automatically | QB-053 |
-| Support more programming languages | QB-046 |
+| Support more programming languages | QB-046 (shipped) |
 | Notice repetition across a whole coding session | QB-043 |
 | Summarize repeated test failures instead of repeating them | QB-044 |
 | Compress more build and CI logs | QB-045 |
-| Compress configuration files | QB-040 |
+| Compress configuration files | QB-040 (shipped) |
 | Track how Quor compares to competitors, continuously | QB-042 |
 | Prove compressed output doesn't hurt task success | QB-048 |
 | A safe way to try experimental compression ideas | QB-050 |

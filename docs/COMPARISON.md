@@ -26,10 +26,10 @@ to remove — filtering is pattern-match, dedup, count, and budget rules defined
 |---|---|---|---|---|
 | AI assistant integration | Claude Code only — **Supported** | 14 assistants (per Quor's competitive research) | Not stated in README/backlog | Not stated in README/backlog |
 | Multi-agent adapter (e.g. Cursor, Copilot, Gemini) | **Planned** (QB-035A design exists; QB-035F implementation not scheduled) | Already supports 14 assistants | Not stated | Not stated |
-| AST-aware source compression | Python, JavaScript, TypeScript, TSX — **Supported** | Not stated | Python, JS, Go, Rust, Java, C++ (per Quor's competitive research) | Not stated |
-| AST-aware compression, more languages (Go/Rust/Java/C#) | **Planned** (QB-046) | Not stated | Already covers Go, Rust, Java, C++ | Not stated |
+| AST-aware source compression | Python, JavaScript, TypeScript, TSX, Go, Rust, Java, C# — **Supported** | Not stated | Python, JS, Go, Rust, Java, C++ (per Quor's competitive research) | Not stated |
+| AST-aware compression, more languages (Go/Rust/Java/C#) | **Supported** (QB-046 shipped) | Not stated | Already covers Go, Rust, Java, C++ | Not stated |
 | Document reading (Markdown, plain text, DOCX, PDF) | **Supported** | Not stated | Not stated | Not stated |
-| Config/structured-data file compression (YAML/JSON/TOML/.env/.ini) | **Planned** (QB-040, not yet scoped) | Not stated | Not stated | Not stated |
+| Config/structured-data file compression (YAML/JSON/TOML/.env/.ini) | **Supported** (QB-040 shipped) | Not stated | Not stated | Not stated |
 | Git diff/show delta compression | **Supported**, but limited — `preserve_patterns` protects nearly all diff content by design, so real compression on large diffs is low (see [Benchmarks vs. real usage](#benchmarks-vs-real-usage) below) | Not stated | Not stated | Not stated |
 | Smarter diff compression (context-aware hunk collapsing) | **Planned** (QB-041 / QB-055, not yet implemented) | Not stated | Not stated | Not stated |
 | Stack-trace/traceback compression (pytest, generic) | **Supported** | Not stated to have this (Quor's competitive research states RTK "doesn't have this" for Django/Flask/pytest traceback compression) | Not stated | Not stated |
@@ -42,7 +42,7 @@ to remove — filtering is pattern-match, dedup, count, and budget rules defined
 | Fail-open behavior (broken filter never blocks or hides output) | **Supported** | Not stated | Not stated | Not stated |
 | Full-output recovery (nothing permanently lost) | **Supported** — cached locally, linked via `[full output: <path>]` | Not stated | Not stated | Not stated |
 | Plugin extensibility (third-party filter stages) | **Supported** — standard Python entry points | Not stated | Not stated | Not stated |
-| Compression telemetry / analytics | **Supported** for the benchmark corpus (QB-051); real-usage analytics against the live tracking DB is **Planned** (QB-054) | Not stated | Not stated | Not stated |
+| Compression telemetry / analytics | **Supported** — both for the benchmark corpus (QB-051) and real-usage analytics against the live tracking DB (QB-054 shipped: `quor gain --filters`/`quor doctor` flag negative/near-zero real compression and real-vs-benchmark divergence) | Not stated | Not stated | Not stated |
 | Platform | Windows-native and pip-installable, primary dev/CI target; Linux (Ubuntu) also verified in CI | Not stated | Not stated | Not stated |
 | Data handling | No LLM calls, no network calls — filtering runs entirely locally (per Quor's README FAQ) | Not stated | Not stated | Not stated |
 
@@ -69,29 +69,33 @@ usage on its current scope before expanding breadth.
 - **Secret-aware without silent redaction.** Known credential patterns trigger a stderr warning
   rather than being silently stripped or blocked.
 - **Locally run, no network calls.** Stated explicitly in the README FAQ.
-- **Committed, CI-gated benchmark suite.** 60 cases across 27 categories run in CI and fail the
+- **Committed, CI-gated benchmark suite.** 153 cases across 58 categories run in CI and fail the
   build on regression (per README and backlog.md's QB-011/QB-051).
 
 ## Limitations (as documented)
 
 - **Single-assistant support.** Claude Code only, today. Multi-agent support (Cursor, Copilot,
   Gemini) is designed (QB-035A) but not implemented.
-- **Narrow language coverage for AST summarization.** Python, JavaScript, TypeScript, and TSX only.
-  Go, Rust, Java, and C# are planned (QB-046) but not started.
+- **AST summarization language coverage.** Python, JavaScript, TypeScript, TSX, Go, Rust, Java, and
+  C# are supported (QB-046 shipped, extending the original Python/JS/TS/TSX set). Other languages
+  are not yet covered.
 - **Git diff/show compression is currently weak.** backlog.md documents that `preserve_patterns`
   protects nearly all diff content by design, so a large diff can blow past its token budget with
   little compression applied. Real-usage data cited in backlog.md attributes 45% of all tokens
   Quor has ever saved on its own project to git-diff, at roughly half the compression ratio of its
   sibling git filters — i.e., the single highest-volume filter is also one of the least effective
   today. A fix (QB-041/QB-055) is proposed, not implemented.
-- **No config/structured-data file compression.** YAML, JSON, TOML, `.env`, and `.ini` files pass
-  through untouched (QB-040, planned, not scoped).
 - **Benchmark corpus and real usage disagree, sometimes sharply.** backlog.md reports several
-  filters where the 60-case benchmark corpus and this project's own 90-day real-usage telemetry
-  diverge significantly — for example mypy measured at 46.1% compression in the benchmark corpus
-  but **-41.2%** (net expansion) in real usage, and pytest at 39.75% (benchmark) vs. 12.9% (real).
-  Two shipped filters (mypy, npm) were found to expand output on average in real usage rather than
-  compress it (QB-052, unfixed as of this writing).
+  filters where the benchmark corpus and this project's own real-usage telemetry diverge
+  significantly — for example mypy measured at 46.1% compression in the benchmark corpus but
+  **-41.2%** (net expansion) in real usage at the time this was first found, and pytest at 39.75%
+  (benchmark) vs. 12.9% (real). The mypy/npm net-expansion finding specifically (QB-052) was a real
+  bug — two dispatcher-level additions (the tee recovery footer, the concise-output instruction
+  nudge) being appended unconditionally, regardless of whether the filter's own saving covered
+  their cost — and was fixed 2026-07-31; backlog.md records mypy's real compression at 16.0%
+  post-fix. This class of divergence is now a standing, checkable signal rather than a one-off
+  finding: QB-054 (shipped) surfaces real-vs-benchmark divergence for any filter on demand via
+  `quor gain --filters`/`quor doctor`.
 - **Token savings are estimates, not exact counts.** `quor gain` reports savings using a `char / 4`
   approximation, stated in the README as accurate to roughly ±20%.
 - **No AI task-success measurement.** backlog.md states explicitly that whether compressed output
@@ -108,7 +112,7 @@ even within Quor's own numbers, benchmark-corpus results and real-usage results 
 measurement and can diverge sharply.** Concretely:
 
 - Quor's published reduction percentages (in README.md) come from a committed, hand-curated
-  60-case benchmark suite, not live production telemetry.
+  153-case benchmark suite, not live production telemetry.
 - backlog.md documents that this benchmark corpus and Quor's own real-usage tracking database
   (`quor gain`) disagree by large margins for several filters (mypy, git-log, git-status, pytest —
   see [Limitations](#limitations-as-documented) above).
@@ -128,12 +132,12 @@ Based only on what's documented here: choose Quor if you use **Claude Code on Wi
 Linux)**, want compression that is **fully deterministic, local, and auditable** (no LLM/ML
 decisions, no network calls, every stage inspectable via `quor explain`), and value that
 **nothing is ever silently and permanently lost** (fail-open behavior plus a full-output recovery
-link). Its current codebase-compression strengths are Python/JavaScript/TypeScript source files,
-Markdown/DOCX/PDF documents, and the mainstream Node.js and Python build/test toolchains.
+link). Its current codebase-compression strengths are Python/JavaScript/TypeScript/TSX/Go/Rust/
+Java/C# source files, YAML/JSON/TOML/.env/.ini config files, Markdown/DOCX/PDF documents, and the
+mainstream Node.js and Python build/test toolchains.
 
-Choose something else, or wait, if you need support for AI assistants other than Claude Code,
-AST-aware compression for languages beyond Python/JS/TS/TSX, compression of config/structured-data
-files, or a retroactive "here's what you would have saved" adoption report — all of these are
-documented as planned but not yet implemented in Quor as of this writing. If your workflow is
-diff-heavy, be aware that Quor's own backlog documents git-diff as its highest-volume but
-currently weakest-performing filter.
+Choose something else, or wait, if you need support for AI assistants other than Claude Code, or a
+retroactive "here's what you would have saved" adoption report — both are documented as planned but
+not yet implemented in Quor as of this writing. If your workflow is diff-heavy, be aware that
+Quor's own backlog documents git-diff as its highest-volume but currently weakest-performing
+filter.

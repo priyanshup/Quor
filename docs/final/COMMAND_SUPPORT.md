@@ -248,8 +248,12 @@ header comment for field-by-field documentation. This runs automatically as part
 CI, not just a manual review step.
 
 **Current benchmark coverage (ADR-032):** every currently-implemented built-in filter has at
-least 2 manifest cases in `tests/benchmarks/manifest.toml` (60 cases across 27 categories total,
-as of QB-005E) with a committed baseline entry. The `ruff`/`eslint`/`npm`/`npx`/`pnpm`/`yarn`/
+least 2 manifest cases in `tests/benchmarks/manifest.toml` (153 cases across 58 categories total,
+as of QB-047 Phase 1, 2026-08-01) with a committed baseline entry. The corpus grew from the 60
+cases/27 categories present as of QB-005E via the additions narrated below, plus further filter
+work (QB-040 config/structured-data files, QB-046 Go/Rust/Java/C# AST summarization, QB-099
+structural-diff samples) not individually narrated here — see `docs/BENCHMARKS.md` for the
+current, regenerated corpus breakdown. The `ruff`/`eslint`/`npm`/`npx`/`pnpm`/`yarn`/
 `cat`/`cat-python` cases were added in the same pass that closed a gap this document originally
 flagged — see ADR-032 in `docs/final/DECISIONS.md` for the full history. The `tsc`/`jest`/
 `vitest`/`prettier`/`next`/`turbo` cases were added for QB-006C; that pass also reclassified the
