@@ -297,6 +297,16 @@ QB-041/QB-055/QB-054/QB-049/QB-039/QB-053 keep their relative order from the 202
 evidence behind that ordering (real-usage volume, sequencing dependencies) is unchanged by this
 review; only the four items above jumped ahead of them, not each other.
 
+**Housekeeping correction (2026-08-01):** QB-094 shipped (implemented, tested, merged to `main`) —
+moved to [Completed](#completed), the same treatment QB-052/QB-046 got above; its stub is removed
+from here rather than left duplicated. It no longer occupies a slot in this ordering. **Current
+order: QB-047 → QB-041 → QB-086 → QB-034 → QB-055 → QB-054 → QB-049 → QB-039 → QB-053.** Separately
+worth flagging next time this section gets a full pass: the priority-interrupt items below (QB-095,
+QB-096, QB-097, QB-098, and the QB-099 cluster) each already carry an "Implemented"/"Closed"/
+"Rejected" `Status:` line in their own entries, but — unlike QB-094/QB-052/QB-046 — haven't actually
+been relocated out of this section yet. Left as-is here rather than bundled into this correction,
+since moving that much entry text is a bigger edit than this note warrants.
+
 **Priority interrupt (2026-07-31, later the same day):** a deterministic-compression research pass
 (diff tools, VCS, compilers, static analyzers, IDEs, log processors, search/indexing systems —
 AI/LLM techniques explicitly excluded) surfaced several new candidate stages, reviewed head-of-
@@ -1285,59 +1295,6 @@ down from Now into [Next](#next) — full reasoning is in each item's own entry,
 
 ---
 
-#### QB-094 — Read-hook concise-instruction tracking accuracy
-
-**Effort:** Small-Medium · **Value:** Medium · **Risk:** Low-Medium · **Expected token impact:** Low
-(same trust-accuracy category as QB-052, not a compression-ratio win) · **Category:** Bug fix /
-Measurement
-
-Found 2026-07-31 while verifying QB-052 was actually resolved (now in [Completed](#completed) — see
-that entry for the full finding). The concise-output instruction nudge's unconditional-prepend bug
-existed in two places: the Bash dispatcher (`dispatcher.py`) and the Claude Code Read hook
-(`claude_read.py`, PostToolUse). Both had the gating bug fixed same-day. Only the dispatcher also got
-its tracking-order fixed (`track_invocation()` now runs after the nudge decision, so tracked numbers
-match what actually reaches stdout) — the Read-hook path's equivalent gap remains open.
-
-<details>
-<summary>Technical details</summary>
-
-**Problem:** In `claude_read.py`, `track_invocation()` is called from three different places —
-inside `_compress_via_named_filter()` and `_compress_extracted_document()`, both several calls deep
-under `_compress_read_output()` — each already returning by the time `_handle_text()` prepends
-`CONCISE_INSTRUCTION` (now gated) and, separately, `_maybe_prepend_relevant_files()` /
-`_maybe_prepend_repo_intel_nudge()`'s own additive content. So `final_tokens` for every Read-hook
-tracking record still reflects a pre-nudge intermediate, not the bytes actually returned via
-`updatedToolOutput` — the same structural gap QB-052 fixed in the Bash dispatcher, just not yet
-here.
-
-**Why this wasn't fixed alongside the dispatcher today:** `dispatcher.py`'s `track_invocation()` call
-is a single call site at the end of one function (`run_dispatch()`), so moving it after the nudge
-decision was a same-file, same-pattern, low-risk change. `claude_read.py`'s three call sites are each
-embedded in a different branch function, each with its own `original`/`filtered`/`command`
-arguments already computed at that point — correctly relocating this needs either plumbing the final,
-fully-assembled `updatedToolOutput` text back down into each branch (awkward, since `_handle_text()`
-computes it after those branches already returned) or restructuring so tracking happens once, at the
-top of `_handle_text()`, after every prepend — a genuine, moderate-risk refactor of code three
-different branches depend on, not the kind of thing to rush into the same change as a verified,
-low-risk gating fix.
-
-**Note:** the relevant-files and repo-intel-nudge additions are deliberately additive context
-features (each already has its own "only fire if there's something real to inject" gate, unrelated to
-compression-savings math) — parity with the Bash dispatcher's design only requires the
-concise-instruction nudge's cost to be counted, not those two.
-
-**Desired outcome:** Restructure `claude_read.py` so exactly one `track_invocation()` call per Read
-happens after all of `_compress_read_output()`, `_maybe_prepend_relevant_files()`, and
-`_maybe_prepend_repo_intel_nudge()` have run — mirroring `dispatcher.py`'s `run_dispatch()` shape —
-without changing any of the existing branch-specific `filter_name`/`was_passthrough` semantics
-documented in `_compress_read_output()`'s own docstring.
-
-**Status:** Proposed. Not scoped or implemented. Opened 2026-07-31 directly out of verifying QB-052.
-
-</details>
-
----
-
 #### QB-047 — Real-world benchmark corpus & continuous tracking
 
 **Effort:** Medium · **Value:** High · **Risk:** Medium · **Expected token impact:** None
@@ -1391,7 +1348,32 @@ first deliverable for this item once scoped.
 **Open question:** privacy/consent model for (1) needs real product and legal thought before any
 implementation — this is explicitly not "just add telemetry."
 
-**Status:** Proposed. Not scoped or implemented.
+**Investigation (2026-08-01):** full engineering/product review at
+`docs/design/QB-047-real-world-benchmark-corpus-investigation.md`. Key finding: this ticket bundles
+two asks with very different amounts of work left. Release-history tracking (2, above) was already
+fully coded (`tests/benchmarks/history.py`, QB-051) and simply never turned on — zero code needed,
+just wiring and test coverage. A genuinely real-content corpus (1, above) cannot be built from
+`TrackingDB` at all — it never stores command-output content, by the enforced anti-goal
+`ANTI_GOALS.md` #4 — and needs wholly new, separately-scoped, opt-in infrastructure. Separately,
+the investigation found `QB-054` (below) already ships the real-vs-benchmark divergence detection
+this entry's own "Desired outcome" (2) describes wanting — its status line below was stale and has
+been corrected.
+
+**Phase 1 implemented (2026-08-01):** release-history tracking (2) and evidence-directed
+hand-curation infrastructure (a lighter-weight substitute for (1) that never touches real content)
+are done — `tests/benchmarks/history.json` now exists and is wired into the Release Readiness
+Checklist (`docs/final/CLAUDE.md`); `quor/analytics/filter_divergence.py`'s
+`find_uncovered_filters()`/`nominate_for_benchmark_coverage()` (surfaced via `quor gain --filters`/
+`quor doctor`'s new "Benchmark coverage nominations" section) turn QB-054's existing divergence
+data into an actionable "which filter needs a new benchmark case" workflow (see
+`tests/benchmarks/README.md`'s "Evidence-directed benchmark curation" section). Item (3) above
+(regenerate `docs/BENCHMARKS.md`) is also done, against the current 153-case corpus. Item (1)
+— genuine opt-in real-sample contribution — remains explicitly deferred to its own future,
+product-and-privacy-reviewed ticket, per the investigation's own recommendation.
+
+**Status:** Phase 1 (release-history tracking + evidence-directed benchmark curation) implemented.
+Real-content corpus collection (the harder, privacy-sensitive half) remains proposed, not scoped —
+see the investigation doc for why, and for the recommended path if it's picked up later.
 
 </details>
 
@@ -1740,9 +1722,21 @@ visibility into *actual production* behavior. They're complementary, not overlap
 the corpus a better proxy for reality, this item stops needing to guess whether the proxy is right
 at all.
 
-**Status:** Proposed. Not scoped or implemented. Natural prerequisite for QB-053 (adaptive
-compression needs a live signal to adapt from). Came directly out of the 2026-07-15 product-strategy
-review, not a prior request.
+**Housekeeping correction (2026-08-01):** this line previously read "Proposed. Not scoped or
+implemented" — stale, found during the QB-047 investigation
+(`docs/design/QB-047-real-world-benchmark-corpus-investigation.md`, "Unrelated issues found" §1).
+Both desired-outcome items are shipped: `quor/analytics/filter_divergence.py::flag_low_performers`
+(item 1, negative/near-zero real compression, wired into `quor doctor`) and `compute_divergence`
+(item 2, real-vs-benchmark divergence, wired into `quor gain --filters`/`quor doctor`), backed by
+`filter_baseline.py`/`filter_history.py`/`filter_report.py` and 29 (now 43, after QB-047 Phase 1's
+own additions) tests in `tests/unit/test_filter_analytics.py`. Real commit:
+`e435f42 "feat(analytics): per-filter compression analytics from real usage (QB-054)"`.
+
+**Status:** Implemented. `quor gain --filters` / `quor doctor` surface both required checks today;
+QB-047 Phase 1 (2026-08-01) extended this module further with `find_uncovered_filters()`/
+`nominate_for_benchmark_coverage()` for evidence-directed benchmark curation. Its own
+`history.json`-style per-machine trend (`filter_history.py`) is intentionally separate from
+`tests/benchmarks/history.py`'s per-release corpus trend — see that module's own docstring.
 
 </details>
 

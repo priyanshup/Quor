@@ -113,7 +113,8 @@ def compute_divergence(
     matched by name. Only filters present on both sides are comparable — a
     filter with real invocations but no benchmark case (or vice versa) has
     nothing to diverge against, so it's omitted rather than shown with a
-    fabricated zero. Sorted by largest compression divergence first (the
+    fabricated zero (see `find_uncovered_filters()` below for that case
+    specifically). Sorted by largest compression divergence first (the
     dimension the 2026-07-15 product-strategy review's own findings —
     mypy/git-log/git-status/pytest — were all expressed in)."""
     diverged = [
@@ -132,3 +133,65 @@ def compute_divergence(
         if b is not None
     ]
     return sorted(diverged, key=lambda d: abs(d.compression_delta_pp), reverse=True)
+
+
+# QB-047 Phase 1 — evidence-directed benchmark curation. Neither function
+# below collects, stores, or transmits anything new: both are pure filters/
+# sorts over the exact same `FilterUsage`/`BenchmarkFilterStats` values
+# `compute_divergence()`/`flag_low_performers()` already read. The intent is
+# to make "which filter should get a new hand-written benchmark sample
+# next" a directly answerable question from already-shipped QB-054 data,
+# instead of a one-off manual comparison (as the 2026-07-15 product-strategy
+# review had to do) — never automatic corpus generation, never real content.
+# A gap this surfaces is a *nomination*: a human still authors, reviews, and
+# commits the actual new `[[case]]`/sample file, following
+# `tests/benchmarks/README.md`'s existing "Adding a new benchmark case"
+# process.
+
+# A real-usage/benchmark compression gap at or beyond this many percentage
+# points is a nomination candidate. Chosen from the 2026-07-15 review's own
+# confirmed findings (docs/BENCHMARKS.md's "Real-world vs. benchmark
+# observations" table) — every filter actually flagged there diverged by at
+# least ~13pp (git-status, the smallest of the five), most by 30-90pp — so
+# 15.0 catches that entire confirmed class without being so low it flags
+# routine sample-to-sample noise.
+DEFAULT_NOMINATION_THRESHOLD_PP = 15.0
+
+
+def find_uncovered_filters(
+    filters: tuple[FilterUsage, ...],
+    benchmark: dict[str, BenchmarkFilterStats],
+) -> list[FilterUsage]:
+    """Real filters with production usage but **zero** benchmark-corpus
+    coverage — the case `compute_divergence()` deliberately omits (nothing
+    to diverge against). Arguably the single best nomination signal: a
+    filter with real invocations and no benchmark case at all has no
+    regression protection whatsoever, which a large-but-covered divergence
+    at least has *some* baseline for. Excludes `PASSTHROUGH_LABEL` (not a
+    filter) and every `SYNTHESIS_FILTER_LABELS` entry (`quor map`/`symbols`/
+    `graph`/`repo`/`explore`/`search` — synthesis commands with no
+    benchmark counterpart by design, not a coverage gap). Sorted by usage
+    share descending — the most-used uncovered filter is the best-evidenced
+    nomination.
+    """
+    uncovered = [
+        f
+        for f in filters
+        if f.filter_name != PASSTHROUGH_LABEL
+        and f.filter_name not in _EXCLUDED_FROM_LOW_PERFORMER_CHECK
+        and f.filter_name not in benchmark
+    ]
+    return sorted(uncovered, key=lambda f: f.usage_pct, reverse=True)
+
+
+def nominate_for_benchmark_coverage(
+    diffs: list[UsageDivergence],
+    *,
+    threshold_pp: float = DEFAULT_NOMINATION_THRESHOLD_PP,
+) -> list[UsageDivergence]:
+    """Narrow `compute_divergence()`'s already-sorted output down to entries
+    whose compression divergence clears `threshold_pp` — the filters worth
+    actually nominating for new hand-written benchmark samples, rather than
+    every filter with any measurable gap at all. Already sorted by largest
+    absolute divergence first (inherited from `diffs`' own ordering)."""
+    return [d for d in diffs if abs(d.compression_delta_pp) >= threshold_pp]

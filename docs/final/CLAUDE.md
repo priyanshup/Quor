@@ -408,6 +408,16 @@ tagging a version:
       not repeated here to avoid two copies drifting apart.
 - [ ] The compression benchmark suite is green against its committed baseline — a release should
       never ship a silent compression regression relative to the last tagged version.
+- [ ] **(QB-047 Phase 1)** Run `python -m tests.benchmarks.run_benchmarks --history` (against the
+      just-bumped `quor.__version__`) and commit the resulting `tests/benchmarks/history.json`
+      alongside this release's other version-bump changes. This is what actually populates the
+      release-over-release trend view `tests/benchmarks/history.py` (QB-051) already implements —
+      re-running the same version replaces its own entry, so this is safe to redo if a release is
+      re-tagged. Deliberately a manual checklist step, not CI-automated: doing this from
+      `release.yml` would mean an automated workflow commits back to `main` from a tag-triggered
+      run, which is a separate, higher-risk decision this ticket did not scope — see
+      `docs/design/QB-047-real-world-benchmark-corpus-investigation.md` §7/§11 and the QB-047 Phase
+      1 final report for why that was deliberately not automated.
 - [ ] `docs/final/PROJECT_STATUS.md` reflects the actual current state (test count, phase status,
       known gaps) as of this release, not a stale snapshot from an earlier session.
 - [ ] `docs/final/COMMAND_SUPPORT.md` and `README.md`'s command/filter-facing sections are current

@@ -8,7 +8,7 @@ Runs entirely on your machine. No LLM, no cloud, no network call — just a dete
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue)](https://github.com/priyanshup/Quor/blob/main/LICENSE)
 
 > ### 35.9% smaller, on average. Up to 89% smaller on the worst offenders.
-> Measured across a 127-case real-world benchmark suite, CI-gated on every single change — not a one-time demo number. See [the numbers](#the-numbers) below, or run `quor gain` / `quor dashboard` to see your own project's real savings.
+> Measured across a 153-case hand-curated benchmark suite, CI-gated on every single change — not a one-time demo number. Benchmark cases are realistic, hand-authored samples, not a random draw of real usage — run `quor gain` / `quor dashboard` on your own project for what Quor actually saves you, or see [the numbers](#the-numbers) below for the full benchmark breakdown.
 
 | | | |
 |---|---|---|
@@ -42,7 +42,7 @@ Same command, same exit code, same side effects — only what reaches the contex
 
 ## The Numbers
 
-**35.9% average token reduction** across Quor's own 127-case benchmark suite (CI-gated — a regression here fails the build, not just a dashboard). That average includes plenty of already-terse output with nothing left to cut; on the cases that actually have noise to remove, it goes much further:
+**35.9% average token reduction** across Quor's own 153-case, hand-curated benchmark suite (CI-gated — a regression here fails the build, not just a dashboard). That average includes plenty of already-terse output with nothing left to cut; on the cases that actually have noise to remove, it goes much further:
 
 | Real command | Compression |
 |---|---|
@@ -55,13 +55,13 @@ By ecosystem:
 
 | Content | Compression |
 |---|---|
-| Java | 55.6% |
+| Java | 54.9% |
 | Config files (JSON/TOML/YAML/lockfiles) | 53.9% |
-| JavaScript | 49.5% |
-| Python packaging (pip/poetry) | 47.4% |
-| TypeScript | 42.5% |
-| Python | 35.6% |
-| CI/build logs | 35.7% |
+| JavaScript | 49.2% |
+| Python packaging (pip/poetry) | 45.4% |
+| TypeScript | 42.8% |
+| Python | 37.9% |
+| CI/build logs | 36.2% |
 | Documents (PDF, DOCX, Markdown) | 24.8% |
 
 Short, already-dense output compresses little — that's correct behavior, not underperformance; Quor never trims a line just to move the number (see [ANTI_GOALS.md](docs/final/ANTI_GOALS.md#9-never-optimize-for-benchmark-numbers-at-the-expense-of-correctness)). Full breakdown in [docs/BENCHMARKS.md](docs/BENCHMARKS.md), or run `quor gain` / `quor dashboard` for your own project's real, live numbers — always shown with an honest ±20% uncertainty band, never a bare number dressed up as exact.

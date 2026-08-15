@@ -15,15 +15,51 @@ and the pipeline engine):
 - User-supplied regex patterns are compiled with the `regex` package and run
   under a per-match timeout (fail-open: a timeout skips that pattern/line with
   a warning rather than hanging or crashing the pipeline).
-- Except for `group_repeated` and `collapse_unchanged_context` (which rewrite
-  one placeholder line per collapsed run), stages only ever mark lines
-  `COMPRESS`/`PROTECT`/`KEEP` — they don't rewrite content.
+- Most stages only ever mark lines `COMPRESS`/`PROTECT`/`KEEP` — they don't
+  rewrite content. Seven stages are the exception, each in its own
+  documented, narrow way (see each stage's own entry below for the exact
+  shape): `group_repeated`, `collapse_unchanged_context`,
+  `structured_data_summarize`, and `numeric_range_compression` each rewrite
+  the first line of a collapsed run to a summary and `COMPRESS` the rest;
+  `path_prefix_fold` inserts one new header line and rewrites every line in
+  the run to its own suffix; `relative_timestamp_compression` rewrites every
+  line but the first to a `+delta` form, `COMPRESS`ing none of them; and
+  `column_padding_compression` rewrites a single qualifying line's own
+  content in place, independent of any run.
 
-"Typical token savings" figures below are drawn from the 60-case benchmark
-corpus reported in `backlog.md` (QB-051, 2026-07-14) where available. They are
-directional (±20% char/4 token estimate, small hand-curated corpus), not a
-guarantee — see `backlog.md`'s own caveats around that table before treating
-them as precise.
+"Typical token savings" figures below are drawn from `docs/BENCHMARKS.md`'s
+"Stage contribution" table, itself generated from the current 153-case
+benchmark corpus (`tests/benchmarks/manifest.toml`, 2026-08-01). Three
+distinct numbers are reported per stage, and they answer different
+questions — not interchangeable:
+
+- **Contribution** — this stage's share of *every token saved by any stage,
+  corpus-wide*. A high contribution can mean "saves a lot each time" or
+  "runs on almost everything for a small trim each time" — the other two
+  columns disambiguate which.
+- **Activation** — the fraction of times this stage actually ran (as
+  opposed to being skipped) *among filters it's wired into* — not a
+  percentage of the whole 153-case corpus. Every stage in this document
+  currently activates 100% of the time it's reached, because none of them
+  skip based on content type; they each fail open internally (no-op) when
+  their own input doesn't match what they're looking for, which still
+  counts as "ran," not "skipped."
+- **Avg saved per fire** — the average token reduction on the cases this
+  stage actually changed something on.
+
+**Impact tier** (High/Medium/Low) is Contribution-based: High is ≥15%,
+Medium is ≥5%, Low is below that (`quor/analytics/effectiveness.py`'s own
+thresholds).
+
+These are **benchmark-corpus measurements only** — a hand-curated set of
+realistic sample commands, not a random sample of real usage. They are also
+approximate (±20% char/4 token estimate). Separately, QB-054 (shipped)
+measures real, per-project usage live via `quor gain --filters`/
+`quor doctor` — where a stage's benchmark figures and a specific project's
+real-usage figures diverge, that command pair is the authoritative,
+project-specific source, not this document; see `docs/BENCHMARKS.md`'s "Real-
+world vs. benchmark observations" for a worked example of how far apart the
+two can be.
 
 ---
 
@@ -46,8 +82,8 @@ Patterns are compiled once via `_compile` (LRU-cached) and matched with
 **Safety level:** High. Purely pattern-driven, deterministic, no line-count
 change, `preserve_patterns` is an explicit escape hatch.
 
-**Typical token savings:** High impact tier — 18.4% of total benchmark tokens
-saved, ~17.9% average reduction per fire, fires on 100% of benchmarked cases.
+**Typical token savings:** High impact tier — 19.5% contribution, 100%
+activation, ~14.5% average reduction per fire.
 
 **Languages/filters using it:** Broadly used across built-in filters (e.g.
 git, npm/node, generic command output) as the first-line noise remover before
@@ -78,9 +114,9 @@ check (and always break/reset the run, since they always survive).
 **Safety level:** High. Exact-match only, no fuzzy logic, strictly adjacent
 lines, never removes the first occurrence.
 
-**Typical token savings:** Low impact tier — 0.1% of total benchmark tokens
-saved, ~0.3% average reduction per fire (100% activation, but the effect size
-per fire is small in this corpus).
+**Typical token savings:** Low impact tier — 0.1% contribution, 100%
+activation, ~0.2% average reduction per fire — the effect size per fire is
+small in this corpus.
 
 **Languages/filters using it:** General-purpose; useful wherever tools emit
 repeated status lines.
@@ -110,8 +146,8 @@ ANSI codes are left untouched (content, not just the codes, is preserved).
 **Safety level:** High. Hardcoded, narrow pattern; only ever removes lines
 with zero printable content.
 
-**Typical token savings:** Low impact tier — 0.0% of total benchmark tokens
-saved, ~0.2% average reduction per fire — this corpus has little raw
+**Typical token savings:** Low impact tier — 0.0% contribution, 100%
+activation, ~0.1% average reduction per fire — this corpus has little raw
 ANSI-laden output; more relevant to filters that capture live terminal
 sessions.
 
@@ -151,12 +187,12 @@ QB-004).
 **Safety level:** Medium-High. Deterministic and `PROTECT`-respecting, but by
 design it can be a blunt instrument — see Limitations.
 
-**Typical token savings:** High impact tier by total contribution — 32.4% of
-all benchmark tokens saved — but that comes from firing on effectively every
-case (100% activation) for a small trim each time (~2.2% average per fire),
-not from deep, structure-aware compression. `backlog.md` explicitly warns
-against reading this as "max_tokens is more valuable than strip_lines";
-it's cheap-and-broad, not sophisticated.
+**Typical token savings:** High impact tier — 18.6% contribution, 100%
+activation, ~1.4% average reduction per fire — the lowest per-fire average
+of any High-tier stage. Its total contribution comes from firing broadly
+for a small trim each time, not from deep, structure-aware compression;
+don't read a high contribution figure here as "more valuable than
+strip_lines" — they're High tier for different reasons (breadth vs. depth).
 
 **Languages/filters using it:** General-purpose backstop; used broadly as a
 final safety-net stage across many built-in filters.
@@ -196,11 +232,15 @@ as the highest-risk stage in the pipeline, mitigated by: opt-in-only TOML
 config, refusing to fire over any `PROTECT` content, preserving line count,
 and always tracing/warning when it fires.
 
-**Typical token savings:** Not present in the QB-051 benchmark stage table in
-`backlog.md` — no measured figure available.
+**Typical token savings:** No measured figure available — not currently
+wired into any built-in filter (verified directly against
+`quor/filters/builtin/*.toml`), so it never appears in a benchmark run at
+all. Implemented and unit-tested (`tests/unit/test_stages.py`), available to
+any project-local or plugin filter that wants a whole-output shortcut.
 
-**Languages/filters using it:** Whole-output shortcuts like a clean `git
-status` or a successful build summary (QB-010).
+**Languages/filters using it:** None currently, among built-in filters.
+Originally motivated by whole-output shortcuts like a clean `git status` or
+a successful build summary (QB-010).
 
 **Limitations:** Requires an exact full-output match — any unexpected
 extra line (even a warning) prevents it from firing, by design. Cannot
@@ -231,9 +271,12 @@ just that rule, not the whole line).
 correctness depends entirely on how well-scoped the configured
 patterns/replacements are; a careless pattern could alter meaningful text.
 
-**Typical token savings:** Not present in the QB-051 benchmark stage table in
-`backlog.md` — no measured figure available. Its value is mostly enabling
-downstream dedup/grouping stages rather than saving tokens directly itself.
+**Typical token savings:** Low impact tier — 1.1% contribution, 100%
+activation, ~51.2% average reduction per fire — the highest per-fire average
+of any stage in the current corpus, on the modest set of cases it directly
+rewrites. Its main value is still mostly enabling downstream dedup/grouping
+stages rather than saving tokens directly itself; this figure only counts
+cases where a rule substitution measurably shortened the line.
 
 **Languages/filters using it:** Any filter needing to normalize noisy
 identifiers before deduplication/grouping (documented rationale references
@@ -267,11 +310,13 @@ preserved; only content and length change.
 **Safety level:** High. Deterministic, visibly marks its own truncation,
 never changes line count, `PROTECT` lines are exempt.
 
-**Typical token savings:** Not present in the QB-051 benchmark stage table in
-`backlog.md` — no measured figure available.
+**Typical token savings:** No measured figure available — not currently
+wired into any built-in filter (verified directly against
+`quor/filters/builtin/*.toml`), so it never appears in a benchmark run at
+all. Implemented and unit-tested (`tests/unit/test_stages.py`), available to
+any project-local or plugin filter dealing with long single-line payloads.
 
-**Languages/filters using it:** Useful for any filter dealing with long
-single-line payloads (long stack traces, JSON blobs, long file paths).
+**Languages/filters using it:** None currently, among built-in filters.
 
 **Limitations:** Truncates blindly by character count with no understanding
 of the line's structure — could cut a JSON value or path midway in a way
@@ -299,17 +344,16 @@ mypy error message recurring at different line numbers) — because several
 shipped filters depend on that default. `exact_match=True` is an opt-in that
 additionally requires byte-identical text to continue a run (used by
 ESLint's filter, where same-shape-different-rule diagnostics must never
-merge). This is one of two stages (with `collapse_unchanged_context`) that
-rewrites line content rather than only toggling decisions.
+merge). One of the seven stages in this document that rewrites line content
+rather than only toggling decisions — see the invariants list above.
 
 **Safety level:** Medium-High. Deterministic and pattern-driven, but the
 default shape-based grouping can merge genuinely different lines that share
 a pattern — mitigated by the `exact_match` opt-in for filters that need
 byte-identical grouping.
 
-**Typical token savings:** Low impact tier — 2.7% of total benchmark tokens
-saved, but ~14.1% average reduction per fire (100% activation) — a large
-effect when it fires, on a modest share of cases in this corpus.
+**Typical token savings:** Medium impact tier — 13.7% contribution, 100%
+activation, ~9.7% average reduction per fire.
 
 **Languages/filters using it:** mypy (`build.toml`, shape-based grouping of
 the same error recurring at different lines), ESLint (`node.toml`,
@@ -319,10 +363,11 @@ the same error recurring at different lines), ESLint (`node.toml`,
 **Limitations:** Only collapses *consecutive* matches — a repeated shape
 separated by unrelated lines is never caught (the exact gap QB-044 targets
 for test-output cross-run summarization). `backlog.md`'s QB-052 also
-documents a real-world negative case: mypy's `min_count=3` threshold means
+documented a real-world negative case: mypy's `min_count=3` threshold means
 2-of-a-kind repeats never collapse, which combined with other factors
-produced measured *negative* compression (-41.2% avg) in real usage —
-flagged as an open bug fix, not a defect in this stage's own logic.
+(unconditional dispatcher-level additions, not a defect in this stage's own
+logic) produced measured *negative* compression (-41.2% avg) in real usage.
+Resolved 2026-07-31 — see `backlog.md`'s QB-052 entry for the fix.
 
 ---
 
@@ -356,27 +401,30 @@ reformats kept text); relies on the pipeline engine's fail-open handling for
 unparseable input, which reverts to the unmodified original rather than
 producing corrupted output.
 
-**Typical token savings:** Highest-total-contribution stage in the current
-corpus — High impact tier, 44.1% of all benchmark tokens saved, ~43.1%
-average reduction per fire, 100% activation. `backlog.md` calls this "the
-single best-performing mechanism Quor has" and the strongest evidence behind
-QB-046 (extending it to more languages).
+**Typical token savings:** High impact tier — 30.1% contribution, 100%
+activation, ~40.7% average reduction per fire. Highest total contribution of
+any stage in the current corpus by a wide margin (`strip_lines`, the next
+highest, is at 19.5%) — `backlog.md` cited this as the strongest evidence
+behind QB-046 (extending it to Go/Rust/Java/C#, since shipped). Its
+average-per-fire figure is no longer the single highest, though — several
+lower-total-contribution stages (`structured_data_summarize`,
+`regex_replace`, `python_ast_summarize`) now measure a higher average
+reduction per fire; see those stages' own entries.
 
-**Languages/filters using it:** Per its own module docstring, **not yet
-wired into any built-in filter** as of this writing — it's the reusable
-framework counterpart to `python_ast_summarize`, proven via direct unit
-tests and via `python_ast_summarize`'s own unchanged behavior. The registry
-it dispatches through (`quor/pipeline/ast_summarize/registry.py`) currently
-has analyzers for `python`, `javascript`, `typescript`, and `tsx` (per
-`backlog.md`'s QB-046 entry); `code_ast_summarize` is the intended future
-entry point for JS/TS/TSX filters once they're wired to use it explicitly.
+**Languages/filters using it:** Wired into six built-in filters —
+`cat-javascript.toml`, `cat-typescript.toml`, `cat-go.toml`, `cat-java.toml`,
+`cat-rust.toml`, and `cat-csharp.toml` — the generic, reusable framework
+counterpart to `python_ast_summarize` (which stays Python-specific; see its
+own entry below). The registry it dispatches through
+(`quor/pipeline/ast_summarize/registry.py`) has analyzers for `python`,
+`javascript`, `typescript`, `tsx`, `go`, `java`, `rust`, and `csharp` as of
+QB-046 (shipped) — the four-language expansion this document previously
+listed under "planned but not yet implemented" below.
 
 **Limitations:** Only compresses whatever an analyzer is registered for —
-languages without a registered analyzer (e.g. Go, Rust, Java, C#) pass
-through completely untouched (documented as QB-046, "planned but not
-implemented" below). A parse failure on genuinely malformed/non-source input
-reverts the entire stage's effect for that file, not just the unparseable
-part.
+languages without a registered analyzer pass through completely untouched.
+A parse failure on genuinely malformed/non-source input reverts the entire
+stage's effect for that file, not just the unparseable part.
 
 ---
 
@@ -410,13 +458,14 @@ behavior are documented as unchanged by that refactor.
 for the one language it targets (parsing only, never regenerating source;
 fail-open reverts to original on unparseable input).
 
-**Typical token savings:** Low total-contribution but very high per-fire
-value — 2.4% of total benchmark tokens saved (low share only because this
-corpus has few Python cases relative to Git/JS/TS ones — a corpus-composition
-artifact per `backlog.md`, not a quality signal), but ~44.3% average
-reduction per fire, 100% activation — essentially identical per-fire quality
-to `code_ast_summarize`'s 43.1%, as expected since they share the same
-underlying analyzer.
+**Typical token savings:** Low impact tier — 2.2% contribution (low share
+only because this corpus has relatively few Python cases relative to
+Git/JavaScript/config-file ones — a corpus-composition artifact, not a
+quality signal), 100% activation, ~48.6% average reduction per fire — the
+second-highest per-fire average of any stage in the current corpus, close
+to but no longer identical to `code_ast_summarize`'s 40.7% (both share the
+same underlying analyzer, so the gap reflects which files each currently
+processes, not a difference in the analyzer itself).
 
 **Languages/filters using it:** Python only — wired into `cat-python.toml`.
 
@@ -450,19 +499,20 @@ omitted ...") and the rest of the middle is marked `COMPRESS`; the
 `context_lines`-sized head and tail of the run are always kept verbatim. Runs
 below the `min_collapse` threshold are left entirely untouched (avoids
 replacing a single leftover line with a placeholder longer than the line
-itself). Like `group_repeated`, this is one of the two stages that rewrites
-line content (the placeholder) rather than only toggling decisions.
+itself). Like `group_repeated`, one of the seven stages in this document
+that rewrites line content (the placeholder) rather than only toggling
+decisions — see the invariants list above.
 
 **Safety level:** High. Never touches `PROTECT`/`COMPRESS` lines (edits, hunk
 headers, conflict markers per ADR-031 are never candidates), only ever
 collapses lines already decided `KEEP` by earlier stages, and guards against
 degenerate short-run replacement via `min_collapse`.
 
-**Typical token savings:** Not present in the QB-051 benchmark stage table in
-`backlog.md` (introduced for QB-041, git-diff compression) — no measured
-figure available yet; `backlog.md`'s QB-041 evidence update notes git-diff
-currently converts only ~26% on average in real usage, which is the gap this
-stage (and QB-055's further design) targets.
+**Typical token savings:** Low impact tier — 3.4% contribution, 100%
+activation, ~12.7% average reduction per fire (benchmark corpus). Separately,
+in real usage, `backlog.md`'s QB-041 evidence update found git-diff
+converting only ~26% on average — a real-world figure, not a benchmark one,
+and the gap this stage (and QB-055's further design) targets.
 
 **Languages/filters using it:** Built for git-diff/git-show compression
 (QB-041); not language-specific — applicable to any filter with a mix of
@@ -485,11 +535,255 @@ collapsed whole.
 
 ---
 
+## structured_data_summarize
+
+**Purpose:** Collapse long, homogeneous JSON/YAML/TOML arrays (or TOML
+array-of-tables) down to their first few elements plus an omitted-count
+placeholder, using each format's real parser rather than line-pattern
+guessing.
+
+**Layman explanation:** For a config or lockfile with a long list of
+near-identical entries (dozens of dependency records, for example), show
+the first few in full and one line saying how many more were omitted —
+every key and value that *is* shown stays byte-for-byte accurate.
+
+**Technical explanation:** Reads a `format` field from its config
+(`"json"`/`"yaml"`/`"toml"`) and dispatches to a per-format analyzer
+(`quor.pipeline.structured_data.registry.get_analyzer()`) that parses the
+*original* line sequence with the format's real parser (stdlib `json`,
+PyYAML, stdlib `tomllib`) to find array/array-of-tables boundaries a
+line-pattern stage can't safely detect (nested brackets, a string
+containing `[`/`]`, etc.). For each collapsible range found, the first line
+is rewritten to an "N more items omitted (M total)"-style summary and the
+rest of the range is marked `COMPRESS` — the same "rewrite the first line of
+a run, compress the rest" technique `group_repeated`/
+`collapse_unchanged_context`/`numeric_range_compression` use.
+`preserve_patterns` still applies; a `PROTECT`ed line anywhere inside a
+would-be-collapsed range cancels collapsing that whole range, rather than
+partially collapsing around it.
+
+**Safety level:** High for supported/parseable input — every kept line is
+byte-identical to source, and collapsing is driven by the format's own real
+parser, not a line-count or regex guess. Relies on the pipeline engine's
+fail-open handling for a genuinely malformed file, which reverts this
+stage's effect entirely rather than producing a corrupted collapse.
+
+**Typical token savings:** Medium impact tier — 6.8% contribution, 100%
+activation, ~54.0% average reduction per fire — the highest average-per-fire
+saving of any stage in the current corpus, on the modest share of cases
+that are JSON/YAML/TOML files.
+
+**Languages/filters using it:** `cat-json.toml` and `cat-yaml.toml` (array
+collapsing); `cat-toml.toml` (array-of-tables only — TOML has no stdlib
+position-tracking API for general values, so support there is deliberately
+narrower). `.env`/`.ini` config files use `strip_lines` instead — their
+grammar has no array structure to collapse.
+
+**Limitations:** TOML support only covers array-of-tables (`[[name]]`
+blocks), not inline arrays or plain tables. Never touches a dict/mapping
+key or a heterogeneous array — only a long, homogeneous run collapses. A
+malformed file reverts this stage's entire effect for that file, not just
+the unparseable part.
+
+---
+
+## path_prefix_fold
+
+**Purpose:** Front-code a consecutive run of path-like lines that share a
+directory (or other separator-delimited) prefix into one header line plus
+each line's own shortened suffix.
+
+**Layman explanation:** Like a file-tree view — a list of files that all
+live under the same folder is shown as "folder/ (N entries):" followed by
+just each file's own name, instead of repeating the full path on every
+line.
+
+**Technical explanation:** For a run of consecutive `KEEP` lines matching
+the filter-declared `patterns`, computes the longest shared character
+prefix across the run, trims it back to the last `separator` occurrence (so
+a fold never splits a filename mid-token), and — only if doing so is
+estimated to cost strictly fewer tokens than leaving the run alone —
+rewrites the run to one new header line (`prefix (N entries):`) followed by
+every original line rewritten to its own suffix. Nothing is discarded:
+every original line is exactly reconstructible as header-prefix plus its
+own suffix. `separator` is configurable, so the same stage handles
+filesystem paths (`/`) and other prefix-delimited shapes.
+
+**Safety level:** High. Deterministic prefix computation, a strict
+token-cost gate, and full reconstructibility — no information is lost, only
+the shared prefix's repetition.
+
+**Typical token savings:** Low impact tier — 0.4% contribution, 100%
+activation, ~4.2% average reduction per fire. The token-cost gate means it
+declines to fold more often than the activation figure alone would suggest
+— a run whose shared prefix is too short to be worth a header line is left
+untouched.
+
+**Languages/filters using it:** `z_generic.toml` (the universal fallback
+filter, `separator = "/"`, for filesystem-path-shaped output like `find`/
+`rg --files` listings) and `ci.toml`'s Gradle handling (`separator = ":"`,
+for `> Task :module:name` lines).
+
+**Limitations:** Requires a filter author to declare which lines are
+path-like via `patterns` — there's no built-in "looks like a path"
+heuristic, since guessing that shape from arbitrary text risks folding
+lines that only coincidentally contain the separator. Scope is
+single-level: one shared prefix per run, not a nested directory tree.
+
+---
+
+## numeric_range_compression
+
+**Purpose:** Collapse a consecutive run of standalone-integer lines
+(nothing else on the line) into one inclusive `start-end` range.
+
+**Layman explanation:** A list of consecutive line numbers or IDs — `101`,
+`102`, `103` — becomes one line, `101-105`, instead of five separate lines.
+
+**Technical explanation:** Matches `KEEP` lines that are nothing but digits
+(`^\d+$`), and folds a run where each value is exactly one more than the
+previous, every line shares the same string width (preserving zero-padding
+fidelity — `"001"`/`"002"`/`"003"` folds to `"001-003"`, not `"1-3"`), and
+the fold is estimated to cost strictly fewer tokens than the original
+lines. Negative numbers are never merged (the range separator `-` would be
+ambiguous against a negative sign), and a width change or non-consecutive
+value always breaks the run rather than attempting a lossy reformat. No
+`patterns` config is needed — "the whole line is only digits" has no
+false-positive risk, unlike `path_prefix_fold`'s path-like shape.
+
+**Safety level:** High. A precise structural check (not a shape guess),
+strict ascending-by-one and same-width requirements, and the same strict
+token-cost gate every run-folding stage in this document uses.
+
+**Typical token savings:** Low impact tier — 0.1% contribution, 100%
+activation, ~9.8% average reduction per fire — the smallest measured
+contribution of any stage with benchmark evidence. Under the char/4 token
+estimate, a same-width run of two-digit-or-longer numbers folding to two
+lines is usually a token-count tie rather than a saving (the `-` separator
+and the newline it replaces both cost one character), so most 2-line
+same-width runs are left unfolded in practice; shorter (single-digit) and
+longer runs fold more often.
+
+**Languages/filters using it:** `z_generic.toml`, positioned after
+`path_prefix_fold` so a numeric suffix that stage just produced (e.g. a
+folded `run/42`/`run/43`) is itself a candidate for further folding.
+
+**Limitations:** Only merges bare, standalone digit lines — `"Line 101"`/
+`"Line 102"` (a text prefix plus a number) is out of scope, a different and
+harder problem this stage deliberately doesn't attempt.
+
+---
+
+## relative_timestamp_compression
+
+**Purpose:** Rewrite a consecutive run of timestamp-prefixed lines so only
+the first line keeps its full timestamp, and every following line shows the
+time elapsed since the previous line.
+
+**Layman explanation:** A log with a full date and time on every line —
+where what actually matters is how far apart the events were — gets
+rewritten so only the first line has the full timestamp, and the rest just
+say `+1s`, `+2s`, and so on.
+
+**Technical explanation:** Recognizes seven deterministic timestamp formats
+anchored at the start of a line (a plain "space" datetime, several
+ISO-8601 variants with or without a fractional second or UTC offset, and
+bare time-only forms) — no locale-dependent parsing, no natural-language
+dates. A run continues only while every line matches the same format kind,
+the same fractional-digit width, and a value no earlier than the previous
+line's. Every timestamp is converted to an exact integer nanosecond count
+(no floating-point rounding) before computing each delta, rendered using
+the largest time unit that divides it evenly. Only folds if the result is
+estimated to cost strictly fewer tokens than the original. Unlike every
+other folding stage in this document, no line is ever marked `COMPRESS`
+and no line is inserted — every line in a folded run stays `KEEP`, with all
+but the first rewritten in place to its `+delta` form.
+
+**Safety level:** High. Every supported format is parsed exactly (no
+rounding; an explicit UTC offset is normalized to an absolute instant
+before diffing, so a run may span a changing offset without ambiguity), a
+run breaks on any format/width mismatch or a value going backwards, and the
+fold is exactly reconstructible by addition from the first line.
+
+**Typical token savings:** Low impact tier — 2.2% contribution, 100%
+activation, ~11.9% average reduction per fire.
+
+**Languages/filters using it:** `node.toml` (an `npm run <script>`
+dev-server watch process that timestamps its own rebuild lines) and
+`z_generic.toml` (covers `docker logs --timestamps`, `kubectl logs
+--timestamps`, ISO-mode `journalctl`, and generic CI/application logs with
+no dedicated filter).
+
+**Limitations:** Deliberately excludes journalctl's default syslog-style
+prefix (a month name is locale-dependent/natural-language, out of scope by
+design) and any timestamp not anchored at the very start of the line (a
+bracket-wrapped or otherwise-prefixed timestamp simply isn't recognized). A
+run breaks on a timestamp that decreases, since that could be legitimate
+clock skew or a day rollover with no date to disambiguate on a time-only
+line.
+
+---
+
+## column_padding_compression
+
+**Purpose:** Collapse multi-space column-alignment padding in
+machine-generated tabular output (`docker ps`, `kubectl get pods`, `ps
+aux`, `df -h`, and similar) down to a single separating space, since an LLM
+needs field values and their order, not visual column alignment.
+
+**Layman explanation:** A table whose columns are padded with extra spaces
+to line up visually gets each run of alignment spaces collapsed to one
+space; every value and its position in the row survive, only the visual
+padding is removed.
+
+**Technical explanation:** For each `KEEP` line matching the filter-declared
+`patterns`, replaces every run of 2+ literal spaces that has a
+non-whitespace character immediately on both sides with a single space (a
+tab, or a run touching the start/end of a line, never matches, so
+indentation and trailing whitespace are untouched). Processes each
+qualifying line independently — unlike the three run-folding stages above,
+it needs no multi-line scanning, since collapsing padding inside one line
+doesn't depend on its neighbors. Applies the same strict token-cost gate
+every folding stage in this document uses. An optional `max_gaps` config
+limits how many space-runs on a line are collapsed, for tables with a
+trailing free-text column (a commit subject, a process command line) that
+can legitimately contain multiple real spaces the stage must not touch.
+
+**Safety level:** Medium-High. Every token's exact spelling and
+left-to-right order is preserved — only inter-column gap width changes —
+but, unlike `path_prefix_fold`, the original padding width isn't
+reconstructible, and a filter that wires this stage into content that
+merely looks tabular (e.g. prose with an accidental double space) would
+silently collapse that spacing too. The safety boundary is the filter
+author's `patterns` opt-in, not something the stage detects on its own.
+
+**Typical token savings:** Low impact tier — 1.8% contribution, 100%
+activation, ~16.2% average reduction per fire.
+
+**Languages/filters using it:** `docker.toml`, `git.toml` (`git branch
+-vv`), `kubectl.toml`, `pip.toml`, `poetry.toml`, and `unix.toml` (`ps
+aux`, `df -h`, `ls -l`). Never wired into `z_generic.toml` — the universal
+fallback doesn't know what command produced its input, so it can't safely
+declare "these are table rows" without reintroducing the shape-guessing
+this stage is built to avoid.
+
+**Limitations:** Requires a filter author to declare which lines are table
+rows via `patterns` — a prose sentence with an accidental double space is
+indistinguishable from a table row by shape alone. Without `max_gaps` set,
+a table whose trailing column can legitimately contain multiple real
+spaces is unsafe to wire this stage into.
+
+---
+
 ## Algorithms planned but not yet implemented (from backlog.md)
 
 The following are proposed compression mechanisms tracked in `backlog.md`
 that do not yet exist as stages (or, for QB-039, as a cross-cutting mode) in
-`quor/pipeline/stages/`:
+`quor/pipeline/stages/`. (QB-046 — AST-aware summarization for more
+languages — and QB-040 — config/structured-data file compression — were
+previously listed here; both have since shipped and are removed from this
+list. QB-046 is documented under `code_ast_summarize` above; QB-040 is now
+documented under `structured_data_summarize` above.)
 
 - **QB-055 — Context-aware hunk compression (diff semantics).** The
   worked-out algorithm for git-diff's next compression step: collapse
@@ -500,22 +794,6 @@ that do not yet exist as stages (or, for QB-039, as a cross-cutting mode) in
   remain unconditionally preserved. Builds directly on
   `collapse_unchanged_context`, which only handles the "fixed context
   window" half of this design. Status: proposed, not scoped or implemented.
-
-- **QB-046 — AST-aware summarization for more languages (Go, Rust, Java,
-  C#).** Extends the `tree-sitter`-based analyzer framework behind
-  `code_ast_summarize`/`python_ast_summarize` (currently registered for
-  Python, JavaScript, TypeScript, TSX) to four more languages, following the
-  same signature-preserved, body-compressed pattern. Status: proposed, no
-  language chosen as "first" yet — sequenced last in `backlog.md`'s current
-  priority order pending real usage evidence.
-
-- **QB-040 — Config & structured-data file compression (YAML/JSON/TOML/
-  .env/.ini).** No filter or stage exists yet for structure-aware
-  compression of config files — e.g. collapsing long homogeneous arrays in a
-  lockfile while preserving schema/key shape, or stripping comments/blank
-  lines from `.env` files without ever touching a value (must compose with
-  the existing secret scanner, QB-029). Status: proposed, demoted to `Next`
-  pending a benchmark category to measure it against.
 
 - **QB-044 — Deeper test-output compression (cross-run summarization).**
   `group_repeated` only collapses *adjacent* matching lines; this item

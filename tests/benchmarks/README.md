@@ -176,6 +176,63 @@ since closed that gap too, adding 12 cases across those 3 categories (60 cases a
 categories total). Every filter added after this point must include its own benchmark case
 before merge — see `docs/final/COMMAND_SUPPORT.md` §7.
 
+## Release-history tracking (QB-047 Phase 1)
+
+`history.py` (QB-051) implements an append-only, one-row-per-release trend view — kept separate
+from `baseline.json` (which only ever compares against the *immediately prior* run) so a
+regression that's individually below `--regression-threshold` but persistent across several
+releases becomes visible.
+
+```bash
+# After bumping quor.__version__ (pyproject.toml) for a release:
+python -m tests.benchmarks.run_benchmarks --history
+```
+
+This appends (or, for a version already present, replaces **in place** — never reordering
+existing history) one entry to `tests/benchmarks/history.json` keyed by `quor.__version__`, prints
+the version-over-version compression table, and reports whether the two most recent entries show a
+regression beyond `--regression-threshold`. Commit the updated `history.json` alongside the
+release's other version-bump changes — see `docs/final/CLAUDE.md`'s Release Readiness Checklist,
+which has its own line item for this step. Deliberately a manual release-checklist step rather
+than a CI-automated one: an automated workflow committing back to `main` from a tag-triggered
+release run is a separate, higher-risk decision not made by this change — see
+`docs/design/QB-047-real-world-benchmark-corpus-investigation.md` §7/§11.
+
+## Evidence-directed benchmark curation (QB-047 Phase 1)
+
+The benchmark corpus is entirely hand-written (see "Filter coverage" above) — it is not, and does
+not claim to be, a sample of real usage (see `docs/BENCHMARKS.md`'s "Known benchmark limitations").
+QB-054's real-usage analytics (`quor gain --filters`, `quor doctor`) already compares live,
+per-project telemetry against this corpus and can tell you exactly *which* filters' benchmark
+numbers currently disagree with production — this section is the workflow for turning that signal
+into new benchmark cases, without ever collecting or storing any real command-output content.
+
+1. Run `python -m quor gain --filters` (or `python -m quor doctor`) against a real project with
+   enough history to be meaningful.
+2. Read the **"Benchmark coverage nominations"** section of the output
+   (`quor/analytics/filter_report.py::render_benchmark_nominations`). It lists two kinds of
+   candidates, both computed purely from numbers `FilterUsage`/`BenchmarkFilterStats` already
+   expose — nothing new is collected to produce this list:
+   - **No benchmark coverage at all** — a real filter with production invocations and zero
+     manifest cases. The single best nomination signal: it currently has no regression protection
+     whatsoever.
+   - **Compression diverges sharply from the benchmark corpus** (>=15 percentage points by
+     default, `quor.analytics.filter_divergence.DEFAULT_NOMINATION_THRESHOLD_PP`) — the same shape
+     of gap the 2026-07-15 product-strategy review found by hand for `mypy`/`npm`/`git-log`/
+     `git-status`/`pytest` (see `docs/BENCHMARKS.md`'s "Real-world vs. benchmark observations"),
+     now a standing, automated signal instead of a one-off manual query.
+3. For each nominated filter, write a new, realistic, hand-authored (or hand-sanitized) sample —
+   following "Adding a new benchmark case" above exactly as for any other case. This step is
+   always a human decision: nothing here writes a `[[case]]` entry, samples a real command output,
+   or commits anything automatically.
+4. Run `--update-baseline` once the new case is reviewed, and commit both files together, as
+   usual.
+
+This closes real, evidence-backed gaps in the *hand-written* corpus's realism. It is not, and is
+not a substitute for, a genuinely real-content benchmark corpus — see
+`docs/design/QB-047-real-world-benchmark-corpus-investigation.md` §4/§5/§7 for why that remains a
+separate, future, product-and-privacy-reviewed initiative, not something this workflow attempts.
+
 ## AST summarization timing analysis (QB-005E)
 
 `ast_timing_analysis.py` is a second, deliberately separate script from the rest of this suite —
