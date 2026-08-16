@@ -5,6 +5,27 @@ All notable changes to Quor are documented here. Format loosely follows
 
 ## [Unreleased]
 
+## [0.6.0] — 2026-08-16
+
+- **BREAKING: retired the hook-based integration; MCP is now Quor's sole integration surface
+  (QB-104).** Quor no longer intercepts Claude Code's PreToolUse/PostToolUse hooks, or any other
+  assistant's hook-shaped extension point — `quor init --claude`, `quor init --agent <name>`, and
+  `quor hook <agent> <event>` are all removed, along with the 9 per-assistant adapters and PS1/SH
+  launcher generation behind them. In their place: an MCP server (`python -m quor.mcp.server`,
+  stdio transport) exposing two tools, `compress_context(raw_text)` and
+  `get_repo_context(file_path, query)`, that any MCP-compatible client (Claude Code, Claude
+  Desktop, and others) can register and call directly — no per-assistant adapter code needed.
+  `get_repo_context` carries forward the old Read-hook's repository-intelligence and
+  onboarding-nudge features (QB-079/081/090), adapted to take a query parameter directly since an
+  MCP tool call has no session transcript to parse one from. **Migration:** run `quor init --mcp`
+  to scaffold `.mcp.json` (and print the equivalent `claude_desktop_config.json` snippet); a
+  pre-0.6 hook installation on disk is cleaned up automatically the next time `quor init` runs (or
+  run `quor uninstall-hooks` directly, with no scaffolding side effect). Per this project's own
+  versioning scheme — MAJOR is reserved specifically for plugin-API or TOML-filter-format breaks,
+  neither of which changed here — this ships as a minor version, but it removes a previously
+  documented, working feature: read this entry before upgrading if `quor init --claude` is
+  installed anywhere. See `backlog.md`'s QB-104 entry for the full removal/rebuild record,
+  including where execution diverged from the original plan.
 - **Fixed: Read-hook tracking accuracy (QB-094).** `quor gain`, dashboard statistics, and per-filter
   analytics under-reported real token cost for Read-hook invocations that used Repository Context
   (QB-079), Relevant repository files (QB-081), the repository-intelligence nudge (QB-090), or the
