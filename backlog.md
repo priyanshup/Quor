@@ -3700,6 +3700,82 @@ command strings, not Read file paths).
 - Java (QB-035's original scope) remains unstarted — QB-005A–F only ever covered Python/
   JavaScript/TypeScript per the design doc's explicit Phase 1 scope.
 
+**Update (2026-08-15):** the `on_empty` gap flagged directly above is now closed for all three
+filters (`cat-python.toml`, `cat-javascript.toml`, `cat-typescript.toml` — both its `cat-typescript`
+and `cat-tsx` blocks). Each now sets `on_empty = "(empty document)"`, the exact convention
+`cat-json.toml`/`cat-yaml.toml`/`cat-toml.toml` already use for the identical dual case (genuinely
+empty input vs. a structural-summarize + `max_tokens` stack collapsing pathological input to
+nothing) — no new fallback string invented, no change to `max_tokens` itself: `FilterRegistry.apply()`
+already had this exact filter-level mechanism (`registry.py`, tested since before this fix). Confirmed
+by direct reproduction against the real filters, not just the theoretical code path: a single
+PROTECT-free line whose estimated token cost exceeds `max_tokens`' 800-token budget (e.g. a ~4KB+
+minified bundle collapsed onto one line, or a Python file with no signature-bearing structure at
+all) now renders `"(empty document)"` instead of silently vanishing. The originally-flagged
+893-character JS benchmark case is well under this threshold and is untouched — no benchmark
+baseline changed. Two pre-existing tests had silently encoded the old empty-string behavior as
+"expected" and were corrected, not weakened: `tests/unit/test_early_exit.py`'s
+`test_cat_python_trailing_max_tokens_actually_skipped` (its `rendered == forced` comparison mixed
+`apply()`, which now applies `on_empty`, with a raw `_run_pipeline().mask.render()` call, which
+doesn't — split into two comparisons plus an explicit `on_empty` assertion) and
+`tests/unit/test_read_hook_repo_context.py`'s `test_omitted_when_compression_itself_is_a_no_op`
+(asserted no `updatedToolOutput` at all for an empty `.py` Read, which is no longer true now that
+compression is a genuine change; updated to the same `updated is None or "Repository Context" not
+in updated` pattern its sibling tests in the same class already use). New regression coverage:
+`tests/unit/test_filters.py`'s `TestCodeFilterEmptyOutputFallback` (13 tests: genuinely-empty input
+for all four filter blocks, minified-collapse reproduction for JS/TS/TSX, a Python no-signature
+pathological case, normal-compression-unaffected guards, and confirmation that a preserve_patterns
+match — e.g. a `TODO` line — still suppresses the fallback since real content survives).
+
+**Update (2026-08-16):** the four QB-046 siblings flagged directly above — `cat-rust.toml`,
+`cat-go.toml`, `cat-java.toml`, `cat-csharp.toml` — are now fixed too, folded into QB-005F rather
+than left as a separate ticket, since they were confirmed instances of the exact same bug, not a
+new one. Each gets the identical one-line `on_empty = "(empty document)"` addition, placed and
+worded consistently with `cat-python.toml`/`cat-javascript.toml`/`cat-typescript.toml`'s own
+on_empty header comments. No changes to `max_tokens.py`, `ContentMask`, `FilterRegistry`, or the
+`on_empty` mechanism itself — this remains purely a filter-configuration fix. Reproduction confirmed
+directly against all four real filters before and after (a single PROTECT-free line, e.g. a
+minified-style function body, whose token cost exceeds the 800-token budget collapses to nothing
+without the fix, renders `"(empty document)"` with it); `cat-go.toml` has no `strip_lines` stage at
+all (see its own header comment), so it was the simplest possible reproduction — nothing in its
+pipeline can mark any part of a pathological line PROTECT. `TestCodeFilterEmptyOutputFallback`
+extended with 15 more tests (4 genuinely-empty-input cases folded into the existing parametrized
+test, plus per-language normal-compression/pathological-collapse/preserved-content coverage for
+Rust, Go, Java, and C#) — 28 total. Two tests fixed for the original three filters
+(`test_early_exit.py`, `test_read_hook_repo_context.py`) needed no further changes: neither
+references Rust/Go/Java/C#, and both were re-run clean. `TestFilterNeverExpandsOutput` (QB-017)
+re-verified unaffected — no inline `input = ""` TOML case was added for any of the four, same
+reasoning as the original three. Full benchmark suite re-run: 153 cases, 20,549 tokens saved
+(35.9% overall) — byte-identical to the pre-fix run, confirming none of the committed Rust/Go/
+Java/C# benchmark samples are pathological enough to reach the collapse threshold; `baseline.json`
+untouched. QB-005F now covers every built-in filter confirmed to share this failure mode; no further
+known instances remain.
+
+**Systemic guard added (2026-08-16):** the eight per-filter fixes above closed every *known*
+instance, but nothing previously stopped a *future* max_tokens-using filter from shipping without
+on_empty — the exact gap that let this bug reach eight filters before being caught. Added
+`TestMaxTokensFiltersDeclareOnEmpty` to `tests/unit/test_filters.py`: it enumerates every built-in
+filter via the real `FilterRegistry`, and fails if any filter whose stages include `max_tokens` has
+no `on_empty` and isn't in a documented, reviewed `_MAX_TOKENS_ON_EMPTY_EXEMPTIONS` allowlist (plus
+an inverse check that the allowlist itself never goes stale). This is a test-only, ratchet-style
+guard — no change to `max_tokens.py`, `registry.py`, or any filter's runtime behavior. Direct
+inspection via `FilterRegistry` found 17 filters that currently use `max_tokens` without `on_empty`
+(`cat`, `docker-build`, `gradle`, `maven`, `github-actions`, `docker-ps`, `docker-images`,
+`kubectl-get`, `ps`, `df`, `ls-long`, `git-log`, `git-diff`, `pip`, `poetry`, `next`, `generic`) —
+all deliberately exempted rather than patched with a borrowed `"(empty document)"` message: none of
+them run `code_ast_summarize`/`python_ast_summarize`/`structured_data_summarize` (confirmed per
+filter, not assumed), so an empty render there is not the QB-005F "signature kept, body discarded"
+pattern — for several (the `docker-ps`/`docker-images`/`kubectl-get`/`ps`/`df`/`ls-long` listing
+commands especially) empty output is a legitimate, common, meaningful state ("nothing running") that
+`"(empty document)"` would actively misrepresent. Several others (`gradle`/`maven`/`next`/
+`github-actions`) look like plausible, low-risk quick wins alongside `build.toml`'s
+`mypy`/`ruff`/`pytest` and `node.toml`'s `eslint`/`tsc`/`jest`/`vitest`/`prettier`, which already
+have their own `on_empty` — flagged here as individual follow-up opportunities, each needing its own
+considered message, not bundled into this fix. Verified the guard actually catches a regression (a
+simulated new filter with `max_tokens` and no `on_empty`, not in the allowlist, correctly fails it)
+before relying on it. `ruff`/`mypy` clean on the touched test file (2 pre-existing, unrelated mypy
+errors confirmed present before this change too); `quor verify` 242/0; full `test_filters.py` +
+`test_stages.py` 422/422.
+
 **Status:** Implemented and merged to `main` — shipped in Quor **v0.4.0** (2026-07-11). *(Correction: this entry originally read "not committed" — verified against `CHANGELOG.md` and `git log` while restructuring this document; the branch was merged via the `integration/stabilize-ast-and-early-exit` PR and the code is present on `main` today.)*
 This closes out the entire QB-005 phased plan (QB-005A→F).
 

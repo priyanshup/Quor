@@ -296,10 +296,13 @@ class TestRepositoryContextOmitted:
         assert "Repository Context" not in updated
 
     def test_omitted_when_compression_itself_is_a_no_op(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        """An empty file compresses to itself — the whole hook stays a
-        passthrough (no `updatedToolOutput` at all), so the Repository
-        Context block, which only ever prepends onto genuinely changed
-        output, never gets a chance to attach even with a matching entry."""
+        """An empty file compresses to cat-python.toml's on_empty fallback
+        (QB-005F: "(empty document)", not the empty string itself — see
+        that filter's own on_empty comment) — a genuine change from the
+        original "", so updatedToolOutput is attached same as any other
+        real compression. Either way, the Repository Context block, which
+        only ever prepends onto genuinely useful compressed output, must
+        not attach to a bare on_empty marker even with a matching entry."""
         monkeypatch.chdir(tmp_path)
         (tmp_path / "empty.py").write_text("", encoding="utf-8")
         intel_store.save_file_intelligence(
@@ -307,5 +310,6 @@ class TestRepositoryContextOmitted:
         )
 
         result = _run_hook(_read_payload(str(tmp_path / "empty.py"), ""))
+        updated = result["hookSpecificOutput"].get("updatedToolOutput")
 
-        assert "updatedToolOutput" not in result["hookSpecificOutput"]
+        assert updated is None or "Repository Context" not in updated

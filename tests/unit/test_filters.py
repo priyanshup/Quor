@@ -764,6 +764,386 @@ class TestBuiltinFilterTests:
 
 
 # ---------------------------------------------------------------------------
+# QB-005F: cat-python/cat-javascript/cat-typescript/cat-tsx must never
+# silently render nothing when max_tokens collapses a pathological,
+# PROTECT-free input (e.g. a minified single-line bundle) entirely away.
+#
+# The `input = ""` case is already covered by each filter's own inline
+# [[filter.tests]] (loaded via TestBuiltinFilterTests above). What can't be
+# expressed as a TOML literal — per markdown.toml's own documented
+# precedent ("TOML has no string-repetition syntax") — is the realistic
+# compression-collapses-to-empty case: a single line whose token cost alone
+# exceeds max_tokens' budget. That's exercised here instead, against the
+# real built-in filters (not a synthetic stage composition), the same way
+# TestGitDiffBestEffortBudget below does for git-diff/ADR-031.
+# ---------------------------------------------------------------------------
+
+
+class TestCodeFilterEmptyOutputFallback:
+    registry = FilterRegistry(skip_user=True, skip_project=True)
+
+    @pytest.mark.parametrize(
+        "command,filter_name",
+        [
+            ("cat empty.py", "cat-python"),
+            ("cat empty.js", "cat-javascript"),
+            ("cat empty.ts", "cat-typescript"),
+            ("cat empty.tsx", "cat-tsx"),
+            ("cat empty.rs", "cat-rust"),
+            ("cat empty.go", "cat-go"),
+            ("cat Empty.java", "cat-java"),
+            ("cat Empty.cs", "cat-csharp"),
+        ],
+    )
+    def test_genuinely_empty_file_renders_fallback(self, command: str, filter_name: str) -> None:
+        """Not exercised as an inline [[filter.tests]] `input = ""` case
+        (see each TOML file's own on_empty comment: that would trip
+        TestFilterNeverExpandsOutput's QB-017 guard, since 0 -> N tokens is
+        exactly what on_empty is supposed to do). Verified here instead,
+        directly against the real built-in filter."""
+        fc = self.registry.find(command)
+        assert fc is not None and fc.name == filter_name
+        assert self.registry.apply(fc, "") == "(empty document)"
+
+    def test_python_normal_compression_unaffected(self) -> None:
+        """Regression guard: on_empty must not change any existing
+        successful-compression behavior for a normal file."""
+        fc = self.registry.find("cat script.py")
+        assert fc is not None and fc.name == "cat-python"
+        src = 'def foo(x, y):\n    """Add two numbers."""\n    total = x + y\n    return total\n'
+        rendered = self.registry.apply(fc, src)
+        assert rendered != "(empty document)"
+        assert "def foo(x, y):" in rendered
+        assert "Add two numbers." in rendered
+
+    def test_python_pathological_single_line_triggers_fallback(self) -> None:
+        """A file with no signature-bearing structure at all (a bare,
+        giant statement — nothing for python_ast_summarize to anchor a
+        KEEP decision on beyond the statement itself) collapses to one
+        PROTECT-free line whose cost exceeds the 800-token budget."""
+        fc = self.registry.find("cat generated.py")
+        assert fc is not None and fc.name == "cat-python"
+        src = f'result = "{"x" * 5000}"\n'
+        rendered = self.registry.apply(fc, src)
+        assert rendered == "(empty document)"
+
+    def test_javascript_normal_compression_unaffected(self) -> None:
+        pytest.importorskip("tree_sitter_javascript")
+        fc = self.registry.find("cat app.js")
+        assert fc is not None and fc.name == "cat-javascript"
+        src = "/**\n * Add two numbers.\n */\nfunction add(x, y) {\n  const total = x + y;\n  return total;\n}\n"
+        rendered = self.registry.apply(fc, src)
+        assert rendered != "(empty document)"
+        assert "function add(x, y) {" in rendered
+
+    def test_javascript_minified_bundle_triggers_fallback(self) -> None:
+        """A large minified bundle collapsed onto a single line — the
+        real-world case QB-005F's own backlog entry names — has no
+        newline for code_ast_summarize/strip_lines to hang a preserved
+        signature on, so the whole file is one PROTECT-free line whose
+        token cost exceeds the 800-token budget."""
+        pytest.importorskip("tree_sitter_javascript")
+        fc = self.registry.find("cat bundle.min.js")
+        assert fc is not None and fc.name == "cat-javascript"
+        minified_line = "const x=1;" * 1000
+        src = f"function f(){{{minified_line}}}\n"
+        rendered = self.registry.apply(fc, src)
+        assert rendered == "(empty document)"
+
+    def test_javascript_fallback_does_not_fire_when_output_legitimately_nonempty(self) -> None:
+        """Sanity check on the other side: a large *realistic* multi-line
+        file (many small functions, each its own line) is compressed but
+        never fully emptied — on_empty must not fire here."""
+        pytest.importorskip("tree_sitter_javascript")
+        fc = self.registry.find("cat app.js")
+        assert fc is not None
+        src = "\n".join(
+            f"function fn{i}(a, b) {{\n  const total = a + b + {i};\n  return total;\n}}\n"
+            for i in range(200)
+        )
+        rendered = self.registry.apply(fc, src)
+        assert rendered != "(empty document)"
+        assert rendered.strip() != ""
+
+    def test_javascript_preserved_content_survives_alongside_collapsed_line(self) -> None:
+        """PROTECT always wins: a TODO comment on its own line survives
+        max_tokens' preserve_patterns even though the adjacent minified
+        line is compressed away — on_empty must not fire here, since real
+        content (the TODO line) is still present in the render."""
+        pytest.importorskip("tree_sitter_javascript")
+        fc = self.registry.find("cat bundle.min.js")
+        assert fc is not None
+        minified_line = "const x=1;" * 1000
+        src = f"// TODO: rebuild this bundle from source\nfunction f(){{{minified_line}}}\n"
+        rendered = self.registry.apply(fc, src)
+        assert rendered != "(empty document)"
+        assert "TODO: rebuild this bundle from source" in rendered
+
+    def test_typescript_normal_compression_unaffected(self) -> None:
+        pytest.importorskip("tree_sitter_typescript")
+        fc = self.registry.find("cat app.ts")
+        assert fc is not None and fc.name == "cat-typescript"
+        src = "function add(x: number, y: number): number {\n  const total = x + y;\n  return total;\n}\n"
+        rendered = self.registry.apply(fc, src)
+        assert rendered != "(empty document)"
+        assert "function add(x: number, y: number): number {" in rendered
+
+    def test_typescript_minified_bundle_triggers_fallback(self) -> None:
+        pytest.importorskip("tree_sitter_typescript")
+        fc = self.registry.find("cat bundle.min.ts")
+        assert fc is not None and fc.name == "cat-typescript"
+        minified_line = "const x:number=1;" * 1000
+        src = f"function f(){{{minified_line}}}\n"
+        rendered = self.registry.apply(fc, src)
+        assert rendered == "(empty document)"
+
+    def test_tsx_minified_bundle_triggers_fallback(self) -> None:
+        pytest.importorskip("tree_sitter_typescript")
+        fc = self.registry.find("cat bundle.min.tsx")
+        assert fc is not None and fc.name == "cat-tsx"
+        minified_line = "const x:number=1;" * 1000
+        src = f"function f(){{{minified_line}}}\n"
+        rendered = self.registry.apply(fc, src)
+        assert rendered == "(empty document)"
+
+    # -- QB-046 siblings folded into QB-005F: cat-rust/cat-go/cat-java/
+    # cat-csharp share the exact same code_ast_summarize -> (strip_lines) ->
+    # deduplicate_consecutive -> max_tokens(800, "both") stack (cat-go has
+    # no strip_lines stage — see its own header comment — but that stage
+    # never touches the pathological single-line input below anyway) and
+    # were confirmed, by direct reproduction, to collapse to the same empty
+    # string before this fix. -------------------------------------------
+
+    def test_rust_normal_compression_unaffected(self) -> None:
+        pytest.importorskip("tree_sitter_rust")
+        fc = self.registry.find("cat lib.rs")
+        assert fc is not None and fc.name == "cat-rust"
+        src = "/// Adds two numbers.\nfn add(x: i32, y: i32) -> i32 {\n    let total = x + y;\n    total\n}\n"
+        rendered = self.registry.apply(fc, src)
+        assert rendered != "(empty document)"
+        assert "fn add(x: i32, y: i32) -> i32 {" in rendered
+
+    def test_rust_pathological_single_line_triggers_fallback(self) -> None:
+        pytest.importorskip("tree_sitter_rust")
+        fc = self.registry.find("cat bundle.min.rs")
+        assert fc is not None and fc.name == "cat-rust"
+        minified_line = "let x=1;" * 1000
+        src = f"fn f(){{{minified_line}}}\n"
+        rendered = self.registry.apply(fc, src)
+        assert rendered == "(empty document)"
+
+    def test_rust_preserved_content_survives_alongside_collapsed_line(self) -> None:
+        pytest.importorskip("tree_sitter_rust")
+        fc = self.registry.find("cat bundle.min.rs")
+        assert fc is not None
+        minified_line = "let x=1;" * 1000
+        src = f"// TODO: rebuild this bundle from source\nfn f(){{{minified_line}}}\n"
+        rendered = self.registry.apply(fc, src)
+        assert rendered != "(empty document)"
+        assert "TODO: rebuild this bundle from source" in rendered
+
+    def test_go_normal_compression_unaffected(self) -> None:
+        pytest.importorskip("tree_sitter_go")
+        fc = self.registry.find("cat main.go")
+        assert fc is not None and fc.name == "cat-go"
+        src = "// Add returns the sum of two numbers.\nfunc Add(x, y int) int {\n\ttotal := x + y\n\treturn total\n}\n"
+        rendered = self.registry.apply(fc, src)
+        assert rendered != "(empty document)"
+        assert "func Add(x, y int) int {" in rendered
+
+    def test_go_pathological_single_line_triggers_fallback(self) -> None:
+        """cat-go has no strip_lines/preserve_patterns stage at all (see
+        cat-go.toml's own header comment), so this is the simplest possible
+        reproduction: nothing anywhere in the pipeline can mark any part of
+        this line PROTECT."""
+        pytest.importorskip("tree_sitter_go")
+        fc = self.registry.find("cat bundle.min.go")
+        assert fc is not None and fc.name == "cat-go"
+        minified_line = "x=1;" * 1500
+        src = f"func f(){{{minified_line}}}\n"
+        rendered = self.registry.apply(fc, src)
+        assert rendered == "(empty document)"
+
+    def test_java_normal_compression_unaffected(self) -> None:
+        pytest.importorskip("tree_sitter_java")
+        fc = self.registry.find("cat Calc.java")
+        assert fc is not None and fc.name == "cat-java"
+        src = "public class Calc {\n    /**\n     * Adds two numbers.\n     */\n    public int add(int x, int y) {\n        int total = x + y;\n        return total;\n    }\n}\n"
+        rendered = self.registry.apply(fc, src)
+        assert rendered != "(empty document)"
+        assert "public int add(int x, int y) {" in rendered
+
+    def test_java_pathological_single_line_triggers_fallback(self) -> None:
+        pytest.importorskip("tree_sitter_java")
+        fc = self.registry.find("cat Bundle.java")
+        assert fc is not None and fc.name == "cat-java"
+        minified_line = "int x=1;" * 1000
+        src = f"void f(){{{minified_line}}}\n"
+        rendered = self.registry.apply(fc, src)
+        assert rendered == "(empty document)"
+
+    def test_java_preserved_content_survives_alongside_collapsed_line(self) -> None:
+        pytest.importorskip("tree_sitter_java")
+        fc = self.registry.find("cat Bundle.java")
+        assert fc is not None
+        minified_line = "int x=1;" * 1000
+        src = f"// TODO: rebuild this bundle from source\nvoid f(){{{minified_line}}}\n"
+        rendered = self.registry.apply(fc, src)
+        assert rendered != "(empty document)"
+        assert "TODO: rebuild this bundle from source" in rendered
+
+    def test_csharp_normal_compression_unaffected(self) -> None:
+        pytest.importorskip("tree_sitter_c_sharp")
+        fc = self.registry.find("cat Calc.cs")
+        assert fc is not None and fc.name == "cat-csharp"
+        src = "public class Calc\n{\n    /// <summary>\n    /// Adds two numbers.\n    /// </summary>\n    public int Add(int x, int y)\n    {\n        int total = x + y;\n        return total;\n    }\n}\n"
+        rendered = self.registry.apply(fc, src)
+        assert rendered != "(empty document)"
+        assert "public int Add(int x, int y)" in rendered
+
+    def test_csharp_pathological_single_line_triggers_fallback(self) -> None:
+        pytest.importorskip("tree_sitter_c_sharp")
+        fc = self.registry.find("cat Bundle.cs")
+        assert fc is not None and fc.name == "cat-csharp"
+        minified_line = "int x=1;" * 1000
+        src = f"void F(){{{minified_line}}}\n"
+        rendered = self.registry.apply(fc, src)
+        assert rendered == "(empty document)"
+
+    def test_csharp_preserved_content_survives_alongside_collapsed_line(self) -> None:
+        pytest.importorskip("tree_sitter_c_sharp")
+        fc = self.registry.find("cat Bundle.cs")
+        assert fc is not None
+        minified_line = "int x=1;" * 1000
+        src = f"// TODO: rebuild this bundle from source\nvoid F(){{{minified_line}}}\n"
+        rendered = self.registry.apply(fc, src)
+        assert rendered != "(empty document)"
+        assert "TODO: rebuild this bundle from source" in rendered
+
+
+# ---------------------------------------------------------------------------
+# QB-005F systemic guard: prevent this bug class from recurring silently.
+#
+# Every built-in filter whose stage pipeline includes max_tokens can, in
+# principle, render an empty string if every surviving line loses the
+# budget check and nothing is PROTECT (see max_tokens.py's own docstring
+# and QB-005F's investigation in backlog.md). For the eight AST/structural-
+# summarize filters (cat-python/javascript/typescript/tsx/rust/go/java/
+# csharp) this was a genuine, confirmed bug: a large minified/generated
+# file with no signature structure to preserve would silently vanish. All
+# eight now set on_empty = "(empty document)".
+#
+# TestCodeFilterEmptyOutputFallback above locks in that fix. This class is
+# the systemic follow-up: it prevents a *future* max_tokens-using filter
+# from shipping without on_empty (or a reviewed exemption) -- exactly the
+# gap that let this bug reach eight filters before being caught. It is a
+# ratchet, not a retroactive fix for every existing filter: the 17 filters
+# below already use max_tokens without on_empty today and are deliberately
+# exempted rather than silently patched with a borrowed "(empty document)"
+# message, because none of them run code_ast_summarize/
+# python_ast_summarize/structured_data_summarize -- the "signature kept,
+# body discarded" stages that made an empty render actively misleading for
+# the code filters (confirmed by direct inspection of each filter's real
+# `stages` list, not assumed). They compress already-flat command output,
+# where an empty result is frequently a legitimate, meaningful terminal
+# state (e.g. "no containers running", "no commits match this path") rather
+# than lost content -- reusing "(empty document)" there would misrepresent
+# that state. Each genuinely deserves its own command-specific message as
+# a follow-up (e.g. gradle/maven/next alongside build.toml's mypy/ruff and
+# node.toml's eslint/tsc/jest/vitest/prettier, which already have one), not
+# a mechanically-copied one bundled into this fix.
+# ---------------------------------------------------------------------------
+
+_MAX_TOKENS_ON_EMPTY_EXEMPTIONS: dict[str, str] = {
+    "cat": "Generic passthrough for any extension with no dedicated filter "
+    "-- no structural-summarize stage, so empty output would require a "
+    "pathologically long single line with nothing to protect; not the "
+    "confirmed QB-005F pattern (that required AST-driven body compression "
+    "discarding real signature-bearing structure).",
+    "docker-build": "Build-tool log output; empty means no lines survived "
+    "the budget, not that a compressible structure collapsed. Worth its "
+    "own message (e.g. build.toml's mypy/ruff 'no issues found' "
+    "convention) as a follow-up, not a borrowed one here.",
+    "gradle": "Build-tool output, same reasoning as docker-build.",
+    "maven": "Build-tool output, same reasoning as docker-build.",
+    "github-actions": "CI run log output (`gh run view/watch`); same "
+    "reasoning as the other build/CI-log filters above.",
+    "docker-ps": "Listing command -- zero running containers is a common, "
+    "legitimate, meaningful state, not lost content. A generic "
+    "'(empty document)' fallback would misrepresent 'nothing running' as "
+    "'something existed and got compressed away'.",
+    "docker-images": "Listing command, same reasoning as docker-ps.",
+    "kubectl-get": "Listing command, same reasoning as docker-ps -- zero "
+    "matching resources is a real kubectl outcome.",
+    "ps": "Listing command, same reasoning as docker-ps -- zero matching "
+    "processes is a real, common outcome.",
+    "df": "Listing command; same 'flat listing, not structural "
+    "summarization' reasoning as docker-ps, even though an empty df is "
+    "not realistic in practice (df always reports at least the root "
+    "filesystem).",
+    "ls-long": "Listing command, same reasoning as docker-ps -- an empty "
+    "directory is a real, legitimate `ls -l` outcome.",
+    "git-log": "Log listing; an empty result (e.g. a path filter matching "
+    "no commits) is a legitimate git outcome, not lost content.",
+    "git-diff": "Empty diff output (no changes) is git's own correct "
+    "signal -- see TestGitDiffBestEffortBudget below for this filter's "
+    "distinct, already-documented ADR-031/QB-004 best-effort-budget "
+    "behavior (a different scenario: PROTECT content exceeding budget, "
+    "not everything collapsing to nothing).",
+    "pip": "Package-manager output; no structural-summarize stage, so an "
+    "empty render is not a meaningfully-lossy outcome here.",
+    "poetry": "Package-manager output, same reasoning as pip.",
+    "next": "Build-tool log output, same reasoning as docker-build/gradle "
+    "-- a next.js build/dev-server log producing no lines within budget "
+    "is not the QB-005F structural-collapse pattern.",
+    "generic": "The catch-all fallback filter matching any command "
+    "(z_generic.toml, match_command = '.'). Deliberately the least-"
+    "specific filter in the registry; a one-size-fits-all on_empty "
+    "message would be meaningless for the arbitrary commands it might be "
+    "asked to compress.",
+}
+
+
+class TestMaxTokensFiltersDeclareOnEmpty:
+    """QB-005F systemic guard, added after the confirmed bug was fixed for
+    all eight AST/structural-summarize filters. Prevents a *new*
+    max_tokens-using filter from shipping without on_empty (or a reviewed
+    exemption) -- exactly the gap that let this bug reach eight filters
+    before being caught.
+    """
+
+    def test_every_max_tokens_filter_has_on_empty_or_reviewed_exemption(self) -> None:
+        registry = FilterRegistry(skip_user=True, skip_project=True)
+        undocumented = []
+        for _, fc in registry.all_filters():
+            uses_max_tokens = any(s.get("type") == "max_tokens" for s in fc.stages)
+            if uses_max_tokens and not fc.on_empty and fc.name not in _MAX_TOKENS_ON_EMPTY_EXEMPTIONS:
+                undocumented.append(fc.name)
+        assert not undocumented, (
+            "filter(s) use max_tokens without on_empty and are not in the "
+            "reviewed _MAX_TOKENS_ON_EMPTY_EXEMPTIONS allowlist above -- "
+            "either add on_empty (see cat-python.toml's own on_empty "
+            "comment for the convention) or add a reviewed justification "
+            f"to the allowlist in this test file: {undocumented}"
+        )
+
+    def test_exemption_allowlist_has_no_stale_entries(self) -> None:
+        """The inverse check: every allowlisted name must still be a real,
+        current max_tokens-without-on_empty filter. Catches the allowlist
+        silently drifting out of sync if a filter is renamed, removed, or
+        given on_empty later without also removing its now-unnecessary
+        entry here."""
+        registry = FilterRegistry(skip_user=True, skip_project=True)
+        current = {
+            fc.name
+            for _, fc in registry.all_filters()
+            if any(s.get("type") == "max_tokens" for s in fc.stages) and not fc.on_empty
+        }
+        stale = set(_MAX_TOKENS_ON_EMPTY_EXEMPTIONS) - current
+        assert not stale, f"stale exemption(s), no longer needed: {sorted(stale)}"
+
+
+# ---------------------------------------------------------------------------
 # QB-004 / ADR-031 regression: git-diff's max_tokens is best-effort, not hard
 # ---------------------------------------------------------------------------
 

@@ -21,11 +21,35 @@
 # it strips ordinary `#` comments and blank-line noise while preserving
 # shebang/TODO/FIXME/HACK/XXX/NOTE/WARN, exactly as it does for every other
 # file cat'd through the generic filter.
+#
+# on_empty (QB-005F): a genuinely empty file (0 bytes) and a pathological
+# file that degenerates to one PROTECT-free line/statement far exceeding
+# max_tokens' 800-token budget (e.g. a single giant literal with no
+# signature-bearing structure for python_ast_summarize to preserve) both
+# render to nothing — FilterRegistry.apply() already treats any blank
+# render as "empty" uniformly, with no way to distinguish the two causes
+# (see registry.py). "(empty document)" is not a new string invented for
+# this filter: it is the exact convention cat-json.toml/cat-yaml.toml/
+# cat-toml.toml already use for the identical dual case (their own
+# structural-summarize + max_tokens stack can equally collapse pathological
+# input to nothing), reused here rather than inventing a source-file-
+# specific message. See backlog.md's QB-005F entry for the investigation.
+#
+# No inline `input = ""` [[filter.tests]] case for this: every other
+# on_empty filter in this codebase omits one too, because
+# TestFilterNeverExpandsOutput (tests/unit/test_filters.py, QB-017) scans
+# every filter's own committed test corpus and asserts none ever grows the
+# token count — on_empty firing on an empty input is a deliberate 0-token
+# increase, which would trip that guard. Covered instead in
+# tests/unit/test_filters.py's TestCodeFilterEmptyOutputFallback, outside
+# that scanned corpus, matching node.toml/gcc.toml's pattern of an
+# `abort_unless`-only `input = ""` case that never reaches on_empty at all.
 schema_version = 1
 
 [[filter]]
 name = "cat-python"
 match_command = '^cat\s+(-\S+\s+)*\S*\.py\b'
+on_empty = "(empty document)"
 
 [[filter.stages]]
 type = "python_ast_summarize"

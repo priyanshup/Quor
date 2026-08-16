@@ -40,11 +40,25 @@
 # pre-existing, inherited risk being reused for consistency with
 # cat-python.toml (per the design's explicit instruction to reuse this
 # stage stack verbatim), not a new one introduced here.
+# on_empty (QB-005F): a large minified/generated bundle can collapse to one
+# PROTECT-free line whose token cost alone exceeds max_tokens' 800-token
+# budget, which — with no signature/JSDoc structure for code_ast_summarize
+# to anchor on — renders to nothing, indistinguishable at the FilterRegistry
+# level from a genuinely empty file. "(empty document)" reuses the exact
+# convention cat-json.toml/cat-yaml.toml/cat-toml.toml already use for this
+# same structural-summarize + max_tokens dual case, rather than inventing a
+# new message. See backlog.md's QB-005F entry for the investigation.
+#
+# No inline `input = ""` [[filter.tests]] case for this — see
+# cat-python.toml's own on_empty comment for why (TestFilterNeverExpandsOutput,
+# QB-017); covered instead in tests/unit/test_filters.py's
+# TestCodeFilterEmptyOutputFallback.
 schema_version = 1
 
 [[filter]]
 name = "cat-javascript"
 match_command = '^cat\s+(-\S+\s+)*\S*\.(js|jsx|mjs|cjs)\b'
+on_empty = "(empty document)"
 
 [[filter.stages]]
 type = "code_ast_summarize"

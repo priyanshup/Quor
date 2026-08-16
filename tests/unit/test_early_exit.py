@@ -419,7 +419,7 @@ class TestFilterRegistryEarlyExitIntegration:
         content = "# comment one\n# comment two\n# comment three"
 
         with patch.object(MaxTokensStage, "apply") as mock_apply:
-            rendered = self.registry.apply(filter_config, content)
+            rendered = self.registry._run_pipeline(filter_config, content).mask.render()
 
         mock_apply.assert_not_called()
         assert rendered == ""
@@ -436,6 +436,15 @@ class TestFilterRegistryEarlyExitIntegration:
             ).mask.render()
         spy.assert_called()
         assert rendered == forced
+
+        # QB-005F: apply() (the real compression path, unlike the raw
+        # _run_pipeline().mask.render() comparison above) wraps this same
+        # early-exit-triggering, all-COMPRESS-lines input in cat-python.toml's
+        # on_empty fallback rather than returning the empty string checked
+        # above — this is the on_empty branch firing for exactly the case
+        # this test exists to exercise (a real filter whose trailing
+        # max_tokens is skipped because nothing survives to compress).
+        assert self.registry.apply(filter_config, content) == "(empty document)"
 
 
 # ---------------------------------------------------------------------------
