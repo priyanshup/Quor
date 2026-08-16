@@ -77,3 +77,4 @@ class QuorUserConfig(BaseModel):
 
     mode: str = "audit"  # one of: audit, optimize, simulate — see ADR-009
     tee_enabled: bool = True  # global kill-switch for the tee mechanism — see ADR-023
+    tee_max_bytes: int = 500 * 1024 * 1024  # tee cache total-size safety ceiling — ADR-023 (QB-103)

@@ -457,6 +457,68 @@ boundary, whole-line-declared `patterns`), which none of the candidates surveyed
 
 ---
 
+#### QB-103 — Tee cache total-size safety ceiling — Shipped
+
+**Effort:** Small · **Value:** Low (robustness/safety, no token-savings impact) · **Risk:** Low ·
+**Category:** Hardening
+
+**Layman explanation:** Quor keeps a local backup copy of anything it compresses, so nothing is
+ever truly lost — that cache automatically clears out anything older than 7 days. An investigation
+into that 7-day window found no evidence it's actually a storage problem for normal, even heavy,
+day-to-day use — but it also found the cache had no upper size limit at all, which meant an unusual
+workload (a huge diff, or an unusually bursty stretch of commands) had nothing stopping it from
+growing arbitrarily large before the week-long window eventually caught up. This adds that missing
+ceiling: a 500 MB cap, alongside the existing 7-day window, not instead of it.
+
+**Why it matters:** Closes a real, evidence-backed gap (no size/entry cap existed) without touching
+the part of the design (age-based retention) that the investigation found no fault with. A minimal,
+targeted fix rather than a broader redesign.
+
+**Status:** Shipped (2026-08-16). Investigation and implementation both completed this session; see
+the investigation's own findings summarized in `docs/final/DECISIONS.md`'s ADR-023 "Implementation
+Update (QB-103)" section.
+
+<details>
+<summary>Technical details</summary>
+
+**What shipped:**
+- `quor/pipeline/tee.py`: `cleanup_tee()` gained a `max_bytes` parameter (default 500 MB,
+  `_DEFAULT_MAX_BYTES`). `_sweep()` now does age eviction first (unchanged 7-day behavior), then,
+  if the survivors still total more than `max_bytes`, evicts oldest-mtime survivors next until back
+  within budget — computed from the same per-file `stat()` call age eviction already performs, so
+  no second directory enumeration was added. A new `current_tee_size_bytes()` read-only helper sums
+  current cache size without evicting anything.
+- `quor/config/model.py` / `quor/config/loader.py`: `QuorUserConfig.tee_max_bytes` (default
+  500 * 1024 * 1024), overridable via `QUOR_TEE_MAX_BYTES` (must parse as a positive integer;
+  otherwise ignored, same fail-open convention as `QUOR_TEE_ENABLED`).
+- `quor/adapters/dispatcher.py`: the per-dispatch `get_user_config()` memoizing closure was moved
+  earlier (before tee cleanup fires) so `cleanup_tee()` can read the configured `tee_max_bytes`
+  without an extra `config.toml` read — `_cleanup_tee_safe()` now takes a `get_user_config`
+  parameter, mirroring `_setup_plugins`/`_apply_tee`'s existing convention.
+- `quor/cli/commands/doctor.py`: new `_check_tee_size()` check — read-only, advisory (always
+  `ok=True`), reports current usage vs. the configured limit; never triggers cleanup itself.
+
+**What was explicitly not changed:** the 7-day age window (unchanged default and behavior), the
+24-hour cleanup throttle (size eviction is gated by the same throttle, never checked on every
+write), content-addressed filenames/dedup behavior (`write_tee()` untouched), and the decision not
+to add SQLite indexing of individual entries, LRU, or per-project partitioning — all three were
+considered and explicitly deferred (see the ADR-023 update for the reasoning on each).
+
+**Testing:** `tests/unit/test_tee.py` — under/at/over-limit behavior, oldest-first eviction order,
+eviction stopping once back within budget, newer-survives-older, a single file larger than the
+entire budget (deterministic eviction, no crash/loop), age+size eviction together, default-argument
+regression, throttle interaction, and a non-timing-asserting ~3,000-file smoke test; also
+`current_tee_size_bytes()` and `_check_tee_size()` direct unit coverage. `tests/unit/test_config.py`
+— `tee_max_bytes` default/override plus `QUOR_TEE_MAX_BYTES` env coverage (valid/invalid/zero/
+negative). `tests/unit/test_adapters.py` — dispatcher-level proof that the configured value actually
+reaches `cleanup_tee()`. Full existing tee/config/adapter suites re-run clean; `ruff`/`mypy` clean on
+every touched file; `tests/integration/test_cli_commands.py::TestInitAndDoctorIntegration` (a real
+`init` → `doctor` run) re-verified green with the new check present.
+
+</details>
+
+---
+
 #### QB-096 — Import block collapsing
 
 **Effort:** Small-Medium · **Value:** Medium · **Risk:** Low · **Expected token impact:** Medium ·

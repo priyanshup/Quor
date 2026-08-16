@@ -84,6 +84,52 @@ class TestLoadUserConfigTeeEnvOverride:
 
 
 # ---------------------------------------------------------------------------
+# QuorUserConfig.tee_max_bytes (ADR-023, QB-103 — tee cache size ceiling)
+# ---------------------------------------------------------------------------
+
+
+class TestQuorUserConfigTeeMaxBytes:
+    def test_defaults_to_500_mb(self) -> None:
+        assert QuorUserConfig().tee_max_bytes == 500 * 1024 * 1024
+
+    def test_can_be_set(self) -> None:
+        assert QuorUserConfig(tee_max_bytes=1024).tee_max_bytes == 1024
+
+    def test_backward_compatible_with_config_missing_tee_max_bytes_key(self) -> None:
+        config = QuorUserConfig.model_validate({"mode": "audit"})
+        assert config.tee_max_bytes == 500 * 1024 * 1024
+
+
+# ---------------------------------------------------------------------------
+# load_user_config() — QUOR_TEE_MAX_BYTES env override
+# ---------------------------------------------------------------------------
+
+
+class TestLoadUserConfigTeeMaxBytesEnvOverride:
+    def test_no_env_var_uses_default(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("QUOR_TEE_MAX_BYTES", raising=False)
+        assert load_user_config().tee_max_bytes == 500 * 1024 * 1024
+
+    def test_env_var_overrides_default(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("QUOR_TEE_MAX_BYTES", "1024")
+        assert load_user_config().tee_max_bytes == 1024
+
+    def test_invalid_env_var_value_is_ignored(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("QUOR_TEE_MAX_BYTES", "not-a-number")
+        assert load_user_config().tee_max_bytes == 500 * 1024 * 1024
+
+    def test_zero_env_var_value_is_ignored(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """0 (or negative) is not a usable byte budget — ignored rather than
+        silently producing a cache that evicts everything on every cleanup."""
+        monkeypatch.setenv("QUOR_TEE_MAX_BYTES", "0")
+        assert load_user_config().tee_max_bytes == 500 * 1024 * 1024
+
+    def test_negative_env_var_value_is_ignored(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("QUOR_TEE_MAX_BYTES", "-5")
+        assert load_user_config().tee_max_bytes == 500 * 1024 * 1024
+
+
+# ---------------------------------------------------------------------------
 # QuorUserConfig.mode (ADR-009 / QB-002) — previously untested at unit level
 # ---------------------------------------------------------------------------
 

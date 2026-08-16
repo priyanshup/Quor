@@ -7,6 +7,10 @@ users should see what filtering would do before opting into OPTIMIZE.
 
 `tee_enabled` is the global kill-switch for the tee mechanism (ADR-023); see
 `quor/pipeline/tee.py` and `FilterConfig.tee` for the per-filter override.
+`tee_max_bytes` is the tee cache's total-size safety ceiling (ADR-023,
+QB-103), overridable via QUOR_TEE_MAX_BYTES — must parse as a positive
+integer (bytes); any other value is ignored, same fail-open convention as
+the QUOR_MODE/QUOR_TEE_ENABLED overrides below.
 """
 
 from __future__ import annotations
@@ -48,5 +52,14 @@ def load_user_config() -> QuorUserConfig:
         config = config.model_copy(update={"tee_enabled": False})
     elif env_tee in ("1", "true"):
         config = config.model_copy(update={"tee_enabled": True})
+
+    env_tee_max_bytes = os.environ.get("QUOR_TEE_MAX_BYTES", "").strip()
+    if env_tee_max_bytes:
+        try:
+            parsed_max_bytes = int(env_tee_max_bytes)
+        except ValueError:
+            parsed_max_bytes = None
+        if parsed_max_bytes is not None and parsed_max_bytes > 0:
+            config = config.model_copy(update={"tee_max_bytes": parsed_max_bytes})
 
     return config
