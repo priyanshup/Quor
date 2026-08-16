@@ -121,6 +121,7 @@ def _run_doctor(
     user_config = load_user_config()
     checks.append(_check_mode(user_config))
     checks.append(_check_tee(user_config))
+    checks.append(_check_tee_size(user_config))
     checks.append(_check_plugins())
     checks.append(_check_negative_compression_filters())
 
@@ -670,6 +671,37 @@ def _check_tee(user_config: QuorUserConfig) -> tuple[str, bool, str]:
         return ("Tee: disabled (disabled in config)", True, "")
 
     return ("Tee: enabled", True, "")
+
+
+def _check_tee_size(user_config: QuorUserConfig) -> tuple[str, bool, str]:
+    """Report the tee cache's current disk usage against its configured
+    ceiling (ADR-023, QB-103).
+
+    Read-only — never triggers cleanup itself; eviction only happens the
+    next time cleanup_tee() actually runs (dispatcher-triggered, throttled
+    to at most once per 24h). Advisory only: being over the limit is
+    expected to self-correct on the next scheduled cleanup pass, so it's
+    surfaced as information, not a failure — it must never block the rest
+    of `quor doctor`'s real install/config checks.
+    """
+    from quor.pipeline.tee import current_tee_size_bytes
+
+    try:
+        size_bytes = current_tee_size_bytes()
+    except Exception as exc:  # noqa: BLE001
+        return ("Tee cache size", True, f"(could not check: {exc})")
+
+    limit_bytes = user_config.tee_max_bytes
+    size_mb = size_bytes / (1024 * 1024)
+    limit_mb = limit_bytes / (1024 * 1024)
+    if size_bytes > limit_bytes:
+        return (
+            "Tee cache size",
+            True,
+            f"{size_mb:.1f} MB used, over the {limit_mb:.0f} MB limit — "
+            "will be trimmed on the next scheduled cleanup",
+        )
+    return ("Tee cache size", True, f"{size_mb:.1f} MB used of {limit_mb:.0f} MB limit")
 
 
 def _check_negative_compression_filters() -> tuple[str, bool, str]:

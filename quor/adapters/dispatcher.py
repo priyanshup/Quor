@@ -117,17 +117,16 @@ def run_dispatch(args: list[str], tracking: TrackingDB | None = None) -> int:
     proc = result
     captured = proc.stdout or ""
 
-    # --- Tee cleanup: once per dispatch, throttled internally (ADR-023) ---
-    _cleanup_tee_safe()
-
     # QuorUserConfig.toml is read+parsed+validated at most once per dispatch:
-    # _setup_plugins() (only when plugins are discovered) and _apply_tee()
-    # (whenever the non-passthrough path is reached) each previously called
-    # load_user_config() independently, so a dispatch with both active read
-    # the same on-disk file twice. get_user_config() is a plain memoizing
-    # closure local to this one call — nothing is cached across dispatches
-    # or processes, so this changes nothing about *what* is read, only how
-    # many times.
+    # tee cleanup (below, for tee_max_bytes — QB-103), _setup_plugins() (only
+    # when plugins are discovered), and _apply_tee() (whenever the
+    # non-passthrough path is reached) each need it, so a dispatch touching
+    # more than one of these previously risked reading the same on-disk file
+    # more than once. get_user_config() is a plain memoizing closure local to
+    # this one call — nothing is cached across dispatches or processes, so
+    # this changes nothing about *what* is read, only how many times.
+    # Declared here, before tee cleanup, so cleanup_tee()'s tee_max_bytes
+    # shares this same single read too.
     cached_user_config: QuorUserConfig | None = None
 
     def get_user_config() -> QuorUserConfig:
@@ -135,6 +134,9 @@ def run_dispatch(args: list[str], tracking: TrackingDB | None = None) -> int:
         if cached_user_config is None:
             cached_user_config = load_user_config()
         return cached_user_config
+
+    # --- Tee cleanup: once per dispatch, throttled internally (ADR-023) ---
+    _cleanup_tee_safe(get_user_config)
 
     filter_config, registry = _lookup_filter(cmd_str)
     plugin_registry, plugin_ctx = _setup_plugins(get_user_config)
@@ -415,10 +417,22 @@ def _run_post_filter_plugins(
         return filtered
 
 
-def _cleanup_tee_safe() -> None:
-    """Run tee cleanup, fail-open. cleanup_tee() throttles itself internally."""
+def _cleanup_tee_safe(
+    get_user_config: Callable[[], QuorUserConfig] = load_user_config,
+) -> None:
+    """Run tee cleanup, fail-open. cleanup_tee() throttles itself internally.
+
+    `get_user_config` defaults to `load_user_config` itself (a fresh read),
+    same rationale as `_setup_plugins`/`_apply_tee`'s own parameter of the
+    same name — `run_dispatch()` passes its memoizing closure so this shares
+    one read of config.toml per dispatch with the rest of the pipeline
+    instead of doing its own. Needed here now (QB-103) so cleanup_tee() gets
+    the user's configured tee_max_bytes rather than always falling back to
+    its own hardcoded default.
+    """
     try:
-        cleanup_tee()
+        max_bytes = get_user_config().tee_max_bytes
+        cleanup_tee(max_bytes=max_bytes)
     except Exception as exc:  # noqa: BLE001
         warnings.warn(f"[quor] tee cleanup error: {exc}", stacklevel=1)
 

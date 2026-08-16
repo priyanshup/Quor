@@ -222,6 +222,226 @@ class TestCleanupTee:
 
 
 # ---------------------------------------------------------------------------
+# cleanup_tee — size ceiling (QB-103)
+# ---------------------------------------------------------------------------
+
+
+class TestCleanupTeeSizeLimit:
+    def test_under_limit_nothing_deleted(self) -> None:
+        path = write_tee("a" * 100)
+        cleanup_tee(max_age_days=7, throttle_hours=0, max_bytes=1000)
+        assert path.exists()
+
+    def test_exactly_at_limit_nothing_deleted(self) -> None:
+        content = "a" * 100
+        path = write_tee(content)
+        size = len(content.encode("utf-8"))
+        cleanup_tee(max_age_days=7, throttle_hours=0, max_bytes=size)
+        assert path.exists()
+
+    def test_over_limit_deletes_oldest_first(self) -> None:
+        old_path = write_tee("a" * 100)
+        old_time = time.time() - 100
+        os.utime(old_path, (old_time, old_time))
+
+        new_path = write_tee("b" * 100)
+
+        # Total is 200 bytes; budget only fits one file.
+        cleanup_tee(max_age_days=7, throttle_hours=0, max_bytes=100)
+
+        assert not old_path.exists()
+        assert new_path.exists()
+
+    def test_eviction_stops_once_back_within_budget(self) -> None:
+        paths = []
+        for i in range(5):
+            p = write_tee(f"content-{i}" * 10)
+            t = time.time() - (100 - i)  # ascending mtimes: 0 oldest ... 4 newest
+            os.utime(p, (t, t))
+            paths.append(p)
+
+        per_file_size = paths[0].stat().st_size
+        budget = per_file_size * 3  # room for exactly the 3 newest files
+
+        cleanup_tee(max_age_days=7, throttle_hours=0, max_bytes=budget)
+
+        assert not paths[0].exists()
+        assert not paths[1].exists()
+        assert paths[2].exists()
+        assert paths[3].exists()
+        assert paths[4].exists()
+
+    def test_newer_files_survive_when_older_ones_satisfy_budget(self) -> None:
+        old_path = write_tee("old" * 50)
+        old_time = time.time() - 500
+        os.utime(old_path, (old_time, old_time))
+
+        new_path = write_tee("new" * 50)
+
+        total = old_path.stat().st_size + new_path.stat().st_size
+        # Budget just under the total: exactly one file (the older one)
+        # needs to go to satisfy it.
+        cleanup_tee(max_age_days=7, throttle_hours=0, max_bytes=total - 1)
+
+        assert not old_path.exists()
+        assert new_path.exists()
+
+    def test_single_file_larger_than_budget_is_evicted_deterministically(self) -> None:
+        """No special-casing for a lone oversized file: the ceiling is a
+        hard bound, so a single survivor over budget is evicted like any
+        other entry — deterministic, no crash, no infinite loop."""
+        big_path = write_tee("x" * 10_000)
+
+        cleanup_tee(max_age_days=7, throttle_hours=0, max_bytes=100)
+
+        assert not big_path.exists()
+
+    def test_age_and_size_eviction_together(self) -> None:
+        # Stale — removed by age eviction regardless of the size budget.
+        stale_path = write_tee("stale" * 20)
+        stale_time = time.time() - (8 * 86400)
+        os.utime(stale_path, (stale_time, stale_time))
+
+        # Fresh, but old enough among survivors to be size-evicted.
+        older_fresh_path = write_tee("older-fresh" * 20)
+        older_fresh_time = time.time() - 500
+        os.utime(older_fresh_path, (older_fresh_time, older_fresh_time))
+
+        # Fresh and newest — must survive both passes.
+        newest_path = write_tee("newest" * 20)
+
+        newest_size = newest_path.stat().st_size
+        # Budget only fits the single newest survivor once age eviction has
+        # already removed the stale file.
+        cleanup_tee(max_age_days=7, throttle_hours=0, max_bytes=newest_size)
+
+        assert not stale_path.exists()
+        assert not older_fresh_path.exists()
+        assert newest_path.exists()
+
+    def test_default_max_bytes_used_when_not_specified(self) -> None:
+        """A small file, well under the 500MB default, must survive a
+        default-argument cleanup_tee() call — regression guard that adding
+        max_bytes didn't change default behavior for ordinary use."""
+        path = write_tee("small content")
+        cleanup_tee(max_age_days=7, throttle_hours=0)
+        assert path.exists()
+
+    def test_size_eviction_respects_throttle(self) -> None:
+        """Size-triggered eviction must only happen when cleanup actually
+        runs — a throttled (no-op) call must not evict anything, even when
+        the cache is far over budget."""
+        old_path = write_tee("a" * 100)
+        old_time = time.time() - 100
+        os.utime(old_path, (old_time, old_time))
+        b_path = write_tee("b" * 100)
+
+        # First call: over budget (200 > 100), and no prior throttle state
+        # recorded yet, so it always runs — evicts the older of the two.
+        cleanup_tee(max_age_days=7, throttle_hours=24, max_bytes=100)
+        assert not old_path.exists()
+        assert b_path.exists()
+
+        c_path = write_tee("c" * 100)
+        # Over budget again (b + c = 200 > 100), but the throttle window
+        # (24h) has not elapsed since the first call — must be a no-op.
+        cleanup_tee(max_age_days=7, throttle_hours=24, max_bytes=100)
+        assert b_path.exists()
+        assert c_path.exists()
+
+    def test_size_eviction_smoke_with_many_files(self) -> None:
+        """Non-timing-asserting smoke test: a few thousand distinct files
+        must not trigger pathological behavior, and the eviction result must
+        still be correct at this scale. No timing threshold is asserted
+        (would be flaky in CI) — only correctness."""
+        n = 3000
+        paths = []
+        for i in range(n):
+            p = write_tee(f"{i:06d}-" + ("x" * 50))
+            t = time.time() - (n - i)  # strictly ascending mtimes
+            os.utime(p, (t, t))
+            paths.append(p)
+
+        keep_count = 100
+        budget = paths[0].stat().st_size * keep_count
+
+        cleanup_tee(max_age_days=7, throttle_hours=0, max_bytes=budget)
+
+        survivors = list(tee_dir().glob("*.txt"))
+        survivor_total = sum(p.stat().st_size for p in survivors)
+        assert survivor_total <= budget
+        assert paths[-1].exists()  # newest survives
+        assert not paths[0].exists()  # clearly-oldest is gone
+
+
+# ---------------------------------------------------------------------------
+# current_tee_size_bytes (QB-103)
+# ---------------------------------------------------------------------------
+
+
+class TestCurrentTeeSizeBytes:
+    def test_empty_dir_returns_zero(self) -> None:
+        from quor.pipeline.tee import current_tee_size_bytes
+
+        assert current_tee_size_bytes() == 0
+
+    def test_sums_all_file_sizes(self) -> None:
+        from quor.pipeline.tee import current_tee_size_bytes
+
+        write_tee("a" * 100)
+        write_tee("b" * 250)
+
+        assert current_tee_size_bytes() == 350
+
+    def test_does_not_delete_anything(self) -> None:
+        from quor.pipeline.tee import current_tee_size_bytes
+
+        path = write_tee("content")
+        current_tee_size_bytes()
+        assert path.exists()
+
+
+# ---------------------------------------------------------------------------
+# quor doctor — _check_tee_size (QB-103)
+# ---------------------------------------------------------------------------
+
+
+class TestCheckTeeSize:
+    def test_reports_size_and_limit_within_budget(self) -> None:
+        from quor.cli.commands.doctor import _check_tee_size
+        from quor.config.model import QuorUserConfig
+
+        path = write_tee("a" * 1000)
+        user_config = QuorUserConfig(tee_max_bytes=1_000_000)
+
+        name, ok, detail = _check_tee_size(user_config)
+
+        expected_size_mb = path.stat().st_size / (1024 * 1024)
+        expected_limit_mb = 1_000_000 / (1024 * 1024)
+        assert name == "Tee cache size"
+        assert ok is True
+        assert detail == f"{expected_size_mb:.1f} MB used of {expected_limit_mb:.0f} MB limit"
+
+    def test_reports_over_limit(self) -> None:
+        from quor.cli.commands.doctor import _check_tee_size
+        from quor.config.model import QuorUserConfig
+
+        path = write_tee("a" * 10_000)
+        user_config = QuorUserConfig(tee_max_bytes=100)
+
+        name, ok, detail = _check_tee_size(user_config)
+
+        expected_size_mb = path.stat().st_size / (1024 * 1024)
+        expected_limit_mb = 100 / (1024 * 1024)
+        assert name == "Tee cache size"
+        assert ok is True  # advisory only — must never fail doctor
+        assert detail == (
+            f"{expected_size_mb:.1f} MB used, over the {expected_limit_mb:.0f} MB limit — "
+            "will be trimmed on the next scheduled cleanup"
+        )
+
+
+# ---------------------------------------------------------------------------
 # Adaptive fallback: get_tee_status / record_tee_failure / record_tee_success
 # / reset_tee_state
 # ---------------------------------------------------------------------------

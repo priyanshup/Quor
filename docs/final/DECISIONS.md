@@ -638,6 +638,45 @@ expand content, so a negative-net row is attributable to this footer (or, in pri
 third-party `PRE_FILTER`/`POST_FILTER` plugin adding content) — not a hidden accounting bug in the
 tracking formula.
 
+**Implementation Update (QB-103 — total-size safety ceiling):**
+An investigation into the tee cache's retention policy (heavy-usage growth modeling, complexity
+analysis of `cleanup_tee()`'s directory sweep, and a survey of existing safeguards) found no
+evidence that the 7-day age window itself is a real storage or performance problem for realistic
+usage — but it did surface one genuine structural gap: **the cache had no upper bound at all**,
+neither total bytes nor entry count. A single unusually large piece of content (already proven
+possible — `tests/unit/test_tee.py::test_large_content_boundary` writes a multi-MB file with no
+special handling) or a sustained, unusually bursty/scripted workload had nothing stopping it from
+growing the cache arbitrarily large before the 7-day age window eventually caught up.
+
+`cleanup_tee()` (`quor/pipeline/tee.py`) now also accepts `max_bytes` (default 500 MB,
+`QuorUserConfig.tee_max_bytes`, overridable via `QUOR_TEE_MAX_BYTES`). **The 7-day age window is
+unchanged** — age eviction still runs first, exactly as before. Only once age eviction has run, if
+the survivors still total more than `max_bytes`, are the oldest-mtime survivors deleted next, until
+back within budget. This reuses `_sweep()`'s existing single directory enumeration — total size is
+accumulated from the same per-file `stat()` call age eviction already performs, so no second
+directory walk was added. Size eviction shares the existing 24-hour cleanup throttle: it is only
+ever considered when a throttled cleanup pass actually runs, never on every `write_tee()` call. A
+single surviving file larger than `max_bytes` by itself is not special-cased — the ceiling is a hard
+bound, so it is evicted in its turn like any other entry once it's the one keeping the total over
+budget, not left in place indefinitely. 500 MB was chosen as comfortably above (roughly 10x+) the
+tens-of-MB steady state a heavy single-developer usage model (8-10h/day, hundreds of Bash calls,
+multiple repositories, 7-day retention) was projected to reach, so it does not fire under realistic
+day-to-day use — it exists specifically to bound the pathological case the age window alone cannot.
+
+`quor doctor` gained a new, read-only, advisory "Tee cache size" check
+(`quor/cli/commands/doctor.py::_check_tee_size`) reporting current usage against the configured
+limit; it never triggers cleanup itself and never fails `doctor`'s overall pass/fail, since being
+temporarily over budget is expected to self-correct on the next scheduled cleanup pass.
+
+No SQLite indexing of individual tee entries was added (enumeration remains a plain directory
+`glob()`, as before), and no LRU or per-project partitioning was introduced — both were considered
+during the investigation and explicitly deferred: LRU would require an index this cache has
+deliberately never maintained, and per-project scoping would be a genuine architecture change (the
+cache has no project dimension today), not a safety-net fix. This work does not touch, and is
+unrelated to, Claude Code's own session/prompt caching — it is entirely local to Quor's own recovery
+cache for eligible Bash output (Read-tool output was never teed in the first place; see this
+module's own docstring).
+
 ---
 
 ## ADR-024: Windows Path Encoding — UTF-8 Everywhere

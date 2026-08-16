@@ -12,6 +12,17 @@ file. Cleanup deletes files whose mtime is older than `max_age_days`, and is
 throttled via a tiny SQLite state file so the directory is not swept on
 every single dispatch (see cleanup_tee).
 
+Size ceiling (QB-103): the same throttled cleanup pass also enforces a
+total-bytes budget (`max_bytes`), evicting oldest-mtime files first once the
+directory's total size exceeds it. This is a hard safety bound against
+pathological growth — a scripted or unusually bursty workload producing far
+more or larger content than the 7-day age window alone would ever
+accumulate under normal, human-paced usage — not a replacement for the
+age-based window. Age eviction always runs first within one pass; size
+eviction only considers whatever survives it, and total size is accumulated
+from the same per-file stat() age eviction already performs, so no second
+directory walk is needed.
+
 Why a separate tee_state.db instead of reusing tracking/db.py's TrackingDB:
 TrackingDB is an async, queue-based writer (record() enqueues and returns;
 a background thread does the actual write) with no synchronous
@@ -66,6 +77,13 @@ _TEE_SUBDIR = "tee"
 _STATE_DB_NAME = "tee_state.db"
 _DEFAULT_MAX_AGE_DAYS = 7
 _DEFAULT_THROTTLE_HOURS = 24
+# 500 MB (QB-103): comfortably above the tens-of-MB steady state a heavy
+# single-developer workload (8-10h/day, hundreds of Bash calls, multiple
+# repos, 7-day retention) was projected to reach — see the QB-103
+# investigation report — so it never fires under realistic day-to-day use,
+# while still capping how large a pathological/scripted workload can grow
+# the cache before the next cleanup pass trims it back.
+_DEFAULT_MAX_BYTES = 500 * 1024 * 1024
 
 _CREATE_STATE_TABLE_SQL = """
 CREATE TABLE IF NOT EXISTS tee_cleanup (
@@ -118,6 +136,25 @@ def tee_dir() -> Path:
 def tee_path(content: str) -> Path:
     """Deterministic path for `content`: {tee_dir}/{sha256(content)}.txt."""
     return tee_dir() / f"{content_hash(content)}.txt"
+
+
+def current_tee_size_bytes() -> int:
+    """Sum of every current tee file's size, in bytes.
+
+    Read-only — never deletes anything (that's cleanup_tee()'s job). Used by
+    `quor doctor` (QB-103) to report cache size against its configured
+    ceiling without triggering an eviction pass itself.
+    """
+    directory = tee_dir()
+    if not directory.exists():
+        return 0
+    total = 0
+    for path in directory.glob("*.txt"):
+        try:
+            total += path.stat().st_size
+        except OSError:
+            continue
+    return total
 
 
 def write_tee(content: str) -> Path:
@@ -271,15 +308,26 @@ def cleanup_tee(
     *,
     max_age_days: int = _DEFAULT_MAX_AGE_DAYS,
     throttle_hours: int = _DEFAULT_THROTTLE_HOURS,
+    max_bytes: int = _DEFAULT_MAX_BYTES,
 ) -> None:
     """Delete tee files older than `max_age_days`, throttled via SQLite.
+
+    Also enforces a total-size ceiling (`max_bytes`, QB-103): once age
+    eviction has run, if the surviving files still total more than
+    `max_bytes`, the oldest-mtime survivors are deleted next, until back
+    within budget. A single file larger than `max_bytes` by itself is not
+    special-cased — the ceiling is a hard bound, not a per-file exemption,
+    so it is evicted in its turn, like any other entry, once it's the one
+    keeping the total over budget.
 
     Quor has no daemon/session concept — every `quor <cmd>` is a fresh
     process — so "at session start" (ADR-023) means "checked at the start of
     some invocation, throttled to at most once per `throttle_hours`". The
     throttle state (last_cleanup_at) lives in its own tiny SQLite file,
     separate from tracking/db.py's TrackingDB, so tee cleanup never contends
-    with the tracking background thread's connection.
+    with the tracking background thread's connection. Size eviction shares
+    this same throttle — it is only ever considered when a throttled cleanup
+    pass actually runs, never on every write.
     """
     now = datetime.now(timezone.utc)  # noqa: UP017
     state_path = Path(platformdirs.user_data_dir("quor")) / _STATE_DB_NAME
@@ -297,7 +345,7 @@ def cleanup_tee(
             if now - last < timedelta(hours=throttle_hours):
                 return
 
-        _sweep(tee_dir(), max_age_days=max_age_days, now=now)
+        _sweep(tee_dir(), max_age_days=max_age_days, max_bytes=max_bytes, now=now)
 
         conn.execute(
             """INSERT INTO tee_cleanup (id, last_cleanup_at) VALUES (1, ?)
@@ -336,17 +384,45 @@ def _connect_state_db(state_path: Path) -> sqlite3.Connection:
     return conn
 
 
-def _sweep(directory: Path, *, max_age_days: int, now: datetime) -> None:
-    """Delete files in `directory` whose mtime is older than `max_age_days`."""
+def _sweep(directory: Path, *, max_age_days: int, max_bytes: int, now: datetime) -> None:
+    """Delete files in `directory` older than `max_age_days`, then, if the
+    survivors still total more than `max_bytes`, delete oldest-mtime
+    survivors next until back within budget (QB-103).
+
+    One enumeration, one stat() per file: size is accumulated from the same
+    stat() call age eviction already needs, not a second directory walk.
+    """
     if not directory.exists():
         return
 
     cutoff = now.timestamp() - max_age_days * 86400
+    survivors: list[tuple[float, int, Path]] = []  # (mtime, size, path)
     for path in directory.glob("*.txt"):
         try:
-            if path.stat().st_mtime < cutoff:
-                path.unlink()
+            st = path.stat()
         except OSError:
             # Another process may have already removed it, or it's locked —
             # cleanup is best-effort, never fatal.
             continue
+        if st.st_mtime < cutoff:
+            try:
+                path.unlink()
+            except OSError:
+                continue
+            continue
+        survivors.append((st.st_mtime, st.st_size, path))
+
+    total = sum(size for _, size, _ in survivors)
+    if total <= max_bytes:
+        return
+
+    # Oldest-mtime-first, stopping as soon as we're back within budget.
+    survivors.sort(key=lambda entry: entry[0])
+    for _mtime, size, path in survivors:
+        if total <= max_bytes:
+            break
+        try:
+            path.unlink()
+        except OSError:
+            continue
+        total -= size

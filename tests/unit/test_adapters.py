@@ -699,6 +699,24 @@ class TestDispatcherTee:
 
         assert "[full output:" not in captured.getvalue()
 
+    def test_configured_tee_max_bytes_reaches_cleanup_tee(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """QB-103: QuorUserConfig.tee_max_bytes (here via QUOR_TEE_MAX_BYTES)
+        must actually reach cleanup_tee()'s max_bytes parameter — proves the
+        dispatcher wiring, not just cleanup_tee()'s own default-argument
+        behavior (already covered in tests/unit/test_tee.py)."""
+        monkeypatch.setenv("QUOR_TEE_MAX_BYTES", "12345")
+        proc = _make_proc(stdout=self._CHANGED_OUTPUT)
+        with (
+            patch("subprocess.run", return_value=proc),
+            patch("sys.stdout", io.StringIO()),
+            patch("quor.adapters.dispatcher.cleanup_tee") as mock_cleanup,
+        ):
+            run_dispatch(["pytest", "tests/"])
+
+        mock_cleanup.assert_called_once_with(max_bytes=12345)
+
     def test_identical_repeated_output_dedupes_to_one_tee_file(self) -> None:
         from quor.pipeline.tee import tee_dir
 
