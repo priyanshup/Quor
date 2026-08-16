@@ -1,0 +1,193 @@
+"""Quor MCP server (QB-104) — the production replacement for Quor's former
+hook-based integration (see backlog.md's QB-104 entry for the full removal/
+rebuild plan). Exposes Quor's compression pipeline and repository
+intelligence as MCP tools an agent calls explicitly, over stdio.
+
+`compress_context` reuses the same `FilterRegistry`/`Pipeline` machinery
+`quor/engine/dispatcher.py` already runs for Bash output (the promoted
+POC's own logic, unchanged): `FilterRegistry.find()` matches a command/path-
+shaped string, and raw text handed to this tool essentially never matches
+one of the specific patterns (`^git\\s+log\\b`, `^cat\\s+...\\.py\\b`, etc. —
+those match the *command*, not command *output*), so in practice this always
+falls through to the built-in `generic` filter
+(`quor/filters/builtin/z_generic.toml`, `match_command = '.'`), the same
+catch-all `quor/engine/dispatcher.py` itself falls back to for any
+unrecognized command.
+
+`get_repo_context` ports the two genuinely repo-state-based Read-hook
+features from the now-removed `quor/adapters/claude_read.py` (QB-079's
+"Repository Context" block and QB-090's onboarding nudge) — both were
+already protocol-agnostic (plain functions over `Path`/`str`, no coupling
+to hook JSON shape), so porting them is additive, not a rewrite. QB-081's
+third feature ("Relevant repository files") is also ported, but adapted:
+the hook version parsed Claude Code's own transcript JSONL to find the
+user's last prompt and derive query terms from it — an MCP tool call has
+no such transcript to read, so `query` is instead a direct parameter the
+calling agent passes.
+
+Run directly: `python -m quor.mcp.server` (stdio transport). See
+docs/POC_TESTING.md for how to register this with an MCP client.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+from mcp.server.mcpserver import MCPServer
+
+from quor.filters.registry import FilterRegistry
+from quor.pipeline.content_type import detect
+from quor.pipeline.repo_profile import intel_store
+from quor.pipeline.repo_profile.intel_model import FileIntelligenceEntry
+from quor.pipeline.repo_profile.nudge import compute_hook_nudge
+from quor.pipeline.repo_profile.query_extract import extract_query_terms
+from quor.pipeline.repo_profile.search import merge_search
+from quor.pipeline.repo_profile.search_render import render_relevant_files_block
+from quor.tracking.db import count_tokens
+
+# The installed `mcp` SDK (v2.0.0) renamed the high-level server class from
+# `FastMCP` (mcp.server.fastmcp) to `MCPServer` (mcp.server.mcpserver) with
+# no back-compat alias — same decorator/`run(transport=...)` API otherwise.
+mcp = MCPServer("Quor Context Compressor")
+
+
+@mcp.tool()
+def compress_context(raw_text: str) -> str:
+    """Use this tool whenever reading large command outputs, log streams, git
+    history, or long files (exceeding 30 lines). It compresses the input
+    deterministically to conserve token context window space."""
+    original_tokens = count_tokens(raw_text)
+    if original_tokens == 0:
+        return "[Quor Compressed: 0% saved]\n" + raw_text
+
+    registry = FilterRegistry(project_root=Path.cwd())
+    filter_config = registry.find(raw_text)
+    if filter_config is None:
+        compressed = raw_text
+    else:
+        content_type = detect(raw_text).value
+        compressed = registry.apply(filter_config, raw_text, content_type=content_type)
+
+    compressed_tokens = count_tokens(compressed)
+    saved_pct = max(0, round((1 - compressed_tokens / original_tokens) * 100))
+    return f"[Quor Compressed: {saved_pct}% saved]\n{compressed}"
+
+
+_MAX_RELEVANT_FILES = 5
+"""Mirrors the former Read-hook's own `MAX_RELEVANT_FILES` (QB-081) — kept
+identical since the underlying `merge_search()` call and its result shape
+are unchanged, only the query source (a direct parameter here, a parsed
+transcript there) differs."""
+
+
+@mcp.tool()
+def get_repo_context(file_path: str = "", query: str = "") -> str:
+    """Use this tool to get deterministic repository intelligence before
+    editing or reasoning about a file: structural context for a specific
+    file (its language, exported symbols, import/imported-by counts),
+    and/or a list of files relevant to a search query. Requires repository
+    intelligence to have been built already (run `quor map` first) — if it
+    hasn't, this tool says so instead of silently returning nothing.
+
+    file_path: repo-relative or absolute path to a file to show context for.
+    query: free text (e.g. a symbol or feature name) to find relevant files for.
+    """
+    root = Path.cwd()
+    sections: list[str] = []
+
+    entries = intel_store.load_file_intelligence(root)
+    if entries is None:
+        nudge = _safe_nudge(root)
+        return (
+            "No repository intelligence found for this directory — run `quor map` "
+            "first to build it." + (f"\n\n{nudge}" if nudge else "")
+        )
+
+    if file_path:
+        block = _repo_context_block(root, entries, file_path)
+        if block is not None:
+            sections.append(block)
+        else:
+            sections.append(f"No repository intelligence entry for {file_path!r}.")
+
+    if query:
+        terms = extract_query_terms(query)
+        if terms:
+            rel_path = _relative_posix_path(file_path, root) if file_path else None
+            exclude = frozenset({rel_path}) if rel_path is not None else frozenset()
+            matches = merge_search(entries, terms, limit=_MAX_RELEVANT_FILES, exclude=exclude)
+            if matches:
+                sections.append(render_relevant_files_block(matches).rstrip("\n"))
+            else:
+                sections.append(f"No relevant files found for query {query!r}.")
+        else:
+            sections.append(f"No searchable terms extracted from query {query!r}.")
+
+    if not file_path and not query:
+        sections.append(
+            f"Repository intelligence is available for {len(entries)} file(s) — "
+            "pass file_path and/or query to use it."
+        )
+
+    nudge = _safe_nudge(root)
+    if nudge:
+        sections.append(nudge.rstrip("\n"))
+
+    return "\n\n".join(sections)
+
+
+def _relative_posix_path(file_path: str, root: Path) -> str | None:
+    """Mirrors `claude_read.py`'s own `_relative_posix_path` — never raises,
+    returns `None` for a path outside `root` (including a different-drive
+    `ValueError` on Windows)."""
+    try:
+        candidate = Path(file_path)
+        if not candidate.is_absolute():
+            candidate = root / candidate
+        rel = candidate.resolve().relative_to(root.resolve())
+    except (OSError, ValueError):
+        return None
+    return rel.as_posix()
+
+
+def _repo_context_block(
+    root: Path, entries: dict[str, FileIntelligenceEntry], file_path: str
+) -> str | None:
+    """Render QB-079's "Repository Context" block for `file_path`, or `None`
+    if there's no fresh entry for it — mirrors `claude_read.py`'s
+    `_maybe_prepend_repo_context`'s fail-open staleness check (size/mtime
+    against the live file), minus the try/except (this tool's own caller
+    handles unexpected errors)."""
+    rel_path = _relative_posix_path(file_path, root)
+    if rel_path is None:
+        return None
+    entry = entries.get(rel_path)
+    if entry is None:
+        return None
+    try:
+        st = (root / rel_path).stat()
+    except OSError:
+        return None
+    if st.st_size != entry.size or st.st_mtime_ns != entry.mtime_ns:
+        return None  # stale cache entry — omit rather than show possibly-wrong info
+
+    defines = ", ".join(entry.top_symbols) if entry.top_symbols else "(none)"
+    entry_point = "yes" if entry.entry_point else "no"
+    return (
+        f"Repository Context ({rel_path}):\n"
+        f"  Kind: {entry.kind.capitalize()} | Language: {entry.language} | "
+        f"Importance: {entry.importance} | Entry point: {entry_point}\n"
+        f"  Defines: {defines}\n"
+        f"  Imports: {entry.imports} file(s) | Imported by: {entry.imported_by} file(s)"
+    )
+
+
+def _safe_nudge(root: Path) -> str | None:
+    try:
+        return compute_hook_nudge(root)
+    except Exception:  # noqa: BLE001 — fail-open: never let a nudge error surface
+        return None
+
+
+if __name__ == "__main__":
+    mcp.run(transport="stdio")

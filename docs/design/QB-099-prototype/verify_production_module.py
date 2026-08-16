@@ -14,10 +14,14 @@ import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from benchmark import CASES  # noqa: E402
+from benchmark import CASES
 
 sys.path.insert(0, str(Path(__file__).parents[2]))  # repo root, for `import quor`
-from quor.pipeline.ast_summarize.structural_diff_python import diff_python_files, render, render_tokens  # noqa: E402
+from quor.pipeline.ast_summarize.structural_diff_python import (
+    diff_python_files,
+    render,
+    render_tokens,
+)
 
 
 def git_diff_tokens(old_src: str, new_src: str) -> int:

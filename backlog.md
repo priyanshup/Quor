@@ -331,6 +331,232 @@ rejected outright: all are real, deterministic, lossless techniques in their nat
 none produce output an LLM can read directly without a decode step, which defeats the purpose of
 compressing *before* the model sees it.
 
+**Priority interrupt (2026-08-16):** a product-owner decision to retire Quor's hook-based
+integration entirely in favor of MCP as the sole integration surface (**QB-104**, added directly
+below) jumps to the very top of Now — this is a breaking architecture change to currently-shipping
+functionality (9 assistant integrations), not an incremental feature, and every other item in this
+section should be sequenced around it rather than the reverse.
+
+---
+
+#### QB-104 — Retire the hook-based integration system; MCP becomes the sole integration surface
+
+**Effort:** Large · **Value:** High · **Risk:** High · **Category:** Architecture / Integration
+
+**Status:** Complete (2026-08-16). All four phases executed and verified across three sessions —
+Phase 1 (legacy removal) + Phase 2 (production MCP module) in one pass, Phase 3 (dead-code cleanup,
+doc archival, MCP scaffolding CLI, documentation refresh) in a follow-up pass, Phase 4 (final
+verification) closing it out. `ruff check .`, `mypy quor`, and the full `pytest tests/` suite
+(including the `integration`-marked tests and the benchmark suite) are all green. See the dated
+"Execution record" note and updated checklists below for what actually shipped, including where
+execution diverged from the original plan.
+
+**Execution record (2026-08-16):**
+- Both open questions from the original plan were resolved during execution, not left blocking:
+  `quor/adapters/dispatcher.py` moved to `quor/engine/dispatcher.py` (the manual `quor <cmd>`
+  passthrough survives, untouched); `claude_read.py`'s three nudge features (Repository Context,
+  Relevant repository files, repo-intel onboarding nudge) were ported into a new `get_repo_context`
+  MCP tool in `quor/mcp/server.py`, adapting "Relevant repository files" to take a `query` parameter
+  directly (an MCP tool call has no transcript to parse a query from, unlike the old Read hook).
+- The migration story was resolved as: a new `quor uninstall-hooks` command (removes leftover
+  pre-QB-104 launcher scripts and settings.json entries, touching nothing another tool registered),
+  plus `quor init` running that same detection/cleanup unprompted on every invocation — no separate
+  manual step required for most users.
+- `quor init` was rebuilt from scratch (not restored) as pure MCP scaffolding: `quor init --mcp`
+  writes `./.mcp.json` (merging into any existing file, never clobbering another project's MCP
+  servers) and prints the equivalent `claude_desktop_config.json` snippet — Claude Desktop's own
+  config lives outside any repo, so it's printed for the user to add themselves rather than
+  auto-written, unlike the project-scoped `.mcp.json`.
+- Real-environment validation: `quor uninstall-hooks` was run against this machine's actual
+  globally-installed pre-QB-104 hook (`~/.claude/settings.json` + two `.ps1` scripts, left over from
+  this repo's own dogfooding) and cleanly removed it; `quor init --mcp`/`quor doctor` were both
+  smoke-tested for real afterward.
+- One correction found during Phase 3: `get_quor_invocation()` (in `quor/rewrite/invocation.py`) is
+  **not** dead code — `classify_command()` (used by `quor explain`) calls it directly to build its
+  rewritten-command string. Only `rewrite_command()`, a zero-caller convenience wrapper around
+  `classify_command()`, was actually dead; that's what was removed. Affected tests
+  (`test_rewrite.py`, `test_invocation.py`) were updated to use a local test-only helper reproducing
+  the wrapper's one-line logic, not deleted.
+- Hook-specific ADRs in `docs/final/DECISIONS.md` (ADR-030, ADR-036, ADR-043, ADR-044) were annotated
+  "Superseded" in place rather than physically extracted — an ADR log is an append-only historical
+  record, and cutting entries out of it to relocate them would have broken that convention for no
+  benefit. `docs/final/ADAPTERS.md` and `docs/design/QB-035A-multi-agent-adapter-design.md` (whole
+  files, not embedded log entries) were moved to `docs/archive/hook-integration/` as originally
+  planned.
+- Documentation refresh was scoped to what was actually requested each session (`README.md`,
+  `docs/final/CLAUDE.md`, `docs/final/ROADMAP.md`, `docs/ALGORITHMS.md`, plus `docs/final/
+  PROJECT_BIBLE.md`/`ANTI_GOALS.md` for direct dangling-link fixes caused by the archive move).
+  `docs/final/PROJECT_STATUS.md`, `IMPLEMENTATION_PLAN.md`, `RELEASE_CRITERIA.md`,
+  `COMMAND_SUPPORT.md`, and `RESEARCH_COMPLETION.md` (all named in the original plan's Phase 3
+  checklist) were never explicitly requested and remain unrefreshed — flagged here as a real gap,
+  not silently dropped.
+
+Quor currently ships two parallel integration mechanisms: (1) a hook-based system that transparently
+intercepts Bash/Read tool calls across 9 assistants (Claude Code, Aider, Cursor, Codex, Continue,
+Gemini, VSCode, Windsurf — 2 with real rewrite capability, 6 detection-only stubs, plus Claude Code's
+own PS1/SH launcher generation), and (2) the new MCP stdio server (`quor/mcp_poc.py`, POC-validated
+against the real pipeline). The decision: MCP fully replaces the hook system as the sole integration
+surface going forward — this entry is the resulting removal + rebuild plan, based on a full
+inventory pass (see "Files affected" below) rather than assumption.
+
+**Load-bearing correction before execution starts:** the hook system is not legacy/dead code by any
+objective measure found during inventory — the most recent merged PR before this planning pass
+(`c067cbe`, cross-platform `.ps1` hook-name fix) was active maintenance of it, and ~20 test files
+covering all 9 adapters were passing at 100% immediately before this plan was drafted. This is a
+deliberate breaking-change pivot away from working, tested, shipped functionality, not a cleanup of
+abandoned code — the risk rating and the migration-story open question below both follow from that.
+
+<details>
+<summary>Technical details</summary>
+
+**Problem:** Maintaining two structurally different integration models (hooks: transparent
+interception, zero agent opt-in required, per-assistant script generation and install/doctor
+tooling; MCP: an explicit tool the agent chooses to call, one standard protocol across every MCP
+client) doubles surface area for no compounding benefit once MCP is production-ready. The hook
+system's own per-assistant detection/install/doctor machinery (`quor/adapters/`, `quor/cli/commands/
+init.py` and most of `doctor.py`) is the single largest source of adapter-specific code in the
+repo and has no MCP equivalent need — MCP registration is client-side config, not a Quor-generated
+script.
+
+**Desired outcome:** One integration surface (MCP), a smaller and more maintainable adapter layer
+(none needed — MCP has no per-assistant variance to detect), and `quor/mcp_poc.py` promoted to a
+real, packaged production module with logging, config, and dependency declaration it doesn't have
+today.
+
+**Scope — what's removed, what's kept, what's new** (from a full-repo inventory pass; not guessed):
+
+*Removed entirely* (hook-protocol-shaped, no reuse value for MCP):
+- `quor/adapters/base.py` — `AgentAdapter` Protocol, `AgentEvent` enum, hook-payload pydantic models
+- `quor/adapters/registry.py` — `AdapterRegistry` (`quor.hook_adapter` entry-point discovery)
+- `quor/adapters/claude.py`, `claude_adapter.py` — Claude Code PreToolUse/Bash hook
+- `quor/adapters/codex_adapter.py`, `continue_adapter.py`, `cursor_adapter.py`, `vscode_adapter.py`,
+  `windsurf_adapter.py`, `aider_adapter.py`, `_detection_only.py` — 6 detection-only stubs + shared base
+- `quor/adapters/gemini_adapter.py`, `hook_manifest.py` — PS1/SH launcher-script generation/templates
+- `quor/cli/commands/init.py` — hook installation flow (dry-run preview, collision detection, atomic
+  PS1/SH writes)
+- `quor/__main__.py`: `_run_hook()`, `_HOOK_ARGV_ALIASES`, the `hook` entry in `_CLI_COMMANDS` and its
+  `sys.argv[1] == "hook"` fast-path
+
+*Refactored, not deleted:*
+- `quor/adapters/claude_read.py` (~1,540 lines) — the PostToolUse/Read hook itself is removed, but it
+  carries three features with real product value that must not be silently lost: "Repository Context"
+  (QB-079), "Relevant repository files" (QB-081), and the repo-intel onboarding nudge (QB-090). These
+  need a new, non-hook call site (see Phase 2) — **open question, see below**, not a settled deletion.
+- `quor/cli/commands/doctor.py` (34,898 bytes, largest CLI command) — strip all hook-specific checks
+  (`_hook_script_path`, `_check_hook_script`, `_check_hook_registered`, `_check_hook_up_to_date`,
+  `_check_adapters`, `_repair_hooks`, `has_stale_hooks`, `should_warn_stale_hooks`,
+  `_check_hook_collision`, `_check_hook_roundtrip`, `_check_read_hook_roundtrip`,
+  `_run_roundtrip_check`); keep the non-hook diagnostics (`_check_python_version`,
+  `_check_dependencies`, `_check_sqlite`, `_check_filters`, `_check_mode`, `_check_tee`,
+  `_check_tee_size`, `_check_negative_compression_filters`, `_check_plugins`); add a new MCP-health
+  check in their place (server importable, `mcp` package present, `.mcp.json`/config discoverable).
+- `tests/unit/test_adapters.py` (1,096 lines), `test_fail_open.py` (517 lines), `test_cli.py` (2,686
+  lines) — each mixes hook-specific tests with pure pipeline/dispatcher tests that must survive;
+  needs per-test triage, not wholesale deletion. `test_cli.py` specifically: remove `TestDoctor*`,
+  `TestInit`, `TestReadHookDoctorChecks`, `TestHookConfigHealth`, `TestStaleHookNudge`,
+  `TestReadHookRegistration`, `TestHookCollisionDetection`, `TestFindConflictingHooks`,
+  `TestExecutionPolicyCheck`, `TestPosixLauncherGeneration`, `TestDoctorPosix`,
+  `TestWindowsEncodingRegression`, `TestCodepageSweep`, `TestRepoIntelligenceOnboarding`; keep
+  `TestValidate`, `TestExplain`, `TestGain`, `TestGainFilters`, `TestVerify`.
+
+*Kept as-is, reused by MCP* (confirmed protocol-agnostic — none of these touch hook JSON shape):
+- `quor/adapters/dispatcher.py` (573 lines) — this is the compression-pipeline runtime itself
+  (`FilterRegistry`/`Pipeline`/plugins/tee/secrets-scan/tracking), not hook-specific despite its
+  current location; `quor/mcp_poc.py` already reuses the same `FilterRegistry`/`Pipeline` layer
+  independently. **Open question:** does `dispatcher.py` move out of `quor/adapters/` (a now-misleading
+  package name once every adapter is gone) into e.g. `quor/core/` or `quor/compress/`? And does the
+  manual `quor <cmd>` passthrough CLI feature it powers stay (as a standalone utility, unrelated to
+  any hook auto-rewrite) or go? Not assumed either way — needs a decision before Phase 1 executes.
+- `quor/pipeline/tee.py`, `onboarding.py`, `secrets.py`, `quor/pipeline/repo_profile/nudge.py`,
+  `quor/tracking/db.py` — all take plain strings, zero coupling to hook request/response shape;
+  directly wireable into the MCP tool's response path as additive enhancements (recovery-footer
+  caching, onboarding tips, secret-scan warnings, repo-intel nudges) matching what hook users got.
+- Every non-hook, non-adapter CLI command (`validate`, `verify`, `explain`, `gain`, `map`, `symbols`,
+  `graph`, `repo`, `explore`, `search`, `version`, `dashboard`) and ~70 of the ~92 files in
+  `tests/unit/` — confirmed zero hook dependency during inventory, untouched by this ticket.
+
+**Phase 1 — Legacy removal/deprecation:**
+- [x] Decide the two open questions above — resolved during execution, see "Execution record" above
+- [x] Decide the migration story — `quor uninstall-hooks` + automatic cleanup in `quor init`
+- [x] Remove the 9 adapter files + `base.py`/`registry.py`/`_detection_only.py`/`hook_manifest.py`
+- [x] Remove `quor/cli/commands/init.py` (later rebuilt as MCP scaffolding in Phase 3); strip
+      hook-specific sections of `doctor.py`
+- [x] Remove hook dispatch wiring from `quor/__main__.py`
+- [x] Remove the wholesale hook/adapter test files (20, not 18 as originally estimated); triage-split
+      `test_adapters.py`, `test_fail_open.py`, `test_cli.py` — plus `test_tracking.py` and
+      `tests/integration/test_cli_commands.py`, two more mixed files found during execution that
+      the original inventory missed
+- [x] Sweep for dangling imports/references to removed modules across `quor/` and `tests/`
+
+**Phase 2 — Production MCP module:**
+- [x] Promote `quor/mcp_poc.py` → `quor/mcp/server.py`
+- [x] Standardize stdio transport + lock `mcp>=2.0.0` (the `FastMCP` → `MCPServer` rename, documented
+      inline in `quor/mcp/server.py`)
+- [x] Add `get_repo_context` tool (config/argument handling took the form of this tool's own
+      `file_path`/`query` parameters rather than a separate config layer — no project-root override
+      or log-level flag was added; not found to be needed in practice)
+- [x] Wire in `nudge` reuse (via `get_repo_context`); `tee`/`onboarding`/`secrets` were evaluated and
+      deliberately left un-wired — they're dispatcher-specific enhancements (recovery-footer caching,
+      onboarding tips, secret-scan warnings) tied to the Bash-output shape, not asked for on the MCP
+      tool-result path and not added speculatively
+- [x] Add `mcp>=2.0.0` as a core `pyproject.toml` dependency (not an extra — it's Quor's sole
+      integration surface, not optional)
+- [x] Packaged as `python -m quor.mcp.server` (a `quor mcp` subcommand was considered and not done —
+      an MCP server needs to hold the process open on stdio, a different shape from every other
+      Typer command, which return promptly)
+- [ ] *(Stretch, not pursued)* repo-intelligence family (map/symbols/graph/explore/search) as
+      additional MCP tools/resources — remains a real future extension, out of this ticket's scope
+
+**Phase 3 — Configuration & documentation:**
+- [x] Promote `docs/POC_TESTING.md` → permanent doc, covering `.mcp.json` and
+      `claude_desktop_config.json` registration
+- [x] Replace `README.md`'s hook-era sections with MCP registration instructions
+- [x] Add MCP-registration scaffolding: `quor init --mcp`, writing `.mcp.json` + printing the
+      Desktop config snippet
+- [x] Archive `docs/final/ADAPTERS.md` and `docs/design/QB-035A-multi-agent-adapter-design.md` to
+      `docs/archive/hook-integration/`; annotate hook-specific ADRs (030/036/043/044) as
+      "Superseded" in place in `docs/final/DECISIONS.md` rather than physically extracting them —
+      see "Execution record" above for why extraction was rejected
+- [ ] A dedicated new ADR for the MCP-only decision was not written as its own entry — the
+      "Superseded" annotations on ADR-030/036/043/044 plus this ticket's own backlog record serve
+      that purpose; a formal ADR-0NN remains a legitimate follow-up if the project wants one
+- [x] Pass over `docs/final/CLAUDE.md`, `ROADMAP.md` — done. `PROJECT_STATUS.md`,
+      `IMPLEMENTATION_PLAN.md`, `RELEASE_CRITERIA.md`, `COMMAND_SUPPORT.md`,
+      `RESEARCH_COMPLETION.md` — **not done**, never explicitly requested; real gap, see "Execution
+      record" above. `docs/ALGORITHMS.md` was checked and needed no changes.
+      `PROJECT_BIBLE.md`/`ANTI_GOALS.md` got targeted fixes for dangling links the archive move
+      caused, not a full pass.
+
+**Phase 4 — Verification & test coverage:**
+- [x] Full `pytest tests/` passes (unit + integration + benchmark suite), zero hook-specific files
+      remaining, every triaged file confirmed clean
+- [x] Grep sweep confirmed no remaining import of any removed `quor.adapters.*` module anywhere in
+      `quor/` or `tests/` (one real gap the sweep caught: `patch("quor.adapters.dispatcher...")`
+      string-literal mock targets in `test_adapters.py`, invisible to an import-only grep)
+- [x] `ruff check .` / `mypy quor` clean — one real `mypy` finding fixed (`merge_search`'s `exclude`
+      param needed a `None`-filtered `rel_path`, not a blind `frozenset({...})`); `ruff check .` also
+      surfaced and fixed several pre-existing, QB-104-unrelated issues in
+      `docs/design/QB-099-prototype/` while satisfying the "zero warnings" gate
+- [x] Manual MCP smoke test: both tools invoked directly against this real repo, including the
+      repo-intel nudge firing correctly (537 files indexed, 14-day-stale nudge shown)
+- [x] `quor doctor` and `quor init --mcp`/`quor uninstall-hooks` all smoke-tested for real, including
+      against this machine's actual pre-QB-104 hook installation (see "Execution record" above)
+- [x] `quor verify` and the benchmark suite both pass unchanged, confirming zero pipeline regression
+
+**Testing (actually run):** `ruff check .` clean, `mypy quor` clean (146 source files), full
+`pytest tests/` clean (unit + benchmark suite), `pytest tests/ -m integration` clean (8/8).
+
+**Files changed:** see the itemized Phase 1–3 checklists above; the full diff spans
+`quor/adapters/` (removed, 15 files), `quor/engine/dispatcher.py` (moved from `quor/adapters/`),
+`quor/mcp/server.py` (promoted + extended), `quor/cli/commands/init.py` (rewritten),
+`quor/cli/commands/uninstall_hooks.py` (new), `quor/cli/commands/doctor.py` (stripped),
+`quor/cli/main.py`/`quor/__main__.py` (rewired), `quor/rewrite/classifier.py` (`rewrite_command()`
+removed), ~25 test files (deleted or triaged), `pyproject.toml`, `README.md`,
+`docs/final/CLAUDE.md`/`DECISIONS.md`/`ROADMAP.md`/`PROJECT_BIBLE.md`/`ANTI_GOALS.md`,
+`docs/POC_TESTING.md`, `docs/archive/hook-integration/` (new), `CONTRIBUTING.md`.
+
+</details>
+
 ---
 
 #### QB-095 — Path prefix front-coding

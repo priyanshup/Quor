@@ -1,9 +1,9 @@
 """Deterministic search-term extraction from free text (QB-081).
 
-Pure text processing only — no repository access, no cache reads, no
-Claude Code hook concepts. This module knows nothing about
-`file_intelligence.json` or `search()`; it exists so `quor/adapters/
-claude_read.py` has a query list to hand to `search.merge_search()`.
+Pure text processing only — no repository access, no cache reads. This
+module knows nothing about `file_intelligence.json` or `search()`; it
+exists so `quor/mcp/server.py`'s `get_repo_context` tool has a query list
+to hand to `search.merge_search()`.
 
 Every extracted term comes from one of two deterministic, shape-based
 rules — never a stopword list, a word-frequency count, or any other
@@ -28,13 +28,13 @@ import re
 MAX_QUERY_TERMS = 4
 """Hard cap on how many distinct terms one `extract_query_terms()` call
 returns. This is the number that actually bounds QB-081's worst-case added
-Read-hook latency: each returned term drives one full `search.search()`
-pass over `file_intelligence.json` (an O(files-in-cache) scan), so total
-added cost is `~MAX_QUERY_TERMS * (one search() call)`, independent of how
-long or identifier-dense the source prompt is. Deliberately small (not the
-3-8 the ticket allows for *displayed* results) — this caps *searches*, a
-different, cost-bearing knob from `quor.adapters.claude_read.
-MAX_RELEVANT_FILES`, which only caps what's shown after merging."""
+latency: each returned term drives one full `search.search()` pass over
+`file_intelligence.json` (an O(files-in-cache) scan), so total added cost
+is `~MAX_QUERY_TERMS * (one search() call)`, independent of how long or
+identifier-dense the source query is. Deliberately small (not the 3-8 the
+ticket allows for *displayed* results) — this caps *searches*, a different,
+cost-bearing knob from `quor.mcp.server._MAX_RELEVANT_FILES`, which only
+caps what's shown after merging."""
 
 # One combined pattern, scanned left-to-right in a single pass so the
 # returned order always matches first-appearance order in `text`:

@@ -15,7 +15,7 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from structural_diff import classify_file, render, render_tokens  # noqa: E402
+from structural_diff import classify_file, render, render_tokens
 
 CASES: dict[str, tuple[str, str]] = {}
 
@@ -393,7 +393,7 @@ def run():
         rendered2 = render(summary2)
         deterministic = rendered1 == rendered2
 
-        baseline_tok, baseline_text = git_diff_tokens(old_src, new_src)
+        baseline_tok, _baseline_text = git_diff_tokens(old_src, new_src)
         structural_tok = render_tokens(rendered1)
         reduction = 1 - (structural_tok / baseline_tok) if baseline_tok else 0.0
         runtime_ms = (t1 - t0) * 1000
@@ -401,7 +401,7 @@ def run():
         totals["baseline"] += baseline_tok
         totals["structural"] += structural_tok
 
-        print(f"{name:28s} {baseline_tok:13d} {structural_tok:15d} {reduction:9.1%} {runtime_ms:10.2f}ms {str(deterministic):>14s}")
+        print(f"{name:28s} {baseline_tok:13d} {structural_tok:15d} {reduction:9.1%} {runtime_ms:10.2f}ms {deterministic!s:>14s}")
         print(f"  -> {rendered1.replace(chr(10), chr(10) + '     ')}")
         print()
 

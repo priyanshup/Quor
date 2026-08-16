@@ -4,23 +4,19 @@ Deliberately break things and confirm Quor degrades safely rather than crashing
 or hanging. Each scenario proves the error model from ADR-018 holds:
 
   1. Corrupted TOML config          → warnings emitted, built-ins still load
-  2. Malformed hook stdin JSON       → original bytes returned to Claude Code
-  3. Missing DB permissions          → dispatch still returns filtered output
-  4. Simulated hook timeout          → original bytes returned (fail-open)
-  5. Subprocess hanging (timeout)    → exit 124, no crash
-  6. Pathological regex (ReDoS)      → timeout fires, warns, line stays KEEP
+  2. Missing DB permissions          → dispatch still returns filtered output
+  3. Subprocess hanging (timeout)    → exit 124, no crash
+  4. Pathological regex (ReDoS)      → timeout fires, warns, line stays KEEP
 """
 
 from __future__ import annotations
 
 import io
 import subprocess
-import sys
 import warnings
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-import orjson
 import pytest
 
 from quor.tracking.db import InvocationRecord, TrackingDB
@@ -84,120 +80,14 @@ class TestCorruptedToml:
 
 
 # ---------------------------------------------------------------------------
-# 2. Malformed hook stdin JSON
-# ---------------------------------------------------------------------------
-
-
-class TestMalformedHookJson:
-    """_run_hook catches all exceptions and writes original bytes to stdout."""
-
-    def _call_run_hook(self, stdin_bytes: bytes) -> bytes:
-        """Call _run_hook with controlled stdin/stdout, return what was written to stdout."""
-        from quor.__main__ import _run_hook
-
-        fake_in = MagicMock()
-        fake_in.buffer = io.BytesIO(stdin_bytes)
-        out_buffer = io.BytesIO()
-        fake_out = MagicMock()
-        fake_out.buffer = out_buffer
-
-        with (
-            patch.object(sys, "argv", ["quor", "hook", "claude"]),
-            patch.object(sys, "stdin", fake_in),
-            patch.object(sys, "stdout", fake_out),
-        ):
-            _run_hook()
-
-        return out_buffer.getvalue()
-
-    def test_malformed_json_returns_original(self) -> None:
-        original = b'{"not": "valid json'
-        result = self._call_run_hook(original)
-        assert result == original
-
-    def test_empty_stdin_returns_original(self) -> None:
-        result = self._call_run_hook(b"")
-        assert result == b""
-
-    def test_missing_tool_input_field_returns_original(self) -> None:
-        # Valid JSON but wrong shape — pydantic ValidationError → original returned
-        original = orjson.dumps({"tool_name": "Bash"})  # missing tool_input
-        result = self._call_run_hook(original)
-        assert result == original
-
-    def test_non_dict_json_returns_original(self) -> None:
-        original = b"[1, 2, 3]"
-        result = self._call_run_hook(original)
-        assert result == original
-
-
-class TestMalformedReadHookJson:
-    """QB-007A: the PostToolUse/Read adapter (claude_read.py) must fail open
-    exactly like the Bash adapter above — same __main__._run_hook guard,
-    different adapter name/payload shape."""
-
-    def _call_run_hook(self, stdin_bytes: bytes) -> bytes:
-        from quor.__main__ import _run_hook
-
-        fake_in = MagicMock()
-        fake_in.buffer = io.BytesIO(stdin_bytes)
-        out_buffer = io.BytesIO()
-        fake_out = MagicMock()
-        fake_out.buffer = out_buffer
-
-        with (
-            patch.object(sys, "argv", ["quor", "hook", "claude-read"]),
-            patch.object(sys, "stdin", fake_in),
-            patch.object(sys, "stdout", fake_out),
-        ):
-            _run_hook()
-
-        return out_buffer.getvalue()
-
-    def test_malformed_json_returns_original(self) -> None:
-        original = b'{"not": "valid json'
-        result = self._call_run_hook(original)
-        assert result == original
-
-    def test_empty_stdin_returns_original(self) -> None:
-        result = self._call_run_hook(b"")
-        assert result == b""
-
-    def test_missing_tool_input_field_returns_original(self) -> None:
-        original = orjson.dumps({"tool_name": "Read"})  # missing tool_input
-        result = self._call_run_hook(original)
-        assert result == original
-
-    def test_non_dict_json_returns_original(self) -> None:
-        original = b"[1, 2, 3]"
-        result = self._call_run_hook(original)
-        assert result == original
-
-    def test_valid_payload_never_sets_updated_tool_output(self) -> None:
-        """Not a failure case — included here to make the contrast explicit:
-        even on the success path, QB-007A's fail-open-adjacent guarantee is
-        that nothing is ever substituted for the original Read output."""
-        original = orjson.dumps(
-            {
-                "tool_name": "Read",
-                "tool_input": {"file_path": "a.md"},
-                "tool_response": "# Heading\n",
-            }
-        )
-        result = self._call_run_hook(original)
-        parsed = orjson.loads(result)
-        assert "updatedToolOutput" not in parsed["hookSpecificOutput"]
-
-
-# ---------------------------------------------------------------------------
-# 3. Missing file permissions on config / tracking dirs
+# 2. Missing file permissions on config / tracking dirs
 # ---------------------------------------------------------------------------
 
 
 class TestPermissionErrors:
     def test_sqlite_connect_failure_does_not_block_dispatch(self) -> None:
         """PermissionError on SQLite connect must not prevent filtered output."""
-        from quor.adapters.dispatcher import run_dispatch
+        from quor.engine.dispatcher import run_dispatch
 
         proc = MagicMock(spec=subprocess.CompletedProcess)
         proc.stdout = (
@@ -275,69 +165,14 @@ class TestPermissionErrors:
 
 
 # ---------------------------------------------------------------------------
-# 4. Simulated hook timeout
-# ---------------------------------------------------------------------------
-
-
-class TestHookTimeout:
-    def _call_run_hook(self, stdin_bytes: bytes, *, side_effect: Exception) -> bytes:
-        from quor.__main__ import _run_hook
-
-        fake_in = MagicMock()
-        fake_in.buffer = io.BytesIO(stdin_bytes)
-        out_buffer = io.BytesIO()
-        fake_out = MagicMock()
-        fake_out.buffer = out_buffer
-
-        with (
-            patch.object(sys, "argv", ["quor", "hook", "claude"]),
-            patch.object(sys, "stdin", fake_in),
-            patch.object(sys, "stdout", fake_out),
-            # QB-035C: __main__._run_hook() now resolves "claude" through
-            # AdapterRegistry -> ClaudeAdapter.handle_event(), which calls
-            # quor.adapters.claude.handle_bytes() (the bytes-in/bytes-out
-            # core) rather than the old sys.stdin/stdout-based run_hook() —
-            # patch the function actually on the hot path.
-            patch("quor.adapters.claude.handle_bytes", side_effect=side_effect),
-        ):
-            _run_hook()
-
-        return out_buffer.getvalue()
-
-    def test_timeout_error_returns_original(self) -> None:
-        original = orjson.dumps({
-            "tool_name": "Bash",
-            "tool_input": {"command": "git status"},
-        })
-        result = self._call_run_hook(original, side_effect=TimeoutError("timed out"))
-        assert result == original
-
-    def test_memory_error_returns_original(self) -> None:
-        original = orjson.dumps({
-            "tool_name": "Bash",
-            "tool_input": {"command": "git log"},
-        })
-        result = self._call_run_hook(original, side_effect=MemoryError("out of memory"))
-        assert result == original
-
-    def test_arbitrary_exception_returns_original(self) -> None:
-        original = orjson.dumps({
-            "tool_name": "Bash",
-            "tool_input": {"command": "pytest"},
-        })
-        result = self._call_run_hook(original, side_effect=RuntimeError("unexpected"))
-        assert result == original
-
-
-# ---------------------------------------------------------------------------
-# 5. Subprocess hanging (timeout handling)
+# 3. Subprocess hanging (timeout handling)
 # ---------------------------------------------------------------------------
 
 
 class TestSubprocessTimeout:
     def test_timeout_expired_returns_124(self) -> None:
         """A hanging subprocess raises TimeoutExpired → dispatch returns 124, no crash."""
-        from quor.adapters.dispatcher import run_dispatch
+        from quor.engine.dispatcher import run_dispatch
 
         captured = io.StringIO()
         with (
@@ -353,7 +188,7 @@ class TestSubprocessTimeout:
 
     def test_timeout_does_not_raise_to_caller(self) -> None:
         """run_dispatch must return an int, never raise, on TimeoutExpired."""
-        from quor.adapters.dispatcher import run_dispatch
+        from quor.engine.dispatcher import run_dispatch
 
         with (
             patch(
@@ -368,7 +203,7 @@ class TestSubprocessTimeout:
 
     def test_timeout_with_tracking_still_returns_124(self, tmp_path: Path) -> None:
         """Timeout + active tracking: tracking is skipped, exit 124 returned."""
-        from quor.adapters.dispatcher import run_dispatch
+        from quor.engine.dispatcher import run_dispatch
 
         tracking = TrackingDB(db_path=tmp_path / "quor.db")
         try:
@@ -387,7 +222,7 @@ class TestSubprocessTimeout:
 
 
 # ---------------------------------------------------------------------------
-# 6. Pathological regex (catastrophic backtracking / ReDoS)
+# 4. Pathological regex (catastrophic backtracking / ReDoS)
 # ---------------------------------------------------------------------------
 
 

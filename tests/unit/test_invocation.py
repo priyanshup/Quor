@@ -13,8 +13,19 @@ import sys
 
 import pytest
 
-from quor.rewrite.classifier import rewrite_command
+from quor.rewrite.classifier import classify_command
 from quor.rewrite.invocation import get_quor_invocation
+
+
+def _rewrite(cmd: str) -> str | None:
+    """QB-104: local stand-in for the removed `rewrite_command()` convenience
+    wrapper (deleted as dead production code — zero real callers once the
+    hook-based integration it served was removed). `classify_command()`
+    itself is still very much alive (`quor explain` depends on it), and this
+    one-liner is exactly what `rewrite_command()` used to do, so every test
+    below keeps checking the same property it always did."""
+    result = classify_command(cmd)
+    return result.rewritten if result.should_rewrite else None
 
 
 class TestGetQuorInvocation:
@@ -43,17 +54,17 @@ class TestRewriteNoLongerUsesLauncher:
     """Proves the rewrite mechanism no longer depends on quor.exe/qr.exe."""
 
     def test_rewritten_command_does_not_start_with_bare_quor(self) -> None:
-        rewritten = rewrite_command("git status")
+        rewritten = _rewrite("git status")
         assert rewritten is not None
         assert not rewritten.startswith("quor ")
 
     def test_rewritten_command_starts_with_current_interpreter(self) -> None:
-        rewritten = rewrite_command("git status")
+        rewritten = _rewrite("git status")
         assert rewritten is not None
         assert rewritten.startswith(shlex.quote(sys.executable))
 
     def test_rewritten_command_matches_helper(self) -> None:
-        rewritten = rewrite_command("cat pyproject.toml")
+        rewritten = _rewrite("cat pyproject.toml")
         assert rewritten == f"{get_quor_invocation()} cat pyproject.toml"
 
     def test_existing_functionality_unchanged(self) -> None:
@@ -61,8 +72,8 @@ class TestRewriteNoLongerUsesLauncher:
         # used to reach Quor changed, not which commands get rewritten.
         # (npm is no longer a good "still unknown" example post-QB-006A —
         # see test_rewrite.py for npm/npx/pnpm/yarn classification coverage.)
-        assert rewrite_command("cargo build") is None
-        assert rewrite_command("git status --porcelain") is None
-        rewritten = rewrite_command("git status && git diff")
+        assert _rewrite("cargo build") is None
+        assert _rewrite("git status --porcelain") is None
+        rewritten = _rewrite("git status && git diff")
         assert rewritten is not None
         assert rewritten.count("-m quor") == 2

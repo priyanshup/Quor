@@ -137,14 +137,15 @@ def _utc_now() -> datetime:
 
 
 def compute_hook_nudge(root: Path) -> str | None:
-    """Single entry point `claude_read.py` calls: one fast git subprocess
-    call to confirm `root` is a git repository, plus at most one cheap
-    state read, plus (rate-limited to once per `STALE_CHECK_INTERVAL`) one
-    or two more fast git subprocess calls — never a repository walk.
-    Returns `None` the instant there's nothing worth saying; never raises
-    (callers still wrap this in their own fail-open guard, matching every
-    other Read-hook enhancement in this codebase, but every internal
-    failure here already degrades to `None` on its own).
+    """Single entry point callers use (`quor/mcp/server.py`'s
+    `get_repo_context` tool, formerly `claude_read.py`'s Read hook): one
+    fast git subprocess call to confirm `root` is a git repository, plus at
+    most one cheap state read, plus (rate-limited to once per
+    `STALE_CHECK_INTERVAL`) one or two more fast git subprocess calls —
+    never a repository walk. Returns `None` the instant there's nothing
+    worth saying; never raises (callers still wrap this in their own
+    fail-open guard, but every internal failure here already degrades to
+    `None` on its own).
 
     The git-repo check is not just cost hygiene — it's the feature's own
     stated scope (a bare, non-project directory has nothing sensible to

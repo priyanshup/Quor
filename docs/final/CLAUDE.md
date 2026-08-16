@@ -8,7 +8,7 @@
 
 ## Project Overview
 
-Quor is a Python CLI tool that compresses AI coding assistant command output before it enters the context window. It intercepts Claude Code PreToolUse hooks, rewrites commands to route through Quor, applies a ContentMask pipeline, and returns compressed output.
+Quor is a Python CLI tool and MCP server that compresses AI coding assistant command output before it enters the context window. As of QB-104, it runs as an MCP server (`quor/mcp/server.py`, stdio transport) exposing `compress_context`/`get_repo_context` tools an assistant calls explicitly; it applies a ContentMask pipeline and returns compressed output. (The pre-QB-104 hook-based integration — transparently intercepting Claude Code's PreToolUse hooks — was removed; see `backlog.md`'s QB-104 entry and `docs/archive/hook-integration/` for the historical architecture.)
 
 **Package name:** `quor` (CLI commands: `quor` and `qr`)  
 **Python version:** 3.11+ required (stdlib `tomllib`)  
@@ -22,25 +22,35 @@ Read PROJECT_BIBLE.md for the full product context. Read DECISIONS.md for the re
 ## Architecture at a Glance
 
 ```
-<agent> hook (Claude Code PreToolUse, Gemini CLI BeforeTool, ...)
-    → quor hook <agent_id> <event>  (AdapterRegistry resolves agent_id -> AgentAdapter)
-    → AgentAdapter.handle_event(): parse this agent's payload, call the
-      agent-agnostic core below, serialize this agent's response shape
-      e.g. "git status" → "<python> -m quor git status"
-      (interpreter invocation via get_quor_invocation(), not the quor/qr
-      launcher — see DECISIONS.md ADR-029)
-    → Quor subprocess runs real command, captures stdout
+MCP client (Claude Code, Claude Desktop, any MCP-compatible client)
+    → calls the compress_context / get_repo_context MCP tool over stdio
+    → quor/mcp/server.py: parse the tool call, run the agent-agnostic
+      core below, return the tool result
     → ContentMask pipeline (stages annotate lines, final render applies)
-    → Compressed output returned to AI context, in that agent's own shape
+    → Compressed output returned to the MCP client, as the tool's result
     → SQLite + JSONL tracking (background thread)
+
+quor <cmd> (CLI passthrough — e.g. a filter author testing a command
+directly, or a script invoking the pipeline outside MCP)
+    → quor/engine/dispatcher.py: runs the real command, captures stdout
+    → ContentMask pipeline (same as above)
+    → Compressed output printed to stdout
 ```
 
 The core pipeline (`quor/rewrite/`, `quor/filters/`, `quor/pipeline/`,
-`quor/tracking/`) is 100% agent-agnostic — it takes/returns plain strings
-and has never had, and must never gain, a branch on which agent called it.
-Everything agent-specific lives in `quor/adapters/` behind the
-`AgentAdapter` Protocol (ADR-036) — see `docs/final/ADAPTERS.md` for the
-full architecture, lifecycle, and how to add a new adapter.
+`quor/tracking/`) is 100% caller-agnostic — it takes/returns plain strings
+and has never had, and must never gain, a branch on which caller invoked
+it. `quor/mcp/server.py` (the MCP tool surface) and `quor/engine/
+dispatcher.py` (the CLI passthrough) are both thin callers on top of the
+same core, not two implementations of it.
+
+**Historical note:** before QB-104, this section described a hook-based
+architecture (`quor/adapters/`, `AgentAdapter` Protocol resolved through
+`AdapterRegistry`, one adapter per AI coding tool) that transparently
+intercepted Claude Code's PreToolUse hooks. That entire system was removed
+in favor of MCP as the sole integration surface — see `backlog.md`'s
+QB-104 entry and `docs/archive/hook-integration/ADAPTERS.md` for the
+historical design.
 
 **Core primitive:** `ContentMask` — array of `LineMask(line, Decision, reason, stage)`.  
 Decisions: `KEEP` (default), `COMPRESS` (remove in render), `PROTECT` (cannot be overridden).  
@@ -54,10 +64,11 @@ Stages annotate. Final render applies. Stages never mutate line content.
 
 | Path | Purpose |
 |---|---|
-| `quor/__main__.py` | Entry point. Version check (3.11+), then routes to hook or CLI. No logic. |
-| `quor/cli/main.py` | Typer app. Registers all 6 commands. No implementation. |
-| `quor/cli/commands/` | One file per command: init, validate, explain, gain, verify, doctor. |
-| `quor/adapters/` | `AgentAdapter` Protocol + `AdapterRegistry` (ADR-036) + one adapter per AI coding tool (`claude_adapter.py`, `gemini_adapter.py` — real hook capability; `codex_adapter.py`, `cursor_adapter.py`, `vscode_adapter.py`, `windsurf_adapter.py`, `aider_adapter.py`, `continue_adapter.py` — share the `_detection_only.py` base, no confirmed rewrite/replace capability). Platform/agent-payload concerns only — see `docs/final/ADAPTERS.md`. |
+| `quor/__main__.py` | Entry point. Version check (3.11+), then routes to CLI passthrough dispatch or the Typer CLI app. No logic. |
+| `quor/cli/main.py` | Typer app. Registers all 6 commands (+ `init`/`doctor`/`uninstall-hooks`, non-filtering). No implementation. |
+| `quor/cli/commands/` | One file per command: init, validate, explain, gain, verify, doctor, uninstall_hooks. |
+| `quor/mcp/server.py` | The MCP server (stdio transport) — `compress_context`/`get_repo_context` tools. Quor's sole integration surface (QB-104). |
+| `quor/engine/dispatcher.py` | `quor <cmd>` CLI passthrough — runs a real command, applies the ContentMask pipeline, prints the result. Reused by nothing else; a standalone utility path alongside the MCP server. |
 | `quor/pipeline/mask.py` | ContentMask, LineMask, Decision. Core primitive. |
 | `quor/pipeline/engine.py` | Pipeline executor. Orchestrates stages. Enforces PROTECT immutability. |
 | `quor/pipeline/content_type.py` | Heuristic content type detection. |
@@ -86,11 +97,11 @@ Stages annotate. Final render applies. Stages never mutate line content.
 - Never use `assert` for validation. Use explicit `if/raise`.
 - All exceptions inherit from `QuorError` or its subclasses.
 - Every `except` clause is specific. Never use bare `except:`.
-- Hook-level code has one top-level `except Exception` guard. Nowhere else.
+- MCP tool functions (`quor/mcp/server.py`) and the CLI passthrough dispatch (`quor/engine/dispatcher.py`) each have one top-level `except Exception` guard at their own boundary. Nowhere else.
 
 **Imports:**
 - Stdlib imports first. Third-party imports second. Quor-internal imports third.
-- Never import `rich` in `__main__.py` hook path — it would appear in hook stdout.
+- Never import `rich` in `quor/mcp/server.py` — stdio is the MCP transport; anything written to stdout outside the protocol's own JSON-RPC framing corrupts it, the same way `rich` output used to corrupt hook JSON.
 - `tomllib` is stdlib in 3.11+. No conditional import needed.
 
 **Files and paths:**
@@ -114,12 +125,12 @@ Stages annotate. Final render applies. Stages never mutate line content.
 
 These are the ONLY filtering-operation commands that exist in V1. Do not add more without explicit approval.
 
-1. `quor init --claude` — install Claude Code hook. Shows dry-run first, writes atomically (tempfile + rename), runs `doctor` automatically.
-2. `quor validate [file]` — validate config. Must complete in <1 second. No subprocess execution.
-3. `quor explain <command>` — stage-by-stage trace. Shows what each stage did and why.
-4. `quor gain` — token savings summary. Reads from SQLite. Always shows ±20% uncertainty.
-5. `quor verify` — run all inline filter tests. Exit code 1 if any test fails.
-6. `quor doctor` — health check: hook responding? Tests passing? Schema current? Mode set?
+1. `quor validate [file]` — validate config. Must complete in <1 second. No subprocess execution.
+2. `quor explain <command>` — stage-by-stage trace. Shows what each stage did and why.
+3. `quor gain` — token savings summary. Reads from SQLite. Always shows ±20% uncertainty.
+4. `quor verify` — run all inline filter tests. Exit code 1 if any test fails.
+5. `quor doctor` — health check: dependencies present (including `mcp`)? Tests passing? Tee healthy?
+6. `quor init --mcp` — scaffold MCP server registration (writes `./.mcp.json`, prints the `claude_desktop_config.json` equivalent). Also runs an unprompted legacy pre-QB-104 hook cleanup pass on every invocation.
 
 `quor schema` also exists as a 7th, exempted utility command (JSON Schema dump for the filter TOML format) — it's not a filtering operation, so it doesn't count against the six. `quor map` (QB-061, ADR-037), `quor symbols` (QB-066, ADR-038), `quor graph` (QB-067, ADR-039), `quor repo` (QB-076/QB-077, Repository Intelligence Dashboard with auto-refresh), and `quor explore` (QB-078, ADR-042, Repository Explorer — cache-only, never calls `ensure_repo_intelligence()`, unlike `quor repo`) are an 8th, 9th, 10th, 11th, and 12th exemption in the same category — deterministic, non-filtering repository-analysis commands, each explicitly approved as its own exemption, not an open door for further ones (see Common Mistake #8 below).
 
@@ -159,7 +170,7 @@ class StageHandler(Protocol):
 - `regex_replace` — apply ordered regex substitution `rules` (capture groups supported) to KEEP lines
 - `match_output` — if the whole rendered output fullmatches `pattern`, collapse to `summary`; refuses to fire if any PROTECT line is present
 - `python_ast_summarize` — COMPRESS function/method body lines (stdlib `ast` parse only; never rewrites/reformats kept body lines); fails open (propagates parse errors to the engine's per-stage fail-open) on any non-Python or invalid-syntax input (QB-005). As of QB-005B, delegates its actual line-range computation to `quor/pipeline/ast_summarize/registry.py::get_analyzer("python")` — a reusable, multi-language analyzer framework — rather than calling `ast.parse()` directly; this stage's own behavior, config shape, and `cat-python.toml` are unchanged. As of QB-096, also calls `get_import_collapser("python")` and merges its result in via `quor.pipeline.stages._utils._apply_ast_summary()` — see that bullet's own QB-096 note below for what this adds.
-- `code_ast_summarize` — the generic, filter-configurable counterpart to `python_ast_summarize` (QB-005B). Reads a `language` field from its config and dispatches to whichever analyzer `quor/pipeline/ast_summarize/registry.py` has registered for that name; an unregistered language fails open (mask unchanged, silent — see the stage's own module docstring for why this lives in `apply()` rather than `can_handle()`, which has no access to `StageConfig`). `"python"` (QB-005B), `"javascript"` (QB-005C), and `"typescript"`/`"tsx"` (QB-005D — two separate registry entries, since `tree-sitter-typescript` exposes two distinct grammars that must be selected by file extension, never by content) are all registered, backed by `tree-sitter`/`tree-sitter-javascript`/`tree-sitter-typescript` (optional `quor[javascript]` extra — one extra covers both languages, a deliberate QB-005D choice; see `typescript.py`'s own module docstring for the rationale). `cat-javascript.toml` routes `.js`/`.jsx`/`.mjs`/`.cjs` through this stage with `language = "javascript"`; `cat-typescript.toml` routes `.ts`/`.tsx` with `language = "typescript"`/`"tsx"` respectively (two `[[filter]]` blocks in one file, mirroring `node.toml`'s own multi-block precedent). `cat-python.toml` still uses the separate `python_ast_summarize` stage, not this one (a deliberate, documented difference, not an oversight — see `backlog.md`'s QB-005B/QB-005C entries). A missing `quor[javascript]` install fails open per-call (empty compress set, actionable warning), not at import time — see `javascript.py`/`typescript.py`'s own module docstrings. `javascript.py` and `typescript.py` share their ERROR-node-overlap-exclusion and body-interior-line logic via `quor/pipeline/ast_summarize/_treesitter_utils.py` (extracted from `javascript.py` in QB-005D, behavior re-verified byte-for-byte unchanged) rather than each reimplementing it. **A verified, real bug in `tree-sitter==0.26.0`** (native-level memory corruption under repeated `Node.child_by_field_name()` + point-attribute access on trees above roughly 85 relevant nodes — reproduced via bisection, absent in `0.25.2`) means `pyproject.toml` caps `tree-sitter` at `<0.26.0`; QB-005D re-ran the same bisection methodology specifically against the TypeScript/TSX grammars (clean at 2000-3000+ nodes) before adding `tree-sitter-typescript`, confirming the existing ceiling remains sufficient. Do not raise that ceiling without independently re-verifying a newer release no longer reproduces it. As of QB-005F, all four `cat-python`/`cat-javascript`/`cat-typescript`/`cat-tsx` filters are also reachable from Claude Code's native `Read` tool, not just `cat`'d through Bash — see `quor/adapters/claude_read.py`'s module docstring and `_SOURCE_CODE_FILTER_NAMES_BY_EXTENSION` for the by-name routing (a bare Read `file_path` can never match these filters' `cat `-prefixed `match_command` patterns, so they're looked up by name instead, the same mechanism QB-007E4 already uses for extracted DOCX/PDF text). **QB-096 (import block collapsing):** both stages above also call `get_import_collapser(language)` — a fourth registry family alongside `_ANALYZERS`/`_SYMBOL_EXTRACTORS`/`_RELATIONSHIP_EXTRACTORS`, registered for `"python"`/`"java"`/`"javascript"`/`"typescript"`/`"tsx"` (not `"go"`/`"rust"`/`"csharp"` — out of this item's scope) — that replaces a whole run of consecutive, top-level import statements with one synthesized summary block (`quor/pipeline/ast_summarize/import_collapse.py`'s shared, language-agnostic `group_import_runs()`/`render_import_block()`/`collapse_import_runs()`, fed by each language's own `collapse_imports_*()` extraction). A bare Python `import x` groups into a "Standard library"/"Third-party" bucket (`sys.stdlib_module_names` — deterministic, not guessed); every `from`-style import (Python relative/wildcard included, Java's package-qualified imports, JS/TS's module-specifier imports) groups under its own `module` heading instead — except a module group of 3 names or fewer, which renders as one inline `"module: a, b, c"` line rather than a heading + bulleted list (`_format_module_group()`, `_MAX_INLINE_MODULE_NAMES` — a product-review finding: a heading followed by 1-3 bullets is visually heavier than the line(s) it replaces; the stdlib/third-party buckets are deliberately exempt from this and always stay bulleted). Gated by the same QB-055 token-cost comparison every collapsing stage in this document already uses, plus a `_MIN_ENTRIES_TO_COLLAPSE = 2` floor (never collapse a run representing fewer than 2 individual bindings, regardless of cost math — a literal requirement, not a guessed heuristic; see `import_collapse.py`'s own docstring for the one edge case that required it). The merge with body-compression lives in one shared helper, `quor.pipeline.stages._utils._apply_ast_summary()`, so `python_ast_summarize.py`/`code_ast_summarize.py` each call it once rather than duplicating the merge logic — see `quor/pipeline/mask.py`'s module docstring for the exact, narrow line-rewrite exception this represents (the fourth, after `group_repeated`/`collapse_unchanged_context`/`path_prefix_fold`) and why it's justified on different grounds than `path_prefix_fold`'s byte-exact one. No filter TOML changes were needed — every `cat-python`/`cat-java`/`cat-javascript`/`cat-typescript`/`cat-tsx` filter gets this automatically through the same `language` config it already had.
+- `code_ast_summarize` — the generic, filter-configurable counterpart to `python_ast_summarize` (QB-005B). Reads a `language` field from its config and dispatches to whichever analyzer `quor/pipeline/ast_summarize/registry.py` has registered for that name; an unregistered language fails open (mask unchanged, silent — see the stage's own module docstring for why this lives in `apply()` rather than `can_handle()`, which has no access to `StageConfig`). `"python"` (QB-005B), `"javascript"` (QB-005C), and `"typescript"`/`"tsx"` (QB-005D — two separate registry entries, since `tree-sitter-typescript` exposes two distinct grammars that must be selected by file extension, never by content) are all registered, backed by `tree-sitter`/`tree-sitter-javascript`/`tree-sitter-typescript` (optional `quor[javascript]` extra — one extra covers both languages, a deliberate QB-005D choice; see `typescript.py`'s own module docstring for the rationale). `cat-javascript.toml` routes `.js`/`.jsx`/`.mjs`/`.cjs` through this stage with `language = "javascript"`; `cat-typescript.toml` routes `.ts`/`.tsx` with `language = "typescript"`/`"tsx"` respectively (two `[[filter]]` blocks in one file, mirroring `node.toml`'s own multi-block precedent). `cat-python.toml` still uses the separate `python_ast_summarize` stage, not this one (a deliberate, documented difference, not an oversight — see `backlog.md`'s QB-005B/QB-005C entries). A missing `quor[javascript]` install fails open per-call (empty compress set, actionable warning), not at import time — see `javascript.py`/`typescript.py`'s own module docstrings. `javascript.py` and `typescript.py` share their ERROR-node-overlap-exclusion and body-interior-line logic via `quor/pipeline/ast_summarize/_treesitter_utils.py` (extracted from `javascript.py` in QB-005D, behavior re-verified byte-for-byte unchanged) rather than each reimplementing it. **A verified, real bug in `tree-sitter==0.26.0`** (native-level memory corruption under repeated `Node.child_by_field_name()` + point-attribute access on trees above roughly 85 relevant nodes — reproduced via bisection, absent in `0.25.2`) means `pyproject.toml` caps `tree-sitter` at `<0.26.0`; QB-005D re-ran the same bisection methodology specifically against the TypeScript/TSX grammars (clean at 2000-3000+ nodes) before adding `tree-sitter-typescript`, confirming the existing ceiling remains sufficient. Do not raise that ceiling without independently re-verifying a newer release no longer reproduces it. (QB-005F originally also made these filters reachable via Claude Code's Read hook, by-name-routed around the `cat `-prefixed `match_command` patterns; that Read-hook path no longer exists post-QB-104 — MCP's `compress_context` tool takes raw text directly, with no file-path-based routing step.) **QB-096 (import block collapsing):** both stages above also call `get_import_collapser(language)` — a fourth registry family alongside `_ANALYZERS`/`_SYMBOL_EXTRACTORS`/`_RELATIONSHIP_EXTRACTORS`, registered for `"python"`/`"java"`/`"javascript"`/`"typescript"`/`"tsx"` (not `"go"`/`"rust"`/`"csharp"` — out of this item's scope) — that replaces a whole run of consecutive, top-level import statements with one synthesized summary block (`quor/pipeline/ast_summarize/import_collapse.py`'s shared, language-agnostic `group_import_runs()`/`render_import_block()`/`collapse_import_runs()`, fed by each language's own `collapse_imports_*()` extraction). A bare Python `import x` groups into a "Standard library"/"Third-party" bucket (`sys.stdlib_module_names` — deterministic, not guessed); every `from`-style import (Python relative/wildcard included, Java's package-qualified imports, JS/TS's module-specifier imports) groups under its own `module` heading instead — except a module group of 3 names or fewer, which renders as one inline `"module: a, b, c"` line rather than a heading + bulleted list (`_format_module_group()`, `_MAX_INLINE_MODULE_NAMES` — a product-review finding: a heading followed by 1-3 bullets is visually heavier than the line(s) it replaces; the stdlib/third-party buckets are deliberately exempt from this and always stay bulleted). Gated by the same QB-055 token-cost comparison every collapsing stage in this document already uses, plus a `_MIN_ENTRIES_TO_COLLAPSE = 2` floor (never collapse a run representing fewer than 2 individual bindings, regardless of cost math — a literal requirement, not a guessed heuristic; see `import_collapse.py`'s own docstring for the one edge case that required it). The merge with body-compression lives in one shared helper, `quor.pipeline.stages._utils._apply_ast_summary()`, so `python_ast_summarize.py`/`code_ast_summarize.py` each call it once rather than duplicating the merge logic — see `quor/pipeline/mask.py`'s module docstring for the exact, narrow line-rewrite exception this represents (the fourth, after `group_repeated`/`collapse_unchanged_context`/`path_prefix_fold`) and why it's justified on different grounds than `path_prefix_fold`'s byte-exact one. No filter TOML changes were needed — every `cat-python`/`cat-java`/`cat-javascript`/`cat-typescript`/`cat-tsx` filter gets this automatically through the same `language` config it already had.
 - `path_prefix_fold` (QB-095) — front-codes a consecutive run of path-like KEEP lines (filter-declared `patterns`, same "author declares the shape" convention as `group_repeated`/`strip_lines`) sharing a directory prefix: the shared prefix, computed char-wise and trimmed back to the last `separator` boundary so a fold never splits a filename mid-token, becomes one new header line, and every line in the run is rewritten to its suffix — no line is `COMPRESS`ed away, so a fold is fully reconstructible (header + child = original line, byte-for-byte). Folds only when strictly cheaper by token estimate, the same QB-055 principle `collapse_unchanged_context` already uses — no separate line-count threshold. The one stage besides `group_repeated` allowed to change the mask's total line count (inserts exactly one header per fold), and the only stage allowed to rewrite every line in a matched run rather than just the first — see `quor/pipeline/mask.py`'s module docstring for the exact, narrow invariant this required extending. Wired into `z_generic.toml` (the fallback filter every command eventually reaches) with an anchored `'^\S+/\S*$'` pattern.
 - `numeric_range_compression` (QB-097) — folds a run of consecutive KEEP lines that are each *nothing but* an integer (`^\d+$`, hardcoded stdlib `re` pattern — a precise structural check, not a shape guess, so unlike `path_prefix_fold`/`group_repeated` there is no `patterns` config for a filter author to declare) into one `start-end` range line. A run only continues while every line shares the same string width as the run's first entry (this one rule both preserves leading-zero fidelity — `"001"/"002"/"003"` → `"001-003"`, exactly reconstructible by zero-padding — and conservatively declines some safe width-crossing runs like `"9"/"10"/"11"`) and each value is exactly one more than the previous (duplicates and descending runs never merge). Negative numbers are never merged (rejected outright, not guessed at): `-` is this stage's own range separator, so `-5`/`-1` as `-5--1` would be ambiguous to read. Folds only when strictly cheaper by the same QB-055 token estimate every collapsing stage here uses — note a same-width 2-line run can never be *strictly* cheaper than leaving it alone (`-` and `\n` are both one character, so `"12-13"` is always exactly as long as `"12\n13"`), only tie, so it never folds; a single-digit 2-line run (`"4"/"5"` → `"4-5"`) can still fold since both sides round down to fewer estimated tokens. Reuses `group_repeated`'s/`collapse_unchanged_context`'s existing line-rewrite exception (first line of the run rewritten to the range, the rest `COMPRESS`ed) rather than `path_prefix_fold`'s "insert a header" one, so the mask's total line count is unchanged — no new mask.py exception category was needed. Wired into `z_generic.toml`, after `path_prefix_fold` (so a numeric suffix it just produced is itself foldable) and before `max_tokens`.
 - `relative_timestamp_compression` (QB-098) — rewrites a consecutive run of KEEP lines that each start with one of 7 deterministic timestamp formats (`space_datetime`/`iso_z`/`iso_frac_z`/`iso_offset`/`iso_frac_offset`/`time_only`/`time_frac` — no locale-dependent month names, no fuzzy parsing) so the first line is left completely untouched and every subsequent line is rewritten to `+delta` + the rest of that line, timestamp stripped. Deltas use exact integer nanosecond arithmetic (never rounded) rendered as the largest unit that divides evenly (`+2h`/`+5m`/`+1s`/`+250ms`/`+1us`/`+1ns`). A run only continues while every line shares the same format kind (and, for fractional kinds, the same fractional-digit width) as the run's first line and is no earlier than the previous line — same "one uniform invariant, when uncertain don't collapse" philosophy `numeric_range_compression`'s width rule already established. No `patterns` config, same reasoning as `numeric_range_compression`. A fifth `mask.py` line-rewrite exception, shaped differently from every one before it: no line is ever `COMPRESS`ed and no line is ever inserted — every line in a fold stays `KEEP`, so reconstructibility comes from arithmetic (`previous + delta = next`) rather than byte-for-byte suffix preservation. Wired into `z_generic.toml` (covers `docker logs --timestamps`/`kubectl logs --timestamps`/ISO-mode `journalctl`/generic CI console output/application logs — none have a dedicated filter) and into `node.toml`'s `npm` filter (covers `npm run <script>` invoking a dev-server watch process that timestamps its own rebuild lines). `line_tokens()` and `apply_preserve_patterns()` — both byte-identical logic previously duplicated across `path_prefix_fold`/`numeric_range_compression`/this stage — were extracted into `quor/pipeline/stages/_utils.py` as part of this item; the three stages' own run-detection/rendering logic was deliberately left independent (see `backlog.md`'s QB-098 entry for the full "why not a shared abstraction" reasoning).
@@ -210,13 +221,12 @@ TOML schema; COMMAND_SUPPORT.md documents which commands actually use them.
 
 | Operation | Target |
 |---|---|
-| Hook response (parse + rewrite) | <10ms |
 | Full pipeline (10,000 lines) | <200ms |
 | `quor validate` | <1 second |
 | Python startup on Windows (corporate AV) | <300ms (measure; design daemon if not met) |
 | Default CI test suite | <30 seconds |
 
-**Hook-path code must not import heavy dependencies.** `__main__.py` in hook mode runs in the AI's request path. Every `import` must be justified. No `rich`, no heavy schema validation, no plugin discovery in the hot path.
+**`quor/mcp/server.py` should stay reasonably light on imports** — an MCP tool call blocks the calling assistant on its result, so unjustified heavy imports (plugin discovery, heavy schema validation) at module import time still cost real latency, even though it's no longer the same hard-sub-10ms hot path a transparent PreToolUse hook used to be.
 
 ---
 
@@ -304,15 +314,15 @@ This rule applies to all Batch 5 work and every future feature unless explicitly
 
 ## Safety Rules — Never Violate These
 
-1. **The hook always returns valid output.** `__main__.py` catches all exceptions and returns original.
+1. **An MCP tool call always returns valid output, never an unhandled exception.** `quor/mcp/server.py` catches failures at its own boundary.
 2. **PROTECT decisions are immutable.** The pipeline engine enforces this. No stage bypasses it.
 3. **Meaning preservation.** When uncertain whether to remove a line, keep it.
-4. **No network calls in the hook path.** Zero. Not even DNS lookups.
-5. **No `rich` in hook path.** It would corrupt hook stdout.
+4. **No network calls in the compression path.** Zero. Not even DNS lookups. (The MCP stdio transport itself is local-only by construction.)
+5. **No `rich` in `quor/mcp/server.py`.** It would corrupt the MCP stdio protocol's own JSON-RPC framing.
 6. **No `assert` for validation.** Use `if/raise`.
 7. **No hardcoded `~`, `/tmp`, or `%APPDATA%`.** Use `platformdirs`.
 8. **Always `encoding="utf-8"` on `open()`.** No exceptions.
-9. **SQLite writes never block the hook.** Background thread only.
+9. **SQLite writes never block an MCP tool call.** Background thread only.
 10. **Plugin failures log and skip.** Never raise from plugin failure.
 
 ---
@@ -449,7 +459,7 @@ Plugin failures (import error, validation error, runtime error) are logged as wa
 
 1. **Using `re` for user patterns.** Always use `regex` with `timeout=1.0`.
 2. **Forgetting `encoding="utf-8"` on file open.** CI should lint for this.
-3. **Importing `rich` in hook path.** Rich output to stdout corrupts hook JSON.
+3. **Importing `rich` in `quor/mcp/server.py`.** It would corrupt the MCP stdio protocol's own JSON-RPC framing, the same way it used to corrupt hook JSON.
 4. **Setting `PROTECT` in the wrong place.** PROTECT is set by `preserve_patterns` in `strip_lines`. The engine enforces immutability — individual stages don't need to check.
 5. **Hardcoding `/tmp`.** Use `tempfile.mkdtemp()`.
 6. **Catching bare `except:`.** Always catch specific exception types.
@@ -459,7 +469,7 @@ Plugin failures (import error, validation error, runtime error) are logged as wa
 10. **Storing backslashes in SQLite paths.** Always `Path.as_posix()`.
 11. **Mutable defaults in Pydantic models.** Use `Field(default_factory=list)`.
 12. **Presenting token counts without ±20% label.** Always include the uncertainty.
-13. **Invoking `quor`/`qr` as a bare command when manually testing the CLI** (e.g. `quor explain "git status"`, `quor doctor`). On a locked-down corporate Windows machine, the pip-generated `quor.exe`/`qr.exe` launcher stubs get silently blocked by Defender/AppLocker application-control policy (see README.md's "corporate-launcher troubleshooting" section and ADR-029 in DECISIONS.md — this is the exact reason the PreToolUse rewrite path invokes `sys.executable -m quor`, never the bare launcher). Manual/dev-workflow invocation is **not** covered by that ADR, so always use `python -m quor ...` / `python -m qr ...` yourself too — never the bare `quor`/`qr` form — when testing from a shell during development.
+13. **Invoking `quor`/`qr` as a bare command when manually testing the CLI** (e.g. `quor explain "git status"`, `quor doctor`). On a locked-down corporate Windows machine, the pip-generated `quor.exe`/`qr.exe` launcher stubs get silently blocked by Defender/AppLocker application-control policy (see README.md's "corporate-launcher troubleshooting" section and ADR-029 in DECISIONS.md — this is the exact reason `quor/rewrite/invocation.py`'s `get_quor_invocation()` — still used by `classify_command()`, `quor explain`, and the CLI passthrough — builds `sys.executable -m quor`, never the bare launcher). Always use `python -m quor ...` / `python -m qr ...` yourself too — never the bare `quor`/`qr` form — when testing from a shell during development, and register the MCP server itself the same way (`python -m quor.mcp.server`, per `quor init --mcp`'s own scaffolded config).
 
 ---
 
@@ -498,6 +508,8 @@ A task is done when:
 
 ## Current Implementation Task
 
-Phases 0-10 are complete (ContentMask pipeline, filters, rewriter, hook adapter, tracking, CLI, plugin infrastructure and discovery, packaging & release). v0.5.0 is published to PyPI (v0.1.0 was the first release, 2026-07-01). See ROADMAP.md for the next milestone (v0.5 — Public Alpha — a named milestone gate, not the same thing as the v0.5.0 package version) and PROJECT_STATUS.md for the current session snapshot.
+Phases 0-10 are complete (ContentMask pipeline, filters, rewriter, hook adapter, tracking, CLI, plugin infrastructure and discovery, packaging & release). v0.5.0 was published to PyPI (v0.1.0 was the first release, 2026-07-01). See ROADMAP.md for the next milestone and PROJECT_STATUS.md for the current session snapshot.
+
+**QB-104 (2026-08-16):** the hook adapter from Phases 0-10 above was removed and replaced with the MCP server (`quor/mcp/server.py`) as Quor's sole integration surface — see this file's "Architecture at a Glance" section and `backlog.md`'s QB-104 entry for the full scope.
 
 The three pre-Phase-0 gates (Python startup time, Claude Code hook mechanism verification, PyPI name availability) were all resolved before Phase 0 began; see PROJECT_STATUS.md's "Pre-implementation blockers" section for the historical record.

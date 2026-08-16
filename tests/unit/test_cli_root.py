@@ -54,11 +54,14 @@ class TestHelpGrouping:
         assert "Analysis" in result.stdout
         assert "Utilities" in result.stdout
 
-    def test_installation_panel_contains_init_and_doctor(self) -> None:
+    def test_installation_panel_contains_doctor_and_uninstall_hooks(self) -> None:
+        """QB-104: `init` was removed along with the hook-based integration;
+        `uninstall-hooks` (the migration command for pre-QB-104 installs)
+        replaced it in the Installation panel."""
         result = runner.invoke(app, ["--help"])
         installation_section = result.stdout.split("Installation")[1].split("Analysis")[0]
-        assert "init" in installation_section
         assert "doctor" in installation_section
+        assert "uninstall-hooks" in installation_section
 
     def test_analysis_panel_contains_map_symbols_graph(self) -> None:
         result = runner.invoke(app, ["--help"])
@@ -75,5 +78,5 @@ class TestHelpGrouping:
 
     def test_help_shows_concise_one_line_descriptions(self) -> None:
         result = runner.invoke(app, ["--help"])
-        assert "Install Quor's integration with an AI coding assistant." in result.stdout
+        assert "Remove a pre-QB-104 hook installation." in result.stdout
         assert "Generate a deterministic repository context profile." in result.stdout

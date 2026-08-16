@@ -123,17 +123,16 @@ def _canon(node, target: str | None):
     if isinstance(node, ast.AST):
         parts = [type(node).__name__]
         for fname, fval in ast.iter_fields(node):
-            if target is not None:
-                if isinstance(node, ast.Name) and fname == "id" and fval == target:
-                    fval = "<SELF>"
-                elif isinstance(node, ast.Attribute) and fname == "attr" and fval == target:
-                    fval = "<SELF>"
-                elif (
+            if target is not None and (
+                (isinstance(node, ast.Name) and fname == "id" and fval == target)
+                or (isinstance(node, ast.Attribute) and fname == "attr" and fval == target)
+                or (
                     isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
                     and fname == "name"
                     and fval == target
-                ):
-                    fval = "<SELF>"
+                )
+            ):
+                fval = "<SELF>"
             parts.append((fname, _canon(fval, target)))
         return tuple(parts)
     if isinstance(node, list):
@@ -159,9 +158,7 @@ def _stmt_eq(a: ast.stmt, b: ast.stmt) -> bool:
 
 def _is_call_to(stmt: ast.stmt, name: str) -> bool:
     val = None
-    if isinstance(stmt, ast.Expr):
-        val = stmt.value
-    elif isinstance(stmt, (ast.Return, ast.Assign, ast.AnnAssign)):
+    if isinstance(stmt, (ast.Expr, ast.Return, ast.Assign, ast.AnnAssign)):
         val = stmt.value
     if not isinstance(val, ast.Call):
         return False
@@ -201,7 +198,10 @@ def _try_extracted(old_body: list[ast.stmt], new_body: list[ast.stmt], helper: D
         return False
     tail_old = old_body[j:]
     tail_new = new_body[i + 1:]
-    return all(_stmt_eq(a, b) for a, b in zip(tail_old, tail_new)) and len(tail_old) == len(tail_new)
+    # strict=False: an intentional truncate-then-compare — the trailing
+    # len() check (not zip itself) is what actually enforces equal length,
+    # so this must return False on mismatch, never raise.
+    return all(_stmt_eq(a, b) for a, b in zip(tail_old, tail_new, strict=False)) and len(tail_old) == len(tail_new)
 
 
 def _try_inlined(old_body: list[ast.stmt], new_body: list[ast.stmt], helper: Decl) -> bool:
@@ -220,7 +220,7 @@ def _try_inlined(old_body: list[ast.stmt], new_body: list[ast.stmt], helper: Dec
     expected = old_body[:call_idx] + h_body + old_body[call_idx + 1:]
     if len(expected) != len(new_body):
         return False
-    return all(_stmt_eq(a, b) for a, b in zip(expected, new_body))
+    return all(_stmt_eq(a, b) for a, b in zip(expected, new_body, strict=True))
 
 
 # --------------------------------------------------------------------------
@@ -421,4 +421,4 @@ def line_tokens(line: str) -> int:
 
 
 def render_tokens(text: str) -> int:
-    return sum(line_tokens(l) for l in text.split("\n"))
+    return sum(line_tokens(line) for line in text.split("\n"))

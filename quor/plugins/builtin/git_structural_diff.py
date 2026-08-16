@@ -1,7 +1,7 @@
 """QB-099A: the builtin PRE_FILTER plugin that gives
 `quor.pipeline.git_diff_enrich` real subprocess/filesystem access.
 
-Registered at the "builtin" tier by `quor.adapters.dispatcher._setup_plugins()`
+Registered at the "builtin" tier by `quor.engine.dispatcher._setup_plugins()`
 — not discovered via entry points, always present, no installation needed.
 `PluginCategory.PRE_FILTER` is the category this project's own plugin API
 (`quor/plugins/base.py`) documents for exactly this: "input enrichment that
@@ -44,7 +44,7 @@ from quor.plugins.base import (
 
 # Per-subprocess-call budget. Small and strict: this is supplementary
 # enrichment layered on top of a command dispatch that already has its own
-# 25s ceiling (`quor.adapters.dispatcher._run_subprocess`) — a slow git
+# 25s ceiling (`quor.engine.dispatcher._run_subprocess`) — a slow git
 # invocation here must degrade to "this file's chunk stays as the original
 # diff text," never stall the whole hook.
 _GIT_SHOW_TIMEOUT_S = 2.0
