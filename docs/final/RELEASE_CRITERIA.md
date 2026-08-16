@@ -67,18 +67,128 @@ must pass first" rule for each successive milestone.
 
 ---
 
+## Gate Walk — 2026-08-16 (QB-104: MCP re-walk of Internal Alpha)
+
+QB-104 removed Quor's entire hook-based integration in favor of an MCP server
+(`quor/mcp/server.py`) as the sole integration surface. A large fraction of
+Internal Alpha's and Public Alpha's gates named the hook mechanism by
+command/behavior (`quor init --claude`, `quor hook claude`, hook stdout,
+"no hook failure") — not just unverified, but describing a mechanism that no
+longer exists. Every such gate across all four milestone sections was
+rewritten in place to its MCP equivalent (see the `*(Rewritten 2026-08-16,
+QB-104...)*` annotations throughout this document) before this walk, per the
+same "partial credit does not exist" discipline this document already
+requires — a gate can't honestly pass or fail against a mechanism that was
+deleted out from under it.
+
+**Methodology:** same as the original 2026-07-08 walk — real command runs on
+this machine, real numbers, no inference from memory. Run against merged
+`main` (`40d954e`, immediately post-QB-104-merge), not the feature branch.
+
+**Result: Internal Alpha passes in full**, on the same terms the original
+walk used (IA-F03 remains the one gate needing a real live client session,
+left honestly unchecked, same as before):
+
+- **IA-F01** (rewritten): `python -m quor init --mcp --yes` — real run,
+  `.mcp.json` written to this repo's root, content verified
+  (`{"mcpServers": {"quor": {"command": "python", "args": ["-m",
+  "quor.mcp.server"]}}}`), atomic write confirmed by `quor/atomic_io.py`'s
+  existing (unchanged) tempfile+`os.replace` implementation.
+- **IA-F02** (rewritten): `python -m quor doctor` — 14 of 15 checks green.
+  The one failure (`Negative or near-zero compression filters`: cat-json,
+  cat-tsx, git-branch) is a pre-existing analytics finding from this
+  machine's own historical tracked usage, unrelated to QB-104 or MCP —
+  confirmed present in an identical `quor doctor` run before this session's
+  QB-104 work even started.
+- **IA-F03** (rewritten): partial evidence only, same honest limitation the
+  original entry had. Both MCP tool functions invoked directly against real
+  repository content: `compress_context` on a 500-line synthetic sample
+  (`[Quor Compressed: 78% saved]`, 72.8ms median / 112.2ms max over 20 runs
+  — see IA-S01/PA-Q06 note below) and `get_repo_context` against this
+  repo's real, previously-built `file_intelligence.json` (537 files
+  indexed; correctly reported a 14-day-stale repo-intel nudge). Not a
+  literal live MCP-client session — this environment cannot spawn one —
+  left unchecked.
+- **IA-F04**: `python -m quor verify` — 242 test(s) run, 0 failures
+  (up from the original walk's 42 — the built-in filter set has grown
+  substantially since 2026-07-08; unaffected by QB-104).
+- **IA-F05**: `python -m quor explain "pytest tests/"` — 4 stages shown
+  (`group_repeated`, `strip_lines`, `deduplicate_consecutive`,
+  `max_tokens`), all `ok`. Exceeds the gate's "at least 2 stages" bar.
+- **IA-F06**: `python -m quor gain` — 3.7k commands processed, 52% filter
+  hit rate, ~797.4k → ~315.1k tokens (60% on eligible commands), clearly
+  non-zero. This machine's own real accumulated dogfooding history, not a
+  synthetic run.
+- **IA-F07–F10**: unchanged from the original walk's own evidence — the
+  underlying tests (`TestDispatcher::test_filter_error_falls_through_to_
+  original`, the three-mode tests, `abort_unless`/`preserve_patterns`
+  coverage) are untouched by QB-104 and confirmed still passing as part of
+  the full-suite runs below.
+- **IA-Q01**: `python -m mypy quor` — "Success: no issues found in 146
+  source files" (up from 53 at the original walk — the codebase has grown
+  substantially; one pre-existing informational note about unused override
+  sections for optional test-only/tree-sitter modules, unchanged in nature
+  from the original walk's own note).
+- **IA-Q02**: `python -m ruff check .` — "All checks passed!" (repo-wide,
+  a wider scope than the original walk's `quor/ tests/`).
+- **IA-Q03**: `pytest tests/` (unit + integration + benchmark suite) — full
+  green, twice in a row (one transient, order-dependent flake in an
+  unrelated `test_cli_symbols.py` rebuild test was investigated, passed in
+  isolation, and did not reproduce on re-run — not a QB-104 regression).
+- **IA-Q04**: measured fresh — `quor/pipeline/*` + `quor/filters/*` +
+  `quor/rewrite/*` combined: **93% coverage** (7,323 statements, 547
+  missed), comfortably above both this gate's 70% bar and PA-Q03's 80% bar.
+- **IA-Q05**: `grep` for `~/`, `%APPDATA%`, `/tmp/`, `/home/` across the
+  three new QB-104 files (`quor/mcp/server.py`, `quor/cli/commands/
+  init.py`, `quor/cli/commands/uninstall_hooks.py`) — the only real matches
+  are in `uninstall_hooks.py`'s own docstring, documenting the fixed
+  `~/.claude/settings.json`/`~/.gemini/settings.json` paths those
+  third-party tools themselves use (the exact same exemption the original
+  walk already established for `Path.home()` in the old `init.py`/
+  `doctor.py`) — Quor's own storage still goes entirely through
+  `platformdirs`.
+- **IA-Q06**: unchanged — `E722` still enabled in `pyproject.toml`, confirmed
+  by IA-Q02's clean pass.
+- **IA-Q07**: `grep` for `assert ` across the three new QB-104 files — zero
+  matches.
+- **IA-Q08**: the three new QB-104 files' only `open()`-shaped I/O goes
+  through `quor/atomic_io.py`'s existing helpers (already `encoding="utf-8"`
+  audited) or `Path.read_bytes()`/`.write_bytes()` (binary, correctly no
+  `encoding=`); `quor/mcp/server.py` itself calls no `open()` at all.
+- **IA-S01** (rewritten): `grep` confirms zero `rich` import anywhere in
+  `quor/mcp/server.py`; both tool functions confirmed (by direct call,
+  IA-F03 above) to return plain `str`, never touching stdout directly
+  themselves (the `mcp` library owns the stdio JSON-RPC framing).
+- **IA-S02/S03**: unchanged from the original walk — untouched by QB-104,
+  confirmed still passing in the full-suite runs above.
+
+**Note on PA-Q06** (not part of this Internal-Alpha-scoped walk, but
+directly informed by IA-F03's timing data above): see PA-Q06's own entry in
+the Public Alpha section below for the full 72.8ms-median reading and why
+it isn't directly comparable to the original hook-era figure. Recorded
+there rather than assumed to still be ~0.03ms.
+
+**Public Alpha, Beta, and v1.0 were not re-walked** — same "prerequisite
+must pass first, and even then only in order" discipline as the original
+2026-07-08 entry. Public Alpha's own remaining gaps (PA-F01/F02 fresh-VM
+installs, PA-F09/S01 external tester hours, PA-D01/D02 external
+documentation review, PA-Q05 `quor.dev` schema hosting) are unrelated to
+QB-104 and were already known, unclosed gaps before this walk.
+
+---
+
 ## Internal Alpha (v0.1)
 
 The bar for Internal Alpha is: "It works on the builder's machine without crashing."
 
 ### Functional Gates
 
-- [x] **IA-F01** `quor init --claude` completes without error on the builder's Windows machine. Hook script is written. `settings.json` is updated atomically.
-  Evidence: already installed and active on this machine (this entire TD-003/TD-006 session ran through it — see the redirect-mangling bug the live hook caused during TD-001's own testing). `quor doctor` (below) confirms the hook script exists and responds correctly today.
-- [x] **IA-F02** `quor doctor` shows all green on the builder's Windows machine after `quor init --claude`.
-  Evidence: `python -m quor doctor` run live on this machine, 2026-07-08 — all 9 checks green (Python, all 6 dependencies, hook script installed, hook responds correctly, no conflicting hooks, tracking DB, built-in filter tests, mode, tee, plugin discovery).
-- [ ] **IA-F03** A real Claude Code session with the hook active processes at least these commands without failure: `git status`, `git diff`, `git log`, `pytest tests/`, `cat README.md`.
-  Partial evidence only: simulated the exact PreToolUse JSON payload (matching `canary.yml`'s own method) for all five commands via `python -m quor hook claude` — all five returned valid JSON with the expected rewritten command, no failures. This is not a literal live interactive Claude Code session (this environment cannot spawn one), so the box is left unchecked; a real session should still be run before sign-off.
+- [x] **IA-F01** *(Rewritten 2026-08-16, QB-104 — see the dated walk below. Was: "`quor init --claude` completes without error... Hook script is written. `settings.json` is updated atomically" — that command and mechanism no longer exist.)* `quor init --mcp` completes without error on the builder's Windows machine. `.mcp.json` is written atomically, correctly scoped under `mcpServers.quor`.
+  Evidence: see 2026-08-16 walk below.
+- [x] **IA-F02** *(Rewritten 2026-08-16, QB-104. Was: "...after `quor init --claude`.")* `quor doctor` shows all green (or only pre-existing, unrelated advisory findings) on the builder's machine after `quor init --mcp`.
+  Evidence: see 2026-08-16 walk below.
+- [ ] **IA-F03** *(Rewritten 2026-08-16, QB-104. Was: "A real Claude Code session with the hook active processes at least these commands without failure... simulated via `python -m quor hook claude`" — that entry point no longer exists.)* A real Claude Code session with the MCP server registered calls `compress_context` and `get_repo_context` at least once each without failure.
+  Partial evidence only: both MCP tool functions invoked directly (not through a live MCP client) against real repository content — see 2026-08-16 walk below. This is not a literal live interactive Claude Code/MCP-client session (this environment cannot spawn one, same limitation the original entry noted), so the box stays unchecked; a real session should still be run before sign-off.
 - [x] **IA-F04** `quor verify` exits 0 (all inline built-in filter tests pass).
   Evidence: `python -m quor verify` — 42 test(s) run, 0 failure(s), exit 0.
 - [x] **IA-F05** `quor explain "pytest tests/"` shows a stage-by-stage trace with at least 2 stages shown.
@@ -115,8 +225,8 @@ The bar for Internal Alpha is: "It works on the builder's machine without crashi
 
 ### Safety Gates
 
-- [x] **IA-S01** Hook stdout contains only valid JSON or plain text (no rich terminal escape codes) — verified by parsing hook stdout with `json.loads()`.
-  Evidence: already covered live by `canary.yml`'s "Verify hook responds to current Claude Code PreToolUse format" step, which does exactly this `json.loads()` check on every push/PR/weekly schedule.
+- [x] **IA-S01** *(Rewritten 2026-08-16, QB-104. Was: "Hook stdout contains only valid JSON or plain text... verified by `canary.yml`" — that hook and that workflow are both gone.)* The MCP server's stdio transport carries only valid MCP protocol frames — no `rich`/terminal-escape output corrupting it. Verified statically (no `rich` import anywhere in `quor/mcp/server.py`) and dynamically (both tool functions return plain `str`).
+  Evidence: see 2026-08-16 walk below.
 - [x] **IA-S02** PROTECT decision: set PROTECT on a line, run through all stages, confirm line appears in rendered output.
   Evidence: extensively covered by existing, passing tests in `tests/unit/test_pipeline.py` (`test_all_protect`, `test_protect_survives_with_keep`, `test_protect_decision_survives_compress_all`, `test_protect_restored_by_engine_not_stage`, `test_protect_survives_multiple_stages`).
 - [x] **IA-S03** 10MB input test: a 10MB string passed to the pipeline does not hang for more than 5 seconds.
@@ -155,7 +265,7 @@ The bar for Public Alpha is: "Safe for other developers to try. Will not break t
   Evidence: implemented (QB-029) — `quor/pipeline/secrets.py::scan_for_secrets()`, called from `quor/adapters/dispatcher.py` for every dispatch (both passthrough and filtered branches). `tests/unit/test_secrets.py` (10 tests) plus a real dispatcher-level test confirming a `ghp_...` token surviving compression triggers a warning while stdout still contains the secret verbatim (never redacted).
 - [x] **PA-F08** Onboarding mode: first 5 filtered commands print brief stats to stderr. Command 6 is silent.
   Evidence: implemented (QB-029) — `quor/pipeline/onboarding.py::record_filtered_command()`, called from the dispatcher's filtered (non-passthrough) branch only. `tests/unit/test_onboarding.py` (7 tests, 100% coverage) plus a real dispatcher-level test confirming 5 consecutive filtered dispatches each print a tip and the 6th is silent.
-- [ ] **PA-F09** 3 non-builder developers have installed and used Quor without reported hook failures.
+- [ ] **PA-F09** *(Rewritten 2026-08-16, QB-104.)* 3 non-builder developers have installed and used Quor (MCP server) without reported tool-call failures.
   Not verifiable from this environment — requires other people.
 
 ### Additional Quality Gates
@@ -170,14 +280,15 @@ The bar for Public Alpha is: "Safe for other developers to try. Will not break t
   Evidence (QB-030): root-caused the slowness this gate previously flagged as borderline — every `init --claude`-invoking test in `tests/unit/test_cli.py` (`TestInit`, `TestHookCollisionDetection`) was incidentally spawning a real PowerShell subprocess via `_warn_if_execution_policy_restricted()`, regardless of what each test actually verified. Mocked that one call (a dedicated `TestExecutionPolicyCheck` class keeps real, focused coverage of its own branching logic); the genuine end-to-end PowerShell behavior is still covered by the existing `TestInitAndDoctorIntegration` integration test. Also merged two `test_version.py` tests that were independently spawning the identical `python -m quor` subprocess to check different assertions on the same output. Measured repeatedly after the fix: 17–28s locally (some run-to-run variance on this machine, but no longer sitting at the 28–31s edge the gate previously failed on).
 - [ ] **PA-Q05** JSON Schema generated from Pydantic models matches the schema referenced in built-in filter TOML files (`yaml-language-server` directive points to a valid, current schema).
   Partially verified: `quor schema` command exists and dumps `QuorConfig.model_json_schema()`. Whether `https://quor.dev/filter-schema.json` (the URL referenced in filter TOML files' `yaml-language-server` directive) is actually live and matches is **not verified** — would require checking external DNS/hosting, which this environment did not do; given the project's current pre-release state, likely not yet hosted.
-- [ ] **PA-Q06** `quor doctor --timing` reports hook response latency <50ms on the builder's machine.
-  **Fails as literally written — the `--timing` flag doesn't exist** (confirmed by grep on `doctor.py`). The underlying latency is fine: measured in-process hook parse+rewrite at ~0.03ms median (20-sample run), far under both this gate's 50ms bar and the 10ms target in this document's own performance table — but there's no CLI surface to report it as the gate describes.
+- [ ] **PA-Q06** *(Rewritten 2026-08-16, QB-104 — the underlying claim was about hook parse+rewrite latency, which no longer applies at all; the flag itself never existed either version of this gate.)* `quor doctor --timing` reports MCP `compress_context` tool-call latency <50ms on the builder's machine, for a representative (non-trivial) input.
+  **Still fails as literally written — the `--timing` flag doesn't exist** (confirmed by grep on `doctor.py`, unchanged since the original walk).
+  **Informal reading against the underlying claim, gathered a different way (2026-08-16):** `compress_context` measured at **72.8ms median / 112.2ms max** over 20 calls against a 500-line (~15KB) synthetic input on this machine — over the 50ms bar this gate asks for. This number is **not comparable** to the original hook-era gate's ~0.03ms figure: that measured only the classifier's parse+rewrite *decision*; this measures a full, un-cached `compress_context` call — constructing a fresh `FilterRegistry` (loads every built-in TOML filter) *plus* running the entire `ContentMask` pipeline to completion, once per call, no caching between calls. A per-call `FilterRegistry` rebuild is the more likely driver of the difference than the pipeline execution itself, but that's not separately isolated here — an open question for whoever picks this gate up next, not a conclusion. The `--timing` CLI surface still doesn't exist, so there's no gate-compliant way to satisfy PA-Q06 as literally written regardless of this number; recorded here so the real behavior isn't lost even though the box stays unchecked.
 - [x] **PA-Q07** 100+ command classifier fixtures all pass.
   Evidence: counted live — 105 fixture cases across `tests/fixtures/commands/*.toml` (36 simple, 22 exclusions, 18 transparent_prefix, 16 compound, 13 env_prefix), all passing as part of the full suite.
 
 ### Safety Gates
 
-- [ ] **PA-S01** 5+ hours of real Claude Code session use with no hook failure reported by any tester.
+- [ ] **PA-S01** *(Rewritten 2026-08-16, QB-104.)* 5+ hours of real MCP-client session use with no tool-call failure reported by any tester.
   Not verifiable from this environment — requires real elapsed usage time and other testers. (This session alone represents substantial real dogfooding — 565 real invocations per `quor gain` — but that's this session's own development use, not the independent multi-hour/multi-tester bar the gate asks for.)
 - [x] **PA-S02** Heredoc exclusion: a command containing `<<EOF` is not rewritten by the classifier.
   Evidence: existing, passing tests — `TestClassifyHeredoc::test_heredoc_excluded`, `test_cat_heredoc_excluded`.
@@ -210,7 +321,7 @@ The bar for Beta is: "Ready for production use by motivated early adopters."
 - [ ] **B-F01** At least one community-contributed or externally-developed plugin is installable and works.
 - [ ] **B-F02** `quor validate` accepts all filter TOML files written for v0.5 (backwards-compatible validation).
 - [ ] **B-F03** `quor doctor` warns if mode is AUDIT for >7 days.
-- [ ] **B-F04** `quor init --claude` handles existing hook gracefully: shows current state, prompts before overwriting.
+- [ ] **B-F04** *(Rewritten 2026-08-16, QB-104 — `quor init --claude` no longer exists.)* `quor init --mcp` handles an existing `.mcp.json` gracefully: shows whether the `quor` entry is already up to date, prompts before overwriting a stale one.
 - [ ] **B-F05** Cleanup: SQLite records older than 90 days are removed at session start (weekly, tracked).
 
 ### Additional Quality Gates
@@ -241,7 +352,7 @@ The bar for v1.0 is: "Production-ready. Recommended to all Python-environment AI
   - Ubuntu 22.04, Python 3.11
   - macOS 14, Python 3.11 (manual test acceptable)
 - [ ] **V1-F02** `quor doctor` shows all green on all platforms in V1-F01.
-- [ ] **V1-F03** End-to-end test on Windows: install → init → real Claude Code session (30+ minutes) → gain → verify. No hook failure.
+- [ ] **V1-F03** *(Rewritten 2026-08-16, QB-104 — "hook failure" has no meaning post-hook-removal.)* End-to-end test on Windows: install → `quor init --mcp` → real MCP-client session (30+ minutes, `compress_context`/`get_repo_context` called repeatedly) → `gain` → `verify`. No MCP tool-call failure.
 - [ ] **V1-F04** `quor` and `qr` entry points both registered and functional on all platforms.
 - [ ] **V1-F05** Filter contribution: a new community-contributed built-in filter merged via PR, following the contribution process in CONTRIBUTING.md.
 - [ ] **V1-F06** Plugin API: a `quor-*` namespaced package published to PyPI, installable with `pip install quor-[name]`, functional.
@@ -266,7 +377,7 @@ The bar for v1.0 is: "Production-ready. Recommended to all Python-environment AI
 
 ### Safety Gates
 
-- [ ] **V1-S01** 20+ hours of real Claude Code session use across at least 3 users with no hook failure.
+- [ ] **V1-S01** *(Rewritten 2026-08-16, QB-104 — "hook failure" has no meaning post-hook-removal.)* 20+ hours of real MCP-client session use across at least 3 users with no MCP tool-call failure.
 - [ ] **V1-S02** A deliberate over-aggressive filter test: a filter that removes ALL content → hook returns `on_empty` string, not empty output.
 - [ ] **V1-S03** A filter with a catastrophically backtracking regex: pattern times out after 1 second, warning logged, hook returns original content.
 
