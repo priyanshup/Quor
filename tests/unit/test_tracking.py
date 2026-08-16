@@ -126,7 +126,12 @@ class TestInvocationRecord:
         assert d["filter_name"] == "git-status"
         assert d["was_passthrough"] == 0  # bool → int
         assert d["duration_ms"] == 12.5
-        assert d["schema_version"] == 3  # bumped for obsolete index removal (v3, QB-070)
+        assert d["schema_version"] == 4  # bumped for files_changed column (v4, QB-093 prep)
+        assert d["files_changed"] is None  # default: only git-diff's call site sets this
+
+    def test_files_changed_round_trips_through_to_dict(self) -> None:
+        rec = _sample_record(files_changed=3)
+        assert rec.to_dict()["files_changed"] == 3
 
     def test_was_passthrough_int_encoding(self) -> None:
         rec = _sample_record(was_passthrough=True, filter_name=None)
@@ -247,7 +252,7 @@ class TestTrackingDbSqlite:
             versions = [r[0] for r in conn.execute(
                 "SELECT version FROM schema_migrations"
             ).fetchall()]
-        assert 3 in versions  # bumped for obsolete index removal (v3, QB-070)
+        assert 4 in versions  # bumped for files_changed column (v4, QB-093 prep)
 
     def test_record_written_to_sqlite(self, tmp_path: Path) -> None:
         db, db_path = _make_db(tmp_path)
@@ -580,6 +585,65 @@ class TestObsoleteIndexMigration:
             }
         assert "idx_invocations_project" not in names
         assert "idx_invocations_filter" not in names
+
+
+class TestFilesChangedColumnMigration:
+    """v4 (QB-093 telemetry prep): files_changed must exist on both a
+    brand-new database and one created before this column existed —
+    mirrors TestObsoleteIndexMigration's pre-existing-database pattern."""
+
+    def test_fresh_database_has_files_changed_column(self, tmp_path: Path) -> None:
+        db, db_path = _make_db(tmp_path)
+        db.flush()
+        db.close()
+        with sqlite3.connect(str(db_path)) as conn:
+            columns = {row[1] for row in conn.execute("PRAGMA table_info(invocations)")}
+        assert "files_changed" in columns
+
+    def test_existing_pre_v4_database_gets_column_added(self, tmp_path: Path) -> None:
+        """A database created before schema v4 has no files_changed column
+        at all (not merely a NULL value in it) — TrackingDB must add it the
+        next time it connects, with no manual migration step, and existing
+        rows must read back with files_changed == NULL."""
+        db_path = tmp_path / "quor.db"
+        conn = sqlite3.connect(str(db_path))
+        conn.executescript(
+            """
+            CREATE TABLE invocations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                command TEXT NOT NULL,
+                project_path TEXT NOT NULL,
+                original_tokens INTEGER NOT NULL DEFAULT 0,
+                final_tokens INTEGER NOT NULL DEFAULT 0,
+                filter_name TEXT,
+                was_passthrough INTEGER NOT NULL DEFAULT 0,
+                duration_ms REAL NOT NULL DEFAULT 0,
+                recorded_at TEXT NOT NULL DEFAULT (datetime('now')),
+                schema_version INTEGER NOT NULL DEFAULT 1,
+                project_key_normalized TEXT
+            );
+            CREATE TABLE schema_migrations (
+                version INTEGER PRIMARY KEY,
+                applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            INSERT INTO schema_migrations (version) VALUES (3);
+            INSERT INTO invocations
+                (command, project_path, filter_name, was_passthrough)
+                VALUES ('git status', '/legacy-project', 'git-status', 0);
+            """
+        )
+        conn.commit()
+        conn.close()
+
+        db = TrackingDB(db_path=db_path)
+        db.flush()
+        db.close()
+
+        with sqlite3.connect(str(db_path)) as conn:
+            columns = {row[1] for row in conn.execute("PRAGMA table_info(invocations)")}
+            row = conn.execute("SELECT files_changed FROM invocations").fetchone()
+        assert "files_changed" in columns
+        assert row == (None,)
 
 
 # ---------------------------------------------------------------------------
@@ -1538,8 +1602,9 @@ class TestQueryFilterAnalytics:
     def test_no_schema_change_columns_match_pre_existing_set(self, tmp_path: Path) -> None:
         """QB-054 requirement: reuse the invocations table exactly as it
         is. Running query_filter_analytics against a brand-new DB must not
-        add, rename, or remove any column — the exact same 10 columns
-        schema.sql/query_gain's own write path already define."""
+        add, rename, or remove any column beyond the exact set schema.sql/
+        query_gain's own write path already define (11 columns as of v4's
+        files_changed addition — QB-093 telemetry prep)."""
         db_path = tmp_path / "quor.db"
         self._populate(db_path, [{"project_path": "/proj"}])
         query_filter_analytics(db_path, Path("/proj"))  # exercises the same connection/backfill path
@@ -1548,7 +1613,7 @@ class TestQueryFilterAnalytics:
         assert columns == {
             "id", "command", "project_path", "original_tokens", "final_tokens",
             "filter_name", "was_passthrough", "duration_ms", "recorded_at",
-            "schema_version", "project_key_normalized",
+            "schema_version", "project_key_normalized", "files_changed",
         }
 
 

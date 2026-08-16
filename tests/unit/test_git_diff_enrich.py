@@ -11,6 +11,7 @@ from pathlib import Path
 from quor.pipeline.git_diff_enrich import (
     ContentPlan,
     classify_command,
+    count_diff_files,
     enrich_git_diff,
     parse_file_section,
     split_diff_sections,
@@ -56,6 +57,27 @@ class TestSplitDiffSections:
         text = "commit abc123\nAuthor: x\n\n    message\n\ndiff --git a/foo.py b/foo.py\nx\n"
         chunks = split_diff_sections(text)
         assert chunks[0].startswith("commit abc123")
+
+
+class TestCountDiffFiles:
+    """QB-093 telemetry prep: how many files a git-diff invocation touches,
+    recorded so a future decision on cross-file repeated-edit
+    deduplication (QB-093's evidence-gated "idea 2") can be made from real
+    usage data — see quor/engine/dispatcher.py's call site."""
+
+    def test_single_file_diff(self) -> None:
+        assert count_diff_files(_REORDER_DIFF) == 1
+
+    def test_multi_file_diff(self) -> None:
+        text = "diff --git a/a.py b/a.py\nx\ndiff --git a/b.py b/b.py\ny\ndiff --git a/c.py b/c.py\nz\n"
+        assert count_diff_files(text) == 3
+
+    def test_no_diff_git_lines_is_zero(self) -> None:
+        assert count_diff_files("not a diff at all\njust some text\n") == 0
+
+    def test_git_show_preamble_not_counted_as_a_file(self) -> None:
+        text = "commit abc123\nAuthor: x\n\n    message\n\ndiff --git a/foo.py b/foo.py\nx\n"
+        assert count_diff_files(text) == 1
 
 
 class TestParseFileSection:

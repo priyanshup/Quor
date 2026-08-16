@@ -220,7 +220,7 @@ class TestGain:
         # This scenario has zero Read-hook rows, so the "not
         # represented" notice must appear.
         assert "No Read-hook activity has been recorded" in output
-        assert "quor init --claude" in output
+        assert "quor init --mcp" in output
 
     def test_low_sample_caveat_shown_below_threshold(self, tmp_path: Path) -> None:
         """QB-091: a single command's percentage is presented with a caveat
@@ -694,7 +694,7 @@ class TestGain:
         assert "Markdown/plain-text compression" in output
         assert "DOCX/PDF extraction" in output
         assert "AST summarization" in output
-        assert "`quor init --claude`" in output
+        assert "`quor init --mcp`" in output
 
     def test_no_read_hook_notice_absent_when_read_rows_present(self, tmp_path: Path) -> None:
         """The inverse: as soon as at least one Read row exists, the notice

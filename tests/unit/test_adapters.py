@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import os
+import sqlite3
 import subprocess
 import sys
 import warnings
@@ -14,6 +15,7 @@ import pytest
 
 from quor.engine.dispatcher import CONCISE_INSTRUCTION, run_dispatch
 from quor.filters.registry import FilterRegistry
+from quor.tracking.db import TrackingDB
 
 # ---------------------------------------------------------------------------
 # run_dispatch() tests
@@ -264,6 +266,72 @@ class TestDispatcher:
             tip_counts.append("[quor] Tip (" in captured_stderr.getvalue())
 
         assert tip_counts == [True, True, True, True, True, False]
+
+
+# ---------------------------------------------------------------------------
+# run_dispatch() — files_changed telemetry (QB-093 prep)
+# ---------------------------------------------------------------------------
+
+
+class TestDispatcherFilesChangedTracking:
+    """QB-093 telemetry prep: dispatcher.py computes files_changed only for
+    git-diff invocations and records it on the InvocationRecord — see
+    quor/tracking/db.py's v4 schema column and
+    quor/pipeline/git_diff_enrich.py's count_diff_files()."""
+
+    def test_git_diff_records_files_changed(self, tmp_path: Path) -> None:
+        diff_text = (
+            "diff --git a/a.py b/a.py\n"
+            "index 111..222 100644\n"
+            "--- a/a.py\n"
+            "+++ b/a.py\n"
+            "@@ -1,1 +1,1 @@\n"
+            "-x\n"
+            "+y\n"
+            "diff --git a/b.py b/b.py\n"
+            "index 333..444 100644\n"
+            "--- a/b.py\n"
+            "+++ b/b.py\n"
+            "@@ -1,1 +1,1 @@\n"
+            "-x\n"
+            "+y\n"
+        )
+        proc = _make_proc(stdout=diff_text)
+        db_path = tmp_path / "quor.db"
+        tracking = TrackingDB(db_path)
+        try:
+            with (
+                patch("subprocess.run", return_value=proc),
+                patch("sys.stdout", io.StringIO()),
+            ):
+                run_dispatch(["git", "diff"], tracking=tracking)
+        finally:
+            tracking.flush()
+            tracking.close()
+
+        with sqlite3.connect(str(db_path)) as conn:
+            row = conn.execute(
+                "SELECT files_changed FROM invocations WHERE filter_name = 'git-diff'"
+            ).fetchone()
+        assert row == (2,)
+
+    def test_non_diff_command_records_none(self, tmp_path: Path) -> None:
+        proc = _make_proc(stdout="FAILED tests/test_a.py::test_x\n    AssertionError: got False\n")
+        db_path = tmp_path / "quor.db"
+        tracking = TrackingDB(db_path)
+        try:
+            with (
+                patch("subprocess.run", return_value=proc),
+                patch("sys.stdout", io.StringIO()),
+            ):
+                run_dispatch(["pytest", "tests/"], tracking=tracking)
+        finally:
+            tracking.flush()
+            tracking.close()
+
+        with sqlite3.connect(str(db_path)) as conn:
+            row = conn.execute("SELECT files_changed FROM invocations").fetchone()
+        assert row == (None,)
 
 
 # ---------------------------------------------------------------------------

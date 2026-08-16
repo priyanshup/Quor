@@ -41,6 +41,7 @@ from quor.config.loader import load_user_config
 from quor.config.model import FilterConfig, QuorUserConfig
 from quor.filters.registry import FilterRegistry
 from quor.pipeline.content_type import detect
+from quor.pipeline.git_diff_enrich import count_diff_files
 from quor.pipeline.onboarding import MAX_ONBOARDING_COMMANDS, record_filtered_command
 from quor.pipeline.secrets import scan_for_secrets
 from quor.pipeline.tee import (
@@ -205,6 +206,11 @@ def run_dispatch(args: list[str], tracking: TrackingDB | None = None) -> int:
     output = _with_concise_instruction(filtered, raw=captured) if content_changed else filtered
 
     _teardown_plugins(plugin_registry, plugin_ctx)
+    # files_changed (QB-093 telemetry prep): only computed for git-diff —
+    # every other filter keeps InvocationRecord.files_changed at its
+    # default None. count_diff_files() is a plain text scan, no risk to
+    # the output already written above.
+    files_changed = count_diff_files(captured) if filter_config.name == "git-diff" else None
     track_invocation(
         tracking,
         command=cmd_str,
@@ -213,6 +219,7 @@ def run_dispatch(args: list[str], tracking: TrackingDB | None = None) -> int:
         filter_name=filter_config.name,
         was_passthrough=False,
         t0=t0,
+        files_changed=files_changed,
     )
     _scan_secrets_safe(output)
     _maybe_print_onboarding_tip_safe(

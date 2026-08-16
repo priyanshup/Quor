@@ -1,4 +1,4 @@
--- Quor tracking schema v2
+-- Quor tracking schema v4
 -- All migrations tracked in schema_migrations table.
 -- Project paths stored as Path.as_posix() — backslashes never appear.
 --
@@ -11,6 +11,14 @@
 -- manual migration is required. Once populated, project-scoped aggregation
 -- queries by simple equality/LIKE-prefix match against this column, not by
 -- re-deriving normalization at read time.
+--
+-- files_changed (v4, QB-093 telemetry prep): nullable, populated only for
+-- git-diff invocations (see quor/engine/dispatcher.py). NULL for every
+-- other filter and for every row written before this version — not
+-- backfilled, since the original diff text isn't retained anywhere to
+-- recompute it from. Exists so a future decision on QB-093's evidence-
+-- gated cross-file repeated-edit deduplication can be made from real
+-- usage data instead of a guess; no reader of this column exists yet.
 
 CREATE TABLE IF NOT EXISTS invocations (
     id                       INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -23,7 +31,8 @@ CREATE TABLE IF NOT EXISTS invocations (
     duration_ms              REAL    NOT NULL DEFAULT 0,
     recorded_at              TEXT    NOT NULL DEFAULT (datetime('now')),
     schema_version           INTEGER NOT NULL DEFAULT 1,
-    project_key_normalized   TEXT                             -- NULL until backfilled (v2)
+    project_key_normalized   TEXT,                            -- NULL until backfilled (v2)
+    files_changed            INTEGER                          -- NULL except git-diff rows (v4)
 );
 
 -- idx_invocations_project (project_path, recorded_at) and
