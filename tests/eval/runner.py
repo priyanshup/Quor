@@ -36,7 +36,8 @@ def build_context(task: Task, registry: FilterRegistry | None = None) -> tuple[s
     `(raw_output, compressed_output)`. `compressed_output` is `raw_output`
     unchanged if no built-in filter matches the command (the same
     passthrough behavior the real dispatcher has)."""
-    proc = subprocess.run(  # noqa: S603 — task.reproduce_command is test-authored, not user input
+    # task.reproduce_command is test-authored, not user input.
+    proc = subprocess.run(
         task.reproduce_command,
         cwd=task.fixture_dir,
         capture_output=True,

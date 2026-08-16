@@ -41,7 +41,7 @@ class Task:
     fix_target_relpath: str
     reproduce_command: list[str]
     verify_command: list[str]
-    verify_success: Callable[[int, str, str], bool] = lambda returncode, stdout, stderr: returncode == 0  # noqa: E731
+    verify_success: Callable[[int, str, str], bool] = lambda returncode, stdout, stderr: returncode == 0
 
 
 @dataclass(frozen=True)

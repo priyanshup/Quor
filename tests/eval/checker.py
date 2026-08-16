@@ -51,7 +51,8 @@ def run_attempt(
 
 def _run_verify(task: Task, scratch_dir: Path) -> VerifyOutcome:
     try:
-        proc = subprocess.run(  # noqa: S603 — task.verify_command is test-authored, not user input
+        # task.verify_command is test-authored, not user input.
+        proc = subprocess.run(
             task.verify_command,
             cwd=scratch_dir,
             capture_output=True,
