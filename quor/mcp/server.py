@@ -36,6 +36,7 @@ from pathlib import Path
 from mcp.server.mcpserver import MCPServer
 
 from quor.filters.registry import FilterRegistry
+from quor.mcp.session_dedup import SessionDedupCache
 from quor.pipeline.content_type import detect
 from quor.pipeline.repo_profile import intel_store
 from quor.pipeline.repo_profile.intel_model import FileIntelligenceEntry
@@ -43,12 +44,19 @@ from quor.pipeline.repo_profile.nudge import compute_hook_nudge
 from quor.pipeline.repo_profile.query_extract import extract_query_terms
 from quor.pipeline.repo_profile.search import merge_search
 from quor.pipeline.repo_profile.search_render import render_relevant_files_block
+from quor.pipeline.tee import content_hash
 from quor.tracking.db import count_tokens
 
 # The installed `mcp` SDK (v2.0.0) renamed the high-level server class from
 # `FastMCP` (mcp.server.fastmcp) to `MCPServer` (mcp.server.mcpserver) with
 # no back-compat alias — same decorator/`run(transport=...)` API otherwise.
 mcp = MCPServer("Quor Context Compressor")
+
+# QB-089: module-level, not per-call — this dict must live exactly as long
+# as this process does (one MCP server subprocess per Claude Code session,
+# stdio transport, see session_dedup.py's own docstring for why that makes
+# this genuinely session-scoped rather than a global-state smell).
+_dedup_cache = SessionDedupCache()
 
 
 @mcp.tool()
@@ -59,6 +67,15 @@ def compress_context(raw_text: str) -> str:
     original_tokens = count_tokens(raw_text)
     if original_tokens == 0:
         return "[Quor Compressed: 0% saved]\n" + raw_text
+
+    # QB-089: exact-match session dedup — if this exact content was already
+    # shown recently this session, resending the compressed version again
+    # is pure waste. Keyed on raw_text (the source content), not the
+    # compressed output, since "did the underlying content change" is the
+    # only question that matters here.
+    digest = content_hash(raw_text)
+    if _dedup_cache.seen(digest):
+        return f"[Quor: unchanged since last shown this session ({digest[:12]}) — see above]"
 
     registry = FilterRegistry(project_root=Path.cwd())
     filter_config = registry.find(raw_text)
