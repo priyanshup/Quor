@@ -145,7 +145,7 @@ def _read_hook_notice_text() -> str:
     return (
         "[yellow]No Read-hook activity has been recorded in this window — "
         "Markdown/plain-text compression, DOCX/PDF extraction, and AST "
-        "summarization aren't represented above. Run `quor init --claude` "
+        "summarization aren't represented above. Run `quor init --mcp` "
         "to enable.[/yellow]"
     )
 
