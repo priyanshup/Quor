@@ -90,6 +90,21 @@ def split_diff_sections(diff_text: str) -> list[str]:
     return ["\n".join(chunk) for chunk in chunks]
 
 
+def count_diff_files(diff_text: str) -> int:
+    """Count changed files in a multi-file `git diff`/`git show` output —
+    the number of `diff --git ` chunks `parse_file_section` recognizes.
+
+    QB-093's own recommendation: record this per git-diff invocation so a
+    future decision on cross-file repeated-edit deduplication (QB-093's
+    "idea 2", left evidence-gated pending real-usage proof) can be made
+    from real usage data instead of a guess. Not used to build that
+    deduplication itself.
+    """
+    return sum(
+        1 for chunk in split_diff_sections(diff_text) if parse_file_section(chunk) is not None
+    )
+
+
 def parse_file_section(chunk: str) -> FileSection | None:
     """Parse one `diff --git `-prefixed chunk. Returns `None` if `chunk`
     doesn't actually start with a `diff --git ` line (the leading preamble

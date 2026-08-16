@@ -39,7 +39,7 @@ from typing import Any
 
 import platformdirs
 
-_SCHEMA_VERSION = 3
+_SCHEMA_VERSION = 4
 _SCHEMA_SQL = (Path(__file__).parent / "schema.sql").read_text(encoding="utf-8")
 
 # v2: project_key_normalized. CREATE TABLE IF NOT EXISTS in schema.sql only
@@ -48,6 +48,14 @@ _SCHEMA_SQL = (Path(__file__).parent / "schema.sql").read_text(encoding="utf-8")
 # `ALTER TABLE ADD COLUMN IF NOT EXISTS`, so existing databases are migrated
 # idempotently via PRAGMA table_info() + a guarded ADD COLUMN.
 _PROJECT_IDENTITY_COLUMNS = ("project_key_normalized",)
+
+# v4 (QB-093 telemetry prep): files_changed, nullable INTEGER, populated
+# only for git-diff invocations (see dispatcher.py). Same idempotent
+# ADD COLUMN pattern as _PROJECT_IDENTITY_COLUMNS above, kept as its own
+# constant/function pair (not folded into that one) since the two columns
+# have different SQL types and this is only the second migration ever
+# added — see schema.sql's own v4 comment for what this is for.
+_FILES_CHANGED_COLUMN = "files_changed"
 
 # v3 (QB-070): idx_invocations_project (project_path, recorded_at) and
 # idx_invocations_filter (filter_name, recorded_at) were the schema's
@@ -85,6 +93,7 @@ class InvocationRecord:
         default_factory=lambda: datetime.now(timezone.utc).isoformat(timespec="seconds")  # noqa: UP017
     )
     schema_version: int = _SCHEMA_VERSION
+    files_changed: int | None = None  # git-diff only (QB-093 telemetry prep, v4)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -97,6 +106,7 @@ class InvocationRecord:
             "duration_ms": self.duration_ms,
             "recorded_at": self.recorded_at,
             "schema_version": self.schema_version,
+            "files_changed": self.files_changed,
         }
 
 
@@ -199,6 +209,16 @@ def _ensure_project_identity_columns(conn: sqlite3.Connection) -> None:
     for column in _PROJECT_IDENTITY_COLUMNS:
         if column not in existing:
             conn.execute(f"ALTER TABLE invocations ADD COLUMN {column} TEXT")
+
+
+def _ensure_files_changed_column(conn: sqlite3.Connection) -> None:
+    """Idempotently add the v4 files_changed column to an existing
+    `invocations` table — same PRAGMA table_info() guard as
+    _ensure_project_identity_columns() above, since SQLite has no
+    `ADD COLUMN IF NOT EXISTS` here either."""
+    existing = {row[1] for row in conn.execute("PRAGMA table_info(invocations)")}
+    if _FILES_CHANGED_COLUMN not in existing:
+        conn.execute(f"ALTER TABLE invocations ADD COLUMN {_FILES_CHANGED_COLUMN} INTEGER")
 
 
 def _drop_obsolete_indexes(conn: sqlite3.Connection) -> None:
@@ -442,6 +462,7 @@ class TrackingDB:
         """Create tables if they don't exist and record schema migration."""
         conn.executescript(_SCHEMA_SQL)
         _ensure_project_identity_columns(conn)
+        _ensure_files_changed_column(conn)
         _drop_obsolete_indexes(conn)
         # Ensure migration row exists for current version
         conn.execute(
@@ -477,11 +498,11 @@ class TrackingDB:
             """INSERT INTO invocations
                (command, project_path, original_tokens, final_tokens,
                 filter_name, was_passthrough, duration_ms, recorded_at, schema_version,
-                project_key_normalized)
+                project_key_normalized, files_changed)
                VALUES
                (:command, :project_path, :original_tokens, :final_tokens,
                 :filter_name, :was_passthrough, :duration_ms, :recorded_at, :schema_version,
-                :project_key_normalized)
+                :project_key_normalized, :files_changed)
             """,
             d,
         )
@@ -501,6 +522,7 @@ def track_invocation(
     filter_name: str | None,
     was_passthrough: bool,
     t0: float,
+    files_changed: int | None = None,
 ) -> None:
     """Build an `InvocationRecord` from one pipeline run and enqueue it.
 
@@ -511,6 +533,9 @@ def track_invocation(
     `tracking=None` is a no-op, and any exception (including one raised by
     `tracking` itself) is swallowed with a warning — a producer's own output
     must never be affected by a tracking failure.
+
+    `files_changed` (QB-093 telemetry prep, v4) is `None` for every
+    producer except dispatcher.py's git-diff call site.
     """
     if tracking is None:
         return
@@ -523,6 +548,7 @@ def track_invocation(
             filter_name=filter_name,
             was_passthrough=was_passthrough,
             duration_ms=(time.monotonic() - t0) * 1000,
+            files_changed=files_changed,
         )
         tracking.record(rec)
     except Exception as exc:  # noqa: BLE001
