@@ -33,9 +33,6 @@ jobs:
       - name: Install test plugin fixture
         run: pip install -e ./tests/fixtures/test_plugin
 
-      - name: Install test adapter fixture
-        run: pip install -e ./tests/fixtures/test_adapter
-
       - name: Lint — ruff
         run: ruff check quor/ tests/
 

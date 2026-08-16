@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from quor.rewrite.classifier import classify_command, rewrite_command
+from quor.rewrite.classifier import classify_command
 from quor.rewrite.invocation import get_quor_invocation
 from quor.rewrite.lexer import (
     TokenKind,
@@ -32,6 +32,16 @@ _FIXTURES_DIR = Path(__file__).parent.parent / "fixtures" / "commands"
 # see quor/rewrite/invocation.py). Tests compare against this same helper
 # rather than hardcoding a literal so they remain valid on every machine.
 Q = get_quor_invocation()
+
+
+def _rewrite(cmd: str) -> str | None:
+    """QB-104: local stand-in for the removed `rewrite_command()` convenience
+    wrapper (deleted as dead production code — zero real callers once the
+    hook-based integration it served was removed); `classify_command()`
+    itself is unaffected (`quor explain` depends on it). Exactly what
+    `rewrite_command()` used to do."""
+    result = classify_command(cmd)
+    return result.rewritten if result.should_rewrite else None
 
 
 # ---------------------------------------------------------------------------
@@ -235,7 +245,7 @@ class TestAdjacentQuoteFragments:
         import shlex
 
         original_argv = shlex.split(cmd)
-        rewritten = rewrite_command(cmd)
+        rewritten = _rewrite(cmd)
         assert rewritten is not None
         rewritten_argv = shlex.split(rewritten)
 
@@ -698,16 +708,16 @@ class TestClassifyTransparentPrefix:
 
 class TestRewriteCommand:
     def test_known_returns_string(self) -> None:
-        assert rewrite_command("git status") == f"{Q} git status"
+        assert _rewrite("git status") == f"{Q} git status"
 
     def test_unknown_returns_none(self) -> None:
-        assert rewrite_command("cargo build") is None
+        assert _rewrite("cargo build") is None
 
     def test_npm_returns_string(self) -> None:
-        assert rewrite_command("npm install") == f"{Q} npm install"
+        assert _rewrite("npm install") == f"{Q} npm install"
 
     def test_excluded_returns_none(self) -> None:
-        assert rewrite_command("git status --porcelain") is None
+        assert _rewrite("git status --porcelain") is None
 
 
 # ---------------------------------------------------------------------------

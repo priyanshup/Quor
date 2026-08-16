@@ -135,6 +135,16 @@ CLAUDE.md's "Six CLI Commands").
 
 ## v2.0 — Multi-Agent + Intelligence Layer
 
+> **Superseded (QB-104, 2026-08-16):** the "Multi-agent support" section below described extending
+> the hook-adapter architecture (`AgentAdapter`/`AdapterRegistry`) to more assistants, one adapter
+> per tool, gated on each tool's own upstream hook capabilities. That entire hook-based integration
+> was removed and replaced with the MCP server (`quor/mcp/server.py`) as Quor's sole integration
+> surface — multi-agent support is now automatic (any MCP-compatible client works, with zero
+> per-agent adapter code), not a roadmap item still to build. Kept below for historical context on
+> what was planned; the "Session-level intelligence" and "Discovery command" subsections are
+> independent of this change and still describe real future direction, though "Hook reads Claude
+> Code session context JSON" would need re-scoping to an MCP-compatible mechanism if pursued.
+
 **Theme:** Expands beyond Claude Code. Adds smart session-level context.
 
 **What ships (adds to v1.0):**

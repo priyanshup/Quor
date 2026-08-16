@@ -1,7 +1,7 @@
 # Quor
 
 **Your AI coding assistant is burning tokens on noise. Quor cuts it before it ever reaches the model.**
-Runs entirely on your machine. No LLM, no cloud, no network call — just a deterministic rule pipeline that strips the boilerplate out of everything your assistant reads.
+An MCP-native, zero-heuristic context-compression server. Runs entirely on your machine. No LLM, no cloud, no network call — just a deterministic rule pipeline that strips the boilerplate out of everything your assistant reads, exposed as standard MCP tools any MCP-compatible client can call.
 
 [![PyPI](https://img.shields.io/pypi/v/quor)](https://pypi.org/project/quor/)
 [![Python](https://img.shields.io/pypi/pyversions/quor)](https://pypi.org/project/quor/)
@@ -20,13 +20,14 @@ Runs entirely on your machine. No LLM, no cloud, no network call — just a dete
 
 ```bash
 pip install quor
-quor init --claude
-quor doctor
+quor init --mcp
 ```
 
-Requires Python 3.11+. If `quor`/`qr` isn't found on your `PATH` after install, run every command below as `python -m quor ...` instead — that's exactly what Claude Code itself already uses under the hood, so it always works.
+This writes `./.mcp.json`, registering Quor as an MCP server for the current project, and prints the equivalent `claude_desktop_config.json` snippet for Claude Desktop or any other MCP client. Requires Python 3.11+.
 
-To upgrade: `pip install --upgrade quor && quor init --claude && quor doctor` — hook files live outside the package, so re-running `init` keeps them in sync.
+To upgrade: `pip install --upgrade quor` — nothing else to re-run; there's no launcher script to go stale.
+
+If you have a pre-0.6 install with `quor init --claude`'s old hook files still on disk, `quor init` cleans them up automatically the next time you run it (or run `quor uninstall-hooks` directly).
 
 ## Why this matters
 
@@ -35,10 +36,21 @@ Every command your AI assistant runs — `git status`, a `pytest` run, a file re
 The obvious fix — have the AI summarize its own output — is the wrong one: it doubles latency, doubles cost, and can silently drop the one line that mattered. Quor takes the other path: a local, rule-based pipeline that runs in milliseconds, makes the same keep/drop decision every time given the same input, and never touches the network.
 
 ```
-command runs → Quor captures the output → rules mark each line KEEP / COMPRESS / PROTECT → noise drops → the assistant reads fewer tokens
+assistant reads a command's output → calls Quor's compress_context MCP tool on it → rules mark each line KEEP / COMPRESS / PROTECT → noise drops → the assistant gets fewer tokens back
 ```
 
-Same command, same exit code, same side effects — only what reaches the context window changes. Failures, diffs, and tracebacks are never touched, and every compressed output links back to the full original — nothing is ever lost, just deferred until you ask for it.
+Same output, same meaning — only what reaches the context window changes. Failures, diffs, and tracebacks are never touched, and every compressed output links back to the full original — nothing is ever lost, just deferred until you ask for it.
+
+## MCP Tools
+
+Quor runs as a standard MCP server (`quor/mcp/server.py`, stdio transport) exposing two tools:
+
+| Tool | What it does |
+|---|---|
+| `compress_context(raw_text)` | Runs `raw_text` through the same deterministic filter pipeline as the CLI, returns the compressed result with a `[Quor Compressed: XX% saved]` header |
+| `get_repo_context(file_path, query)` | Deterministic repository intelligence for a file (language, exported symbols, import counts) and/or files relevant to a search query — requires `quor map` to have been run first |
+
+The calling assistant decides when to invoke `compress_context` — on a large command output, a big file read, anything it judges worth compressing before it lands in context. This is the one real trade-off of moving to MCP: compression is opt-in per call, not a transparent interception of every command the way the pre-0.6 hook-based integration was. In exchange, Quor works with any MCP-compatible client instead of one hook implementation per assistant.
 
 ## The Numbers
 
@@ -72,7 +84,7 @@ Short, already-dense output compresses little — that's correct behavior, not u
 
 | | |
 |---|---|
-| `quor init --claude` | Install the Claude Code hook |
+| `quor init --mcp` | Scaffold MCP server registration (`.mcp.json` + printed Desktop config) |
 | `quor doctor` | Health check |
 | `quor gain` | Cumulative token savings summary |
 | `quor dashboard` | Live terminal view of savings for this session |
@@ -80,25 +92,26 @@ Short, already-dense output compresses little — that's correct behavior, not u
 | `quor search <query>` | Semantic search across your repository |
 | `quor map` / `quor symbols` / `quor graph` | Repository profile, symbol index, and dependency graph |
 | `quor validate [file]` | Validate a filter config |
+| `quor uninstall-hooks` | Remove a pre-0.6 hook-based install, if you have one |
 
 Full reference: `quor --help`.
 
 ## Supported
 
-**Full compression:** Claude Code (Bash + Read hooks), Gemini CLI (command rewriting). **Detected, integration pending upstream hook support:** Codex CLI, Cursor, VS Code (GitHub Copilot agent mode), Windsurf (Cascade), Aider, Continue.dev — `quor doctor` tells you exactly which state you're in.
+**Any MCP-compatible client** can register and call Quor's tools — Claude Code, Claude Desktop, and every other client speaking the Model Context Protocol, with no per-assistant integration work required. `quor init --mcp` scaffolds registration for Claude Code (`.mcp.json`) and prints the equivalent `claude_desktop_config.json` snippet; any other MCP client follows the same `mcpServers` shape.
 
-**Commands:** git, pytest, mypy/ruff, pip/poetry, the full Node/TypeScript toolchain (npm, pnpm, yarn, ESLint, tsc, Jest, Vitest, Prettier, Next.js, Turbo), and a generic fallback for everything else. **Source code:** Python built in; JavaScript/TypeScript, Go, Rust, Java, C# via `pip install "quor[<language>]"`. **Documents:** Markdown, TXT, DOCX, PDF via `quor[documents]`. **Config:** JSON/TOML/.env/.ini built in, YAML via `quor[yaml]`.
+**Commands the filter pipeline understands:** git, pytest, mypy/ruff, pip/poetry, the full Node/TypeScript toolchain (npm, pnpm, yarn, ESLint, tsc, Jest, Vitest, Prettier, Next.js, Turbo), and a generic fallback for everything else. **Source code:** Python built in; JavaScript/TypeScript, Go, Rust, Java, C# via `pip install "quor[<language>]"`. **Documents:** Markdown, TXT, DOCX, PDF via `quor[documents]`. **Config:** JSON/TOML/.env/.ini built in, YAML via `quor[yaml]`.
 
 ## Trust
 
-Compression tooling sits in the middle of every command you run — it has to earn the right to be there.
+An MCP server sees whatever text an assistant hands it for compression — it has to earn the right to be there.
 
 - **Local execution only** — no network calls, no cloud, no telemetry, no API keys, ever
 - **Rule-based, not AI** — pattern match, dedup, count, budget; zero ML in the filter path, zero hallucination risk
 - **Fail-open** — a filter bug never blocks a command or hides output, it just returns the original untouched
 - **Secret-aware** — warns (never silently strips) if a credential pattern survives compression
 - **Meaning-preserving by contract** — a line Quor keeps is bit-for-bit identical to the original; nothing is rephrased or summarized (see [ANTI_GOALS.md](docs/final/ANTI_GOALS.md#3-never-silently-modify-content-meaning))
-- **App-control friendly** — every invocation runs through `python -m quor` directly, never an unsigned launcher `.exe`, so corporate AppLocker/Defender policies don't get in the way
+- **App-control friendly** — the MCP server runs via `python -m quor.mcp.server` directly, never an unsigned launcher `.exe`, so corporate AppLocker/Defender policies don't get in the way
 
 ## Contributing
 

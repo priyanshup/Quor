@@ -1,5 +1,11 @@
 # Quor Multi-Agent Adapter Architecture
 
+> **Archived (QB-104, 2026-08-16):** `quor/adapters/` and the hook-based
+> integration this document describes were removed in favor of the MCP
+> server (`quor/mcp/server.py`) as Quor's sole integration surface. Kept
+> for historical context on why the hook adapter architecture looked the
+> way it did — it no longer describes current code.
+
 Implements QB-068 and QB-069, on the design shipped in QB-035A
 (`docs/design/QB-035A-multi-agent-adapter-design.md`, ADR-036, ADR-040,
 ADR-041). This is the canonical reference for `quor/adapters/` going

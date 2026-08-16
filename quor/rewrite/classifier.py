@@ -2,7 +2,6 @@
 
 Public API:
     classify_command(cmd) -> ClassificationResult
-    rewrite_command(cmd)  -> str | None
 """
 
 from __future__ import annotations
@@ -26,12 +25,6 @@ class ClassificationResult:
     rewritten: str | None     # None when should_rewrite is False
     reason: str               # human-readable for quor explain
     rule_matched: str | None  # rule name for quor explain
-
-
-def rewrite_command(cmd: str) -> str | None:
-    """Return the rewritten command string, or None if command should pass through."""
-    result = classify_command(cmd)
-    return result.rewritten if result.should_rewrite else None
 
 
 def classify_command(cmd: str) -> ClassificationResult:

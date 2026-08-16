@@ -1,4 +1,4 @@
-"""Unit tests for quor/adapters/: hook adapter and dispatcher."""
+"""Unit tests for quor/engine/dispatcher.py and quor/__main__.py routing."""
 
 from __future__ import annotations
 
@@ -8,273 +8,12 @@ import subprocess
 import sys
 import warnings
 from pathlib import Path
-from typing import Any
 from unittest.mock import MagicMock, patch
 
-import orjson
 import pytest
-from pydantic import ValidationError
 
-from quor.adapters.base import HookInput, HookOutput, ToolInput
-from quor.adapters.claude import HOOK_COMMAND, HOOK_PS1_TEMPLATE, run_hook
-from quor.adapters.dispatcher import CONCISE_INSTRUCTION, run_dispatch
+from quor.engine.dispatcher import CONCISE_INSTRUCTION, run_dispatch
 from quor.filters.registry import FilterRegistry
-from quor.rewrite.invocation import get_quor_invocation
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-# Rewritten commands are prefixed with the shell-safe Quor invocation
-# (sys.executable -m quor), not the bare `quor` launcher — see
-# quor/rewrite/invocation.py. Compare against this same helper.
-Q = get_quor_invocation()
-
-
-def _make_hook_payload(command: str, **extra: Any) -> dict:
-    return {"tool_name": "Bash", "tool_input": {"command": command}, **extra}
-
-
-class _FakeStdout:
-    """sys.stdout replacement with a writable binary .buffer attribute."""
-
-    def __init__(self) -> None:
-        self.buffer: io.BytesIO = io.BytesIO()
-
-    def write(self, s: str) -> int:
-        return 0
-
-    def flush(self) -> None:
-        pass
-
-
-def _run_hook_with(payload: dict) -> dict:
-    """Call run_hook() with payload as stdin; return parsed stdout JSON."""
-    raw = orjson.dumps(payload)
-    stdin_text = raw.decode("utf-8")
-    fake_stdout = _FakeStdout()
-
-    with (
-        patch.object(sys, "stdin", io.StringIO(stdin_text)),
-        patch.object(sys, "stdout", fake_stdout),
-    ):
-        run_hook()
-
-    fake_stdout.buffer.seek(0)
-    return orjson.loads(fake_stdout.buffer.read())
-
-
-# ---------------------------------------------------------------------------
-# HookInput / HookOutput model tests
-# ---------------------------------------------------------------------------
-
-
-class TestModels:
-    def test_tool_input_parses_command(self) -> None:
-        ti = ToolInput(command="git status")
-        assert ti.command == "git status"
-
-    def test_tool_input_extra_fields_preserved(self) -> None:
-        ti = ToolInput.model_validate({"command": "git status", "description": "check state"})
-        assert ti.command == "git status"
-        # Extra field stored in __pydantic_extra__
-        assert ti.model_extra is not None
-        assert ti.model_extra.get("description") == "check state"
-
-    def test_hook_input_defaults(self) -> None:
-        hi = HookInput.model_validate({"tool_input": {"command": "pytest"}})
-        assert hi.tool_name == ""
-        assert hi.tool_input.command == "pytest"
-
-    def test_hook_input_with_tool_name(self) -> None:
-        hi = HookInput.model_validate(
-            {"tool_name": "Bash", "tool_input": {"command": "git diff"}}
-        )
-        assert hi.tool_name == "Bash"
-
-    def test_hook_output_shape(self) -> None:
-        ho = HookOutput.model_validate(
-            {
-                "hookSpecificOutput": {
-                    "hookEventName": "PreToolUse",
-                    "permissionDecision": "allow",
-                    "updatedInput": {"command": f"{Q} git status"},
-                }
-            }
-        )
-        assert ho.hookSpecificOutput.updatedInput is not None
-        assert ho.hookSpecificOutput.updatedInput["command"] == f"{Q} git status"
-
-    def test_hook_input_missing_tool_input_raises(self) -> None:
-        from pydantic import ValidationError
-
-        with pytest.raises(ValidationError):
-            HookInput.model_validate({"tool_name": "Bash"})
-
-    def test_hook_input_empty_command_allowed(self) -> None:
-        hi = HookInput.model_validate({"tool_input": {}})
-        assert hi.tool_input.command == ""
-
-
-# ---------------------------------------------------------------------------
-# run_hook() — rewrite behaviour
-# ---------------------------------------------------------------------------
-
-
-def _updated_command(result: dict) -> str | None:
-    """Extract the rewritten command from a hookSpecificOutput response, if any."""
-    updated_input = result.get("hookSpecificOutput", {}).get("updatedInput")
-    return None if updated_input is None else updated_input.get("command")
-
-
-class TestRunHookRewrite:
-    def test_known_command_is_rewritten(self) -> None:
-        payload = _make_hook_payload("git status")
-        result = _run_hook_with(payload)
-        assert _updated_command(result) == f"{Q} git status"
-
-    def test_response_shape(self) -> None:
-        """The response is wrapped in hookSpecificOutput — not a raw tool_input echo."""
-        payload = _make_hook_payload("git status")
-        result = _run_hook_with(payload)
-        assert result["hookSpecificOutput"]["hookEventName"] == "PreToolUse"
-        assert result["hookSpecificOutput"]["permissionDecision"] == "allow"
-        assert "tool_input" not in result
-
-    def test_unknown_command_unchanged(self) -> None:
-        """No rewrite → updatedInput is omitted so Claude Code runs the original command."""
-        payload = _make_hook_payload("cargo build")
-        result = _run_hook_with(payload)
-        assert "updatedInput" not in result["hookSpecificOutput"]
-
-    def test_compound_command_rewritten(self) -> None:
-        payload = _make_hook_payload("git status && git diff")
-        result = _run_hook_with(payload)
-        assert _updated_command(result) == f"{Q} git status && {Q} git diff"
-
-    def test_excluded_command_unchanged(self) -> None:
-        payload = _make_hook_payload("git status --porcelain")
-        result = _run_hook_with(payload)
-        assert "updatedInput" not in result["hookSpecificOutput"]
-
-    def test_heredoc_command_unchanged(self) -> None:
-        payload = _make_hook_payload("git commit -m << EOF")
-        result = _run_hook_with(payload)
-        assert "updatedInput" not in result["hookSpecificOutput"]
-
-    def test_extra_tool_input_fields_preserved(self) -> None:
-        """updatedInput replaces the whole tool_input object — sibling fields must survive."""
-        payload = {
-            "tool_name": "Bash",
-            "tool_input": {"command": "git log", "description": "show history"},
-        }
-        result = _run_hook_with(payload)
-        updated_input = result["hookSpecificOutput"]["updatedInput"]
-        assert updated_input["description"] == "show history"
-        assert updated_input["command"] == f"{Q} git log"
-
-    def test_output_is_valid_json(self) -> None:
-        payload = _make_hook_payload("git status")
-        result = _run_hook_with(payload)
-        # _run_hook_with already parsed — reaching here means valid JSON
-        assert isinstance(result, dict)
-
-    def test_does_not_regress_to_bare_tool_input_echo(self) -> None:
-        """Regression guard: Claude Code only honors hookSpecificOutput.updatedInput.
-
-        A prior version of this hook echoed back the whole mutated input
-        payload as a top-level `tool_input` key. That shape round-trips fine
-        in-process (these tests would have passed) but is silently ignored by
-        the real Claude Code binary, so the rewrite never took effect end to
-        end. Guard against reintroducing it.
-        """
-        payload = _make_hook_payload("git status")
-        result = _run_hook_with(payload)
-        assert "tool_input" not in result
-        assert "tool_name" not in result
-        assert set(result.keys()) == {"hookSpecificOutput"}
-
-
-# ---------------------------------------------------------------------------
-# run_hook() — BOM handling
-# ---------------------------------------------------------------------------
-
-
-_BOM = "﻿"  # U+FEFF, single BOM character
-
-
-class TestRunHookBom:
-    def _run_with_bom_str(self, boms: int, payload: dict) -> dict:
-        """Run hook with N BOM characters prepended to the JSON string."""
-        json_str = orjson.dumps(payload).decode("utf-8")
-        bom_str = _BOM * boms + json_str
-        fake_stdout = _FakeStdout()
-        with (
-            patch.object(sys, "stdin", io.StringIO(bom_str)),
-            patch.object(sys, "stdout", fake_stdout),
-        ):
-            run_hook()
-        fake_stdout.buffer.seek(0)
-        return orjson.loads(fake_stdout.buffer.read())
-
-    def test_single_bom_stripped(self) -> None:
-        result = self._run_with_bom_str(1, _make_hook_payload("git status"))
-        assert _updated_command(result) == f"{Q} git status"
-
-    def test_doubled_bom_stripped(self) -> None:
-        result = self._run_with_bom_str(2, _make_hook_payload("git diff"))
-        assert _updated_command(result) == f"{Q} git diff"
-
-    def test_no_bom_works(self) -> None:
-        payload = _make_hook_payload("pytest tests/")
-        result = _run_hook_with(payload)
-        assert _updated_command(result) == f"{Q} pytest tests/"
-
-
-# ---------------------------------------------------------------------------
-# run_hook() — invalid JSON raises (caught by __main__)
-# ---------------------------------------------------------------------------
-
-
-class TestRunHookInvalidJson:
-    def test_invalid_json_raises(self) -> None:
-        fake_stdout = _FakeStdout()
-        with (
-            patch.object(sys, "stdin", io.StringIO("not valid json {")),
-            patch.object(sys, "stdout", fake_stdout),
-            pytest.raises(orjson.JSONDecodeError),
-        ):
-            run_hook()
-
-    def test_missing_tool_input_raises(self) -> None:
-        fake_stdout = _FakeStdout()
-        with (
-            patch.object(sys, "stdin", io.StringIO('{"tool_name": "Bash"}')),
-            patch.object(sys, "stdout", fake_stdout),
-            pytest.raises(ValidationError),
-        ):
-            run_hook()
-
-
-# ---------------------------------------------------------------------------
-# Hook template constants
-# ---------------------------------------------------------------------------
-
-
-class TestHookTemplate:
-    def test_hook_command_has_python_placeholder(self) -> None:
-        assert "{python}" in HOOK_COMMAND
-
-    def test_hook_ps1_template_has_python_placeholder(self) -> None:
-        assert "{python}" in HOOK_PS1_TEMPLATE
-
-    def test_hook_ps1_template_can_be_formatted(self) -> None:
-        rendered = HOOK_PS1_TEMPLATE.format(python=r"C:\Python\python.exe", schema_version=1)
-        assert r"C:\Python\python.exe" in rendered
-
-    def test_hook_ps1_template_has_schema_version_placeholder(self) -> None:
-        assert "{schema_version}" in HOOK_PS1_TEMPLATE
-
 
 # ---------------------------------------------------------------------------
 # run_dispatch() tests
@@ -384,7 +123,7 @@ class TestDispatcher:
         # Force apply() to raise
         with (
             patch("subprocess.run", return_value=proc),
-            patch("quor.adapters.dispatcher.FilterRegistry") as mock_reg,
+            patch("quor.engine.dispatcher.FilterRegistry") as mock_reg,
             patch("sys.stdout", captured),
         ):
             mock_inst = MagicMock()
@@ -402,7 +141,7 @@ class TestDispatcher:
         captured = io.StringIO()
         with (
             patch("subprocess.run", return_value=proc),
-            patch("quor.adapters.dispatcher.FilterRegistry") as mock_reg,
+            patch("quor.engine.dispatcher.FilterRegistry") as mock_reg,
             patch("sys.stdout", captured),
         ):
             mock_inst = MagicMock()
@@ -598,7 +337,7 @@ class TestConciseInstruction:
         with (
             patch("subprocess.run", return_value=proc),
             patch("sys.stdout", captured),
-            patch("quor.adapters.dispatcher.CONCISE_INSTRUCTION_ENABLED", False),
+            patch("quor.engine.dispatcher.CONCISE_INSTRUCTION_ENABLED", False),
         ):
             run_dispatch(["pytest", "tests/"])
 
@@ -677,7 +416,7 @@ class TestDispatcherTee:
         with (
             patch("subprocess.run", return_value=proc),
             patch("sys.stdout", captured),
-            patch("quor.adapters.dispatcher.FilterRegistry") as mock_reg_cls,
+            patch("quor.engine.dispatcher.FilterRegistry") as mock_reg_cls,
         ):
             mock_inst = MagicMock()
             mock_reg_cls.return_value = mock_inst
@@ -711,7 +450,7 @@ class TestDispatcherTee:
         with (
             patch("subprocess.run", return_value=proc),
             patch("sys.stdout", io.StringIO()),
-            patch("quor.adapters.dispatcher.cleanup_tee") as mock_cleanup,
+            patch("quor.engine.dispatcher.cleanup_tee") as mock_cleanup,
         ):
             run_dispatch(["pytest", "tests/"])
 
@@ -744,7 +483,7 @@ class TestDispatcherTee:
         with (
             patch("subprocess.run", return_value=proc),
             patch("sys.stdout", captured),
-            patch("quor.adapters.dispatcher.write_tee", side_effect=OSError("disk full")),
+            patch("quor.engine.dispatcher.write_tee", side_effect=OSError("disk full")),
         ):
             exit_code = run_dispatch(["pytest", "tests/"])
 
@@ -761,7 +500,7 @@ class TestDispatcherTee:
         with (
             patch("subprocess.run", return_value=proc),
             patch("sys.stdout", io.StringIO()),
-            patch("quor.adapters.dispatcher.write_tee", side_effect=OSError("Access is denied")),
+            patch("quor.engine.dispatcher.write_tee", side_effect=OSError("Access is denied")),
         ):
             run_dispatch(["pytest", "tests/"])
 
@@ -775,7 +514,7 @@ class TestDispatcherTee:
 
         proc = _make_proc(stdout=self._CHANGED_OUTPUT)
         with patch(
-            "quor.adapters.dispatcher.write_tee", side_effect=OSError("Access is denied")
+            "quor.engine.dispatcher.write_tee", side_effect=OSError("Access is denied")
         ):
             for _ in range(MAX_CONSECUTIVE_TEE_FAILURES):
                 with (
@@ -796,7 +535,7 @@ class TestDispatcherTee:
 
         proc = _make_proc(stdout=self._CHANGED_OUTPUT)
         with patch(
-            "quor.adapters.dispatcher.write_tee", side_effect=OSError("Access is denied")
+            "quor.engine.dispatcher.write_tee", side_effect=OSError("Access is denied")
         ) as mock_write:
             for _ in range(MAX_CONSECUTIVE_TEE_FAILURES):
                 with (
@@ -812,7 +551,7 @@ class TestDispatcherTee:
         with (
             patch("subprocess.run", return_value=proc),
             patch("sys.stdout", captured),
-            patch("quor.adapters.dispatcher.write_tee") as mock_write_after_disable,
+            patch("quor.engine.dispatcher.write_tee") as mock_write_after_disable,
         ):
             exit_code = run_dispatch(["pytest", "tests/"])
             mock_write_after_disable.assert_not_called()
@@ -830,7 +569,7 @@ class TestDispatcherTee:
         with (
             patch("subprocess.run", return_value=proc),
             patch("sys.stdout", io.StringIO()),
-            patch("quor.adapters.dispatcher.write_tee", side_effect=OSError("Access is denied")),
+            patch("quor.engine.dispatcher.write_tee", side_effect=OSError("Access is denied")),
         ):
             run_dispatch(["pytest", "tests/"])
         assert get_tee_status().consecutive_failures == 1
@@ -964,7 +703,7 @@ class TestDispatcherTee:
         """If the new token-count comparison itself raises, _apply_tee's
         existing outer fail-open handler still wins — same ADR-018 contract
         as any other tee-internal error, unchanged by QB-052."""
-        from quor.adapters.dispatcher import _apply_tee
+        from quor.engine.dispatcher import _apply_tee
         from quor.filters.registry import FilterRegistry
 
         registry = FilterRegistry(project_root=Path.cwd())
@@ -973,7 +712,7 @@ class TestDispatcherTee:
         final_output = "FAILED tests/test_b.py::test_y\n    AssertionError: got False\n"
 
         with patch(
-            "quor.adapters.dispatcher.count_tokens", side_effect=RuntimeError("boom")
+            "quor.engine.dispatcher.count_tokens", side_effect=RuntimeError("boom")
         ):
             result = _apply_tee(
                 filter_config,
@@ -991,24 +730,10 @@ class TestDispatcherTee:
 
 
 class TestMainRouting:
-    def test_hook_routing(self) -> None:
-        """quor hook claude → _run_hook() called."""
-        with (
-            patch("sys.argv", ["quor", "hook", "claude"]),
-            patch("quor.__main__._run_hook") as mock_hook,
-            patch("quor.__main__._run_dispatch") as mock_dispatch,
-        ):
-            from quor.__main__ import main
-
-            main()
-            mock_hook.assert_called_once()
-            mock_dispatch.assert_not_called()
-
     def test_dispatch_routing(self) -> None:
         """quor git status → _run_dispatch() called with ['git', 'status']."""
         with (
             patch("sys.argv", ["quor", "git", "status"]),
-            patch("quor.__main__._run_hook") as mock_hook,
             patch("quor.__main__._run_dispatch") as mock_dispatch,
             pytest.raises(SystemExit),  # _run_dispatch calls sys.exit
         ):
@@ -1017,21 +742,18 @@ class TestMainRouting:
 
             main()
             mock_dispatch.assert_called_once_with(["git", "status"])
-            mock_hook.assert_not_called()
 
     def test_cli_routing_schema(self) -> None:
         """quor schema → typer CLI (not dispatcher)."""
         with (
             patch("sys.argv", ["quor", "schema"]),
             patch("quor.__main__._run_dispatch") as mock_dispatch,
-            patch("quor.__main__._run_hook") as mock_hook,
             patch("quor.cli.main.app") as mock_app,
         ):
             from quor.__main__ import main
 
             main()
             mock_dispatch.assert_not_called()
-            mock_hook.assert_not_called()
             mock_app.assert_called_once()
 
     def test_flag_goes_to_cli(self) -> None:
@@ -1039,46 +761,20 @@ class TestMainRouting:
         with (
             patch("sys.argv", ["quor", "--help"]),
             patch("quor.__main__._run_dispatch") as mock_dispatch,
-            patch("quor.__main__._run_hook") as mock_hook,
             patch("quor.cli.main.app") as mock_app,
         ):
             from quor.__main__ import main
 
             main()
             mock_dispatch.assert_not_called()
-            mock_hook.assert_not_called()
             mock_app.assert_called_once()
 
 
 class TestMainRealExecution:
     """TD-010: __main__.py had the lowest coverage in the codebase because
-    TestMainRouting above always mocks _run_hook/_run_dispatch entirely at
-    the call site — real bodies of the unknown-hook-adapter branch and the
-    dispatch wrapper were never actually exercised by any test."""
-
-    def test_run_hook_unknown_adapter_echoes_original_and_warns(self) -> None:
-        """quor hook <unknown-adapter>: the real _run_hook() body (not
-        mocked) writes the original stdin bytes back unchanged and warns on
-        stderr, rather than silently dropping input it doesn't understand."""
-        from quor.__main__ import _run_hook
-
-        payload = b'{"tool_name": "Bash", "tool_input": {"command": "git status"}}'
-        fake_stdin = MagicMock()
-        fake_stdin.buffer.read.return_value = payload
-        fake_stdout = _FakeStdout()
-        captured_stderr = io.StringIO()
-
-        with (
-            patch("sys.argv", ["quor", "hook", "bogus-adapter"]),
-            patch.object(sys, "stdin", fake_stdin),
-            patch.object(sys, "stdout", fake_stdout),
-            patch.object(sys, "stderr", captured_stderr),
-        ):
-            _run_hook()
-
-        fake_stdout.buffer.seek(0)
-        assert fake_stdout.buffer.read() == payload
-        assert "Unknown hook adapter: 'bogus-adapter'" in captured_stderr.getvalue()
+    TestMainRouting above always mocks _run_dispatch entirely at the call
+    site — the real body of the dispatch wrapper was never actually
+    exercised by any test."""
 
     def test_run_dispatch_real_execution_exits_with_real_code(self) -> None:
         """quor git status: the real _run_dispatch() body (not mocked) opens

@@ -255,14 +255,17 @@ Summary of critical non-goals:
 
 ## Architecture Overview
 
-**Multi-agent note (QB-068):** the diagram below traces Claude Code's own
-flow as the original, still-accurate reference example. As of QB-068,
-`[Quor Hook Adapter]` is one of several `AgentAdapter` implementations
-(`quor/adapters/`) resolved through `AdapterRegistry`, not a
-Claude-Code-specific hardcoded path — see `docs/final/ADAPTERS.md` for the
-generalized architecture, lifecycle, and how Codex CLI/Gemini CLI (and any
-future agent) plug into the same `[Quor Dispatcher]`/`[ContentMask
-Pipeline]` below unchanged.
+**Superseded (QB-104, 2026-08-16):** the hook-adapter architecture this note
+described (`[Quor Hook Adapter]`, `quor/adapters/`, `AdapterRegistry`) was
+removed in favor of the MCP server (`quor/mcp/server.py`) as Quor's sole
+integration surface — an agent calls `compress_context`/`get_repo_context`
+directly, there is no per-agent adapter to resolve. See
+`docs/archive/hook-integration/ADAPTERS.md` for the historical hook-era
+architecture this superseded.
+
+**Multi-agent note (QB-068, historical):** the diagram below traces Claude
+Code's own flow as the original reference example from the hook era —
+kept for historical context, not current architecture.
 
 ```
 [Claude Code AI]

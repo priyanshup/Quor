@@ -838,7 +838,10 @@ ADR-011 decided the rewritten command Quor hands back to Claude Code is `quor <o
 
 ## ADR-030: PreToolUse Hook Response — `hookSpecificOutput.updatedInput` (not a bare `tool_input` echo)
 
-**Status:** Decided
+**Status:** Decided — **Superseded (QB-104, 2026-08-16):** the PreToolUse hook this ADR governs was
+removed along with Quor's entire hook-based integration, replaced by the MCP server
+(`quor/mcp/server.py`). Kept here as the historical record of why the hook's response shape was
+what it was; no longer describes current behavior.
 **Date:** 2026-07-04
 
 **Context:**
@@ -1165,7 +1168,11 @@ boolean parameter: the allowlist reuses `StageHandler.stage_type` (already requi
 
 ## ADR-036: Multi-Agent Adapter Architecture — `AgentAdapter` Protocol + Registry (QB-035A)
 
-**Status:** Decided (design only — no code implements this yet)
+**Status:** Decided (design only — no code implements this yet) — **Superseded (QB-104,
+2026-08-16):** the entire hook-based multi-agent adapter system this ADR designed (`quor/adapters/`,
+9 agent adapters, `AdapterRegistry`) was removed in favor of the MCP server as the sole integration
+surface — MCP has no per-agent variance to adapt to. Kept here as the historical record of the
+hook-era architecture; no longer describes current behavior.
 **Date:** 2026-07-10
 
 **Context:**
@@ -2075,7 +2082,9 @@ synthetic labels already are — a reporting command has no "before" blob to com
 
 ## ADR-043: Cross-Platform Claude Hook Launcher (QB-082)
 
-**Status:** Decided and shipped
+**Status:** Decided and shipped — **Superseded (QB-104, 2026-08-16):** the Claude Code hook launcher
+scripts this ADR made cross-platform were removed along with the hook-based integration; MCP
+registration (`.mcp.json`) has no launcher script to generate. Kept here as the historical record.
 **Date:** 2026-07-30
 
 **Context:**
@@ -2166,7 +2175,9 @@ closing note.
 
 ## ADR-044: Cross-Platform Gemini Hook Launcher (QB-083)
 
-**Status:** Decided and shipped
+**Status:** Decided and shipped — **Superseded (QB-104, 2026-08-16):** the Gemini CLI hook launcher
+this ADR made cross-platform was removed along with the hook-based integration. Kept here as the
+historical record.
 **Date:** 2026-07-31
 
 **Context:**

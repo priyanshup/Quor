@@ -100,12 +100,15 @@ implementation, building on the QB-035A design/ADR-036): the product owner
 explicitly directed this work to begin ahead of the original V1/V2 split,
 the same way QB-035A's design-only phase was explicitly authorized ahead of
 it. Claude Code, Gemini CLI, Codex CLI, Cursor, VS Code (Copilot agent
-mode), Windsurf, Aider, and Continue.dev now each have an `AgentAdapter`
-(`quor/adapters/`) — see `docs/final/ADAPTERS.md`. This anti-goal is
-retained for historical context (it explains why the codebase was
-single-agent for as long as it was) but is no longer accurate as a
-current-state description. Standalone Copilot CLI remains unimplemented —
-see `docs/final/ROADMAP.md`.
+mode), Windsurf, Aider, and Continue.dev each had an `AgentAdapter`
+(`quor/adapters/`) for a time — see
+`docs/archive/hook-integration/ADAPTERS.md` (archived). **Superseded again
+(QB-104, 2026-08-16):** the entire hook-based adapter system was then
+removed in favor of the MCP server (`quor/mcp/server.py`) as Quor's sole
+integration surface, which has no per-agent concept at all — an MCP client
+either supports the protocol or it doesn't. This anti-goal is retained for
+historical context but is no longer accurate as a current-state
+description.
 
 ### 13. No session-level deduplication in V1
 

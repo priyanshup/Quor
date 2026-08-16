@@ -1,5 +1,9 @@
 # QB-035A — Multi-Agent Adapter Architecture Design
 
+> **Archived (QB-104, 2026-08-16):** the hook-based adapter architecture
+> this document designed was removed in favor of the MCP server. Kept for
+> historical context; no longer describes current code.
+
 **Status:** Design complete. No runtime code changed. Design-only branch
 (`feature/qb-035a-multi-agent-adapter-design`).
 
