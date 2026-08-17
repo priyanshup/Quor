@@ -24,6 +24,13 @@ name: Release
 # environment, the publish-pypi job fails fast at the "Check PyPI token is
 # configured" step rather than silently skipping — so a maintainer always
 # gets a clear signal instead of a false "success".
+#
+# Fixed 2026-08-17: `github-release` previously only depended on `build`,
+# so it ran in parallel with (not gated behind) TestPyPI validation and
+# `release-approval` — a tag push could publish a public, non-draft GitHub
+# Release before anyone approved the PyPI publish, or even before TestPyPI
+# validation finished. Now depends on `[build, release-approval]`, matching
+# the pipeline description above.
 
 on:
   push:
@@ -146,7 +153,7 @@ jobs:
 
   github-release:
     name: Create GitHub Release
-    needs: build
+    needs: [build, release-approval]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
