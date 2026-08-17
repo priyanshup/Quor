@@ -559,6 +559,68 @@ removed), ~25 test files (deleted or triaged), `pyproject.toml`, `README.md`,
 
 ---
 
+#### QB-105 — Wire track_invocation() into the MCP server's tools
+
+**Effort:** Medium · **Value:** High · **Risk:** Low · **Expected token impact:** None directly
+(measurement/infrastructure — restores visibility into QB-104's own integration surface) ·
+**Category:** Engineering / Measurement
+
+**New item, added 2026-08-17**, surfaced during a post-QB-104 audit of whether `quor/mcp/server.py`
+carries any leftover Claude-Code-specific assumptions (it doesn't — see QB-035's entry, resolved by
+verification rather than new adapter work). The audit's real finding was here instead: neither
+`compress_context` nor `get_repo_context` (the two MCP tools that are now Quor's actual compression
+path) ever calls `track_invocation()`. Every remaining call site is a secondary CLI utility (`quor
+map`/`graph`/`symbols`/`search`/`explore`/`repo`) — none of which represent real compression work.
+
+<details>
+<summary>Technical details</summary>
+
+**Problem:** `quor gain`/`quor dashboard`/`quor doctor`'s negative-compression-filter detection all
+read exclusively from the `invocations` SQLite table, populated by `track_invocation()`
+(`quor/tracking/db.py`). Before QB-104, every Bash/Read call flowed through `dispatcher.py`'s or
+`claude_read.py`'s call to it. After QB-104, the compression path moved entirely to
+`quor/mcp/server.py`'s two `@mcp.tool()` functions, and neither was wired up — confirmed by grepping
+every `track_invocation` call site in the current tree (`quor/cli/commands/{explore,graph,map,repo,
+search,symbols}.py` only). Net effect: `quor gain` can currently report real numbers only for those
+six secondary utilities, never for the actual `compress_context`/`get_repo_context` usage a real MCP
+client generates — the exact capability `quor gain` exists to measure is now invisible to it.
+
+**Desired outcome:** `compress_context` and `get_repo_context` each call `track_invocation()` on
+every invocation, the same fail-open, non-blocking contract every other producer already honors
+(`tracking=None` no-ops, any exception is swallowed with a warning). `quor gain`/`quor dashboard`
+resume reflecting real MCP usage without any change to their own read-side logic.
+
+**Open design questions, not yet resolved:**
+- **`TrackingDB` construction/lifecycle.** Every existing call site constructs (or receives) a
+  `TrackingDB` once per short-lived CLI process. The MCP server is long-lived (one process per
+  session — see QB-089's entry for why that's now true post-QB-104) and handles many tool calls;
+  needs a decision on whether one `TrackingDB` is constructed at server startup and reused for the
+  process's lifetime (consistent with QB-089's own session-scoped `SessionDedupCache` precedent), or
+  something else.
+- **`command` field semantics.** Every existing `InvocationRecord.command` value is a real shell
+  command or a `"Read: {path}"` string (`quor gain`'s `read_hook_invocations` counter — see
+  `quor/tracking/db.py`'s own docstring — depends on that exact prefix). `compress_context` receives
+  raw text with no command/path attached at all; `get_repo_context` has `file_path`/`query`
+  parameters but no shell-command shape either. Needs a considered convention (e.g. a new sentinel
+  prefix), not a guess — a wrong choice here would either silently break `read_hook_invocations` or
+  misrepresent MCP-tool calls as something they're not.
+- **`filter_name` for `compress_context`.** Unlike the dispatcher's Bash path, `compress_context`
+  doesn't route through a *named* filter lookup keyed on a command pattern — it always falls through
+  to the generic filter (see `quor/mcp/server.py`'s own module docstring). Whether that's recorded
+  as `filter_name="generic"` or something MCP-specific needs a decision, since `quor gain --filters`
+  groups and reports by this field.
+- **Interaction with QB-089's dedup marker.** When `compress_context` returns the "unchanged since
+  last shown" marker instead of compressing, does that still count as a tracked invocation (and if
+  so, with what token-savings semantics — the dedup marker's own savings, or nothing)? Needs a
+  decision, not an assumption, the same way QB-089's own entry flagged "interaction with `quor
+  explain`/`quor dashboard`... needs a design decision" for its own marker.
+
+**Status:** Proposed. Not scoped or implemented.
+
+</details>
+
+---
+
 #### QB-095 — Path prefix front-coding
 
 **Effort:** Small-Medium · **Value:** High · **Risk:** Low · **Expected token impact:** High on
