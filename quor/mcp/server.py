@@ -31,6 +31,9 @@ docs/POC_TESTING.md for how to register this with an MCP client.
 
 from __future__ import annotations
 
+import contextlib
+import threading
+import time
 from pathlib import Path
 
 from mcp.server.mcpserver import MCPServer
@@ -45,7 +48,14 @@ from quor.pipeline.repo_profile.query_extract import extract_query_terms
 from quor.pipeline.repo_profile.search import merge_search
 from quor.pipeline.repo_profile.search_render import render_relevant_files_block
 from quor.pipeline.tee import content_hash
-from quor.tracking.db import count_tokens
+from quor.tracking.db import (
+    MCP_DEDUP_FILTER_LABEL,
+    MCP_REPO_CONTEXT_FILTER_LABEL,
+    TrackingDB,
+    count_tokens,
+    get_tracking_db,
+    track_invocation,
+)
 
 # The installed `mcp` SDK (v2.0.0) renamed the high-level server class from
 # `FastMCP` (mcp.server.fastmcp) to `MCPServer` (mcp.server.mcpserver) with
@@ -58,14 +68,65 @@ mcp = MCPServer("Quor Context Compressor")
 # this genuinely session-scoped rather than a global-state smell).
 _dedup_cache = SessionDedupCache()
 
+# QB-105: session-scoped, same lifetime reasoning as `_dedup_cache` above —
+# but constructed lazily (on first real use, not at import time), unlike
+# `_dedup_cache`. Unlike that in-memory dict, `TrackingDB.__init__` spins up
+# a background thread and touches the real platformdirs `quor.db` on disk;
+# doing that merely by importing this module (as every test in
+# test_mcp_server.py already does) would be a real, surprising side effect.
+# `_tracking_db_lock` only guards this one-time construction race — once
+# built, `TrackingDB.record()` is itself safe for concurrent callers
+# (`queue.SimpleQueue`).
+_tracking_db: TrackingDB | None = None
+_tracking_db_lock = threading.Lock()
+
+
+def _get_tracking_db() -> TrackingDB:
+    global _tracking_db
+    if _tracking_db is None:
+        with _tracking_db_lock:
+            if _tracking_db is None:
+                _tracking_db = get_tracking_db()
+    return _tracking_db
+
+
+def _track(
+    *,
+    command: str,
+    original: str,
+    filtered: str,
+    filter_name: str | None,
+    was_passthrough: bool,
+    t0: float,
+) -> None:
+    """Fail-open wrapper around track_invocation() for this module's two MCP
+    tools — mirrors every other producer's own try/except Exception: pass
+    discipline (map.py/explore.py/...), needed here on top of
+    track_invocation()'s own internal swallowing since constructing the lazy
+    `_tracking_db` singleton happens outside that internal guard."""
+    with contextlib.suppress(Exception):
+        track_invocation(
+            _get_tracking_db(),
+            command=command,
+            original=original,
+            filtered=filtered,
+            filter_name=filter_name,
+            was_passthrough=was_passthrough,
+            t0=t0,
+        )
+
 
 @mcp.tool()
 def compress_context(raw_text: str) -> str:
     """Use this tool whenever reading large command outputs, log streams, git
     history, or long files (exceeding 30 lines). It compresses the input
     deterministically to conserve token context window space."""
+    t0 = time.monotonic()
     original_tokens = count_tokens(raw_text)
     if original_tokens == 0:
+        # Nothing was measured — untracked, same "empty file_path stays
+        # untracked" convention track_invocation()'s own producers already
+        # follow for a degenerate/no-op input.
         return "[Quor Compressed: 0% saved]\n" + raw_text
 
     # QB-089: exact-match session dedup — if this exact content was already
@@ -75,7 +136,16 @@ def compress_context(raw_text: str) -> str:
     # only question that matters here.
     digest = content_hash(raw_text)
     if _dedup_cache.seen(digest):
-        return f"[Quor: unchanged since last shown this session ({digest[:12]}) — see above]"
+        marker = f"[Quor: unchanged since last shown this session ({digest[:12]}) — see above]"
+        _track(
+            command="MCP compress_context",
+            original=raw_text,
+            filtered=marker,
+            filter_name=MCP_DEDUP_FILTER_LABEL,
+            was_passthrough=False,
+            t0=t0,
+        )
+        return marker
 
     registry = FilterRegistry(project_root=Path.cwd())
     filter_config = registry.find(raw_text)
@@ -87,7 +157,16 @@ def compress_context(raw_text: str) -> str:
 
     compressed_tokens = count_tokens(compressed)
     saved_pct = max(0, round((1 - compressed_tokens / original_tokens) * 100))
-    return f"[Quor Compressed: {saved_pct}% saved]\n{compressed}"
+    result = f"[Quor Compressed: {saved_pct}% saved]\n{compressed}"
+    _track(
+        command="MCP compress_context",
+        original=raw_text,
+        filtered=result,
+        filter_name=filter_config.name if filter_config is not None else None,
+        was_passthrough=filter_config is None,
+        t0=t0,
+    )
+    return result
 
 
 _MAX_RELEVANT_FILES = 5
@@ -110,10 +189,14 @@ def get_repo_context(file_path: str = "", query: str = "") -> str:
     query: free text (e.g. a symbol or feature name) to find relevant files for.
     """
     root = Path.cwd()
+    t0 = time.monotonic()
     sections: list[str] = []
 
     entries = intel_store.load_file_intelligence(root)
     if entries is None:
+        # Untracked — mirrors `quor map`'s own convention of only recording
+        # an invocation on real output, not on a "go run `quor map`" bailout
+        # that did no repository-intelligence lookup at all.
         nudge = _safe_nudge(root)
         return (
             "No repository intelligence found for this directory — run `quor map` "
@@ -150,7 +233,22 @@ def get_repo_context(file_path: str = "", query: str = "") -> str:
     if nudge:
         sections.append(nudge.rstrip("\n"))
 
-    return "\n\n".join(sections)
+    result = "\n\n".join(sections)
+    if file_path:
+        command = f"MCP get_repo_context: {file_path}"
+    elif query:
+        command = f"MCP get_repo_context: query={query!r}"
+    else:
+        command = "MCP get_repo_context: (no args)"
+    _track(
+        command=command,
+        original=result,
+        filtered=result,
+        filter_name=MCP_REPO_CONTEXT_FILTER_LABEL,
+        was_passthrough=False,
+        t0=t0,
+    )
+    return result
 
 
 def _relative_posix_path(file_path: str, root: Path) -> str | None:
@@ -207,4 +305,13 @@ def _safe_nudge(root: Path) -> str | None:
 
 
 if __name__ == "__main__":
-    mcp.run(transport="stdio")
+    try:
+        mcp.run(transport="stdio")
+    finally:
+        # QB-105: mirrors quor/__main__.py's own `tracking.close()` in a
+        # `finally` around run_dispatch() — flush whatever's staged before
+        # the process exits. Guarded on `is not None`: a session that never
+        # actually tracked an invocation (every call degenerate/untracked)
+        # should not force quor.db into existence on exit.
+        if _tracking_db is not None:
+            _tracking_db.close()

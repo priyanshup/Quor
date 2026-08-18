@@ -32,6 +32,8 @@ from quor.analytics.filter_report import (
     render_filter_analytics_report,
 )
 from quor.tracking.db import (
+    MCP_DEDUP_FILTER_LABEL,
+    MCP_REPO_CONTEXT_FILTER_LABEL,
     PASSTHROUGH_LABEL,
     REPO_GRAPH_FILTER_LABEL,
     REPO_PROFILE_FILTER_LABEL,
@@ -154,6 +156,23 @@ class TestFlagLowPerformers:
         0.0% by design (synthesis, not compression), same reasoning as
         `test_repo_profile_label_is_excluded` above."""
         filters = (_usage(REPO_GRAPH_FILTER_LABEL, compression_pct=0.0),)
+        assert flag_low_performers(filters) == []
+
+    def test_mcp_repo_context_label_is_excluded(self) -> None:
+        """QB-105: the MCP `get_repo_context` tool's synthetic tracking
+        label always reads 0.0% by design (synthesis, not compression, same
+        as `quor map`/`explore`/etc.'s own labels above) — must not be
+        flagged alongside a real compression regression."""
+        filters = (_usage(MCP_REPO_CONTEXT_FILTER_LABEL, compression_pct=0.0),)
+        assert flag_low_performers(filters) == []
+
+    def test_mcp_dedup_label_is_excluded(self) -> None:
+        """QB-105: the MCP `compress_context` tool's QB-089 session-dedup
+        label is real savings (unlike the synthesis labels above), but a
+        near-100% hit-rate ratio has nothing meaningful to be flagged
+        against here either — excluded for the same reason
+        `PASSTHROUGH_LABEL` is, not because it's low-performing."""
+        filters = (_usage(MCP_DEDUP_FILTER_LABEL, compression_pct=98.0),)
         assert flag_low_performers(filters) == []
 
     def test_threshold_is_configurable(self) -> None:

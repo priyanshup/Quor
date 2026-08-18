@@ -991,17 +991,46 @@ REPO_EXPLORE_FILTER_LABEL = "repo-explore"
 # must exclude this label too.
 REPO_SEARCH_FILTER_LABEL = "repo-search"
 
-# QB-092: the six synthesis-not-compression labels above, grouped for
-# query_gain()'s aggregate. Each always records original_tokens ==
-# final_tokens by design (see each label's own docstring) — pooling them
+# QB-105: the synthetic `filter_name` the MCP server's `get_repo_context`
+# tool tracks its invocations under (see `quor/mcp/server.py::_track`). Same
+# reasoning as `REPO_PROFILE_FILTER_LABEL`/.../`REPO_SEARCH_FILTER_LABEL`
+# above, applied to the MCP equivalent of those synthesis-not-compression
+# CLI commands: `get_repo_context` only reads already-cached repository
+# intelligence, so it has no "before" blob either — `original_tokens`/
+# `final_tokens` are recorded equal by design, and `flag_low_performers`
+# must exclude this label too.
+MCP_REPO_CONTEXT_FILTER_LABEL = "mcp-repo-context"
+
+# QB-105: the synthetic `filter_name` the MCP server's `compress_context`
+# tool tracks a QB-089 session-dedup cache hit under (see
+# `quor/mcp/server.py::_track`). Unlike `MCP_REPO_CONTEXT_FILTER_LABEL`
+# above, this *is* real, deliberate token savings (a hit returns a ~15-byte
+# marker instead of resending the full compressed content) and belongs in
+# `query_gain`'s headline SUM()s — it is deliberately NOT added to
+# `SYNTHESIS_FILTER_LABELS` below. It still needs its own label, separate
+# from whatever real ContentMask filter would otherwise have matched: a
+# dedup hit's near-100% compression ratio would otherwise blend into and
+# badly inflate that filter's own real `avg_compression_pct`, which reflects
+# a completely different mechanism. `flag_low_performers` excludes this
+# label too, for a different reason than the synthesis labels — not because
+# it's low-performing, but because a benchmark-divergence check has nothing
+# meaningful to compare a session-cache hit rate against (same rationale
+# `PASSTHROUGH_LABEL` is already excluded for).
+MCP_DEDUP_FILTER_LABEL = "mcp-dedup"
+
+# QB-092 (extended by QB-105): the synthesis-not-compression labels above,
+# grouped for query_gain()'s aggregate. Each always records original_tokens
+# == final_tokens by design (see each label's own docstring) — pooling them
 # into the same SUM()s as real ContentMask filters means their *share of
 # total invocations* directly dilutes `quor gain`'s headline percentage as
 # repo-intelligence commands (`map`/`symbols`/`graph`/`repo`/`explore`/
-# `search`) get used more, with nothing about real compression having
-# changed. `flag_low_performers` (filter_divergence.py) already excludes
-# this same set from per-filter "low performer" analysis for the identical
-# reason; query_gain's headline aggregate needs the same exclusion, which
-# it did not have before QB-092.
+# `search`, plus the MCP `get_repo_context` tool) get used more, with
+# nothing about real compression having changed. `flag_low_performers`
+# (filter_divergence.py) already excludes this same set from per-filter
+# "low performer" analysis for the identical reason; query_gain's headline
+# aggregate needs the same exclusion, which it did not have before QB-092.
+# `MCP_DEDUP_FILTER_LABEL` is deliberately absent — see its own docstring
+# above for why it belongs in the headline instead.
 SYNTHESIS_FILTER_LABELS = frozenset(
     {
         REPO_PROFILE_FILTER_LABEL,
@@ -1010,6 +1039,7 @@ SYNTHESIS_FILTER_LABELS = frozenset(
         REPO_DASHBOARD_FILTER_LABEL,
         REPO_EXPLORE_FILTER_LABEL,
         REPO_SEARCH_FILTER_LABEL,
+        MCP_REPO_CONTEXT_FILTER_LABEL,
     }
 )
 

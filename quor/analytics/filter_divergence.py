@@ -14,6 +14,8 @@ from dataclasses import dataclass
 
 from quor.analytics.filter_baseline import BenchmarkFilterStats
 from quor.tracking.db import (
+    MCP_DEDUP_FILTER_LABEL,
+    MCP_REPO_CONTEXT_FILTER_LABEL,
     PASSTHROUGH_LABEL,
     REPO_DASHBOARD_FILTER_LABEL,
     REPO_EXPLORE_FILTER_LABEL,
@@ -28,8 +30,12 @@ from quor.tracking.db import (
 # "low performing" — each is documented at its own definition (PASSTHROUGH_LABEL
 # in quor/tracking/db.py, REPO_PROFILE_FILTER_LABEL/REPO_SYMBOLS_FILTER_LABEL/
 # REPO_GRAPH_FILTER_LABEL/REPO_DASHBOARD_FILTER_LABEL/REPO_EXPLORE_FILTER_LABEL/
-# REPO_SEARCH_FILTER_LABEL alongside it) as always reading 0.0%/near-zero by
-# design, not as evidence of a broken filter.
+# REPO_SEARCH_FILTER_LABEL/MCP_REPO_CONTEXT_FILTER_LABEL alongside it) as
+# always reading 0.0%/near-zero by design, not as evidence of a broken
+# filter. MCP_DEDUP_FILTER_LABEL is excluded for a different reason (see its
+# own docstring in quor/tracking/db.py) — it's real savings, not a synthesis
+# label, but a session-cache hit rate has no benchmark counterpart to
+# meaningfully diverge against, same as PASSTHROUGH_LABEL.
 _EXCLUDED_FROM_LOW_PERFORMER_CHECK = frozenset(
     {
         PASSTHROUGH_LABEL,
@@ -39,6 +45,8 @@ _EXCLUDED_FROM_LOW_PERFORMER_CHECK = frozenset(
         REPO_DASHBOARD_FILTER_LABEL,
         REPO_EXPLORE_FILTER_LABEL,
         REPO_SEARCH_FILTER_LABEL,
+        MCP_REPO_CONTEXT_FILTER_LABEL,
+        MCP_DEDUP_FILTER_LABEL,
     }
 )
 

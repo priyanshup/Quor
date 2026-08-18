@@ -307,6 +307,28 @@ QB-096, QB-097, QB-098, and the QB-099 cluster) each already carry an "Implement
 been relocated out of this section yet. Left as-is here rather than bundled into this correction,
 since moving that much entry text is a bigger edit than this note warrants.
 
+**Priority order re-set (2026-08-18):** QB-105 (added 2026-08-17, following the QB-104 audit) jumps
+to #1, ahead of QB-047. QB-105 found that neither MCP tool (`compress_context`/`get_repo_context`) —
+Quor's entire compression path since QB-104 retired the hook mechanism — ever calls
+`track_invocation()`. `quor gain`/`dashboard`/`doctor` have therefore been blind to real usage since
+2026-08-16, seeing only the six secondary CLI utilities (`map`/`graph`/`symbols`/`search`/`explore`/
+`repo`). That's a more urgent gap than QB-047 was ranked for: QB-047 (real-content tracking against
+production benchmarks) implicitly assumes `quor gain`'s telemetry is trustworthy input to build on,
+and right now it isn't. **Current order: QB-105 → QB-047 → QB-041 → QB-086 → QB-034 → QB-055 →
+QB-054 → QB-049 → QB-039 → QB-053.**
+
+**Housekeeping note (2026-08-18, same day):** QB-105 shipped (implemented, tested, `quor verify`
+242/242 — see its own entry's now-dated `Status:` line). Same as QB-095/096/097/098/099 above, its
+full write-up is left in place rather than relocated to [Completed](#completed) in this pass — but it
+no longer occupies a slot in this ordering. **Current order: QB-047 → QB-041 → QB-086 → QB-034 →
+QB-055 → QB-054 → QB-049 → QB-039 → QB-053.**
+
+A third candidate raised alongside QB-105 and QB-047 — rewriting `RELEASE_CRITERIA.md`'s gates for
+MCP — was checked against the file and is **already done**: QB-104's 2026-08-16 pass rewrote every
+hook-era gate (IA-F01/F02/F03, IA-S01, PA-Q06, B-F04, V1-F03/S01) in `docs/final/RELEASE_CRITERIA.md`
+to test `quor init --mcp` / `.mcp.json` / MCP tool calls, each with the struck-through hook-era
+wording left visible for the record. No open item there — not added to this list.
+
 **Priority interrupt (2026-07-31, later the same day):** a deterministic-compression research pass
 (diff tools, VCS, compilers, static analyzers, IDEs, log processors, search/indexing systems —
 AI/LLM techniques explicitly excluded) surfaced several new candidate stages, reviewed head-of-
@@ -615,7 +637,43 @@ resume reflecting real MCP usage without any change to their own read-side logic
   decision, not an assumption, the same way QB-089's own entry flagged "interaction with `quor
   explain`/`quor dashboard`... needs a design decision" for its own marker.
 
-**Status:** Proposed. Not scoped or implemented.
+**Resolution (2026-08-18), answering each open question above:**
+- **Lifecycle:** one `TrackingDB`, constructed lazily (module-level singleton, guarded by a
+  `threading.Lock`) on first real use rather than eagerly at import — eager construction would spin
+  up a background thread and touch the real platformdirs `quor.db` merely by importing
+  `quor/mcp/server.py`, exactly as every test in `test_mcp_server.py` already does. Closed in a
+  `finally` around `mcp.run()`, mirroring `quor/__main__.py`'s own `tracking.close()` discipline —
+  skipped entirely if the singleton was never constructed (a session that never tracked anything
+  should not force `quor.db` into existence).
+- **`command` field:** every MCP-sourced row is prefixed `"MCP "` (`"MCP compress_context"`, `"MCP
+  get_repo_context: {file_path}"`, etc.) — never `"Read: "`, so `read_hook_invocations` is unaffected.
+- **`filter_name` for `compress_context`:** reuses the real `filter_config.name` unchanged (almost
+  always `"generic"`) rather than inventing an MCP-specific label — it's genuinely the same
+  ContentMask compression, just a different transport, and `filter_name` is meant to identify
+  compression *strategy*, not provenance.
+- **QB-089 dedup interaction:** tracked, under its own new label `MCP_DEDUP_FILTER_LABEL`
+  (`"mcp-dedup"`) — a dedup hit is real, deliberate token savings (the marker is a few bytes
+  regardless of input size) and belongs in `quor gain`'s headline SUM()s, but blending its near-100%
+  ratio into `"generic"`'s own real average would badly misrepresent that filter's actual
+  performance, so it gets a separate label instead.
+- **`get_repo_context`'s own label:** a second new constant, `MCP_REPO_CONTEXT_FILTER_LABEL`
+  (`"mcp-repo-context"`) — synthesis, not compression (no "before" blob, same convention `quor
+  map`/`explore`/`repo`'s own labels already use), added to `SYNTHESIS_FILTER_LABELS` so it doesn't
+  dilute `quor gain`'s headline. Both new labels are added to `filter_divergence.py`'s
+  `_EXCLUDED_FROM_LOW_PERFORMER_CHECK` (for different reasons — one is a synthesis 0%-by-design
+  label, the other has no benchmark counterpart to diverge against) — the exact wiring gap that, if
+  missed, would have reproduced the false-positive-in-`doctor` failure mode this ticket exists to fix.
+- **Untracked edge cases:** an empty `compress_context` input and a `get_repo_context` call before
+  `quor map` has ever run are both left untracked — same "empty `file_path` stays untracked"
+  convention `track_invocation()`'s other producers already follow for degenerate/no-op input.
+
+**Status:** Implemented (2026-08-18). `ruff check`/`mypy` clean on all four changed source files
+(`quor/mcp/server.py`, `quor/tracking/db.py`, `quor/analytics/filter_divergence.py`,
+`quor/cli/commands/*` untouched). New tests in `test_mcp_server.py` (tracking fixture +
+`TestCompressContextTracking`/`TestGetRepoContextTracking`) and `test_filter_analytics.py` (both new
+labels' exclusion). `quor verify` 242/242. Full `tests/unit` sweep green (excluding the pre-existing
+slow real-subprocess-spawning files this repo's own test suite already runs separately — see
+QB-095's own entry for that same exclusion list).
 
 </details>
 
