@@ -2466,3 +2466,85 @@ non-heuristic content signal — not scoped here.
   claimed to be. See `backlog.md`'s QB-109 entry for the full finding and scope.
 - See `docs/final/COMMAND_SUPPORT.md` §2 ("Content-type fallback (QB-109)") for the user-facing
   description of how this interacts with existing filter precedence.
+
+---
+
+## ADR-048: Windows Extended-Length Path Prefix (`\\?\`) for Repository-Intelligence File Reads
+
+**Status:** Decided
+**Date:** 2026-08-19
+
+**Context:**
+A QB-110 audit (Windows platform paths, encoding, performance) found that Windows' classic
+MAX_PATH (260-character) limit was never handled anywhere in the codebase — no ADR, no code, no
+tests. Verified empirically on a real corporate machine (`LongPathsEnabled=0` in the registry,
+which requires admin rights to change — rights Quor's own target user, per `docs/final/CLAUDE.md`,
+does not have): `Path.mkdir()`, `.read_text()`, `.exists()`, and `os.listdir()` all fail, or (for
+`.exists()`) silently report `False` on a file that genuinely exists, for a real path exceeding 260
+characters. Confirmed the real-world trigger is not contrived: Git for Windows commonly has its own
+long-path support enabled internally, so `walk.py`'s primary path (`git ls-files`) can legitimately
+report tracked files whose absolute path exceeds 260 characters — files git itself can see, but
+that an unprefixed `Path.read_text()` call cannot open. Every per-file read in
+`quor/pipeline/repo_profile/` already fails open (`except (OSError, UnicodeDecodeError)`, marking
+the file `parse_failure`/skipped rather than crashing `quor map`/`symbols`/`graph`), so this was
+never a crash risk — just silently reduced repo-intelligence coverage on exactly the deep corporate
+package structure, OneDrive-synced-desktop scenario Quor is built for (this repository's own
+checkout has headroom — longest tracked file's full path is 154 characters — which is exactly why
+this went unnoticed in Quor's own dogfooding/CI).
+
+**Options considered:**
+- **Do nothing, rely on existing fail-open handling:** the existing `except (OSError,
+  UnicodeDecodeError)` guards mean this was never a crash risk, so leaving it is "safe" in the
+  narrow sense — but it means `quor map`/`symbols`/`graph` silently under-report on exactly Quor's
+  stated target environment, with no actionable signal to the user (the `parse_failure` note is
+  generic, doesn't distinguish a fixable path-length issue from a genuinely corrupt file).
+- **Instruct users to enable `LongPathsEnabled`:** rejected outright — requires admin rights or
+  Group Policy, which Quor's own target user (corporate Windows, no admin rights) does not have by
+  definition. Documenting a fix the target user cannot apply is not a fix.
+- **Extended-length `\\?\` path prefix, applied internally before the file-system call:** bypasses
+  MAX_PATH entirely for Win32 file APIs, verified empirically to work with zero admin rights and no
+  registry change. The only cost is a small, self-contained helper and wiring it into the handful of
+  call sites that read arbitrary repo files.
+
+**Decision:** Add `quor/pipeline/repo_profile/_longpath.py::to_long_path(path, *, force=False)` — a
+Windows-only (`os.name == "nt"` guard, consistent with the project's existing "the check that most
+directly expresses Windows vs. POSIX process semantics" convention, not `isinstance(...,
+WindowsPath)`), no-admin-required helper that extended-length-prefixes an absolute path above a
+240-character conservative threshold (or unconditionally, under `force=True`), handling UNC paths'
+distinct `\\?\UNC\server\share\...` form correctly (not the drive-letter `\\?\C:\...` form). Wired
+into every per-file read call site in `quor/pipeline/repo_profile/` that opens an arbitrary
+repo-relative file: `symbols.py::extract_file_symbols`, `graph.py::extract_file_facts` and
+`_is_generated_by_content`-equivalent in `intel.py`, `entry_points.py`'s three manifest/content
+reads, `intel_diff.py`'s `_hash_file`/`fingerprint_files`/`diff_repository`, and
+`detectors/loader.py`/`detectors/registry.py`'s TOML/content reads. `walk.py`'s `os.walk` fallback
+is the one caller using `force=True`: a walk's starting root is typically short (so the
+threshold-gated default would no-op on it), but `os.walk` builds every deeper `dirpath` via plain
+string concatenation off the root it's given — an unprefixed short root can still recurse into a
+descendant that exceeds MAX_PATH, and there's no way to know the eventual depth in advance, so the
+root must be prefixed unconditionally rather than gated on its own current length.
+
+The result of `to_long_path()` is used transiently, for one file-system call only — never stored,
+never fed into repo-relative path bookkeeping. Every relative path produced by `walk.py`/
+`symbols.py`/`graph.py` stays `Path.as_posix()`-normalized and prefix-free, matching the project's
+existing path-storage convention (`quor/tracking/db.py`'s `normalize_project_path()`).
+
+**Consequences:**
+- New module: `quor/pipeline/repo_profile/_longpath.py`.
+- Seven call sites updated: `symbols.py`, `graph.py`, `intel.py`, `entry_points.py`,
+  `intel_diff.py`, `detectors/loader.py`, `detectors/registry.py`, `walk.py`.
+- New tests: `tests/unit/test_repo_profile_longpath.py` (the helper's own logic, including a real
+  filesystem round-trip past 260 characters — confirms the unprefixed form genuinely fails first,
+  so the test is meaningful, not vacuous) plus regression tests in `test_repo_profile_walk.py`,
+  `test_repo_profile_symbols.py`, `test_repo_profile_graph.py`, `test_repo_intel_diff.py`. Real
+  Windows-behavior tests are `@pytest.mark.skipif(os.name != "nt", ...)`, not simulated via
+  monkeypatching `os.name` off Windows — `pathlib.Path(...)` resolves to a fixed `WindowsPath`/
+  `PosixPath` class at interpreter startup regardless of a later `os.name` patch (the same
+  constraint this project already found and documented for hook-manifest platform testing; see that
+  ADR's "Why not simulate the other platform via `os.name`/`sys.platform` monkeypatching" note).
+- Explicitly out of scope: filters/`quor/engine/dispatcher.py`'s subprocess-output path (arbitrary
+  command output, not a repo file walk — a different risk surface not audited here), and the
+  `parse_failure` skip-reason message itself (still generic, doesn't distinguish a long-path failure
+  from a permissions/encoding one — flagged as a follow-up, not required for this fix since the
+  underlying failure this ADR addresses no longer happens for the common case).
+- See `backlog.md`'s QB-110 entry for the full audit findings (what was already solid, what wasn't)
+  and the fresh benchmark numbers gathered during the same audit.

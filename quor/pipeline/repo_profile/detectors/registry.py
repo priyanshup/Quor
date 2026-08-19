@@ -21,6 +21,7 @@ import regex
 
 from quor.errors import ConfigError
 from quor.filters.trust import is_git_tracked
+from quor.pipeline.repo_profile._longpath import to_long_path
 from quor.pipeline.repo_profile.detectors.loader import load_detector_file
 from quor.pipeline.repo_profile.detectors.model import DetectorRule
 from quor.pipeline.repo_profile.model import DetectedItem
@@ -214,7 +215,7 @@ def _read_capped(path: Path) -> str | None:
     error, binary content) — fail-open, matching the discipline used
     throughout the hook path (`claude_read.py`, `dispatcher.py`)."""
     try:
-        with open(path, "rb") as fh:
+        with open(to_long_path(path), "rb") as fh:
             raw = fh.read(_MAX_CONTENT_READ_BYTES)
     except OSError:
         return None

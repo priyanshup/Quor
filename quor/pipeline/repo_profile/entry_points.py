@@ -29,6 +29,7 @@ from pathlib import Path, PurePosixPath
 
 import regex
 
+from quor.pipeline.repo_profile._longpath import to_long_path
 from quor.pipeline.repo_profile.model import EntryPoint
 
 _MAIN_GUARD_RE = r"^if\s+__name__\s*==\s*[\"']__main__[\"']\s*:"
@@ -58,7 +59,7 @@ def detect_entry_points(root: Path, files: list[str]) -> list[EntryPoint]:
 
 def _load_toml(path: Path) -> dict[str, object] | None:
     try:
-        with open(path, "rb") as fh:
+        with open(to_long_path(path), "rb") as fh:
             return tomllib.load(fh)
     except (OSError, tomllib.TOMLDecodeError):
         return None
@@ -66,7 +67,7 @@ def _load_toml(path: Path) -> dict[str, object] | None:
 
 def _load_json(path: Path) -> dict[str, object] | None:
     try:
-        with open(path, encoding="utf-8", errors="ignore") as fh:
+        with open(to_long_path(path), encoding="utf-8", errors="ignore") as fh:
             data = json.load(fh)
     except (OSError, json.JSONDecodeError):
         return None
@@ -186,7 +187,7 @@ def _python_main_guard_entry_points(root: Path, files: list[str]) -> list[EntryP
     )
     for f in root_level_py:
         try:
-            with open(root / f, "rb") as fh:
+            with open(to_long_path(root / f), "rb") as fh:
                 raw = fh.read(_MAX_SCAN_BYTES)
         except OSError:
             continue

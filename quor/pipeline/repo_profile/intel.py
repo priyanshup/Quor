@@ -66,6 +66,7 @@ from quor.pipeline.ast_summarize.registry import (
     is_language_available,
 )
 from quor.pipeline.repo_profile import dashboard, intel_store
+from quor.pipeline.repo_profile._longpath import to_long_path
 from quor.pipeline.repo_profile.graph import (
     _MAX_FILE_SIZE_BYTES as _GRAPH_MAX_FILE_SIZE_BYTES,
 )
@@ -247,7 +248,7 @@ def _is_generated_by_content(root: Path, rel_path: str) -> bool:
     parsing (see `_build_file_intelligence`'s `scan_content` gate) — never
     adds a new read for a file this module wouldn't already be touching."""
     try:
-        with open(root / rel_path, "rb") as fh:
+        with open(to_long_path(root / rel_path), "rb") as fh:
             raw = fh.read(_MAX_SCAN_BYTES)
     except OSError:
         return False

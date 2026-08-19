@@ -42,6 +42,7 @@ import hashlib
 import subprocess
 from pathlib import Path
 
+from quor.pipeline.repo_profile._longpath import to_long_path
 from quor.pipeline.repo_profile.intel_model import FileFingerprint, RepoDiff
 
 _GIT_TIMEOUT = 10.0
@@ -91,7 +92,7 @@ def fingerprint_files(root: Path, files: list[str]) -> dict[str, FileFingerprint
     call has something to diff against."""
     fingerprints: dict[str, FileFingerprint] = {}
     for rel_path in files:
-        abs_path = root / rel_path
+        abs_path = to_long_path(root / rel_path)
         try:
             st = abs_path.stat()
         except OSError:
@@ -126,7 +127,7 @@ def diff_repository(
     modified: list[str] = []
 
     for rel_path in files:
-        abs_path = root / rel_path
+        abs_path = to_long_path(root / rel_path)
         try:
             st = abs_path.stat()
         except OSError:

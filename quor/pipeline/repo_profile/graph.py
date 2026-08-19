@@ -94,6 +94,7 @@ from quor.pipeline.ast_summarize.registry import (
     is_language_available,
 )
 from quor.pipeline.ast_summarize.relationship_model import Relationship
+from quor.pipeline.repo_profile._longpath import to_long_path
 from quor.pipeline.repo_profile.graph_model import Edge, RepoDependencyGraph
 from quor.pipeline.repo_profile.walk import WalkResult, walk_repository
 
@@ -158,7 +159,7 @@ def extract_file_facts(root: Path, rel_path: str, language: str) -> tuple[FileFa
     outgoing relationships of its own, mirroring `build_dependency_graph()`'s
     existing behavior of always retaining every successfully-parsed file.
     """
-    abs_path = root / rel_path
+    abs_path = to_long_path(root / rel_path)
     try:
         if abs_path.stat().st_size > _MAX_FILE_SIZE_BYTES:
             return None, "too_large"

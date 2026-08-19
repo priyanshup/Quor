@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 from pathlib import Path
+
+import pytest
 
 from quor.pipeline.repo_profile.walk import walk_repository
 
@@ -97,3 +100,32 @@ class TestWalkRepositoryFallback:
 
         assert result.files == []
         assert result.used_git is False
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows-only: MAX_PATH (QB-110)")
+class TestWalkRepositoryFallbackLongPaths:
+    def test_deep_tree_past_max_path_is_still_walked(self, tmp_path: Path) -> None:
+        """QB-110 regression: the fallback's os.walk root must be extended-
+        length-prefixed unconditionally (not threshold-gated on its own,
+        typically-short, starting length) — os.walk builds every deeper
+        dirpath by string concatenation off the root it's given, so a
+        short, unprefixed root still hits MAX_PATH once recursion goes deep
+        enough. Confirms the file is actually found, not silently dropped."""
+        deep = tmp_path
+        long_name = "package_segment_" + "x" * 30
+        while len(str(deep)) < 250:
+            deep = deep / long_name
+        target = deep / "sample.py"
+        assert len(str(target)) > 260
+
+        from quor.pipeline.repo_profile._longpath import to_long_path
+
+        to_long_path(deep, force=True).mkdir(parents=True, exist_ok=True)
+        to_long_path(target).write_text("x\n", encoding="utf-8")
+
+        result = walk_repository(tmp_path)
+
+        assert result.used_git is False
+        assert len(result.files) == 1
+        assert result.files[0].endswith("sample.py")
+        assert "\\" not in result.files[0]  # still POSIX-normalized, prefix never leaked

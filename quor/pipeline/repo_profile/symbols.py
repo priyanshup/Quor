@@ -33,6 +33,7 @@ from quor.pipeline.ast_summarize.registry import (
     get_symbol_extractor,
     is_language_available,
 )
+from quor.pipeline.repo_profile._longpath import to_long_path
 from quor.pipeline.repo_profile.symbols_model import FileSymbols, RepoSymbolIndex
 from quor.pipeline.repo_profile.walk import WalkResult, walk_repository
 
@@ -75,7 +76,7 @@ def extract_file_symbols(
     count correctly after only re-scanning changed files (see `intel.py`'s
     own module docstring).
     """
-    abs_path = root / rel_path
+    abs_path = to_long_path(root / rel_path)
     try:
         if abs_path.stat().st_size > _MAX_FILE_SIZE_BYTES:
             return None, "too_large"

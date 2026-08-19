@@ -13,6 +13,7 @@ from pathlib import Path
 from pydantic import ValidationError
 
 from quor.errors import ConfigError
+from quor.pipeline.repo_profile._longpath import to_long_path
 from quor.pipeline.repo_profile.detectors.model import DetectorFile, DetectorRule
 
 
@@ -22,7 +23,7 @@ def load_detector_file(path: Path) -> list[DetectorRule]:
     Raises ConfigError on TOML syntax errors or Pydantic validation failures.
     """
     try:
-        with open(path, "rb") as fh:
+        with open(to_long_path(path), "rb") as fh:
             data = tomllib.load(fh)
     except tomllib.TOMLDecodeError as exc:
         raise ConfigError(f"Invalid TOML in {path.name}: {exc}") from exc
