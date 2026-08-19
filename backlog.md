@@ -323,6 +323,25 @@ full write-up is left in place rather than relocated to [Completed](#completed) 
 no longer occupies a slot in this ordering. **Current order: QB-047 → QB-041 → QB-086 → QB-034 →
 QB-055 → QB-054 → QB-049 → QB-039 → QB-053.**
 
+**Housekeeping correction (2026-08-19):** QB-047 should not have been carried in this ordering since
+**2026-08-01** — its own entry's `Status:` line already said so ("Phase 1 [release-history tracking +
+evidence-directed benchmark curation] implemented") three re-rankings before this one, including the
+2026-08-18 pass directly above, which is on me: the ranking list was updated without re-checking the
+ticket's own status line underneath it. Re-verified directly against the running code today, not just
+the backlog text: `quor/analytics/filter_history.py`'s `append_snapshot()`/`build_entry()` are called
+live from `quor/cli/commands/gain.py:256-261` on every `quor gain --filters` run, `growing_filters()`
+renders the "Filters growing over time" section, `find_uncovered_filters()`/
+`nominate_for_benchmark_coverage()` render "Benchmark coverage nominations" — all three confirmed
+live in this project's own real `quor gain --filters` output, not just present in source. Full test
+coverage already exists (`tests/unit/test_filter_analytics.py`'s `TestBuildEntry`/
+`TestHistoryPersistence`/`TestGrowingFilters`). The one part of QB-047 that's genuinely still open —
+real (actual command-output) sample collection, "D3" in the investigation doc — is not an engineering
+wiring gap: `TrackingDB` architecturally never stores content at all (`ANTI_GOALS.md` #4/#5), and the
+investigation's own final recommendation is to defer it to a separate, product-and-legal-reviewed
+ticket, rating a naive implementation High risk. Nothing scoped remains to rank QB-047 against the
+items below it for — dropped from this ordering, same treatment QB-094/QB-046/QB-052/QB-105 got
+above. **Current order: QB-041 → QB-086 → QB-034 → QB-055 → QB-054 → QB-049 → QB-039 → QB-053.**
+
 A third candidate raised alongside QB-105 and QB-047 — rewriting `RELEASE_CRITERIA.md`'s gates for
 MCP — was checked against the file and is **already done**: QB-104's 2026-08-16 pass rewrote every
 hook-era gate (IA-F01/F02/F03, IA-S01, PA-Q06, B-F04, V1-F03/S01) in `docs/final/RELEASE_CRITERIA.md`
