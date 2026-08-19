@@ -23,6 +23,7 @@ real `get_tracking_db()` would otherwise touch the actual platformdirs
 
 from __future__ import annotations
 
+import sqlite3
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -68,6 +69,21 @@ def _fresh_tracking_db(tmp_path: Path) -> Iterator[TrackingDB]:
 def _recent_rows(tmp_path: Path):
     since = datetime.now(UTC) - timedelta(minutes=5)
     return query_recent_invocations(tmp_path / "quor.db", tmp_path, since=since)
+
+
+def _latest_files_changed(tmp_path: Path) -> int | None:
+    # QB-109: files_changed isn't exposed on RecentInvocation (that type is
+    # metadata for quor dashboard's feed, not a full row) — query the column
+    # directly, the same way the real-DB audit that found the QB-093
+    # telemetry gap did.
+    conn = sqlite3.connect(tmp_path / "quor.db")
+    try:
+        row = conn.execute(
+            "SELECT files_changed FROM invocations ORDER BY recorded_at DESC LIMIT 1"
+        ).fetchone()
+    finally:
+        conn.close()
+    return row[0] if row else None
 
 
 class TestCompressContextBasics:
@@ -160,6 +176,49 @@ class TestCompressContextTracking:
         # The tracked final_tokens must reflect exactly what the caller
         # received, not an intermediate value (QB-094's own principle).
         assert rows[0].final_tokens == count_tokens(result)
+
+    def test_git_diff_content_records_files_changed(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _fresh_tracking_db: TrackingDB
+    ) -> None:
+        # QB-109: files_changed (QB-093 telemetry prep) must actually
+        # populate through the real MCP path now that match_content_types
+        # lets git-diff be selected here — this is the exact gap a direct
+        # `quor.db` audit found (358 real git-diff rows, 0 with the column
+        # set, because it was only ever wired into dispatcher.py's dead-for-
+        # real-usage git-diff call site).
+        monkeypatch.chdir(tmp_path)
+        diff_text = (
+            "diff --git a/foo.py b/foo.py\n"
+            "index abc123..def456 100644\n"
+            "--- a/foo.py\n"
+            "+++ b/foo.py\n"
+            "@@ -1,3 +1,4 @@\n"
+            " context\n"
+            "+new line\n"
+            "diff --git a/bar.py b/bar.py\n"
+            "index 111..222 100644\n"
+            "--- a/bar.py\n"
+            "+++ b/bar.py\n"
+            "@@ -1,2 +1,3 @@\n"
+            " context\n"
+            "+another new line\n"
+        )
+        compress_context(diff_text)
+        _fresh_tracking_db.flush()
+
+        rows = _recent_rows(tmp_path)
+        assert len(rows) == 1
+        assert rows[0].filter_name == "git-diff"
+        assert _latest_files_changed(tmp_path) == 2
+
+    def test_non_diff_content_leaves_files_changed_null(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _fresh_tracking_db: TrackingDB
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        text = "\n".join(f"line {i}" for i in range(100))
+        compress_context(text)
+        _fresh_tracking_db.flush()
+        assert _latest_files_changed(tmp_path) is None
 
     def test_dedup_hit_is_tracked_under_its_own_label(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _fresh_tracking_db: TrackingDB

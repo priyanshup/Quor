@@ -40,6 +40,7 @@ from mcp.server.mcpserver import MCPServer
 from quor.filters.registry import FilterRegistry
 from quor.mcp.session_dedup import SessionDedupCache
 from quor.pipeline.content_type import detect
+from quor.pipeline.git_diff_enrich import count_diff_files
 from quor.pipeline.repo_profile import intel_store
 from quor.pipeline.repo_profile.intel_model import FileIntelligenceEntry
 from quor.pipeline.repo_profile.nudge import compute_hook_nudge
@@ -131,6 +132,17 @@ def compress_context(raw_text: str) -> str:
     compressed_tokens = count_tokens(compressed)
     saved_pct = max(0, round((1 - compressed_tokens / original_tokens) * 100))
     result = f"[Quor Compressed: {saved_pct}% saved]\n{compressed}"
+    # QB-109: files_changed (QB-093 telemetry prep) was only ever wired into
+    # dispatcher.py's git-diff call site, which is dead for real usage since
+    # QB-104 made this tool the sole integration surface — 0 of the DB's
+    # real git-diff rows had it populated. Now that match_content_types lets
+    # git-diff actually be selected here, record it at the site that's
+    # actually reachable.
+    files_changed = (
+        count_diff_files(raw_text)
+        if filter_config is not None and filter_config.name == "git-diff"
+        else None
+    )
     track_invocation_safe(
         _get_tracking_db,
         command="MCP compress_context",
@@ -139,6 +151,7 @@ def compress_context(raw_text: str) -> str:
         filter_name=filter_config.name if filter_config is not None else None,
         was_passthrough=filter_config is None,
         t0=t0,
+        files_changed=files_changed,
     )
     return result
 

@@ -225,6 +225,55 @@ class TestFilterRegistryTiering:
         registry._project = []
         assert registry.find("some_unknown_cmd") is None
 
+    def test_find_resolves_git_diff_by_content_when_no_command_string_exists(
+        self,
+    ) -> None:
+        # QB-109: MCP's compress_context has no command string, only the raw
+        # diff content itself — match_content_types is the only way git-diff
+        # can ever be selected there.
+        registry = FilterRegistry(skip_user=True, skip_project=True)
+        diff_content = (
+            "diff --git a/foo.py b/foo.py\n"
+            "index abc123..def456 100644\n"
+            "--- a/foo.py\n"
+            "+++ b/foo.py\n"
+            "@@ -1,3 +1,4 @@\n"
+            " context\n"
+            "+new line\n"
+        )
+        f = registry.find(diff_content)
+        assert f is not None
+        assert f.name == "git-diff"
+
+    def test_find_content_type_fallback_does_not_misroute_real_commands(
+        self,
+    ) -> None:
+        # A real shell command string must still resolve via match_command,
+        # not be accidentally reclassified by content_type.detect() (it
+        # returns PLAIN_TEXT for these, so the fallback is a no-op).
+        registry = FilterRegistry(skip_user=True, skip_project=True)
+        assert registry.find("git diff foo.py").name == "git-diff"  # type: ignore[union-attr]
+        assert registry.find("git status").name == "git-status"  # type: ignore[union-attr]
+        assert registry.find("pytest tests/").name == "pytest"  # type: ignore[union-attr]
+
+    def test_find_content_type_fallback_beats_generic_catchall(self) -> None:
+        # z_generic's match_command='.' matches any non-empty string,
+        # content included — the content-type fallback must be tried before
+        # the match_command loop reaches it, or it would never fire at all.
+        registry = FilterRegistry(skip_user=True, skip_project=True)
+        diff_content = "diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b\n"
+        f = registry.find(diff_content)
+        assert f is not None
+        assert f.name != "generic"
+
+    def test_find_content_type_fallback_inert_for_non_diff_text(self) -> None:
+        # Plain text with no declared match_content_types owner still falls
+        # through to the ordinary match_command loop (generic catch-all).
+        registry = FilterRegistry(skip_user=True, skip_project=True)
+        f = registry.find("just some plain command output\nwith no diff markers\n")
+        assert f is not None
+        assert f.name == "generic"
+
     def test_project_filter_overrides_builtin(self, tmp_path: Path) -> None:
         project_root = tmp_path / "repo"
         (project_root / ".quor" / "filters").mkdir(parents=True)
