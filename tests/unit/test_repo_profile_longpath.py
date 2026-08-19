@@ -77,10 +77,20 @@ class TestToLongPathWindows:
 
     def test_real_filesystem_roundtrip_past_max_path(self, tmp_path: Path) -> None:
         """The actual regression proof, not just string manipulation: build
-        a real path past Windows' 260-character MAX_PATH, confirm the
-        unprefixed form genuinely fails (so this test is meaningful, not
-        vacuous), and that to_long_path()'s prefixed form succeeds — the
-        same round-trip verified empirically during the QB-110 audit."""
+        a real path past Windows' 260-character MAX_PATH and confirm
+        to_long_path()'s prefixed form can create and read it.
+
+        Deliberately does NOT assert the unprefixed form fails — whether it
+        does depends on this machine's own `LongPathsEnabled` registry
+        state (and, per QB-110's own audit, the target user can't control
+        that: no admin rights). Verified during the audit that it fails on
+        a real corporate machine with `LongPathsEnabled=0`; CI's hosted
+        Windows runner apparently has long-path support on by default, so
+        the unprefixed form works there too — both are legitimate
+        environments, and to_long_path() must work correctly in either
+        (prefixing an already-long-path-capable environment is a no-op in
+        effect, never a regression). The contract this test actually owns
+        is narrower and environment-independent: the prefixed form works."""
         deep = tmp_path
         long_name = "package_segment_" + "x" * 30
         while len(str(deep)) < 250:
@@ -91,9 +101,5 @@ class TestToLongPathWindows:
         prefixed_file = to_long_path(target)
         prefixed_dir.mkdir(parents=True, exist_ok=True)
         prefixed_file.write_text("hello", encoding="utf-8")
-
-        assert not target.exists()  # unprefixed access silently misreports
-        with pytest.raises(OSError):
-            target.read_text(encoding="utf-8")
 
         assert prefixed_file.read_text(encoding="utf-8") == "hello"
