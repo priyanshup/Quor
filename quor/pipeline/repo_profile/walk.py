@@ -15,6 +15,8 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
+from quor.pipeline.repo_profile._longpath import to_long_path
+
 _GIT_TIMEOUT = 10.0
 
 # Only used by the no-git fallback — git's own .gitignore handling already
@@ -82,10 +84,20 @@ def _git_ls_files(root: Path) -> list[str] | None:
 
 
 def _walk_fallback(root: Path) -> list[str]:
+    # QB-110: extended-length-prefix the starting root unconditionally
+    # (force=True — see to_long_path()'s own docstring for why a walk root
+    # can't be threshold-gated on its own current length), not just each
+    # leaf file read elsewhere in this package — os.walk builds every
+    # deeper dirpath via plain string concatenation off the root it's
+    # given, so a prefixed root propagates the prefix (and its MAX_PATH
+    # immunity) through the whole recursive walk automatically. long_root
+    # is used consistently as both the walk root and the relative_to()
+    # anchor below.
+    long_root = to_long_path(root, force=True)
     results: list[str] = []
-    for dirpath, dirnames, filenames in os.walk(root):
+    for dirpath, dirnames, filenames in os.walk(long_root):
         dirnames[:] = [d for d in dirnames if d not in _FALLBACK_SKIP_DIRS]
         for name in filenames:
-            rel = Path(dirpath, name).relative_to(root).as_posix()
+            rel = Path(dirpath, name).relative_to(long_root).as_posix()
             results.append(rel)
     return sorted(results)

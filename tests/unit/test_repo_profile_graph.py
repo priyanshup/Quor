@@ -3,12 +3,19 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 import warnings
 from pathlib import Path
 from unittest.mock import patch
 
-from quor.pipeline.repo_profile.graph import _MAX_FILE_SIZE_BYTES, build_dependency_graph
+import pytest
+
+from quor.pipeline.repo_profile.graph import (
+    _MAX_FILE_SIZE_BYTES,
+    build_dependency_graph,
+    extract_file_facts,
+)
 
 
 def _init_git_repo(root: Path) -> None:
@@ -259,3 +266,29 @@ class TestCrossFileResolution:
 
         import_edges = [e for e in graph.edges if e.kind == "import"]
         assert all(e.target_file is None for e in import_edges)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows-only: MAX_PATH (QB-110)")
+class TestExtractFileFactsLongPaths:
+    def test_file_past_max_path_is_parsed_not_skipped(self, tmp_path: Path) -> None:
+        """QB-110 regression, mirrors symbols.py's own long-path test —
+        extract_file_facts() shares the identical abs_path/try/except
+        shape extract_file_symbols() does."""
+        deep = tmp_path
+        long_name = "package_segment_" + "x" * 30
+        while len(str(deep)) < 250:
+            deep = deep / long_name
+        target = deep / "sample.py"
+        assert len(str(target)) > 260
+
+        from quor.pipeline.repo_profile._longpath import to_long_path
+
+        to_long_path(deep, force=True).mkdir(parents=True, exist_ok=True)
+        to_long_path(target).write_text("def hello():\n    return 1\n", encoding="utf-8")
+
+        rel_path = str(target.relative_to(tmp_path).as_posix())
+        facts, skip_reason = extract_file_facts(tmp_path, rel_path, "python")
+
+        assert skip_reason is None
+        assert facts is not None
+        assert facts.symbol_counts["hello"] == 1

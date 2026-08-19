@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 from pathlib import Path
+
+import pytest
 
 from quor.pipeline.repo_profile.intel_diff import diff_repository, fingerprint_files, git_head
 
@@ -149,3 +152,30 @@ class TestDiffRepository:
         diff, _ = diff_repository(tmp_path, ["renamed.py", "kept.py", "brand_new.py"], previous=fingerprints)
 
         assert diff.reextraction_paths == ["brand_new.py", "kept.py"]
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows-only: MAX_PATH (QB-110)")
+class TestFingerprintFilesLongPaths:
+    def test_file_past_max_path_is_fingerprinted_not_skipped(self, tmp_path: Path) -> None:
+        """QB-110 regression: fingerprint_files()'s stat()+_hash_file() pair
+        must not silently drop a file whose absolute path exceeds MAX_PATH —
+        before the fix, both would raise/fail on the unprefixed path and the
+        file would be dropped from the fingerprint table entirely (never
+        `added`, never diffed against on a later run)."""
+        deep = tmp_path
+        long_name = "package_segment_" + "x" * 30
+        while len(str(deep)) < 250:
+            deep = deep / long_name
+        target = deep / "sample.py"
+        assert len(str(target)) > 260
+
+        from quor.pipeline.repo_profile._longpath import to_long_path
+
+        to_long_path(deep, force=True).mkdir(parents=True, exist_ok=True)
+        to_long_path(target).write_text("x = 1\n", encoding="utf-8")
+
+        rel_path = str(target.relative_to(tmp_path).as_posix())
+        fingerprints = fingerprint_files(tmp_path, [rel_path])
+
+        assert rel_path in fingerprints
+        assert fingerprints[rel_path].content_hash is not None

@@ -974,6 +974,81 @@ the full design record and options considered.
 
 ---
 
+#### QB-110 — Windows platform audit: paths, encoding, performance (long-path/MAX_PATH fix)
+
+**Effort:** Small-Medium · **Value:** Medium-High (correctness fix for Quor's own stated target
+environment — corporate Windows, deep package structures, OneDrive-synced desktops) · **Risk:**
+Low · **Expected token impact:** None directly (repo-intelligence coverage/correctness, not
+compression) · **Category:** Bug fix / Platform
+
+**Note on numbering:** requested as "QB-086 — Windows Platform Optimization & Differentiation," but
+QB-086 already exists in this document ("Competitive landscape refresh," referenced by QB-034/QB-042
+and the priority-ordering history above) — filed under the next free number instead of overwriting
+or renumbering an existing, cross-referenced entry.
+
+**Audit, 2026-08-19: what's already solid vs. what wasn't.** Re-verified against the actual code
+(not just the docs) that this codebase already has substantial, mature Windows engineering: UTF-8
+file I/O (ADR-024, lint-enforced), console UTF-8 output (`__main__.py::_ensure_utf8_stdio()`, still
+passing its `TestWindowsEncodingRegression`/`TestCodepageSweep` regression tests against
+cp1252/cp437/ascii), `.CMD`/`.BAT` shim resolution (ADR-033, the real QB-019 npm/npx/pnpm/yarn fix),
+drive-letter/case-insensitive project identity (`normalize_project_path()`, explicitly handles Git
+Bash vs. PowerShell/cmd casing differences), crash-safe atomic writes (`atomic_io.py`), and
+already-discovered `platformdirs` Windows ctypes quirks. None of that needed touching.
+
+<details>
+<summary>Technical details</summary>
+
+**The one real, previously-unaddressed gap, found and fixed: Windows MAX_PATH (260 characters).**
+No ADR, code, or test anywhere in the codebase handled it. Verified empirically on a real corporate
+machine (`LongPathsEnabled=0` in the registry — requires admin rights to change, which Quor's own
+target user does not have): `Path.mkdir()`/`.read_text()`/`.exists()`/`os.listdir()` all fail, or
+(for `.exists()`) silently misreport, on a real path past 260 characters. Confirmed the trigger is
+real, not contrived: Git for Windows commonly enables its own long-path support internally, so
+`walk.py`'s primary path (`git ls-files`) can legitimately report tracked files an unprefixed
+`Path.read_text()` can't open. Every per-file read in `quor/pipeline/repo_profile/` already fails
+open (`except (OSError, UnicodeDecodeError)`), so this was never a crash risk — just silent,
+unmeasured coverage loss on `quor map`/`symbols`/`graph` for exactly Quor's own stated target
+scenario. This repo's own checkout never hits it (longest tracked file's full path is 154
+characters), which is exactly why it went unnoticed in Quor's own dogfooding/CI.
+
+**Fix:** `quor/pipeline/repo_profile/_longpath.py::to_long_path()` — a Windows-only, no-admin-
+required helper that applies the `\\?\` extended-length path prefix (verified empirically to fully
+bypass MAX_PATH with zero privilege requirement), wired into every per-file read in
+`quor/pipeline/repo_profile/`: `symbols.py`, `graph.py`, `intel.py`, `entry_points.py`,
+`intel_diff.py`, `detectors/loader.py`, `detectors/registry.py`, and `walk.py`'s `os.walk` fallback
+(the one caller needing `force=True` — a walk's short starting root can still recurse into a
+too-long descendant, so the root must be prefixed unconditionally, not gated on its own length; see
+`to_long_path()`'s own docstring). Never leaks into stored/repo-relative path bookkeeping — used
+transiently, one file-system call at a time. Full design record, options considered, and the exact
+call-site list: `docs/final/DECISIONS.md`'s new **ADR-048**.
+
+**Secondary findings, not acted on (out of this item's scope):**
+- `dispatcher.py`'s subprocess timeout comment ("25s leaves room... within 30s hook budget") is
+  stale post-QB-104 — hooks no longer gate this. Cosmetic; not fixed here.
+- The `parse_failure` skip note ("N files could not be read or parsed") doesn't distinguish a
+  long-path failure from a permissions/encoding one — moot for the common case now that the
+  underlying failure doesn't happen, but still generic for genuine failures. Flagged as a possible
+  follow-up, not required.
+- Fresh benchmark run on this machine (`tests/benchmarks/repo_intel_benchmark.py`, 150-file corpus):
+  cold build 4.48s wall / 0.81s CPU, warm cache-hit 0.44s. The ~3.7s wall-vs-CPU gap on cold build is
+  I/O/subprocess-wait, not compute — consistent with the corporate-AV overhead already flagged
+  elsewhere in this project's history (see ADR-002's Python-startup-time gate), not a new finding to
+  chase further here.
+
+**Status:** Implemented (2026-08-19), branch `feature/qb-110-windows-long-path-support`. New tests:
+`tests/unit/test_repo_profile_longpath.py` (the helper itself, including a real filesystem
+round-trip past 260 characters that confirms the unprefixed form genuinely fails first) plus
+regression tests in `test_repo_profile_walk.py`, `test_repo_profile_symbols.py`,
+`test_repo_profile_graph.py`, `test_repo_intel_diff.py` — all `@pytest.mark.skipif(os.name != "nt",
+...)`, executed for real on this machine (99 passed, 3 correctly skipped for the non-Windows
+branch). `quor verify` 243/243 (unchanged — no filter TOML touched), `quor validate` clean, full
+`pytest tests/unit` clean, `ruff`/`mypy` clean, compression benchmark suite 153/153 unchanged
+against baseline, repo-intelligence benchmark suites green.
+
+</details>
+
+---
+
 #### QB-095 — Path prefix front-coding
 
 **Effort:** Small-Medium · **Value:** High · **Risk:** Low · **Expected token impact:** High on
