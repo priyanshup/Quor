@@ -5,6 +5,17 @@ All notable changes to Quor are documented here. Format loosely follows
 
 ## [Unreleased]
 
+## [0.6.1] — 2026-08-19
+
+- **Fixed: MCP tool usage was invisible to `quor gain`/`dashboard`/`doctor` (QB-105).** Neither
+  `compress_context` nor `get_repo_context` — Quor's entire compression path since 0.6.0 retired the
+  hook mechanism — ever called `track_invocation()`, so real MCP usage wasn't reflected in any
+  tracking-backed command; only the six secondary CLI utilities (`map`/`graph`/`symbols`/`search`/
+  `explore`/`repo`) were visible. Both tools now track every real invocation, under two new labels:
+  `mcp-dedup` (a QB-089 session-dedup cache hit — real savings, counted in `quor gain`'s headline) and
+  `mcp-repo-context` (synthesis, not compression, excluded from it the same way `repo-profile`/
+  `repo-symbols`/etc. already are). See `backlog.md`'s QB-105 entry for the full design record.
+
 ## [0.6.0] — 2026-08-16
 
 - **BREAKING: retired the hook-based integration; MCP is now Quor's sole integration surface
