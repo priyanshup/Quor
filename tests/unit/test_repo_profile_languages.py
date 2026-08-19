@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from quor.pipeline.repo_profile.languages import compute_language_stats
+from quor.pipeline.repo_profile.languages import compute_language_stats, is_vendor_or_build_path
 
 
 class TestComputeLanguageStats:
@@ -63,3 +63,37 @@ class TestComputeLanguageStats:
         python_stat = next(s for s in stats if s.language == "Python")
 
         assert python_stat.percentage == 33.3
+
+    def test_vendor_directory_files_excluded(self) -> None:
+        """A committed vendor/ tree must not inflate that language's share
+        with dependency code the repo's own author didn't write."""
+        stats = compute_language_stats(["app.go", "vendor/github.com/pkg/errors.go"])
+
+        assert len(stats) == 1
+        assert stats[0].language == "Go"
+        assert stats[0].file_count == 1
+
+    def test_all_vendor_files_returns_empty(self) -> None:
+        assert compute_language_stats(["vendor/lib.go", "third_party/dep.py"]) == []
+
+
+class TestIsVendorOrBuildPath:
+    def test_vendor_directory(self) -> None:
+        assert is_vendor_or_build_path("vendor/github.com/pkg/errors.go") is True
+
+    def test_third_party_directory(self) -> None:
+        assert is_vendor_or_build_path("third_party/lib/util.py") is True
+
+    def test_nested_dist_directory(self) -> None:
+        assert is_vendor_or_build_path("packages/ui/dist/bundle.js") is True
+
+    def test_case_insensitive_on_windows(self) -> None:
+        assert is_vendor_or_build_path("Vendor/pkg/foo.go") is True
+
+    def test_filename_named_vendor_is_not_a_directory_match(self) -> None:
+        """Only directory components count — a file literally named
+        `vendor.go` at the repo root is not vendored code."""
+        assert is_vendor_or_build_path("vendor.go") is False
+
+    def test_ordinary_source_path(self) -> None:
+        assert is_vendor_or_build_path("src/app/service.py") is False

@@ -1166,6 +1166,62 @@ against baseline, repo-intelligence benchmark suites green.
 
 ---
 
+#### QB-113 — Vendor/build-path exclusion for repo-intelligence extraction & search noise
+
+**Effort:** Small · **Value:** Medium (correctness/noise reduction for repo-intelligence outputs,
+not compression ratio) · **Risk:** Low · **Expected token impact:** None directly (repo-intelligence
+coverage/correctness, not `compress_context`) · **Category:** Bug fix / Repo-intelligence quality
+
+**Note on numbering:** requested as "QB-054 — File Filtering & Context Exclusion Policy Tuning," but
+QB-054 already exists in this document ("Telemetry-driven optimization," shipped 2026-08-01, commit
+`e435f42` — see its own entry above) and describes unrelated work. No existing backlog entry, under
+any ID, covered file-filtering/exclusion-policy tuning — filed fresh under the next free number
+rather than overwriting or renumbering QB-054.
+
+<details>
+<summary>Technical details</summary>
+
+**Audit finding:** Quor has no general "walk the repo, read files, decide what to exclude" pipeline
+the request's framing assumed — `compress_context` (QB-104) compresses arbitrary text with no concept
+of files at all, and `walk.py`'s repo-intelligence enumeration already fully delegates `.gitignore`
+handling to `git ls-files --exclude-standard`, correctly. The real gap: a committed vendor tree
+(`vendor/`, `third_party/` — common in Go/PHP) or a minified bundle under the existing 2MB size cap
+(`symbols.py`/`graph.py`'s `_MAX_FILE_SIZE_BYTES`, itself only a size proxy for "probably generated")
+sailed straight through every check, got fully AST-parsed, and its mangled/meaningless symbols
+polluted `symbol_facts.json`/`graph_facts.json`, `file_intelligence.json`'s `top_symbols`,
+`dashboard.py`'s "largest modules"/"most connected files", and `search.py`'s filename matching — so
+`get_repo_context(query=...)` could hand the agent a vendored/minified file as a "relevant file"
+alongside real source, and a vendored dependency tree inflated the repo's language-percentage census.
+
+**Fix, evidence-based only (no size/content guessing, same "convention as proof" rigor
+`intel.py`'s existing `_is_test_path()`/generated-by-name checks already use):**
+- `languages.py::is_vendor_or_build_path()` — new directory-name-component check (`vendor`,
+  `third_party`, `thirdparty`, `dist`, `build`, `.next`, `out`, `target` — the same vocabulary
+  `walk.py`'s no-git fallback skip-set already trusted, extended to the primary git-tracked walk).
+  Wired into `compute_language_stats()` to exclude matches from the language census.
+- `intel.py`: `.min.js`/`.min.css` added to the existing generated-filename-suffix list;
+  `_classify_kind()` now classifies vendor/build-path files as `"generated"` (existing `FileKind`
+  value, no schema change); `_build_combined_facts()`/`_refresh_combined_facts()` both skip AST
+  extraction for vendor/build-path or generated-by-name files *before* the disk read (`stat()`/
+  `read_text()`), not just at classification time — the exclusion check runs as early as the loop
+  allows, ahead of the one disk-touching call per file.
+- Deliberately unchanged: `walk_repository()`'s file list, `total_files`/statistics,
+  `important_directories()`/`detect_services()` — these stay a faithful census of what git tracks;
+  only the "worth parsing as source" and "worth surfacing as a relevant file" decisions tightened.
+  Lockfile/configuration-file classification (already correct) was not touched.
+
+**Status:** Implemented (2026-08-19), branch `feature/qb-113-vendor-generated-file-exclusion`.
+New tests: `TestIsVendorOrBuildPath` + vendor-exclusion cases in `TestComputeLanguageStats`
+(`tests/unit/test_repo_profile_languages.py`), vendor/minified cases in `TestClassifyKind`
+(`tests/unit/test_repo_intel_file_intelligence.py`), and an end-to-end
+`TestVendorAndBuildPathExclusion` class (`tests/unit/test_repo_intel.py`) covering full rebuild,
+incremental refresh, and language-stat exclusion. `ruff`/`mypy` clean on changed files, `quor verify`
+247/247, `quor validate` all filters healthy, full `pytest tests/unit` clean (exit 0).
+
+</details>
+
+---
+
 #### QB-095 — Path prefix front-coding
 
 **Effort:** Small-Medium · **Value:** High · **Risk:** Low · **Expected token impact:** High on

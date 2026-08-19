@@ -357,6 +357,65 @@ class TestFileIntelligence:
         assert intel_store.load_file_intelligence(repo) is not None
 
 
+class TestVendorAndBuildPathExclusion:
+    """A committed vendor/build-output tree should still be visible in
+    `file_intelligence.json` (every walked file gets an entry — see
+    `TestFileIntelligence`'s own docstring) but must never be AST-parsed,
+    must never pollute the symbol/dependency-graph caches, and must never
+    inflate the repo's language census."""
+
+    def _make_repo_with_vendor_file(self, root: Path) -> None:
+        _init_git_repo(root)
+        (root / "a.py").write_text("def foo():\n    pass\n", encoding="utf-8")
+        vendor_dir = root / "vendor" / "pkg"
+        vendor_dir.mkdir(parents=True)
+        (vendor_dir / "dep.py").write_text(
+            "def vendored_symbol():\n    pass\n", encoding="utf-8"
+        )
+        _git_add_all(root)
+
+    def test_vendor_file_never_parsed_for_symbols_or_graph(self, repo: Path) -> None:
+        self._make_repo_with_vendor_file(repo)
+
+        result = ensure_repo_intelligence(repo)
+
+        assert {f.path for f in result.symbols.files} == {"a.py"}
+        assert "vendored_symbol" not in {
+            s.name for f in result.symbols.files for s in f.symbols
+        }
+
+    def test_vendor_file_still_appears_in_file_intelligence_as_generated(self, repo: Path) -> None:
+        self._make_repo_with_vendor_file(repo)
+        ensure_repo_intelligence(repo)
+
+        entries = intel_store.load_file_intelligence(repo)
+        assert entries is not None
+        vendor_path = "vendor/pkg/dep.py"
+        assert vendor_path in entries
+        assert entries[vendor_path].kind == "generated"
+        assert entries[vendor_path].top_symbols == []
+
+    def test_vendor_file_excluded_from_language_census(self, repo: Path) -> None:
+        self._make_repo_with_vendor_file(repo)
+
+        result = ensure_repo_intelligence(repo)
+
+        python_stat = next(s for s in result.profile.languages if s.language == "Python")
+        assert python_stat.file_count == 1  # a.py only, not vendor/pkg/dep.py
+
+    def test_incremental_refresh_still_skips_a_changed_vendor_file(self, repo: Path) -> None:
+        self._make_repo_with_vendor_file(repo)
+        ensure_repo_intelligence(repo)
+
+        (repo / "vendor" / "pkg" / "dep.py").write_text(
+            "def newly_vendored():\n    pass\n", encoding="utf-8"
+        )
+        result = ensure_repo_intelligence(repo)
+
+        assert result.action == "incremental"
+        assert {f.path for f in result.symbols.files} == {"a.py"}
+
+
 class TestPerformanceRegression:
     def test_large_unchanged_repo_reparses_zero_files_on_cache_hit(self, repo: Path, monkeypatch) -> None:
         _init_git_repo(repo)

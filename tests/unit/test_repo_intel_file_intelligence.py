@@ -130,6 +130,26 @@ class TestClassifyKind:
     def test_default_is_source(self, tmp_path: Path) -> None:
         assert _classify_kind("app/service.py", tmp_path, configuration_paths=set(), scan_content=False) == "source"
 
+    def test_vendor_directory_classified_as_generated(self, tmp_path: Path) -> None:
+        assert (
+            _classify_kind(
+                "vendor/github.com/pkg/errors.go", tmp_path, configuration_paths=set(), scan_content=False
+            )
+            == "generated"
+        )
+
+    def test_minified_js_classified_as_generated(self, tmp_path: Path) -> None:
+        assert (
+            _classify_kind("static/jquery.min.js", tmp_path, configuration_paths=set(), scan_content=False)
+            == "generated"
+        )
+
+    def test_minified_css_classified_as_generated(self, tmp_path: Path) -> None:
+        assert (
+            _classify_kind("static/app.min.css", tmp_path, configuration_paths=set(), scan_content=False)
+            == "generated"
+        )
+
     def test_test_takes_priority_over_configuration(self, tmp_path: Path) -> None:
         assert (
             _classify_kind(

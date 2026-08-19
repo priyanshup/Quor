@@ -73,6 +73,26 @@ _EXTENSION_TO_LANGUAGE: dict[str, str] = {
 }
 
 
+_VENDOR_OR_BUILD_DIR_NAMES = frozenset(
+    {"vendor", "third_party", "thirdparty", "dist", "build", ".next", "out", "target"}
+)
+"""Well-known vendored-dependency/build-output directory names — the same
+directory vocabulary `walk.py`'s no-git fallback skip-set already trusts for
+`dist`/`build`/`target`, extended here to the primary `git ls-files` walk
+path, where `.gitignore` alone doesn't always cover a committed vendor tree
+(Go and PHP, in particular, conventionally commit `vendor/`)."""
+
+
+def is_vendor_or_build_path(rel_path: str) -> bool:
+    """Directory-naming-convention evidence only — the same "convention as
+    proof" rigor `intel.py`'s `_is_test_path`/generated-by-name checks
+    already use, not a content or size guess. True if any directory
+    component of `rel_path` (the filename itself excluded) is a known
+    vendor/build directory name, case-folded for Windows-safe comparison."""
+    parts = PurePosixPath(rel_path).parts[:-1]
+    return any(part.lower() in _VENDOR_OR_BUILD_DIR_NAMES for part in parts)
+
+
 def language_for_path(rel_path: str) -> str | None:
     """Display-name language lookup for a single path (e.g. `"Python"`,
     `"HTML"`), or `None` if the extension isn't a recognized language
@@ -90,10 +110,15 @@ def compute_language_stats(files: list[str]) -> list[LanguageStat]:
     Percentage is relative to the total count of files with a *recognized
     language extension* — not every file in the repo (see module docstring:
     config/data files aren't language files and would otherwise dilute
-    every real language's share).
+    every real language's share). Vendor/build-path files (`is_vendor_or_
+    build_path()`) are excluded for the same reason — a committed `vendor/`
+    tree would otherwise inflate that language's share with dependency code
+    the repo's own author didn't write.
     """
     counts: dict[str, int] = {}
     for f in files:
+        if is_vendor_or_build_path(f):
+            continue
         language = language_for_path(f)
         if language is not None:
             counts[language] = counts.get(language, 0) + 1

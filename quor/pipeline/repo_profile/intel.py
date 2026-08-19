@@ -87,7 +87,7 @@ from quor.pipeline.repo_profile.intel_model import (
     RepoIntelligence,
     RepoIntelState,
 )
-from quor.pipeline.repo_profile.languages import language_for_path
+from quor.pipeline.repo_profile.languages import is_vendor_or_build_path, language_for_path
 from quor.pipeline.repo_profile.model import RepoProfile
 from quor.pipeline.repo_profile.profiler import build_profile
 from quor.pipeline.repo_profile.symbols import (
@@ -179,7 +179,15 @@ _MAX_TOP_SYMBOLS = 5
 
 _TEST_DIR_NAMES = frozenset({"test", "tests", "__tests__", "spec", "specs"})
 
-_GENERATED_BASENAME_SUFFIXES = ("_pb2.py", "_pb2_grpc.py", ".pb.go", ".g.cs", ".g.dart")
+_GENERATED_BASENAME_SUFFIXES = (
+    "_pb2.py",
+    "_pb2_grpc.py",
+    ".pb.go",
+    ".g.cs",
+    ".g.dart",
+    ".min.js",
+    ".min.css",
+)
 _GENERATED_NAME_SUBSTRINGS = ("_generated.", ".generated.")
 _GENERATED_CONTENT_RE = r"(@generated\b|DO NOT EDIT|Code generated .* DO NOT EDIT)"
 _GENERATED_SCAN_TIMEOUT = 1.0
@@ -278,7 +286,7 @@ def _classify_kind(
     signal for that distinction today (confirmed with the user)."""
     if _is_test_path(rel_path):
         return "test"
-    if _is_generated_by_name(rel_path):
+    if _is_generated_by_name(rel_path) or is_vendor_or_build_path(rel_path):
         return "generated"
     if scan_content and _is_generated_by_content(root, rel_path):
         return "generated"
@@ -475,6 +483,15 @@ def _build_combined_facts(root: Path, walk_result: WalkResult) -> tuple[
             # Unreachable in practice — see _extract_combined_facts()'s identical guard.
             continue
         languages_covered.add(language)
+
+        # Vendor/build-path and generated-by-name checks are cheap (no disk
+        # access) and go before the one call in this loop that reads the
+        # file (_extract_combined_facts) — skipping here avoids the read
+        # entirely, not just the classification. The language itself is
+        # still recorded as covered above: it's genuinely supported, this
+        # one file is just not worth indexing as source.
+        if is_vendor_or_build_path(rel_path) or _is_generated_by_name(rel_path):
+            continue
 
         file_symbols, file_facts, reason = _extract_combined_facts(root, rel_path, language)
         if reason == "too_large":
@@ -740,6 +757,11 @@ def _refresh_combined_facts(
             or get_symbol_extractor(language) is None
             or get_relationship_extractor(language) is None
         ):
+            continue
+        # Mirrors _build_combined_facts()'s identical pre-read skip — a
+        # changed vendor/build-path or generated-by-name file still doesn't
+        # belong in the index just because it was re-touched.
+        if is_vendor_or_build_path(rel_path) or _is_generated_by_name(rel_path):
             continue
         file_symbols, file_facts, reason = _extract_combined_facts(root, rel_path, language)
         if reason == "parse_failure":
