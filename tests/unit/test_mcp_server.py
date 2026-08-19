@@ -131,9 +131,17 @@ class TestCompressContextTracking:
     """QB-105: compress_context must call track_invocation() so `quor gain`/
     `dashboard`/`doctor` reflect real MCP usage."""
 
-    def test_empty_input_is_untracked(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_empty_input_is_untracked(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _fresh_tracking_db: TrackingDB
+    ) -> None:
         monkeypatch.chdir(tmp_path)
         compress_context("")
+        # flush() (not just the fact nothing was tracked) matters here: the
+        # fixture's TrackingDB creates its schema on a background thread, and
+        # _recent_rows() connects to the same file independently — without
+        # synchronizing on flush() first, the file can exist before the
+        # `invocations` table does, racing query_recent_invocations().
+        _fresh_tracking_db.flush()
         assert _recent_rows(tmp_path) == []
 
     def test_normal_compression_is_tracked(
@@ -195,10 +203,13 @@ class TestGetRepoContextTracking:
         )
 
     def test_no_intelligence_built_is_untracked(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _fresh_tracking_db: TrackingDB
     ) -> None:
         monkeypatch.chdir(tmp_path)
         get_repo_context(file_path="a.py")
+        # See test_empty_input_is_untracked's own comment: flush() first to
+        # avoid racing the fixture's TrackingDB's own background schema setup.
+        _fresh_tracking_db.flush()
         assert _recent_rows(tmp_path) == []
 
     def test_successful_call_is_tracked_under_synthesis_label(
