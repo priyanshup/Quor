@@ -261,7 +261,28 @@ class FilterRegistry:
         return result
 
     def find(self, command: str) -> FilterConfig | None:
-        """Return first matching filter (project > user > built-in priority)."""
+        """Return first matching filter (project > user > built-in priority).
+
+        `command` is a real shell command for the CLI/dispatcher path, but
+        MCP's `compress_context` (QB-104) has no command at all and passes
+        raw content instead — command-shaped `match_command` patterns can
+        never match there. Checks `match_content_types` (judging the same
+        string by its own shape via `content_type.detect()`) *before* the
+        `match_command` loop, not after: `z_generic.toml`'s catch-all
+        `match_command = '.'` matches any non-empty string, content included,
+        so trying `match_command` first would always win via that catch-all
+        before a content-type-declaring filter ever got a chance. A real
+        command string never satisfies a content-type check (e.g.
+        `detect("git diff foo.py")` is PLAIN_TEXT, not DIFF, since it doesn't
+        start a line with a diff marker), so this phase is a no-op on the
+        dispatcher path and only ever activates for content-only callers —
+        priority order (project > user > built-in) is preserved within it.
+        """
+        content_type = detect(command).value
+        for _, f in self.all_filters():
+            if content_type in f.match_content_types:
+                return f
+
         for _, f in self.all_filters():
             try:
                 if regex.search(f.match_command, command, timeout=_COMMAND_TIMEOUT):

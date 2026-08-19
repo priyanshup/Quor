@@ -893,6 +893,87 @@ detecting it.
 
 ---
 
+#### QB-109 — Content-based filter selection fallback for `compress_context` (git-diff unreachable since QB-104)
+
+**Effort:** Small-Medium · **Value:** High (unblocks the entire specialized-filter ecosystem for
+real MCP usage, not just git-diff) · **Risk:** Low · **Expected token impact:** High — restores
+`git-diff`'s specialized compression (`collapse_unchanged_context`, tuned `preserve_patterns`,
+QB-041/QB-055's own work) to actually firing in production · **Category:** Bug fix / Architecture
+
+**Found 2026-08-19, during a QB-041 audit.** The audit's original goal was to look for further
+safe git-diff compression wins. Before proposing any, real telemetry was checked
+(`quor gain --filters`: git-diff at 46.2%, 334 calls/90d) — but a direct query against this
+project's own `quor.db` found every one of those rows predates QB-104 (2026-08-16). Confirmed
+empirically by calling `compress_context` with real diff content: it resolved to `filter_name =
+"generic"`, 0% saved, byte-identical output.
+
+<details>
+<summary>Technical details</summary>
+
+**Root cause:** `FilterRegistry.find()` selects a filter by regex-matching `match_command` (e.g.
+`^git\s+(diff|show)\b`) against a string. Before QB-104, that string was always the real shell
+command Claude Code was about to run — a natural match. QB-104 made MCP's
+`compress_context(raw_text)` the sole real integration surface, and it only ever receives the
+tool's *output*, never the command that produced it — `git-diff`'s `match_command` cannot match
+diff content (`diff --git a/...`), and neither can any other command-shaped pattern.
+`quor/mcp/server.py`'s own module docstring already half-documented this ("raw text handed to this
+tool essentially never matches one of the specific patterns... so in practice this always falls
+through to the built-in generic filter"), and QB-105's entry recorded `filter_name` as "almost
+always `generic`" as an accepted fact to track correctly — neither treated it as a problem to fix.
+Grep across `quor/filters/builtin/` confirms every filter except `z_generic.toml` (`match_command =
+'.'`) is command-keyed: `git-diff`, `git-log`, `git-status`, `pytest`, `mypy`, `ruff`, every `cat-*`
+filter. This is a foundational gap, not a narrow one — QB-041's entire premise (tuning git-diff's
+filter) was moot in production until this is fixed, and the same is true for most of the built-in
+filter catalog.
+
+**Compounding finding — QB-093's own telemetry prep was a casualty of the same gap.** QB-093
+recommended recording a `files_changed` count on git-diff invocations before ever evidence-
+justifying cross-file dedup. That column shipped (`quor/tracking/schema.sql` v4,
+`quor/engine/dispatcher.py`'s git-diff call site) the same day as QB-104 — but wired into
+`dispatcher.py`, the now-secondary CLI-passthrough path, never into `compress_context`. Direct
+query: 358 real `git-diff` rows in `quor.db`, 0 with `files_changed` populated. The QB-093 evidence
+gate was silently uncollectable as shipped.
+
+**Fix implemented, scoped narrowly (not a full filter-selection redesign):**
+- `FilterConfig` (`quor/config/model.py`) gains an optional `match_content_types: list[str]`
+  field (default `[]`) — filter-author-declared, same "declare the shape, don't guess" convention
+  `patterns`/`preserve_patterns` already use.
+- `FilterRegistry.find()` (`quor/filters/registry.py`) checks `match_content_types` against
+  `quor.pipeline.content_type.detect()` *before* the `match_command` loop — required ordering,
+  since `z_generic`'s catch-all would otherwise always win first. A real command string never
+  satisfies a content-type check (`detect("git diff foo.py")` is `PLAIN_TEXT`), so this is a
+  verified no-op on the CLI/dispatcher path.
+- `git-diff` (`quor/filters/builtin/git.toml`) sets `match_content_types = ["diff"]`. Restricted to
+  `content_type.py`'s exact structural detectors (diff/json/traceback) — deliberately excludes
+  `ansi` (a >20%-of-lines heuristic, not a structural fact), consistent with [[feedback_no_heuristic_fields]].
+- `compress_context` (`quor/mcp/server.py`) now records `files_changed` (via the already-shipped,
+  already-tested `count_diff_files()`) at the site that's actually reachable, closing the QB-093
+  telemetry gap.
+- **Compounding correctness finding, fixed alongside:** `git.toml`'s `strip_lines.patterns` listed
+  `'^--- a/'`/`'^\+\+\+ b/'` as strippable, but they never fired — `preserve_patterns`'s `'^\+'`/
+  `'^-'` (protecting real diff content) also match those two header lines, and preserve wins by the
+  stage's own documented precedence. This collision is load-bearing, not a bug: since `diff --git
+  a/X b/X` *is* stripped, `--- a/`/`+++ b/` are the only remaining filename carrier in multi-file
+  diff output. Removed the dead patterns (cleanup — behavior was already this way) and added a
+  regression test (`git.toml`'s "QB-109 regression: every changed file's name survives...") pinning
+  it against a future well-intentioned cleanup silently deleting every filename.
+
+**Explicitly out of scope:** extending `match_content_types` to `pytest`/`mypy`/`ruff`/the `cat-*`
+family — none has a content signal as unambiguous as a diff's four structural markers; each would
+need its own considered design, not a copy-paste of this one.
+
+**Status:** Implemented (2026-08-19), branch `feature/qb-109-qb-110-diff-compression-audit-fixes`.
+New tests: `tests/unit/test_filters.py` (`TestFilterRegistryTiering` — content-type fallback
+resolves git-diff for raw content, real commands unaffected, fallback beats the generic catch-all,
+inert for non-diff text), `tests/unit/test_mcp_server.py` (`TestCompressContextTracking` —
+`files_changed` populated for real diff content via the real MCP path, null for non-diff), one new
+inline `[[filter.tests]]` entry in `git.toml`. See `docs/final/DECISIONS.md`'s new **ADR-047** for
+the full design record and options considered.
+
+</details>
+
+---
+
 #### QB-095 — Path prefix front-coding
 
 **Effort:** Small-Medium · **Value:** High · **Risk:** Low · **Expected token impact:** High on
@@ -2068,6 +2149,17 @@ found a narrower, safety-legitimate path for one slice of idea 2 but left it evi
 scheduled. Idea 3 has no code at all yet. **See QB-055, directly below, for the worked-out
 algorithm design covering ideas 2 and 3** — added 2026-07-15 at product-owner request so "compress
 diffs more" has a concrete, safety-constrained mechanism instead of a sketch.
+
+**Critical correction (2026-08-19) — idea 1's real-world numbers above were stale, and the actual
+gap was architectural, not algorithmic.** A follow-on audit (looking for further safe compression
+wins) found that every "real usage" figure cited for git-diff (the 46.2%/334-calls numbers `quor
+gain` reports) predates QB-104 (2026-08-16) — since MCP became the sole integration surface,
+`git-diff`'s `match_command` pattern can never match against `compress_context`'s raw-content-only
+input, so it silently fell through to `generic` for all real usage. See
+[QB-109](#qb-109--content-based-filter-selection-fallback-for-compress_context-git-diff-unreachable-since-qb-104)
+for the full finding and fix (a `match_content_types` fallback, now shipped) — this doesn't change
+idea 1/2/3's own status above, but it means idea 1's compression logic is only now, as of QB-109,
+actually reachable in production.
 
 **Fix update (2026-07-15) — over-broad `preserve_patterns` bug found via the 12-case corpus (QB-047
 slice already landed):** with QB-055's `collapse_unchanged_context` in place, per-line token tracing

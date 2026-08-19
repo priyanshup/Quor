@@ -2398,3 +2398,71 @@ PostToolUse payload.
   metric and no new persisted artifact beyond one small `nudge_state.json` per repository, a
   sibling of the existing `repo_intel/<repo_key>/` cache files.
 - See `backlog.md`'s `QB-090` entry for the implementation record.
+
+---
+
+## ADR-047: Content-Type Fallback for Filter Selection (`match_content_types`)
+
+**Status:** Decided
+**Date:** 2026-08-19
+
+**Context:**
+`FilterRegistry.find()` selects a filter by regex-matching `match_command` against a string.
+Before QB-104, that string was always a real shell command (`"git diff"`), a natural match for a
+command-shaped pattern like `^git\s+(diff|show)\b`. QB-104 made MCP's `compress_context(raw_text)`
+the sole real integration surface, and it receives only the tool's *output* text, never the
+command that produced it. Auditing QB-041 (diff-compression work) directly against this project's
+own `quor.db` found the consequence: every `git-diff`-labeled row predates QB-104; zero exist
+since. Empirically confirmed by calling `compress_context` with real diff content — it resolved to
+the `generic` catch-all (`match_command = '.'`), not `git-diff`. This affects every built-in
+filter, not just `git-diff` — grep across `quor/filters/builtin/` shows every filter except
+`z_generic` is keyed on a command-shaped `match_command`.
+
+**Options considered:**
+- **Do nothing / evidence-gate as a future item:** simplest, but leaves the entire specialized-
+  filter ecosystem (the actual subject of QB-041 and most of the built-in filter work to date)
+  unreachable via the only integration surface that now exists — not a narrow gap, a foundational
+  one.
+- **Full content-based rewrite of filter selection** (replace `match_command` entirely with
+  content-shape matching for every filter): disproportionate for this finding — most filters
+  (`pytest`, `mypy`, `ruff`, the `cat-*` family) have no content shape as unambiguous as a diff's;
+  designing a safe, non-guessing signal for each is separate, larger work.
+  `pytest`/`mypy`/`ruff` output all resemble plain CI text without a structural marker as reliable
+  as `content_type.py`'s existing diff/JSON/traceback detectors.
+- **Optional per-filter `match_content_types` fallback, checked only when `match_command` doesn't
+  match:** additive, backward-compatible (`FilterConfig` gets one new `list[str]`, default empty),
+  reuses `quor/pipeline/content_type.py::detect()` — already shipped, already tested — rather than
+  inventing new detection logic. Scoped initially to `git-diff` (`content_type` `"diff"`), since
+  that detector is an exact structural check (a line starting with `diff --git `/`--- a/`/
+  `+++ b/`/`@@ `), not a guessed heuristic — the same "author declares the shape" convention
+  `patterns`/`preserve_patterns` already use. Deliberately excludes `content_type.py`'s `ansi`
+  classification (a >20%-of-lines threshold, a genuine heuristic) from ever driving filter
+  selection.
+
+**Decision:** Optional per-filter `match_content_types` fallback, scoped to `git-diff` for now.
+`FilterConfig.match_content_types: list[str]` (default `[]`). `FilterRegistry.find()` checks it
+*before* the `match_command` loop, not after — `z_generic.toml`'s `match_command = '.'` matches
+any non-empty string, content included, so trying `match_command` first would always resolve via
+that catch-all before a content-type-declaring filter ever got a chance. A real command string
+never satisfies a content-type check (`detect("git diff foo.py")` is `PLAIN_TEXT`, since it never
+starts a line with a diff marker), so this phase is a no-op on the CLI/dispatcher path — zero
+behavior change there — and only ever activates for content-only callers (`compress_context`).
+Extending this to other filters is future work, gated on finding each one an equally unambiguous,
+non-heuristic content signal — not scoped here.
+
+**Consequences:**
+- `quor/config/model.py`: `FilterConfig` gains `match_content_types: list[str] = Field(default_factory=list)`.
+- `quor/filters/registry.py`: `FilterRegistry.find()` restructured — content-type fallback phase
+  runs first, `match_command` loop (including the `z_generic` catch-all) runs second, unchanged
+  from before otherwise.
+- `quor/filters/builtin/git.toml`: `git-diff` sets `match_content_types = ["diff"]`.
+- `quor/mcp/server.py`: `compress_context` now actually selects `git-diff` for real diff content,
+  so the QB-093 `files_changed` telemetry-prep column (previously only wired into
+  `dispatcher.py`'s git-diff call site — dead for real usage since QB-104, confirmed via direct
+  `quor.db` query: 358 real rows, 0 with the column populated) is now recorded at the site that's
+  actually reachable.
+- Every other command-keyed built-in filter (`pytest`, `mypy`, `ruff`, `git-log`, `git-status`, the
+  `cat-*` family, etc.) remains unreachable via `compress_context` — not fixed by this ADR, and not
+  claimed to be. See `backlog.md`'s QB-109 entry for the full finding and scope.
+- See `docs/final/COMMAND_SUPPORT.md` §2 ("Content-type fallback (QB-109)") for the user-facing
+  description of how this interacts with existing filter precedence.

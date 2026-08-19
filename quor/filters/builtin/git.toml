@@ -88,14 +88,28 @@ must_contain = ["commit aaa0001"]
 [[filter]]
 name = "git-diff"
 match_command = '^git\s+(diff|show)\b'
+# QB-109: content_type.detect() classifies real diff/show output as DIFF via
+# an exact structural check (a line starting with "diff --git "/"--- a/"/
+# "+++ b/"/"@@ "), not a guessed heuristic — safe to use as a fallback
+# selector for MCP's compress_context, which has no command string to match
+# match_command against at all (see FilterRegistry.find()'s own docstring).
+match_content_types = ["diff"]
 
 [[filter.stages]]
 type = "strip_lines"
+# QB-109: `--- a/`/`+++ b/` are deliberately absent from `patterns` below.
+# They used to be listed there, but strip_lines checks preserve_patterns
+# first (see that stage's own docstring) and `^\+`/`^-` below already match
+# `+++ b/...`/`--- a/...` too — those two entries never fired, dead code.
+# That collision is load-bearing, not a bug to fix: since `diff --git a/X
+# b/X` IS stripped, `--- a/`/`+++ b/` are the only place a filename survives
+# in compressed output. Actually stripping them (e.g. by tightening `^\+`/
+# `^-` to exclude them) would leave multi-file diffs with no way to tell
+# which file a hunk belongs to — see the "filenames survive" test below,
+# which pins this behavior against a future well-intentioned cleanup.
 patterns = [
     '^index ',
     '^diff --git ',
-    '^--- a/',
-    '^\+\+\+ b/',
     '^ $',
 ]
 preserve_patterns = [
@@ -187,6 +201,16 @@ must_contain = [
     "rename to src/notifications/channels.py",
 ]
 must_not_contain = ["unchanged lines omitted"]
+
+[[filter.tests]]
+description = "QB-109 regression: every changed file's name survives compression in a multi-file diff, even though diff --git is stripped — --- a/ and +++ b/ are the only remaining filename carrier and must never be silently stripped by a future preserve_patterns/patterns cleanup"
+input = "diff --git a/src/alpha.py b/src/alpha.py\nindex 111..222 100644\n--- a/src/alpha.py\n+++ b/src/alpha.py\n@@ -1,2 +1,2 @@\n-old alpha\n+new alpha\ndiff --git a/src/beta.py b/src/beta.py\nindex 333..444 100644\n--- a/src/beta.py\n+++ b/src/beta.py\n@@ -1,2 +1,2 @@\n-old beta\n+new beta"
+must_contain = [
+    "src/alpha.py",
+    "src/beta.py",
+    "new alpha",
+    "new beta",
+]
 
 [[filter]]
 # QB-101: `git branch -vv` right-pads the branch-name and hash columns so

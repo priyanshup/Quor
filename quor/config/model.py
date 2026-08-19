@@ -50,6 +50,19 @@ class FilterConfig(BaseModel):
 
     name: str
     match_command: str
+    match_content_types: list[str] = Field(default_factory=list)
+    """Optional fallback selector, checked only when `match_command` fails to
+    match: names of `quor.pipeline.content_type.ContentType` values (e.g.
+    "diff") this filter also applies to, judged by the *content itself*
+    rather than the command that produced it. Exists because MCP's
+    `compress_context` (QB-104) receives raw output text with no originating
+    command string at all, so command-shaped patterns like `git-diff`'s
+    `^git\\s+(diff|show)\\b` can never match there — see `FilterRegistry.find()`
+    for how this is used. Deliberately restricted to `content_type.detect()`
+    outcomes that are exact structural checks (diff/json/traceback), never
+    "ansi" (a >20%-of-lines heuristic, not a structural fact) — the same
+    "author declares the shape, no guessing" convention `patterns`/
+    `preserve_patterns` already use."""
     abort_unless: list[str] = Field(default_factory=list)
     abort_if: list[str] = Field(default_factory=list)
     on_empty: str = ""
