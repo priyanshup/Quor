@@ -7,6 +7,7 @@ import time
 from pathlib import Path
 
 import orjson
+import pytest
 
 from quor.discovery.session_scan import find_session_files, scan_project
 
@@ -85,6 +86,13 @@ class TestFindSessionFiles:
         result = find_session_files(project_dir, claude_home=claude_home)
         assert result == []
 
+    @pytest.mark.skipif(
+        os.name != "nt",
+        reason="Windows-only: _normalize_path uses os.path.normcase, which only "
+        "lowercases on win32 (matching real Windows drive-letter-case/NTFS "
+        "case-insensitivity) -- a no-op on POSIX, where paths are genuinely "
+        "case-sensitive and this scenario doesn't arise the same way.",
+    )
     def test_case_insensitive_match(self, tmp_path: Path) -> None:
         claude_home = tmp_path / ".claude"
         project_dir = tmp_path / "MyRepo"
