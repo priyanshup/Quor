@@ -45,6 +45,10 @@ from quor.pipeline.stages.numeric_range_compression import (
     NumericRangeCompressionStage,
 )
 from quor.pipeline.stages.path_prefix_fold import PathPrefixFoldConfig, PathPrefixFoldStage
+from quor.pipeline.stages.protect_diff_filename_headers import (
+    ProtectDiffFilenameHeadersConfig,
+    ProtectDiffFilenameHeadersStage,
+)
 from quor.pipeline.stages.python_ast_summarize import (
     PythonAstSummarizeConfig,
     PythonAstSummarizeStage,
@@ -820,6 +824,119 @@ class TestCollapseUnchangedContext:
 
     def test_wrong_config_type_raises(self) -> None:
         with pytest.raises(TypeError, match="CollapseUnchangedContextConfig"):
+            self.stage.apply(ContentMask.from_text("x"), RemoveAnsiConfig(type="remove_ansi"))
+
+
+# ---------------------------------------------------------------------------
+# protect_diff_filename_headers
+# ---------------------------------------------------------------------------
+
+class TestProtectDiffFilenameHeaders:
+    stage = ProtectDiffFilenameHeadersStage()
+
+    def _config(self) -> ProtectDiffFilenameHeadersConfig:
+        return ProtectDiffFilenameHeadersConfig(type="protect_diff_filename_headers")
+
+    def test_empty_input(self) -> None:
+        result = self.stage.apply(ContentMask.from_text(""), self._config())
+        assert result.render() == ""
+
+    def test_no_diff_header_left_untouched(self) -> None:
+        mask = ContentMask.from_text("hello\nworld")
+        result = self.stage.apply(mask, self._config())
+        assert all(lm.decision is Decision.KEEP for lm in result.lines)
+
+    def test_mode_only_change_protects_header(self) -> None:
+        text = "diff --git a/script.sh b/script.sh\nold mode 100644\nnew mode 100755"
+        mask = ContentMask.from_text(text)
+        result = self.stage.apply(mask, self._config())
+        assert result.lines[0].decision is Decision.PROTECT
+        assert result.lines[0].line == "diff --git a/script.sh b/script.sh"
+
+    def test_new_empty_file_protects_header(self) -> None:
+        text = "diff --git a/empty.txt b/empty.txt\nnew file mode 100644\nindex 0000000..e69de29"
+        mask = ContentMask.from_text(text)
+        result = self.stage.apply(mask, self._config())
+        assert result.lines[0].decision is Decision.PROTECT
+
+    def test_deleted_empty_file_protects_header(self) -> None:
+        text = (
+            "diff --git a/empty.txt b/empty.txt\ndeleted file mode 100644\n"
+            "index e69de29..0000000"
+        )
+        mask = ContentMask.from_text(text)
+        result = self.stage.apply(mask, self._config())
+        assert result.lines[0].decision is Decision.PROTECT
+
+    def test_normal_content_diff_header_left_keep(self) -> None:
+        """--- a/ and +++ b/ already carry the filename — the header must
+        stay KEEP (still removable by strip_lines downstream), not PROTECT,
+        or a normal diff would regress to carrying the filename twice."""
+        text = (
+            "diff --git a/foo.py b/foo.py\nindex abc..def 100644\n"
+            "--- a/foo.py\n+++ b/foo.py\n@@ -1,3 +1,4 @@\n+new line"
+        )
+        mask = ContentMask.from_text(text)
+        result = self.stage.apply(mask, self._config())
+        assert result.lines[0].decision is Decision.KEEP
+
+    def test_binary_diff_header_left_keep(self) -> None:
+        text = (
+            "diff --git a/img.png b/img.png\nindex abc..def 100644\n"
+            "Binary files a/img.png and b/img.png differ"
+        )
+        mask = ContentMask.from_text(text)
+        result = self.stage.apply(mask, self._config())
+        assert result.lines[0].decision is Decision.KEEP
+
+    def test_rename_diff_header_left_keep(self) -> None:
+        text = (
+            "diff --git a/a.py b/b.py\nsimilarity index 100%\n"
+            "rename from a.py\nrename to b.py"
+        )
+        mask = ContentMask.from_text(text)
+        result = self.stage.apply(mask, self._config())
+        assert result.lines[0].decision is Decision.KEEP
+
+    def test_multi_file_diff_each_segment_judged_independently(self) -> None:
+        """One mode-only file followed by one normal-content file: only the
+        first file's header should be protected, not the second's."""
+        text = (
+            "diff --git a/mode.sh b/mode.sh\nold mode 100644\nnew mode 100755\n"
+            "diff --git a/foo.py b/foo.py\nindex abc..def 100644\n"
+            "--- a/foo.py\n+++ b/foo.py\n@@ -1,3 +1,4 @@\n+new line"
+        )
+        mask = ContentMask.from_text(text)
+        result = self.stage.apply(mask, self._config())
+        headers = [lm for lm in result.lines if lm.line.startswith("diff --git ")]
+        assert len(headers) == 2
+        assert headers[0].decision is Decision.PROTECT
+        assert headers[1].decision is Decision.KEEP
+
+    def test_already_protected_line_from_earlier_stage_stays_protected(self) -> None:
+        lines = (
+            LineMask(
+                line="diff --git a/x.sh b/x.sh",
+                decision=Decision.PROTECT,
+                reason="already decided",
+                stage="test",
+            ),
+            LineMask(line="old mode 100644"),
+            LineMask(line="new mode 100755"),
+        )
+        mask = ContentMask(lines=lines)
+        result = self.stage.apply(mask, self._config())
+        assert result.lines[0].decision is Decision.PROTECT
+        assert result.lines[0].reason == "already decided"
+
+    def test_line_count_unchanged(self) -> None:
+        text = "diff --git a/script.sh b/script.sh\nold mode 100644\nnew mode 100755"
+        mask = ContentMask.from_text(text)
+        result = self.stage.apply(mask, self._config())
+        assert len(result.lines) == len(mask.lines)
+
+    def test_wrong_config_type_raises(self) -> None:
+        with pytest.raises(TypeError, match="ProtectDiffFilenameHeadersConfig"):
             self.stage.apply(ContentMask.from_text("x"), RemoveAnsiConfig(type="remove_ansi"))
 
 

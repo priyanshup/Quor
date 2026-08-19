@@ -277,6 +277,27 @@ must_contain = [
 ]
 
 [[case]]
+# QB-041: real git diff shapes where "diff --git " is the *only* line
+# naming the changed file — a mode-only (chmod) change, and a newly
+# added/deleted file with zero content, neither of which git ever pairs
+# with a "--- a/"/"+++ b/" line. Pins `protect_diff_filename_headers`
+# (quor/pipeline/stages/protect_diff_filename_headers.py) against a future
+# regression that would silently drop the filename on these paths again.
+id = "git-diff-mode-change-and-empty-files"
+category = "git-diff"
+ecosystem = "Git"
+command = "git diff"
+sample_file = "samples/git-diff/016_mode_change_and_empty_files.txt"
+expected_filter = "git-diff"
+min_reduction_pct = 15.0
+must_contain = [
+    "scripts/deploy.sh",
+    "src/notifications/__init__.py",
+    "src/notifications/legacy_placeholder.py",
+    "def send(self, event, *, retry=True):",
+]
+
+[[case]]
 id = "pytest-two-failures"
 category = "pytest"
 ecosystem = "Python"
