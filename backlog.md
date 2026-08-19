@@ -989,6 +989,24 @@ gate was silently uncollectable as shipped.
 family — none has a content signal as unambiguous as a diff's four structural markers; each would
 need its own considered design, not a copy-paste of this one.
 
+**Evidence update (2026-08-19, later the same day) — this out-of-scope gap is bigger than it looked.**
+An external review (Gemini) proposed a "Log & Stack Trace Distiller" (drop passing tests, keep
+failures/tracebacks) and a "JSON Payload Shrinker" (collapse homogeneous arrays to a few samples +
+count) as new capabilities. Checked against the actual codebase rather than treated as new work:
+both already exist, in more depth than proposed — `pytest.toml` already strips passing-test noise,
+dedups repeated parametrized-failure messages (QB-044), and strips framework traceback frames while
+preserving the user's own (QB-060); `cat-json.toml` already collapses long homogeneous arrays to
+first-few-plus-omitted-count, byte-for-byte on every kept value (QB-040). Both are exactly the class
+of filter this entry's own "explicitly out of scope" line left dark for real MCP usage — same
+`match_command`-only gap this ticket fixed for `git-diff` alone. The competitive framing behind the
+review's suggestion ("up to 70% of context bloat in multi-step agent loops comes from CLI output, not
+source code") is a real reason to revisit that scoping decision: this is very plausibly higher
+real-world value, unblocked, than QB-112's structural-diff gap it's currently expected to be
+sequenced behind. Recommend the next full prioritization pass treat "extend `match_content_types` (or
+an equivalent content-shape signal) to `pytest`/`cat-json` specifically" as its own small follow-on
+item, not bundled into this one's already-shipped fix, and rank it alongside QB-112/QB-114 rather than
+left as an indefinitely-deferred "out of scope" note.
+
 **Status:** Implemented (2026-08-19), branch `feature/qb-109-qb-110-diff-compression-audit-fixes`.
 New tests: `tests/unit/test_filters.py` (`TestFilterRegistryTiering` — content-type fallback
 resolves git-diff for raw content, real commands unaffected, fallback beats the generic catch-all,
@@ -1086,6 +1104,69 @@ sequencing directly behind QB-109 in priority given comparable severity (a shipp
 feature at 0% real-world reach) and shared root cause (the QB-104 MCP migration didn't carry every
 command-shaped assumption forward with it — worth a full audit of `quor.plugins.registry` /
 `_setup_plugins()`'s other registered plugins for the same gap before assuming this is the only one).
+
+</details>
+
+---
+
+#### QB-114 — Dispatcher-level safety nets (tee recovery link, secret-leak detection) are unreachable via `compress_context` — same architectural gap class as QB-109/QB-112, confirmed by taking QB-112's own "audit the rest" recommendation
+
+**Effort:** Small-Medium (wiring, not design, for the two safety-net calls; a real product decision
+for the redaction question below) · **Value:** High — one of the two missing pieces is a security
+control, not a compression feature · **Risk:** Low to document, Medium-High to leave unfixed ·
+**Expected token impact:** None (these are safety/trust mechanisms, not compression stages) ·
+**Category:** Bug fix / Architecture / Security
+
+**Found 2026-08-19**, directly acting on QB-112's own closing recommendation ("worth a full audit of
+[dispatcher-registered mechanisms] for the same gap before assuming this is the only one"). QB-112
+scoped that audit to plugins; this extends it to the other class of dispatcher-level, cross-cutting
+concern QB-112's own text names by analogy — "like `tee.py`". Confirmed via direct source read, the
+same standard QB-109/QB-112 held themselves to, not inference: `quor/engine/dispatcher.py` wires up
+three such concerns — `scan_for_secrets()` (line 453), `record_filtered_command()` (line 471), and
+`write_tee()` (line 550). `quor/mcp/server.py` imports none of `quor.pipeline.secrets`,
+`quor.pipeline.onboarding`, or `quor.pipeline.tee`'s `write_tee`/`cleanup_tee`/`get_tee_status` —
+only `tee.content_hash`, pulled in by `session_dedup.py` for QB-089's exact-match dedup, unrelated to
+the recovery-link mechanism itself.
+
+<details>
+<summary>Technical details</summary>
+
+**Two safety nets, ranked by severity:**
+
+1. **The tee recovery link (QB-013) never fires for `compress_context`.** `write_tee()` is what
+   makes Quor's entire lossy-compression trust story defensible: whatever gets collapsed, a
+   `[full output: ...]` link still points at the untouched original on disk. That guarantee is
+   architecture-wide in the CLI-passthrough path and **entirely absent** from MCP — the only
+   production integration surface since QB-104 (2026-08-16). Every `compress_context` call today
+   compresses with no recovery path if the model needed something back. This is a materially bigger
+   gap than QB-109/QB-112: those cost missed compression opportunity; this costs the safety
+   mechanism that makes aggressive compression elsewhere (QB-039, QB-041, QB-055, R-09's escalation
+   idea) trustworthy to ship at all. Any item that assumes "the recovery link covers this" is
+   assuming a mechanism that doesn't run.
+2. **Secret-leak detection (QB-029/PA-F07) never fires for `compress_context`.** `scan_for_secrets()`
+   warns to stderr when output looks like a real API key/token — deliberately narrow, high-confidence
+   patterns only, detection-only by original design, "never redacts." Since QB-104, no MCP call
+   triggers it, so a GitHub/AWS/Slack-token-shaped string flowing through `compress_context` today
+   produces no warning at all, in Quor's sole production path. Lower engineering cost to fix than #1
+   (call the existing function, no design questions), but real security-relevance for a tool whose own
+   stated target includes "corporate use."
+
+**Third, cosmetic-only finding, noted for completeness, not scoped here:** `record_filtered_command()`
+(QB-090's first-run onboarding tip) is also dark in MCP — new users get no "here's what just got
+compressed" nudge. No trust or security implication; lowest priority of the three.
+
+**Related but separate product question, raised by an external review (Gemini, 2026-08-19) alongside
+this same audit:** should secret handling in the MCP path go further than restoring today's
+warn-only behavior — i.e. actually mask/strip detected tokens before they reach the model, the way
+RepoPrompt/Repomix do? That's a real scope expansion beyond QB-029's original design (detection was
+a deliberate choice there, not an oversight), and needs its own product call — most importantly,
+whether a masked token could ever be something the calling agent legitimately needed verbatim (e.g.
+a placeholder value in a config example vs. a live credential), which a pure pattern match can't
+distinguish. Do not fold into this ticket's fix; track separately if pursued.
+
+**Status:** Proposed. Not scoped or implemented. Recommend sequencing alongside QB-109/QB-112 —
+finding #1 (tee recovery link) arguably outranks both given it underwrites every other aggressive-
+compression item's trust story, not just its own feature area.
 
 </details>
 
@@ -2917,6 +2998,19 @@ stays the default — this must not silently change behavior for any existing us
 - Interaction with the multi-tier `preserve_patterns` idea ADR-031 explicitly considered and
   rejected (Option 3, "priority-based budgeting") — Balanced mode may effectively be that option,
   revisited under new product priorities rather than rejected outright.
+- **Automatic trigger, not just user-selected mode (raised 2026-08-19, external Gemini review):**
+  everything above assumes a user or project opts into Balanced/Aggressive ahead of time. A distinct
+  question is whether Quor should *automatically* fall back toward Aggressive-equivalent behavior when
+  Safe mode's output would still exceed a hard transport/host limit (the review's framing: an
+  "emergency valve" past some byte ceiling) — the alternative today is presumably an uncompressed
+  payload hitting a host-side context-limit failure with no Quor-side fallback at all. This is a
+  materially different trigger (an observable fact — payload size — not a heuristic guess) but it
+  still has to answer the same "does this ever touch PROTECT content" question ADR-031 already settled
+  once ("PROTECT is absolute" — see the citations at QB-041/QB-055's own entries): an automatic
+  override needs to either stay within whatever boundary Balanced/Aggressive mode itself settles on
+  for touching protected content, or get its own explicit product sign-off to go further, not invent a
+  third, undocumented boundary. Worth resolving as part of this item's own design pass, not a separate
+  ticket — same underlying "escalate past Safe mode" mechanism, different trigger condition.
 
 **Status:** Proposed. Not scoped or implemented. The natural next step is a design pass (in the
 spirit of QB-005A/QB-035A/QB-036's own architecture-first discipline) before any code, specifically
@@ -3034,6 +3128,55 @@ Status or its QB-048 gate: most of what was proposed (fuzzy "already saw the gis
 cross-command semantic matching) still needs proof it can't hurt task success. **See QB-089,
 immediately below, for the one slice of this idea that's safe to build now, without waiting on
 QB-048** — because it relies on exact, not fuzzy, matching.
+
+**Update (2026-08-19) — a concrete mechanism proposal needs to be checked against this item's own
+addition-not-substitution constraint, not accepted at face value.** An external review (Gemini)
+proposed "AST structural deltas" as the implementation: render unchanged regions as
+`[UNCHANGED: lines 1-180]` rather than resending them. Taken literally, that's exactly the
+substitution this item's own Design Principle (see [Vision](#vision)) rules out — Quor cannot verify
+the model still has "lines 1-180" live in context (the harness's own compaction is invisible to
+Quor), so a bare omission marker is an unverifiable claim, not a compression. It only becomes safe if
+paired with a real, always-available way to make the claim good — either QB-013's tee recovery link
+(currently **not even wired into the MCP path at all**, see [QB-114](#qb-114--dispatcher-level-safety-nets-tee-recovery-link-secret-leak-detection-are-unreachable-via-compress_context--same-architectural-gap-class-as-qb-109qb-112-confirmed-by-taking-qb-112s-own-audit-the-rest-recommendation)),
+or a more granular equivalent — see [R-12](#r-12--on-demand-node-expansion-expand_node-style-mcp-tool),
+a proposed on-demand node-expansion tool, as one candidate mechanism that would make an
+`[UNCHANGED: ...]`-style marker an addition-with-a-working-recovery-path rather than a bare claim.
+Whichever mechanism, QB-114
+needs to be resolved first or alongside — building delta-compression on top of a recovery link that
+doesn't run in production would repeat QB-114's own root cause one layer up.
+
+**Update (2026-08-19, later the same day) — a second proposed mechanism, "anchored session state,"
+needs to be split into a safe half and an unsafe half, not adopted whole.** A follow-up review
+proposed Quor maintain a persistent, incrementally-updated four-field block (`Intent`,
+`Decisions Made`, `Changes Executed`, `Pending Steps`) across a session, updated "when processing
+tool outputs," to fight multi-turn drift. As scoped, that means Quor deciding for itself what counts
+as a "Decision Made" from raw tool output text — that's semantic extraction/summarization, exactly
+[R-04](#r-04--neural--model-based-compression)/[R-06](#r-06--semantic-extraction-embeddingsummarization-based)'s
+territory, the highest-trust-cost category this document has, and in direct tension with QB-035A's
+audit finding that Quor's compression core is deliberately 100% call-scoped, stateless, and
+deterministic — this is not a smaller version of that property, it's the thing that property was
+protecting against. **A safer variant exists and is worth designing instead:** the *calling agent*
+supplies the four fields explicitly each turn (it already knows its own intent and decisions — this
+is exactly the "explicit caller input, not Quor-inferred" pattern R-08/R-11/R-13 all already use),
+and Quor's job is narrower and mechanical — persist, dedupe, and re-surface that block, no extraction
+involved. That narrower version still isn't risk-free: *using* a persisted "already decided" field to
+justify omitting something later is the same class of "unchanged since last call" claim this entry's
+own Design Principle already constrains (see the update above and [Vision](#vision)) — it would need
+the same addition-not-substitution treatment, not a free pass just because the fields are Quor's own
+architecture. Either variant is squarely inside this item's own existing "needs its own dedicated
+design pass" status, not a shortcut around it.
+
+**Update (2026-08-19, same day, third pass) — the same split applies to multi-agent orchestration, not
+just single-session drift.** A third proposal asked for Quor to act as an "isolation proxy," collapsing
+a sub-agent's full execution trajectory into a structured outcome contract before it reaches a parent
+orchestrator. Same two halves as the session-state update above: Quor deciding for itself what the
+sub-agent's "outcome" was, from raw trajectory text, is `ANTI_GOALS.md` #2 territory ("no LLM call for
+summarization, classification, or decision-making" in the default path) — Anti-Goal #2 is written
+about network/LLM calls specifically, but the underlying judgment-call problem (what counts as the
+"outcome") is identical whether or not a second model call is literally involved. The safe half needs
+no new mechanism at all: a sub-agent (or its orchestrator) that already formats its own final report
+as structured text can have that text run through `compress_context` today, exactly like any other
+content — there is nothing to build there, only a usage pattern to document.
 
 </details>
 
@@ -3317,6 +3460,19 @@ only array-of-tables; a mixed-shape array (or one crammed onto a single physical
 left uncollapsed rather than guessed at; JSON/YAML/TOML re-parse malformed input and fail open
 (no compression, original content unchanged) rather than partially compressing something invalid.
 
+**Candidate small addition (2026-08-19, external Gemini review) — null-field dropping, not
+default-field dropping.** The review proposed stripping "null/default JSON fields" as part of a
+broader "response payload projection" idea; checked against `structured_data_summarize.py` directly
+— it only ever collapses homogeneous array runs today, nothing at the object-field level. The two
+halves of the suggestion are not equally safe. **Dropping a key whose value is literally `null`** is
+unambiguous and structurally verifiable the same way array-homogeneity is — no schema needed, no
+guessing. **Dropping a key because its value happens to equal some "default"** requires knowing what
+the default *is*, which without a schema (JSON Schema, an OpenAPI spec, a Pydantic model) is exactly
+the kind of unverifiable guess [[feedback_no_heuristic_fields]] already rules out — `"enabled": false`
+might be the schema default, or it might be a meaningful explicit override; Quor can't tell from the
+JSON alone. If pursued, scope this as null-field dropping only, as a small addition to `cat-json`'s
+existing stage, not the pair as proposed.
+
 <details>
 <summary>Original planning notes (superseded by "What shipped" above)</summary>
 
@@ -3508,6 +3664,24 @@ rate" row, currently unmeasured, and [Strategic Roadmap](#strategic-roadmap) Pha
 **Status:** Proposed. Not scoped or implemented. Recommend this lands before or alongside QB-039's
 Aggressive mode (or QB-053's automatic equivalent) reaching any default-on state, not strictly
 before either is scoped/designed.
+
+**Evidence update (2026-08-19) — this item's dependent list has grown substantially since its own
+"before QB-039/QB-043/QB-053" note was written, and an external review's request for exactly this
+capability ("build an eval harness comparing task success with/without compression, e.g. via
+SWE-bench") is a restatement of what's already proposed here, not new scope.** Since this item was
+last touched, [R-08](#r-08--caller-explicit-focusrelevance-hints-for-get_repo_context-dependency-graph-reachability-from-a-named-entry-point-not-quor-side-statistical-ranking)'s
+tiered collapsing, [R-12](#r-12--on-demand-node-expansion-expand_node-style-mcp-tool)'s on-demand
+expansion, and QB-043's own "anchored session state" candidate mechanism were all added or refined,
+and each one's own write-up explicitly flags needing proof it doesn't hurt task success before
+shipping. That's a wider dependent surface than "QB-039/QB-043/QB-053" alone. On the specific
+suggestion: SWE-bench (or a similar external, pre-built benchmark) is a reasonable candidate source
+for this item's "handful of realistic coding tasks" rather than hand-authoring them, but not a
+drop-in replacement without two things checked first — SWE-bench's task instances are real-repo-scale
+(full clone, install, run a full test suite per instance), a much heavier per-eval cost than this
+item's own "starts small and specific" framing anticipated, and there's a known
+training-data-contamination concern in the field for any benchmark this widely published (worth
+confirming isn't already baked into whatever model runs the eval before treating results as clean).
+Neither rules it out; both are design-pass questions, not blockers to raising this item's priority.
 
 </details>
 
@@ -4045,6 +4219,131 @@ use a learned component (R-05) as a second-opinion check on top of them — e.g.
 deterministic filter's output looks like it may have removed something important, without the
 learned component making compression decisions itself. Interesting as a lower-trust-cost way to get
 some of R-04/R-05's benefit without fully giving up determinism. Still unstudied end to end.
+
+**R-08 — Caller-explicit focus/relevance hints for `get_repo_context` (dependency-graph reachability
+from a named entry point, not Quor-side statistical ranking).** Raised 2026-08-19 via an external
+model (Gemini) asked to evaluate Quor as a daily driver; it proposed "hybrid relevance" — BM25 text
+scoring plus dependency-graph reachability — to keep prompt-relevant code uncompressed while
+collapsing distant files. The graph-reachability half is not new ground: QB-067's dependency graph
+already exists and a caller-supplied entry point (a path or symbol name) could deterministically
+narrow `get_repo_context`'s returned neighborhood exactly the way QB-111's caller-selected read modes
+narrow its output shape — explicit input, not a guess. The BM25 half is a different animal: Quor
+computing its own statistical "relevance" score to decide what a caller didn't ask for but probably
+wants is the same class of call this project has twice already declined to make on trust grounds —
+QB-111's own entry contrasts caller-selected modes with "a heuristic Quor guesses at," and QB-041's
+idea 3 (size-based diff collapsing) shipped and was later reverted specifically because a heuristic
+proxy couldn't reliably distinguish the case that mattered (see [[project_quor_qb041_idea3_reverted]]
+in memory). Carries the same non-determinism/trust-cost profile as R-05/R-07 and shouldn't be scoped
+ahead of them without the same evaluation gate. If pursued, pursue the graph-reachability half as an
+explicit `focus:`-style parameter first — it needs no new research, only a design pass — and treat
+BM25 scoring as a separate, harder-gated question, not a package deal with it.
+
+**Update (2026-08-19, same day) — a concrete mechanism for the graph-reachability half.** A second
+external-review pass (same Gemini conversation) pointed at Aider's repo map, which ranks symbols by
+PageRank over Tree-sitter tags. The ranking algorithm itself is exactly the statistical-scoring
+problem this entry already declines to take on without a trust-cost gate — but Aider's *tiering*,
+stripped of PageRank, is just hop-distance in a graph Quor already has: from a caller-supplied focus
+point, 0-hop (the target file itself) renders full, 1-hop (direct dependencies) renders
+signatures/type contracts only, 2+-hop renders class/interface outlines only. Hop-count is a discrete,
+deterministic, `quor explain`-able fact — no different in kind from anything else QB-067's graph
+already supports — so this gives R-08's `focus:` idea a concrete collapsing scheme to design against
+instead of a vague "narrow the neighborhood," without pulling in BM25 or PageRank at all.
+
+**Correctness constraint, not optional (2026-08-19) — cross-tier reference resolution.** A third
+external-review pass flagged a real gap in the tiering scheme above, not a new idea: if a 1-hop file
+is rendered as a signature that references `struct UserConfig`, and the 2-hop file that actually
+defines `UserConfig` gets collapsed down to an outline that omits it, the model has a reference with
+no resolvable definition — arguably worse than not showing the reference at all, since it looks
+resolvable and isn't. This has to be solved before R-08 ships, not treated as a follow-on: any symbol
+referenced by a kept (0-hop or 1-hop) signature must be force-kept wherever its own definition lands,
+even if that file would otherwise collapse further under its raw hop-distance. Unlike the BM25
+question above, **this is not a trust-cost problem** — resolving "which symbols does this signature
+reference, and where are they defined" is exactly the kind of graph-reachability fact QB-067's
+existing symbol/dependency data already answers deterministically, no ranking or guessing involved.
+It's scope, not risk: R-08's design pass needs to include this pass from the start, sized against a
+plain hop-distance implementation that doesn't do it.
+
+**R-09 — Adaptive compression aggressiveness scaled to caller-supplied signals (context-window usage,
+model tier).** Raised 2026-08-19 via the same external Gemini review: escalate from lightweight to
+aggressive compression as the calling agent's context fills, rather than applying one fixed
+aggressiveness regardless of how full the window already is. Feasibility, not algorithm design, is the
+open question: Quor runs as a stdio MCP server and only sees what a tool call passes it — whether
+Claude Code or any other MCP host currently exposes remaining-context/token-budget to a tool call is
+unconfirmed, and the standard MCP tool-call schema has no such field today. Two paths if a host
+doesn't expose it natively: decline (nothing to scale against), or have the calling agent pass an
+explicit `budget_hint` parameter itself — again explicit caller input Quor acts on, not host state
+Quor infers, consistent with this project's standing "no heuristic guess" stance
+([[feedback_no_heuristic_fields]]). First step is confirming what any real MCP host actually exposes,
+before scoping the scaling logic itself.
+
+**Update (2026-08-19, later the same day) — a second signal, same shape of problem.** A follow-up
+review proposed the same idea for a different axis: auto-adjust AST-collapsing aggressiveness based
+on which model is consuming the output (a small model needs more explicit context; a frontier
+reasoning model can work from a sparser outline). This is R-09's own open question wearing a different
+signal, not a new mechanism — an MCP tool call has no more visibility into which model the host is
+running than it has into remaining context budget, so the same two paths apply: unconfirmed until a
+host is checked, and if unsupported, resolved the same way — an explicit caller-supplied
+`model_profile`/`compression_tier` parameter, never Quor guessing at model identity or capability from
+indirect signals (that guess would itself be exactly the heuristic this project's stance already
+rejects). Treat both signals as one design question, not two separate features, when this item is
+eventually scoped.
+
+**R-10 — Structural boundary markers on collapsed/multi-file output.** Raised 2026-08-19 via the same
+Gemini review, citing Repomix's practice of wrapping each file in explicit tags (e.g.
+`<file path="..." summary="...">`) rather than plain concatenation, on the claim that this reduces
+"attention leakage" across file boundaries in transformer context windows. Low implementation cost
+and no trust-model conflict either way — this is output formatting, not a compression decision, so it
+doesn't touch determinism or `quor explain`. Research-stage anyway because the underlying claim is
+unverified for this project's actual output shape and target models: whether explicit delimiters
+measurably help (or are simply neutral, or theoretically could hurt if they add tokens without
+changing model behavior) hasn't been tested against Quor's `get_repo_context`/multi-file output
+specifically. First step is a small A/B comparison on real multi-file output, not a design pass.
+
+**R-11 — Canonical, cache-stable AST output ordering.** Raised 2026-08-19 via the same Gemini review,
+citing provider prompt-caching discounts (up to 90% on a cached prefix) that require byte-identical
+output across calls. Splits into two very different questions. **(a) Output stability** — does
+`get_repo_context`/AST-summarized output for an unchanged file stay byte-identical across calls when
+*unrelated* parts of the file or repo change (a new function added elsewhere, a different subset of
+files requested)? This is Quor-controllable and genuinely unstudied: nothing today verifies
+compressed output for file A is unaffected by an edit to file B, or that render order is stable
+independent of request order. Worth a research pass — if there's drift, it silently defeats
+provider-side caching for every session regardless of anything else Quor does, which is a real
+enough stake to justify checking even though it's not a compression-ratio win itself. **(b) "Tail-only
+appends" (put dynamic content at the end of the overall prompt)** — this is not Quor's to build. Quor
+compresses one tool call's output; it has no visibility into or control over where that output lands
+in the assembled prompt or conversation history — that's the calling agent/host's job entirely. Not
+scoped here, and shouldn't be scoped as a Quor feature under any name.
+
+**R-12 — On-demand node expansion (`expand_node`-style MCP tool).** Raised 2026-08-19 via the same
+Gemini review: instead of a caller receiving only what Quor chose to keep, expose a tool call that
+lets the model request the original, uncompressed content for one specific collapsed unit (a
+function body, a 2-hop class outline from [R-08](#r-08--caller-explicit-focusrelevance-hints-for-get_repo_context-dependency-graph-reachability-from-a-named-entry-point-not-quor-side-statistical-ranking),
+an omitted array run from `cat-json`) by reference, rather than re-requesting the whole file. Distinct
+from — and possibly a better answer than — [QB-114](#qb-114--dispatcher-level-safety-nets-tee-recovery-link-secret-leak-detection-are-unreachable-via-compress_context--same-architectural-gap-class-as-qb-109qb-112-confirmed-by-taking-qb-112s-own-audit-the-rest-recommendation)'s
+finding #1 (the tee full-file recovery link, a CLI-era mechanism never wired into MCP at all): a
+node-level tool is MCP-native, needs no filesystem tee cache, and only ever returns something Quor
+actually removed moments ago, referenced by a stable id — no ranking, no guessing, an explicit request
+answered exactly. Also the mechanism that would make [QB-043](#qb-043--cross-call--session-level-context-optimization)'s
+delta-compression idea safe rather than a bare unverifiable claim (see that entry's own 2026-08-19
+update). Unstudied: what a stable node id looks like across calls when the underlying file changes
+between them, and whether this needs QB-048's quality-measurement gate the way QB-043 itself does, or
+is lower-risk since it only ever returns real original content on explicit request, never infers
+anything.
+
+**R-13 — Intra-payload placement to counter "lost in the middle."** Raised 2026-08-19 via the same
+Gemini review, citing the documented U-shaped attention curve (recall highest at a prompt's start and
+end, weakest in the middle) as a reason to order a multi-file `get_repo_context` response deliberately
+— active/0-hop content at the edges of the returned payload, collapsed 2-hop outlines in the middle —
+rather than in whatever order files happen to be gathered. **Scope boundary, same shape as R-11(b):**
+Quor only controls ordering *within one tool response*; it has no visibility into where that response
+then lands inside the full assembled conversation, so this cannot promise to defeat lost-in-the-middle
+for the whole session, only avoid making it worse inside Quor's own contribution. Depends on
+[R-08](#r-08--caller-explicit-focusrelevance-hints-for-get_repo_context-dependency-graph-reachability-from-a-named-entry-point-not-quor-side-statistical-ranking)
+existing first (there's no 0-hop/1-hop/2-hop tiering to place yet). Same posture as R-10: the
+underlying empirical claim (that reordering *inside* one bundled tool-response block, as opposed to
+across a whole long document, measurably changes recall) is unverified for Quor's actual output shape
+and the model families it targets — pure reordering carries no trust-model cost, so the right first
+step is a small measured comparison, not a design pass.
 
 ---
 
