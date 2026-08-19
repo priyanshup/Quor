@@ -104,12 +104,11 @@ class TestUnchangedRepository:
         def _fail(*_a, **_kw):
             raise AssertionError("must not re-parse on a true cache hit")
 
-        # intel.py binds these names via `from ... import ...` at import time,
-        # so the patch must target intel's own namespace, not symbols.py/
-        # graph.py's — patching the source module's attribute would not
-        # affect intel.py's already-bound reference to the original function.
-        monkeypatch.setattr(intel_module, "extract_file_symbols", _fail)
-        monkeypatch.setattr(intel_module, "extract_file_facts", _fail)
+        # QB-055: symbols+graph extraction is one combined per-file call
+        # inside intel.py itself (`_extract_combined_facts`), not two calls
+        # into symbols.py/graph.py — patching that one function is enough
+        # to catch any re-parse on a true cache hit.
+        monkeypatch.setattr(intel_module, "_extract_combined_facts", _fail)
 
         result = ensure_repo_intelligence(repo)
         assert result.action == "cache_hit"
@@ -145,15 +144,15 @@ class TestFileModified:
         (repo / "a.py").write_text("def foo():\n    return 1\n", encoding="utf-8")
 
         import quor.pipeline.repo_profile.intel as intel_module
-        from quor.pipeline.repo_profile.symbols import extract_file_symbols as original
 
+        original = intel_module._extract_combined_facts
         seen_paths: list[str] = []
 
         def _tracking(root, rel_path, language):
             seen_paths.append(rel_path)
             return original(root, rel_path, language)
 
-        monkeypatch.setattr(intel_module, "extract_file_symbols", _tracking)
+        monkeypatch.setattr(intel_module, "_extract_combined_facts", _tracking)
 
         ensure_repo_intelligence(repo)
 
@@ -190,7 +189,7 @@ class TestFileRenamed:
         def _fail(*_a, **_kw):
             raise AssertionError("a pure rename must not require re-parsing")
 
-        monkeypatch.setattr(intel_module, "extract_file_symbols", _fail)
+        monkeypatch.setattr(intel_module, "_extract_combined_facts", _fail)
 
         result = ensure_repo_intelligence(repo)
 
@@ -369,20 +368,17 @@ class TestPerformanceRegression:
 
         import quor.pipeline.repo_profile.intel as intel_module
 
-        symbol_calls = []
-        graph_calls = []
+        combined_calls = []
         monkeypatch.setattr(
-            intel_module, "extract_file_symbols", lambda *a, **kw: symbol_calls.append(a) or (None, None)
-        )
-        monkeypatch.setattr(
-            intel_module, "extract_file_facts", lambda *a, **kw: graph_calls.append(a) or (None, None)
+            intel_module,
+            "_extract_combined_facts",
+            lambda *a, **kw: combined_calls.append(a) or (None, None, None),
         )
 
         result = ensure_repo_intelligence(repo)
 
         assert result.action == "cache_hit"
-        assert symbol_calls == []
-        assert graph_calls == []
+        assert combined_calls == []
 
     def test_one_changed_file_among_many_reparses_exactly_one(self, repo: Path, monkeypatch) -> None:
         _init_git_repo(repo)
@@ -394,15 +390,15 @@ class TestPerformanceRegression:
         (repo / "mod_7.py").write_text("def f_7():\n    return 1\n", encoding="utf-8")
 
         import quor.pipeline.repo_profile.intel as intel_module
-        from quor.pipeline.repo_profile.symbols import extract_file_symbols as original
 
+        original = intel_module._extract_combined_facts
         seen_paths: list[str] = []
 
         def _tracking(root, rel_path, language):
             seen_paths.append(rel_path)
             return original(root, rel_path, language)
 
-        monkeypatch.setattr(intel_module, "extract_file_symbols", _tracking)
+        monkeypatch.setattr(intel_module, "_extract_combined_facts", _tracking)
 
         result = ensure_repo_intelligence(repo)
 

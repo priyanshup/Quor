@@ -51,6 +51,7 @@ from __future__ import annotations
 
 import dataclasses
 import time
+import warnings
 from collections import Counter, defaultdict
 from collections.abc import Callable
 from datetime import UTC, datetime
@@ -73,8 +74,6 @@ from quor.pipeline.repo_profile.graph import (
 from quor.pipeline.repo_profile.graph import (
     FileFacts,
     assemble_graph,
-    build_dependency_graph_with_facts,
-    extract_file_facts,
 )
 from quor.pipeline.repo_profile.graph_model import Edge, RepoDependencyGraph
 from quor.pipeline.repo_profile.intel_diff import diff_repository, fingerprint_files, git_head
@@ -95,9 +94,8 @@ from quor.pipeline.repo_profile.symbols import (
     _MAX_FILE_SIZE_BYTES as _SYMBOLS_MAX_FILE_SIZE_BYTES,
 )
 from quor.pipeline.repo_profile.symbols import (
+    SkipReason,
     assemble_symbol_index,
-    build_symbol_index_with_facts,
-    extract_file_symbols,
 )
 from quor.pipeline.repo_profile.symbols_model import FileSymbols, RepoSymbolIndex
 from quor.pipeline.repo_profile.walk import WalkResult, walk_repository
@@ -360,6 +358,150 @@ def _build_file_intelligence(
     return entries
 
 
+# ---------------------------------------------------------------------------
+# Combined symbols+graph extraction (QB-055).
+#
+# `symbols.build_symbol_index_with_facts()` and
+# `graph.build_dependency_graph_with_facts()` each do a complete,
+# independent walk-and-parse of every AST-covered file — correct and
+# already-optimal when either runs alone (`quor symbols`/`quor graph`, via
+# `build_symbol_index()`/`build_dependency_graph()`), but this orchestrator
+# is the one caller that always needs *both* artifacts from the same build
+# pass. Calling the two independently here read every file's source off
+# disk twice and ran its symbol extractor over it twice for an identical
+# result (same source, same extractor, same output) — pure waste, not a
+# second, differently-scoped parse the way `graph.py`'s own
+# symbols-vs-relationships two-parses-per-file already is (see that
+# module's docstring). `_extract_combined_facts()` below does one read, one
+# symbol-extractor call, and one relationship-extractor call per file, and
+# `_build_combined_facts()`/`_refresh_combined_facts()` are this module's
+# only callers of it, replacing what used to be two independent loops
+# (a full walk here, and — before QB-055 — two more inside
+# `_refresh_symbol_facts()`/`_refresh_graph_facts()` below) with one.
+# ---------------------------------------------------------------------------
+
+
+def _extract_combined_facts(
+    root: Path, rel_path: str, language: str
+) -> tuple[FileSymbols | None, FileFacts | None, SkipReason | None]:
+    """Parse `rel_path` once and derive both its `FileSymbols` and
+    `FileFacts` from that single read + single symbol-extractor call +
+    single relationship-extractor call. Mirrors
+    `symbols.extract_file_symbols()`'s and `graph.extract_file_facts()`'s
+    read/parse/fail-open behavior exactly (same size cap, same "empty
+    symbol list is not a failure" contract for `FileSymbols`, same "always
+    return real `FileFacts` for anything that parsed" contract) — it is
+    those two functions fused into one pass, not new behavior.
+
+    `_SYMBOLS_MAX_FILE_SIZE_BYTES`/`_GRAPH_MAX_FILE_SIZE_BYTES` are the same
+    value today (each module documents the coupling); gating the one read
+    on `max()` of the two means a future divergence could only ever widen
+    what gets read, never silently narrow one artifact's coverage without
+    the other noticing.
+    """
+    abs_path = to_long_path(root / rel_path)
+    try:
+        if abs_path.stat().st_size > max(_SYMBOLS_MAX_FILE_SIZE_BYTES, _GRAPH_MAX_FILE_SIZE_BYTES):
+            return None, None, "too_large"
+        source = abs_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None, None, "parse_failure"
+
+    symbol_extractor = get_symbol_extractor(language)
+    relationship_extractor = get_relationship_extractor(language)
+    if symbol_extractor is None or relationship_extractor is None:
+        # Unreachable in practice given the caller's precondition — mirrors
+        # symbols.py's/graph.py's identical skip-not-raise guard.
+        return None, None, "parse_failure"
+
+    try:
+        with warnings.catch_warnings():
+            # A missing optional dependency is already reported once via
+            # languages_skipped, not per-file — mirrors symbols.py's/
+            # graph.py's identical reasoning.
+            warnings.simplefilter("ignore")
+            symbols = symbol_extractor(source)
+            relationships = relationship_extractor(source)
+    except Exception:  # noqa: BLE001 — per-file fail-open, mirrors symbols.py's/graph.py's identical boundary
+        return None, None, "parse_failure"
+
+    file_symbols = None
+    if symbols:
+        sorted_symbols = sorted(symbols, key=lambda s: (s.line, s.name))
+        file_symbols = FileSymbols(path=rel_path, language=language, symbols=sorted_symbols)
+    file_facts = FileFacts(
+        language=language, symbol_counts=Counter(s.name for s in symbols), relationships=relationships
+    )
+    return file_symbols, file_facts, None
+
+
+def _build_combined_facts(root: Path, walk_result: WalkResult) -> tuple[
+    dict[str, FileSymbols],
+    set[str],
+    dict[str, FileFacts],
+    set[str],
+    set[str],
+    set[str],
+    int,
+    int,
+]:
+    """Full-scan counterpart to `_refresh_combined_facts()` below — walks
+    every file once and extracts both artifacts' facts per file via
+    `_extract_combined_facts()`, replacing what used to be
+    `build_symbol_index_with_facts()` and `build_dependency_graph_with_facts()`
+    each doing their own full walk-and-parse (QB-055). `_SYMBOL_EXTRACTORS`/
+    `_RELATIONSHIP_EXTRACTORS` in `ast_summarize/registry.py` are registered
+    for exactly the same eight languages, so "language covered/skipped" is
+    identical for both artifacts — computed once here rather than twice."""
+    symbol_files: dict[str, FileSymbols] = {}
+    symbol_parse_failures: set[str] = set()
+    graph_facts: dict[str, FileFacts] = {}
+    graph_parse_failures: set[str] = set()
+    languages_covered: set[str] = set()
+    languages_skipped: set[str] = set()
+    large_file_count = 0
+    parse_failure_count = 0
+
+    for rel_path in walk_result.files:
+        language = EXTENSION_TO_LANGUAGE.get(PurePosixPath(rel_path).suffix.lower())
+        if language is None:
+            continue
+
+        if not is_language_available(language):
+            languages_skipped.add(language)
+            continue
+
+        if get_symbol_extractor(language) is None or get_relationship_extractor(language) is None:
+            # Unreachable in practice — see _extract_combined_facts()'s identical guard.
+            continue
+        languages_covered.add(language)
+
+        file_symbols, file_facts, reason = _extract_combined_facts(root, rel_path, language)
+        if reason == "too_large":
+            large_file_count += 1
+            continue
+        if reason == "parse_failure":
+            parse_failure_count += 1
+            symbol_parse_failures.add(rel_path)
+            graph_parse_failures.add(rel_path)
+            continue
+        if file_symbols is not None:
+            symbol_files[rel_path] = file_symbols
+        if file_facts is not None:
+            graph_facts[rel_path] = file_facts
+
+    return (
+        symbol_files,
+        symbol_parse_failures,
+        graph_facts,
+        graph_parse_failures,
+        languages_covered,
+        languages_skipped,
+        large_file_count,
+        parse_failure_count,
+    )
+
+
 def _full_rebuild(
     root: Path, *, action: BuildAction, t0: float, echo: Echo, quor_version: str
 ) -> RepoIntelligence:
@@ -373,14 +515,35 @@ def _full_rebuild(
     echo("Building repository intelligence...")
     profile = build_profile(root, walk_result=walk_result)
 
-    echo("Building symbols...")
-    symbol_index, symbol_files, symbol_parse_failures = build_symbol_index_with_facts(
-        root, walk_result=walk_result
-    )
+    echo("Building symbols and dependency graph...")
+    (
+        symbol_files,
+        symbol_parse_failures,
+        graph_facts,
+        graph_parse_failures,
+        languages_covered,
+        languages_skipped,
+        large_file_count,
+        parse_failure_count,
+    ) = _build_combined_facts(root, walk_result)
 
-    echo("Building dependency graph...")
-    graph, graph_facts, graph_parse_failures = build_dependency_graph_with_facts(
-        root, walk_result=walk_result
+    symbol_index = assemble_symbol_index(
+        root,
+        walk_result,
+        list(symbol_files.values()),
+        languages_covered=languages_covered,
+        languages_skipped=languages_skipped,
+        large_file_count=large_file_count,
+        parse_failure_count=parse_failure_count,
+    )
+    graph = assemble_graph(
+        root,
+        walk_result,
+        graph_facts,
+        languages_covered=languages_covered,
+        languages_skipped=languages_skipped,
+        large_file_count=large_file_count,
+        parse_failure_count=parse_failure_count,
     )
 
     fingerprints = fingerprint_files(root, walk_result.files)
@@ -464,14 +627,9 @@ def _refresh_from_cache(
         echo("Building repository intelligence...")
         profile = build_profile(root, walk_result=walk_result)
 
-        echo("Building symbols...")
-        symbol_files, symbol_parse_failures = _refresh_symbol_facts(
-            root, diff, symbol_files, symbol_parse_failures
-        )
-
-        echo("Building dependency graph...")
-        graph_facts, graph_parse_failures = _refresh_graph_facts(
-            root, diff, graph_facts, graph_parse_failures
+        echo("Building symbols and dependency graph...")
+        symbol_files, symbol_parse_failures, graph_facts, graph_parse_failures = _refresh_combined_facts(
+            root, diff, symbol_files, symbol_parse_failures, graph_facts, graph_parse_failures
         )
 
         intel_store.save_state(
@@ -522,76 +680,59 @@ def _refresh_from_cache(
     )
 
 
-def _refresh_symbol_facts(
+def _refresh_combined_facts(
     root: Path,
     diff: RepoDiff,
-    cached_files: dict[str, FileSymbols],
-    cached_parse_failures: set[str],
-) -> tuple[dict[str, FileSymbols], set[str]]:
-    files = dict(cached_files)
-    parse_failures = set(cached_parse_failures)
+    cached_symbol_files: dict[str, FileSymbols],
+    cached_symbol_parse_failures: set[str],
+    cached_graph_facts: dict[str, FileFacts],
+    cached_graph_parse_failures: set[str],
+) -> tuple[dict[str, FileSymbols], set[str], dict[str, FileFacts], set[str]]:
+    """Incremental counterpart to `_build_combined_facts()` above — QB-055's
+    fix for what used to be `_refresh_symbol_facts()`/`_refresh_graph_facts()`
+    looping over `diff.reextraction_paths` independently, each re-reading
+    and re-parsing the same changed file a second time for no benefit."""
+    symbol_files = dict(cached_symbol_files)
+    symbol_parse_failures = set(cached_symbol_parse_failures)
+    graph_facts = dict(cached_graph_facts)
+    graph_parse_failures = set(cached_graph_parse_failures)
 
     for old_path in diff.deleted:
-        files.pop(old_path, None)
-        parse_failures.discard(old_path)
+        symbol_files.pop(old_path, None)
+        symbol_parse_failures.discard(old_path)
+        graph_facts.pop(old_path, None)
+        graph_parse_failures.discard(old_path)
 
     for old_path, new_path in diff.renamed:
         # Pure rename: content is byte-identical to what the old path
         # already had cached — relocate, never re-parse (see
         # RepoDiff.reextraction_paths's docstring for the bug this fixed).
-        moved = files.pop(old_path, None)
-        was_failure = old_path in parse_failures
-        parse_failures.discard(old_path)
-        if moved is not None:
-            files[new_path] = dataclasses.replace(moved, path=new_path)
-        elif was_failure:
-            parse_failures.add(new_path)
+        moved_symbols = symbol_files.pop(old_path, None)
+        was_symbol_failure = old_path in symbol_parse_failures
+        symbol_parse_failures.discard(old_path)
+        if moved_symbols is not None:
+            symbol_files[new_path] = dataclasses.replace(moved_symbols, path=new_path)
+        elif was_symbol_failure:
+            symbol_parse_failures.add(new_path)
         # else: old_path had zero symbols and wasn't a failure either —
         # new_path correctly inherits that same "nothing to record" outcome.
 
-    for rel_path in diff.reextraction_paths:
-        files.pop(rel_path, None)
-        parse_failures.discard(rel_path)
-        language = EXTENSION_TO_LANGUAGE.get(PurePosixPath(rel_path).suffix.lower())
-        if (
-            language is None
-            or not is_language_available(language)
-            or get_symbol_extractor(language) is None
-        ):
-            continue
-        file_symbols, reason = extract_file_symbols(root, rel_path, language)
-        if reason == "parse_failure":
-            parse_failures.add(rel_path)
-        elif file_symbols is not None:
-            files[rel_path] = file_symbols
-    return files, parse_failures
-
-
-def _refresh_graph_facts(
-    root: Path, diff: RepoDiff, cached_facts: dict[str, FileFacts], cached_parse_failures: set[str]
-) -> tuple[dict[str, FileFacts], set[str]]:
-    facts = dict(cached_facts)
-    parse_failures = set(cached_parse_failures)
-
-    for old_path in diff.deleted:
-        facts.pop(old_path, None)
-        parse_failures.discard(old_path)
-
-    for old_path, new_path in diff.renamed:
-        # Pure rename — relocate the cached facts, never re-parse (FileFacts
-        # carries no `path` field of its own, unlike FileSymbols, so this is
-        # a plain key move with no field to update).
-        moved = facts.pop(old_path, None)
-        was_failure = old_path in parse_failures
-        parse_failures.discard(old_path)
-        if moved is not None:
-            facts[new_path] = moved
-        elif was_failure:
-            parse_failures.add(new_path)
+        # FileFacts carries no `path` field of its own, unlike FileSymbols,
+        # so this is a plain key move with no field to update.
+        moved_facts = graph_facts.pop(old_path, None)
+        was_graph_failure = old_path in graph_parse_failures
+        graph_parse_failures.discard(old_path)
+        if moved_facts is not None:
+            graph_facts[new_path] = moved_facts
+        elif was_graph_failure:
+            graph_parse_failures.add(new_path)
 
     for rel_path in diff.reextraction_paths:
-        facts.pop(rel_path, None)
-        parse_failures.discard(rel_path)
+        symbol_files.pop(rel_path, None)
+        symbol_parse_failures.discard(rel_path)
+        graph_facts.pop(rel_path, None)
+        graph_parse_failures.discard(rel_path)
+
         language = EXTENSION_TO_LANGUAGE.get(PurePosixPath(rel_path).suffix.lower())
         if (
             language is None
@@ -600,12 +741,17 @@ def _refresh_graph_facts(
             or get_relationship_extractor(language) is None
         ):
             continue
-        file_facts, reason = extract_file_facts(root, rel_path, language)
+        file_symbols, file_facts, reason = _extract_combined_facts(root, rel_path, language)
         if reason == "parse_failure":
-            parse_failures.add(rel_path)
-        elif file_facts is not None:
-            facts[rel_path] = file_facts
-    return facts, parse_failures
+            symbol_parse_failures.add(rel_path)
+            graph_parse_failures.add(rel_path)
+            continue
+        if file_symbols is not None:
+            symbol_files[rel_path] = file_symbols
+        if file_facts is not None:
+            graph_facts[rel_path] = file_facts
+
+    return symbol_files, symbol_parse_failures, graph_facts, graph_parse_failures
 
 
 def _current_language_coverage(files: list[str]) -> tuple[set[str], set[str]]:
