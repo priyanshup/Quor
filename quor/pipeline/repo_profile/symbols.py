@@ -106,7 +106,7 @@ def extract_file_symbols(
         # relies on Pipeline.execute()'s own per-stage fail-open,
         # ADR-018), there is no engine above this loop to catch a parse
         # failure for us. One malformed file must not abort the whole
-        # index — mirrors `map_command._track_map_invocation()`'s
+        # index — mirrors `quor/tracking/db.py::track_invocation_safe()`'s
         # identical, explicitly-commented fail-open boundary.
         return None, "parse_failure"
 

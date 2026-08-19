@@ -34,7 +34,7 @@ from quor.cli.repo_path import resolve_repo_root
 from quor.cli.repo_progress import print_build_summary, progress_echo
 from quor.pipeline.repo_profile.intel import ensure_repo_intelligence
 from quor.pipeline.repo_profile.render import render_json, render_markdown
-from quor.tracking.db import REPO_PROFILE_FILTER_LABEL, get_tracking_db, track_invocation
+from quor.tracking.db import REPO_PROFILE_FILTER_LABEL, get_tracking_db, track_invocation_safe
 
 
 def map_command(
@@ -61,38 +61,19 @@ def map_command(
     print_build_summary(intel, detail, elapsed_seconds=time.monotonic() - t0)
 
     typer.echo(output)
-    _track_map_invocation(root, output, t0)
-
-
-def _track_map_invocation(root: Path, output: str, t0: float) -> None:
-    """Record this invocation in the same tracking DB every other Quor
-    producer uses, so `quor gain` reflects `quor map` usage.
-
-    There is no "before" blob to compress against — this is synthesis, not
-    compression (see module docstring) — so `original` and `filtered` are
-    deliberately passed as the *same* value. That makes this invocation's
-    contribution to GainReport.tokens_saved exactly zero (honest: `quor map`
-    doesn't save tokens, it avoids a multi-call discovery sequence that
-    Quor's tracking has no way to measure directly) while still surfacing
-    the invocation itself in `total_invocations`/`tokens_after` and (with
-    zero % compression) in `quor gain --filters`' per-filter breakdown under
-    the "repo-profile" label — never conflated with a real ContentMask
-    filter's compression ratio.
-
-    Fails open like every other tracking call site: a tracking-DB error
-    must never affect the profile output the user already received.
-    """
-    try:
-        db = get_tracking_db()
-        track_invocation(
-            db,
-            command=f"Map: {root.as_posix()}",
-            original=output,
-            filtered=output,
-            filter_name=REPO_PROFILE_FILTER_LABEL,
-            was_passthrough=False,
-            t0=t0,
-        )
-        db.close()
-    except Exception:  # noqa: BLE001 — fail-open: tracking must never affect real output
-        pass
+    # No "before" blob to compress against — this is synthesis, not
+    # compression (see module docstring) — so original/filtered default to
+    # the same value, making this invocation's GainReport.tokens_saved
+    # contribution exactly zero (honest) while still surfacing it in
+    # total_invocations/tokens_after and (0% compression) `quor gain
+    # --filters`' breakdown under the "repo-profile" label, never conflated
+    # with a real ContentMask filter's ratio. QB-107: track_invocation_safe
+    # itself is fail-open.
+    track_invocation_safe(
+        get_tracking_db,
+        command=f"Map: {root.as_posix()}",
+        original=output,
+        filter_name=REPO_PROFILE_FILTER_LABEL,
+        t0=t0,
+        close_after=True,
+    )

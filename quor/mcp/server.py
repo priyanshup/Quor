@@ -31,7 +31,6 @@ docs/POC_TESTING.md for how to register this with an MCP client.
 
 from __future__ import annotations
 
-import contextlib
 import threading
 import time
 from pathlib import Path
@@ -54,7 +53,7 @@ from quor.tracking.db import (
     TrackingDB,
     count_tokens,
     get_tracking_db,
-    track_invocation,
+    track_invocation_safe,
 )
 
 # The installed `mcp` SDK (v2.0.0) renamed the high-level server class from
@@ -90,32 +89,6 @@ def _get_tracking_db() -> TrackingDB:
     return _tracking_db
 
 
-def _track(
-    *,
-    command: str,
-    original: str,
-    filtered: str,
-    filter_name: str | None,
-    was_passthrough: bool,
-    t0: float,
-) -> None:
-    """Fail-open wrapper around track_invocation() for this module's two MCP
-    tools — mirrors every other producer's own try/except Exception: pass
-    discipline (map.py/explore.py/...), needed here on top of
-    track_invocation()'s own internal swallowing since constructing the lazy
-    `_tracking_db` singleton happens outside that internal guard."""
-    with contextlib.suppress(Exception):
-        track_invocation(
-            _get_tracking_db(),
-            command=command,
-            original=original,
-            filtered=filtered,
-            filter_name=filter_name,
-            was_passthrough=was_passthrough,
-            t0=t0,
-        )
-
-
 @mcp.tool()
 def compress_context(raw_text: str) -> str:
     """Use this tool whenever reading large command outputs, log streams, git
@@ -137,12 +110,12 @@ def compress_context(raw_text: str) -> str:
     digest = content_hash(raw_text)
     if _dedup_cache.seen(digest):
         marker = f"[Quor: unchanged since last shown this session ({digest[:12]}) — see above]"
-        _track(
+        track_invocation_safe(
+            _get_tracking_db,
             command="MCP compress_context",
             original=raw_text,
             filtered=marker,
             filter_name=MCP_DEDUP_FILTER_LABEL,
-            was_passthrough=False,
             t0=t0,
         )
         return marker
@@ -158,7 +131,8 @@ def compress_context(raw_text: str) -> str:
     compressed_tokens = count_tokens(compressed)
     saved_pct = max(0, round((1 - compressed_tokens / original_tokens) * 100))
     result = f"[Quor Compressed: {saved_pct}% saved]\n{compressed}"
-    _track(
+    track_invocation_safe(
+        _get_tracking_db,
         command="MCP compress_context",
         original=raw_text,
         filtered=result,
@@ -240,12 +214,11 @@ def get_repo_context(file_path: str = "", query: str = "") -> str:
         command = f"MCP get_repo_context: query={query!r}"
     else:
         command = "MCP get_repo_context: (no args)"
-    _track(
+    track_invocation_safe(
+        _get_tracking_db,
         command=command,
         original=result,
-        filtered=result,
         filter_name=MCP_REPO_CONTEXT_FILTER_LABEL,
-        was_passthrough=False,
         t0=t0,
     )
     return result

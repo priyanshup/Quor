@@ -57,7 +57,7 @@ from quor.pipeline.repo_profile.dashboard_model import RepoIntelligenceStatus
 from quor.pipeline.repo_profile.dashboard_render import print_dashboard, render_json
 from quor.pipeline.repo_profile.intel import ensure_repo_intelligence
 from quor.pipeline.repo_profile.intel_model import RepoIntelligence
-from quor.tracking.db import REPO_DASHBOARD_FILTER_LABEL, get_tracking_db, track_invocation
+from quor.tracking.db import REPO_DASHBOARD_FILTER_LABEL, get_tracking_db, track_invocation_safe
 
 console = Console(highlight=False)
 
@@ -122,7 +122,17 @@ def repo_command(
     detail = f"{len(dashboard.languages)} language{'s' if len(dashboard.languages) != 1 else ''}"
     print_build_summary(intel, detail, elapsed_seconds=time.monotonic() - t0)
 
-    _track_repo_invocation(root, output, t0)
+    # Synthesis, not compression — see quor/tracking/db.py's
+    # track_invocation_safe() docstring for why original/filtered default
+    # equal and this call is fail-open (QB-107).
+    track_invocation_safe(
+        get_tracking_db,
+        command=f"Repo: {root.as_posix()}",
+        original=output,
+        filter_name=REPO_DASHBOARD_FILTER_LABEL,
+        t0=t0,
+        close_after=True,
+    )
 
 
 def _build_intelligence_status(intel: RepoIntelligence) -> RepoIntelligenceStatus:
@@ -158,30 +168,3 @@ def _print_no_cache_message(*, json_output: bool) -> None:
         )
     else:
         typer.secho(_NO_CACHE_MESSAGE, fg=typer.colors.YELLOW)
-
-
-def _track_repo_invocation(root: Path, output: str, t0: float) -> None:
-    """Record this invocation in the same tracking DB every other Quor
-    producer uses, so `quor gain` reflects `quor repo` usage — mirrors
-    `quor map`/`quor symbols`/`quor graph`'s identical tracking call site.
-
-    There is no "before" blob to compress against (this presents already-
-    cached data, it doesn't compress anything), so `original`/`filtered`
-    are the same value, exactly like those three commands. Fails open like
-    every other tracking call site: a tracking-DB error must never affect
-    the dashboard output the user already received.
-    """
-    try:
-        db = get_tracking_db()
-        track_invocation(
-            db,
-            command=f"Repo: {root.as_posix()}",
-            original=output,
-            filtered=output,
-            filter_name=REPO_DASHBOARD_FILTER_LABEL,
-            was_passthrough=False,
-            t0=t0,
-        )
-        db.close()
-    except Exception:  # noqa: BLE001 — fail-open: tracking must never affect real output
-        pass

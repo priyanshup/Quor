@@ -802,7 +802,40 @@ singleton (long-lived server convention) — the shared helper needs to accept a
 `TrackingDB` (matching `track_invocation()`'s own signature) rather than assuming either lifecycle,
 so both call-site families can adopt it unchanged.
 
-**Status:** Proposed. Not yet scoped.
+**Resolution:** Not named `track_synthesis_invocation` as originally sketched above — `mcp/server.py`'s
+`_track()` isn't synthesis-only (it also backs `compress_context`, where `original != filtered` and
+`filter_name`/`was_passthrough` genuinely vary), so a synthesis-scoped name would have excluded the
+one call site that most needed unifying. Shipped as `track_invocation_safe(get_db, *, command,
+original, filtered=None, filter_name, was_passthrough=False, t0, files_changed=None,
+close_after=False)` in `quor/tracking/db.py`, right after `track_invocation()`. `get_db` is a zero-arg
+callable rather than a `TrackingDB` instance — the acquisition step itself (which can raise) needed to
+be inside the fail-open boundary too, not just the `track_invocation()` call, so a getter was the only
+shape covering both lifecycles: `quor/cli/commands/*`'s 6 sites pass `get_tracking_db` with
+`close_after=True` (fresh `TrackingDB` per call, matching their existing convention);
+`mcp/server.py`'s 3 call sites (`compress_context` ×2, `get_repo_context` ×1) pass its own
+`_get_tracking_db` lazy-singleton getter with `close_after=False`. `filtered` defaults to `original`
+(the 6-CLI-plus-`get_repo_context` synthesis convention); `compress_context` passes it explicitly.
+
+All 4 single-call-site wrappers (`map.py`/`graph.py`/`symbols.py`/`repo.py`) removed entirely, calls
+inlined. `search.py`'s single-call-site `_track()` likewise removed and inlined.
+`quor/mcp/server.py`'s `_track()` removed, its 3 call sites now call `track_invocation_safe` directly.
+One deliberate deviation from "remove every wrapper": `explore.py`'s `_track()` (5 internal call
+sites sharing everything but the command label) was kept as a thin wrapper that now delegates to
+`track_invocation_safe` internally, rather than inlined — genuine intra-file DRY value that a
+cross-file dedup pass shouldn't have removed just for uniformity; the actual QB-107 problem (each
+file reinventing the get-db/track/close/swallow boilerplate) is fully eliminated there too. Three
+stale doc-comment pointers to the now-removed function names (two in `quor/tracking/db.py`'s
+`REPO_*_FILTER_LABEL` docstrings, one in `quor/pipeline/repo_profile/symbols.py`) were also found and
+fixed while grepping for leftover references.
+
+**Verified:** `ruff check`/`mypy` clean on all 8 changed files. `test_tracking.py`/`test_mcp_server.py`/
+`test_filter_analytics.py` green. All 6 affected commands' own CLI test suites
+(`test_cli_{explore,graph,map,repo,symbols}.py`, `test_repo_search_cli.py`) green — previously
+excluded from the routine broad sweep as slow/subprocess-spawning, run explicitly here since this
+ticket changed their actual tracking call sites. `quor verify` 242/242. Full `tests/unit` sweep
+(including the CLI test files this time) green.
+
+**Status:** Resolved (2026-08-19).
 
 </details>
 

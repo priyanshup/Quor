@@ -37,7 +37,7 @@ from quor.cli.repo_path import resolve_repo_root
 from quor.cli.repo_progress import print_build_summary, progress_echo
 from quor.pipeline.repo_profile.intel import ensure_repo_intelligence
 from quor.pipeline.repo_profile.symbols_render import render_json, render_markdown
-from quor.tracking.db import REPO_SYMBOLS_FILTER_LABEL, get_tracking_db, track_invocation
+from quor.tracking.db import REPO_SYMBOLS_FILTER_LABEL, get_tracking_db, track_invocation_safe
 
 
 def symbols_command(
@@ -63,32 +63,14 @@ def symbols_command(
     print_build_summary(intel, detail, elapsed_seconds=time.monotonic() - t0)
 
     typer.echo(output)
-    _track_symbols_invocation(root, output, t0)
-
-
-def _track_symbols_invocation(root: Path, output: str, t0: float) -> None:
-    """Record this invocation in the same tracking DB every other Quor
-    producer uses, so `quor gain` reflects `quor symbols` usage.
-
-    There is no "before" blob to compress against — this is synthesis, not
-    compression, exactly like `quor map` — so `original`/`filtered` are
-    deliberately passed as the same value (see
-    `quor/cli/commands/map.py::_track_map_invocation`'s identical
-    reasoning, not repeated here). Fails open like every other tracking
-    call site: a tracking-DB error must never affect the index output the
-    user already received.
-    """
-    try:
-        db = get_tracking_db()
-        track_invocation(
-            db,
-            command=f"Symbols: {root.as_posix()}",
-            original=output,
-            filtered=output,
-            filter_name=REPO_SYMBOLS_FILTER_LABEL,
-            was_passthrough=False,
-            t0=t0,
-        )
-        db.close()
-    except Exception:  # noqa: BLE001 — fail-open: tracking must never affect real output
-        pass
+    # Synthesis, not compression — see quor/tracking/db.py's
+    # track_invocation_safe() docstring for why original/filtered default
+    # equal and this call is fail-open (QB-107).
+    track_invocation_safe(
+        get_tracking_db,
+        command=f"Symbols: {root.as_posix()}",
+        original=output,
+        filter_name=REPO_SYMBOLS_FILTER_LABEL,
+        t0=t0,
+        close_after=True,
+    )

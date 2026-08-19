@@ -6,6 +6,10 @@ Public API:
     TrackingDB             — background-thread writer (non-blocking)
     track_invocation()     — shared fail-open recorder for every InvocationRecord
                               producer (Bash dispatcher, Read hook, ...)
+    track_invocation_safe() — track_invocation() plus safe TrackingDB acquisition,
+                              for producers that don't already have one in hand
+                              (QB-107): every quor/cli/commands/*.py synthesis
+                              command and the MCP server's two tools
     query_gain()           — read-side: produce a GainReport from SQLite
     query_recent_invocations() — read-side: last N invocations for `quor dashboard` (QB-083)
     normalize_project_path() — canonical project identity (query_gain's matching rule)
@@ -32,6 +36,7 @@ import sqlite3
 import threading
 import time
 import warnings
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timezone
 from pathlib import Path
@@ -555,6 +560,59 @@ def track_invocation(
         warnings.warn(f"[quor] tracking record error: {exc}", stacklevel=2)
 
 
+def track_invocation_safe(
+    get_db: Callable[[], TrackingDB],
+    *,
+    command: str,
+    original: str,
+    filtered: str | None = None,
+    filter_name: str | None,
+    was_passthrough: bool = False,
+    t0: float,
+    files_changed: int | None = None,
+    close_after: bool = False,
+) -> None:
+    """Fail-open wrapper around track_invocation() that also covers
+    acquiring the TrackingDB itself (QB-107) — the one failure surface
+    every pre-QB-107 call site's own try/except had to add on top of
+    track_invocation()'s own internal swallowing: constructing/obtaining a
+    TrackingDB can itself raise, and track_invocation() only guards the
+    call it's already been handed.
+
+    `get_db` is a zero-arg callable, not a `TrackingDB` instance, so one
+    shape covers both lifecycles every real producer uses: a short-lived
+    CLI process passes `get_tracking_db` itself (a fresh `TrackingDB` per
+    call, matching every `quor/cli/commands/*.py` synthesis command's
+    construct-then-close convention) with `close_after=True`; a long-lived
+    process (the MCP server) passes its own lazy singleton getter with
+    `close_after=False` (closed once, at process shutdown, not after every
+    call — see `quor/mcp/server.py`'s `_get_tracking_db()`).
+
+    `filtered` defaults to `original` — the synthesis-command convention
+    every `quor/cli/commands/*.py` call site and `get_repo_context` share
+    (no "before" blob, so `original`/`filtered` are recorded equal by
+    design). `compress_context` is the one caller that always passes a
+    real, different `filtered` explicitly, which is why this stays a
+    general recorder rather than a synthesis-only one.
+    """
+    try:
+        db = get_db()
+        track_invocation(
+            db,
+            command=command,
+            original=original,
+            filtered=filtered if filtered is not None else original,
+            filter_name=filter_name,
+            was_passthrough=was_passthrough,
+            t0=t0,
+            files_changed=files_changed,
+        )
+        if close_after:
+            db.close()
+    except Exception:  # noqa: BLE001 — tracking must never affect real output
+        pass
+
+
 # ---------------------------------------------------------------------------
 # Read-side: query_gain
 # ---------------------------------------------------------------------------
@@ -932,7 +990,8 @@ def query_recent_invocations(
 PASSTHROUGH_LABEL = "(no filter matched)"
 
 # QB-061: the synthetic `filter_name` `quor map` tracks its invocations
-# under (see `quor/cli/commands/map.py::_track_map_invocation`). Like
+# under (see `quor/cli/commands/map.py::map_command`'s own
+# `track_invocation_safe` call, QB-107). Like
 # `PASSTHROUGH_LABEL`, this is not a real ContentMask filter — `quor map`
 # is synthesis, not compression, so its `original_tokens`/`final_tokens`
 # are deliberately recorded equal (net-zero contribution, by design, not a
@@ -944,16 +1003,18 @@ PASSTHROUGH_LABEL = "(no filter matched)"
 REPO_PROFILE_FILTER_LABEL = "repo-profile"
 
 # QB-066: the synthetic `filter_name` `quor symbols` tracks its invocations
-# under (see `quor/cli/commands/symbols.py::_track_symbols_invocation`).
-# Same reasoning as `REPO_PROFILE_FILTER_LABEL` above, applied to the
+# under (see `quor/cli/commands/symbols.py::symbols_command`'s own
+# `track_invocation_safe` call, QB-107). Same reasoning as
+# `REPO_PROFILE_FILTER_LABEL` above, applied to the
 # second synthesis-not-compression command: a repository symbol index has
 # no "before" blob either, so `original_tokens`/`final_tokens` are recorded
 # equal by design, and `flag_low_performers` must exclude this label too.
 REPO_SYMBOLS_FILTER_LABEL = "repo-symbols"
 
 # QB-067: the synthetic `filter_name` `quor graph` tracks its invocations
-# under (see `quor/cli/commands/graph.py::_track_graph_invocation`). Same
-# reasoning as `REPO_PROFILE_FILTER_LABEL`/`REPO_SYMBOLS_FILTER_LABEL`
+# under (see `quor/cli/commands/graph.py::graph_command`'s own
+# `track_invocation_safe` call, QB-107). Same reasoning as
+# `REPO_PROFILE_FILTER_LABEL`/`REPO_SYMBOLS_FILTER_LABEL`
 # above, applied to the third synthesis-not-compression command: a
 # repository dependency graph has no "before" blob either, so
 # `original_tokens`/`final_tokens` are recorded equal by design, and
@@ -961,8 +1022,9 @@ REPO_SYMBOLS_FILTER_LABEL = "repo-symbols"
 REPO_GRAPH_FILTER_LABEL = "repo-graph"
 
 # QB-076: the synthetic `filter_name` `quor repo` tracks its invocations
-# under (see `quor/cli/commands/repo.py::_track_repo_invocation`). Same
-# reasoning as `REPO_PROFILE_FILTER_LABEL`/`REPO_SYMBOLS_FILTER_LABEL`/
+# under (see `quor/cli/commands/repo.py::repo_command`'s own
+# `track_invocation_safe` call, QB-107). Same reasoning as
+# `REPO_PROFILE_FILTER_LABEL`/`REPO_SYMBOLS_FILTER_LABEL`/
 # `REPO_GRAPH_FILTER_LABEL` above, applied to the fourth synthesis-not-
 # compression command: the dashboard only presents already-cached
 # repository intelligence, so it has no "before" blob either —
@@ -981,7 +1043,8 @@ REPO_DASHBOARD_FILTER_LABEL = "repo-dashboard"
 REPO_EXPLORE_FILTER_LABEL = "repo-explore"
 
 # QB-080: the synthetic `filter_name` `quor search` tracks its invocations
-# under (see `quor\cli\commands\search.py::_track()`). Same reasoning as
+# under (see `quor\cli\commands\search.py::search_command`'s own
+# `track_invocation_safe` call, QB-107). Same reasoning as
 # `REPO_PROFILE_FILTER_LABEL`/`REPO_SYMBOLS_FILTER_LABEL`/
 # `REPO_GRAPH_FILTER_LABEL`/`REPO_DASHBOARD_FILTER_LABEL`/
 # `REPO_EXPLORE_FILTER_LABEL` above, applied to the sixth synthesis-not-

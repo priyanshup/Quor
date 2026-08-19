@@ -38,7 +38,7 @@ from quor.pipeline.repo_profile.explorer_render import (
 )
 from quor.pipeline.repo_profile.intel_model import FileImportance, FileIntelligenceEntry, FileKind
 from quor.pipeline.repo_profile.search_render import render_search_json, render_search_text
-from quor.tracking.db import REPO_SEARCH_FILTER_LABEL, get_tracking_db, track_invocation
+from quor.tracking.db import REPO_SEARCH_FILTER_LABEL, get_tracking_db, track_invocation_safe
 
 _FILE_KINDS: tuple[str, ...] = get_args(FileKind)
 _FILE_IMPORTANCES: tuple[str, ...] = get_args(FileImportance)
@@ -87,26 +87,6 @@ def _exit_invalid_limit(limit: int, *, json_output: bool) -> NoReturn:
     else:
         typer.secho(message, fg=typer.colors.RED, err=True)
     raise typer.Exit(code=ExitCode.GENERAL_ERROR)
-
-
-def _track(root: Path, output: str, t0: float) -> None:
-    """Record this invocation the same way `quor explore` does — fails
-    open, never affects real output. No "before" blob (this only reads
-    already-cached data), so `original`/`filtered` are recorded equal."""
-    try:
-        db = get_tracking_db()
-        track_invocation(
-            db,
-            command=f"Search: {root.as_posix()}",
-            original=output,
-            filtered=output,
-            filter_name=REPO_SEARCH_FILTER_LABEL,
-            was_passthrough=False,
-            t0=t0,
-        )
-        db.close()
-    except Exception:  # noqa: BLE001 — fail-open: tracking must never affect real output
-        pass
 
 
 def search_command(
@@ -173,4 +153,14 @@ def search_command(
 
     output = render_search_json(result) if json_output else render_search_text(result)
     typer.echo(output)
-    _track(root, output, t0)
+    # Synthesis, not compression — see quor/tracking/db.py's
+    # track_invocation_safe() docstring for why original/filtered default
+    # equal and this call is fail-open (QB-107).
+    track_invocation_safe(
+        get_tracking_db,
+        command=f"Search: {root.as_posix()}",
+        original=output,
+        filter_name=REPO_SEARCH_FILTER_LABEL,
+        t0=t0,
+        close_after=True,
+    )

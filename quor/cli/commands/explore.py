@@ -54,7 +54,7 @@ from quor.pipeline.repo_profile.explorer_render import (
     render_used_by_json,
     render_used_by_text,
 )
-from quor.tracking.db import REPO_EXPLORE_FILTER_LABEL, get_tracking_db, track_invocation
+from quor.tracking.db import REPO_EXPLORE_FILTER_LABEL, get_tracking_db, track_invocation_safe
 
 explore_app = typer.Typer(
     help="Answer repository structure questions from cached repository intelligence — never walks or rebuilds.",
@@ -97,28 +97,26 @@ def _load_cache_or_exit(root: Path, *, json_output: bool) -> explorer.ExplorerCa
 
 def _track(root: Path, command: str, output: str, t0: float) -> None:
     """Record this invocation the same way `quor map`/`quor symbols`/`quor
-    graph`/`quor repo` do — fails open, never affects real output. There is
-    no "before" blob (this only reads already-cached data), so
-    `original`/`filtered` are recorded equal, mirroring those four
-    commands' identical convention. `t0` must be a `time.monotonic()`
-    reading taken at the start of the calling command (never a placeholder
-    like `0.0`) — `track_invocation()` computes `duration_ms` as
+    graph`/`quor repo` do (QB-107: via `track_invocation_safe`, fail-open,
+    never affects real output). There is no "before" blob (this only reads
+    already-cached data), so `original`/`filtered` are recorded equal by
+    that helper's own default, mirroring those four commands' identical
+    convention. `t0` must be a `time.monotonic()` reading taken at the
+    start of the calling command (never a placeholder like `0.0`) —
+    `track_invocation()` computes `duration_ms` as
     `(time.monotonic() - t0) * 1000`, so anything else records a wildly
-    wrong duration into `quor gain`'s stats."""
-    try:
-        db = get_tracking_db()
-        track_invocation(
-            db,
-            command=f"{command}: {root.as_posix()}",
-            original=output,
-            filtered=output,
-            filter_name=REPO_EXPLORE_FILTER_LABEL,
-            was_passthrough=False,
-            t0=t0,
-        )
-        db.close()
-    except Exception:  # noqa: BLE001 — fail-open: tracking must never affect real output
-        pass
+    wrong duration into `quor gain`'s stats. Kept as a thin, file-local
+    wrapper (unlike the other 6 call sites, which call
+    `track_invocation_safe` directly) since this file alone has 5 call
+    sites sharing everything but the command label."""
+    track_invocation_safe(
+        get_tracking_db,
+        command=f"{command}: {root.as_posix()}",
+        original=output,
+        filter_name=REPO_EXPLORE_FILTER_LABEL,
+        t0=t0,
+        close_after=True,
+    )
 
 
 @explore_app.command("find")
