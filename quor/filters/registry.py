@@ -49,6 +49,10 @@ from quor.pipeline.stages.numeric_range_compression import (
     NumericRangeCompressionStage,
 )
 from quor.pipeline.stages.path_prefix_fold import PathPrefixFoldConfig, PathPrefixFoldStage
+from quor.pipeline.stages.protect_diff_filename_headers import (
+    ProtectDiffFilenameHeadersConfig,
+    ProtectDiffFilenameHeadersStage,
+)
 from quor.pipeline.stages.python_ast_summarize import (
     PythonAstSummarizeConfig,
     PythonAstSummarizeStage,
@@ -100,6 +104,10 @@ _STAGE_HANDLERS: dict[str, tuple[type, type[StageConfig]]] = {
     "column_padding_compression": (
         ColumnPaddingCompressionStage,
         ColumnPaddingCompressionConfig,
+    ),
+    "protect_diff_filename_headers": (
+        ProtectDiffFilenameHeadersStage,
+        ProtectDiffFilenameHeadersConfig,
     ),
 }
 

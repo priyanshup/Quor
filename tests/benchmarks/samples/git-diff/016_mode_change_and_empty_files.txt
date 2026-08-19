@@ -1,0 +1,24 @@
+diff --git a/scripts/deploy.sh b/scripts/deploy.sh
+old mode 100644
+new mode 100755
+diff --git a/src/notifications/__init__.py b/src/notifications/__init__.py
+new file mode 100644
+index 0000000..e69de29
+diff --git a/src/notifications/legacy_placeholder.py b/src/notifications/legacy_placeholder.py
+deleted file mode 100644
+index e69de29..0000000
+diff --git a/src/notifications/channels.py b/src/notifications/channels.py
+index 2d3e4f5..6a7b8c9 100644
+--- a/src/notifications/channels.py
++++ b/src/notifications/channels.py
+@@ -10,7 +10,7 @@ class EmailChannel:
+     def __init__(self, smtp_client):
+         self.smtp_client = smtp_client
+
+-    def send(self, event):
+-        return self.smtp_client.send_raw(event.to_payload())
++    def send(self, event, *, retry=True):
++        return self.smtp_client.send_raw(event.to_payload(), retry=retry)
+
+     def supports(self, event_type):
+         return event_type in self.SUPPORTED_EVENTS

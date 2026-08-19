@@ -342,6 +342,33 @@ ticket, rating a naive implementation High risk. Nothing scoped remains to rank 
 items below it for — dropped from this ordering, same treatment QB-094/QB-046/QB-052/QB-105 got
 above. **Current order: QB-041 → QB-086 → QB-034 → QB-055 → QB-054 → QB-049 → QB-039 → QB-053.**
 
+**Housekeeping correction (2026-08-19, later the same day):** QB-086 shipped — the competitive
+landscape refresh is done (research/writing, no code, as scoped). Every competitor figure in its own
+entry below was independently re-verified live against the GitHub REST API rather than carried
+forward from secondary sources; see `docs/archive/product-discovery/competitive-research-refresh-2026-08.md`
+for the full refreshed analysis and QB-086's own entry below for the summary and status update. One
+new backlog candidate came out of the refresh — **QB-111** (tiered/partial-disclosure read modes for
+`get_repo_context`, modeled on a capability a new competitor, LeanCTX, ships and Quor doesn't) — added
+to [Next](#next). Moved to [Completed](#completed) treatment is not applied here (same as QB-095/096/
+097/098/099/105 above) — full write-up left in place, but it no longer occupies a slot in this
+ordering. **Current order: QB-041 → QB-034 → QB-055 → QB-054 → QB-049 → QB-039 → QB-053.**
+
+**Housekeeping correction (2026-08-19, later the same day):** QB-041 shipped. Its own audit found and
+fixed a real filename-loss correctness bug (`protect_diff_filename_headers`) and surfaced a second,
+larger finding spun into its own new item, **QB-112** (`GitStructuralDiffPlugin` unreachable via
+`compress_context`, same architectural gap class as QB-109), added to this section (Now) directly
+after QB-109's own entry given comparable severity. Not moved to [Completed](#completed) (same
+full-write-up-left-in-place treatment as above); no longer occupies a slot in this ordering.
+**Current order: QB-034 → QB-055 → QB-054 → QB-049 → QB-039 → QB-053.** QB-112, being new and not yet
+triaged into this ordering, is deliberately left unranked here rather than guessed into a position —
+next full roadmap review should place it (its own entry's severity note suggests it belongs near the
+top, comparable to where QB-109 itself ranked, but that's a call for a dedicated prioritization pass,
+not a housekeeping note).
+
+**Housekeeping correction (2026-08-19, later the same day):** QB-034 shipped as `quor discover`. Not
+moved to [Completed](#completed) (same full-write-up-left-in-place treatment as above); no longer
+occupies a slot in this ordering. **Current order: QB-055 → QB-054 → QB-049 → QB-039 → QB-053.**
+
 A third candidate raised alongside QB-105 and QB-047 — rewriting `RELEASE_CRITERIA.md`'s gates for
 MCP — was checked against the file and is **already done**: QB-104's 2026-08-16 pass rewrote every
 hook-era gate (IA-F01/F02/F03, IA-S01, PA-Q06, B-F04, V1-F03/S01) in `docs/final/RELEASE_CRITERIA.md`
@@ -969,6 +996,96 @@ inert for non-diff text), `tests/unit/test_mcp_server.py` (`TestCompressContextT
 `files_changed` populated for real diff content via the real MCP path, null for non-diff), one new
 inline `[[filter.tests]]` entry in `git.toml`. See `docs/final/DECISIONS.md`'s new **ADR-047** for
 the full design record and options considered.
+
+</details>
+
+---
+
+#### QB-112 — `GitStructuralDiffPlugin` (QB-099A/B/C) is unreachable via `compress_context` — same architectural gap class as QB-109, one layer deeper
+
+**Effort:** Medium-Large (real fix requires an MCP-path design decision) · **Value:** High — QB-099A's
+own benchmark claims 73.1% *additional* reduction on declaration-shaped Python diffs, currently 0% of
+that reaches real MCP usage · **Risk:** Low to document, Medium to fix (architectural) · **Expected
+token impact:** High once fixed; **zero today** · **Category:** Bug fix / Architecture
+
+**Found 2026-08-19, during this same QB-041 audit that produced the `protect_diff_filename_headers`
+fix above** — while confirming `quor/mcp/server.py::compress_context` doesn't fail-silently
+bypass any part of the pipeline, direct code reading found it never imports or calls
+`quor.plugins.registry.PluginRegistry` at all. It goes straight from `FilterRegistry.find()` to
+`registry.apply()` — no plugin execution stage exists in the MCP path, full stop.
+
+<details>
+<summary>Technical details</summary>
+
+**What this means concretely:** `GitStructuralDiffPlugin`
+(`quor/plugins/builtin/git_structural_diff.py`, category `PRE_FILTER`) is the mechanism that
+rewrites a declaration-shaped Python diff (a pure reorder, rename, formatting-only, or import-only
+change — QB-099A/B/C) into a compact structural summary *before* `git-diff`'s own `ContentMask`
+pipeline ever sees it. It is registered only by `quor.engine.dispatcher._setup_plugins()` — the
+CLI-passthrough (`quor <cmd>`) path — and its `execute()` requires `payload.command` (to decide
+whether this is even a `git diff`/`show` invocation) plus real subprocess/filesystem access
+(`_git_show`/`_read_working_tree`, via `ctx.project_root`) to fetch the old/new full file content it
+structurally diffs. `compress_context(raw_text)` receives neither a command string nor filesystem
+access by its own MCP tool signature (see its own docstring: "raw text handed to this tool" only) —
+there is no `payload`, no `PluginContext`, nothing for `GitStructuralDiffPlugin` to run against, even
+in principle, without a design change to what the tool receives.
+
+**This is not the same bug QB-109 fixed, and QB-109's fix does not touch it.** QB-109 fixed
+*filter selection* (`FilterRegistry.find()` couldn't match `git-diff`'s command-shaped
+`match_command` against raw content, so it fell through to `generic`) — a `match_content_types`
+declaration was enough, since the filter itself only ever needed the content, not the command. This
+finding is one layer earlier and structurally different: the *plugin* layer
+(`quor.plugins.registry.PluginRegistry`, `PluginPayload.command`) isn't invoked by `compress_context`
+at all — there is no registry call to add a content-type fallback to, and even if there were,
+`GitStructuralDiffPlugin` specifically still needs the command string and real repo access that
+`compress_context`'s signature doesn't carry, unlike `FilterRegistry.find()`/`apply()`, which only
+ever needed the content string.
+
+**Confirmed via direct source reading, not inference:** grepped `quor/mcp/server.py` for `plugin`,
+`Plugin`, `PluginRegistry` — zero matches. `compress_context`'s own body (lines 124-130) calls
+`FilterRegistry(project_root=Path.cwd())` → `.find(raw_text)` → `.apply(...)` directly, with nothing
+between the MCP tool boundary and the filter registry.
+
+**Real-world impact, illustrative not measured (same honesty standard QB-093 held itself to):**
+QB-099A's own entry reports "73.1% overall reduction across the 9 [structural-diff] benchmark
+cases" as this feature's measured ceiling — that number is real for `FilterRegistry`-direct testing
+(and for the CLI-passthrough path, still live) but has been *categorically unreachable* for any real
+MCP session since QB-104 (2026-08-16) made MCP the sole production integration surface, for the same
+reason QB-109 found `git-diff`'s own base filter dark: `quor.db`'s real git-diff rows all predate
+QB-104, so there is no real-usage data either confirming or measuring this gap's cost — it's an
+architectural fact (the plugin literally cannot execute), not a telemetry-derived estimate.
+
+**Why this isn't fixed as part of this same QB-041 session, unlike the smaller
+`protect_diff_filename_headers` fix above:** the fix requires a real design decision, not a narrow
+bug patch — `compress_context`'s tool signature would need to gain a way to supply the originating
+command and grant scoped subprocess/filesystem access (a bigger surface-area and trust decision for
+an MCP tool than anything it does today — see `docs/final/ANTI_GOALS.md`'s existing "no network calls
+in the compression path" boundary, which this doesn't violate but sits adjacent to), or
+`GitStructuralDiffPlugin`'s own fetch mechanism needs a fundamentally different trigger that doesn't
+depend on a command string at all. Per `docs/final/CLAUDE.md`'s Rule 4 (competitor-first design,
+present the recommendation for approval before implementation whenever a meaningful architectural
+decision exists), this needs its own design pass, not an inline fix bundled into a git-diff
+compression-tuning ticket.
+
+**Candidate directions, not yet evaluated against each other:**
+- Add an optional `command`/`cwd` parameter to `compress_context` that the calling assistant can
+  supply when it has one (it usually does — it just ran the command) — opt-in, backwards compatible,
+  but changes MCP's trust boundary (subprocess/filesystem access from a tool call) in a way that
+  needs explicit product sign-off, not just an engineering call.
+- Give `GitStructuralDiffPlugin`'s underlying `enrich_git_diff()` a text-only mode that infers old/new
+  content *from the diff text itself* rather than fetching full files via git — a fundamentally
+  different (and lossier) mechanism than what QB-099A actually validated, likely a new investigation
+  in its own right, not a small variant.
+- Accept the gap for MCP and scope `GitStructuralDiffPlugin` as CLI-passthrough-only going forward —
+  cheapest, but quietly strands QB-099A/B/C's entire benchmarked value behind a path Quor's own
+  `docs/final/CLAUDE.md` describes as secondary to MCP.
+
+**Status:** Proposed. Not scoped or implemented — documented here per this audit's own finding,
+exactly the way QB-109 was itself spun out of a QB-041 audit rather than fixed inline. Recommend
+sequencing directly behind QB-109 in priority given comparable severity (a shipped, benchmarked
+feature at 0% real-world reach) and shared root cause (the QB-104 MCP migration didn't carry every
+command-shaped assumption forward with it — worth a full audit of `quor.plugins.registry` /
+`_setup_plugins()`'s other registered plugins for the same gap before assuming this is the only one).
 
 </details>
 
@@ -2236,6 +2353,69 @@ for the full finding and fix (a `match_content_types` fallback, now shipped) —
 idea 1/2/3's own status above, but it means idea 1's compression logic is only now, as of QB-109,
 actually reachable in production.
 
+**Correctness fix shipped (2026-08-19) — a real meaning-loss bug found while auditing "path
+preservation rules across multi-file diffs," not a compression-ratio tuning win.** Now that QB-109
+makes `git-diff`'s filter actually reachable via `compress_context`, this audit re-verified the whole
+pipeline end to end against real git output shapes rather than assuming the existing 12-case corpus
+was exhaustive. Three real, verified `git diff` shapes were found to lose the changed file's name
+*entirely* after compression — not under-compress, actually drop the one piece of information the AI
+needs to know which file changed:
+- a mode-only change (`chmod`: `old mode 100644` / `new mode 100755`, no other line in the segment)
+- a newly added file with zero content (git emits no `--- /dev/null`/`+++ b/X` pair for an empty file)
+- a deleted file that was already empty (same reasoning, reversed)
+
+Root cause: `strip_lines` unconditionally strips every `diff --git a/X b/Y` header line, relying on
+`--- a/`/`+++ b/` (or `rename from `/`rename to `/`Binary files `) to carry the filename forward —
+correct for a normal content change, a rename, or a binary diff, but none of those three lines exist
+in the three shapes above, so once the header is stripped nothing in the segment names the file at
+all. Verified directly against the shipped pipeline before fixing (`FilterRegistry.find`/`.apply` on
+each synthetic input), not assumed.
+
+**Fix:** a new stage, `protect_diff_filename_headers`
+(`quor/pipeline/stages/protect_diff_filename_headers.py`), runs first in `git-diff`'s stage chain
+(before `strip_lines`, matching the ordering precedent `QB-093`'s own investigation already validated
+as architecturally legitimate — acting on lines while they're still plain `KEEP`, never touching an
+already-`PROTECT`ed line). It scans each `diff --git ` segment for the five filename-carrier patterns
+`strip_lines`'s `preserve_patterns` already recognizes elsewhere (`--- a/`, `+++ b/`, `rename from `,
+`rename to `, `Binary files `) and `PROTECT`s the header line only when none of the five are present in
+that segment — a no-op, byte-for-byte, for every ordinary diff, rename, and binary-file segment, since
+each of those already carries its filename another way. Registered in `quor/filters/registry.py`'s
+`_STAGE_HANDLERS`, wired into `git.toml` as the new first stage.
+
+**Testing:** 12 new unit tests (`tests/unit/test_stages.py::TestProtectDiffFilenameHeaders` — all
+three bug shapes, all three pre-existing-safe shapes as regression pins, multi-file independence,
+already-PROTECT-from-elsewhere respected, line-count invariant, wrong-config-type). 4 new inline
+`[[filter.tests]]` in `git.toml` (the three bug shapes plus a regression pin that an ordinary diff
+still strips its `diff --git ` line — this fix must never make normal diffs show every path twice).
+One new benchmark case, `git-diff-mode-change-and-empty-files`
+(`tests/benchmarks/samples/git-diff/016_mode_change_and_empty_files.txt`,
+`tests/benchmarks/manifest.toml`), combining all three bug shapes plus one real content edit in a
+single realistic multi-file diff — 235→182 tokens (22.6%), all four filenames verified present in the
+compressed output. Full benchmark suite re-run: 154 cases (was 153), 0 regressions, all 15 pre-existing
+git-diff cases' compression numbers byte-identical to before this fix (confirmed via before/after JSON
+diff — the only change to their trace is one new zero-cost `protect_diff_filename_headers` stage
+entry). `quor verify` 247/247 (git-diff 13/13, was 9). `quor validate`, `ruff check quor/ tests/`,
+`mypy quor/` all clean. Full `tests/unit` sweep green.
+
+**Second finding from this same audit, spun into its own ticket rather than fixed here:**
+[QB-112](#qb-112--gitstructuraldiffplugin-qb-099abc-is-unreachable-via-compress_context--same-architectural-gap-class-as-qb-109-one-layer-deeper)
+— `GitStructuralDiffPlugin` (QB-099A/B/C's declaration-aware structural diff, 73.1% *additional*
+claimed reduction on eligible Python diffs) is dispatcher.py-only and has been completely unreachable
+via real MCP usage since QB-104, for a related but architecturally distinct reason than QB-109's own
+finding. Not fixed inline — it needs its own design pass per `docs/final/CLAUDE.md`'s Rule 4, not a
+bundled patch in a diff-compression-tuning session.
+
+**No further safe, deterministic compression win was found in this audit beyond the fix above.**
+Checked systematically: `collapse_unchanged_context`'s `context_lines=1` default is a product/quality
+trade-off (less surrounding context makes a diff harder to read even though nothing is lost — not a
+pure engineering win to silently retune), `max_tokens`'s 600-token limit is confirmed still a
+best-effort no-op against `PROTECT`-heavy real diffs exactly as ADR-031 describes and is not
+expected to change, `deduplicate_consecutive`'s placement after `collapse_unchanged_context` is
+already correct, and every remaining "compress diffs harder" idea already on record (QB-055's
+"collapse repeated hunks," QB-093's cross-file dedup, QB-041's own "idea 3" huge-diff/generated-noise
+summary) is already correctly evidence-gated or unscoped rather than silently blocked — this audit
+did not find a reason to reopen any of them.
+
 **Fix update (2026-07-15) — over-broad `preserve_patterns` bug found via the 12-case corpus (QB-047
 slice already landed):** with QB-055's `collapse_unchanged_context` in place, per-line token tracing
 across all 12 git-diff benchmark cases showed the largest *remaining* safe lever wasn't a new stage —
@@ -2340,9 +2520,22 @@ possibly conflated or stale) results. Treat every competitor name in this docume
 ones this item itself just added — as needing direct, individual re-verification against the real
 repository before being cited anywhere public-facing, not taken on any single search's word alone.
 
-**Status:** Proposed. Not scoped or implemented. Deliberately kept cheap and high in this ranking —
-research/writing only, no code — because every other prioritization decision in this document
-(including this review's own) depends on this foundation being current.
+**Status:** Implemented (2026-08-19). The refresh is done —
+`docs/archive/product-discovery/competitive-research-refresh-2026-08.md` re-verifies every
+competitor figure directly against the GitHub REST API (not secondary sources) as of 2026-08-19, and
+the original archived document now carries a banner pointing readers to it. Headline corrections:
+Headroom AI's star count is 66,863 (resolving the 29.5K-vs-37K discrepancy this item itself flagged
+as needing resolution — both prior figures were stale/wrong), RTK grew to 76,641★ and still has no
+native Windows hook (falls back to CLAUDE.md compliance-injection, issue #1864 open), Headroom AI's
+`pip install` on Windows currently fails to a from-source Rust build requiring MSVC (issue #636,
+open, live today) — directly answering the original pre-implementation research's own unresolved
+"does Headroom work on Windows" pre-flight gate. LeanCTX, Token Optimizer, and Caveman are all
+confirmed real (not hallucinated/conflated search results) with verified stats; the two *alternate*
+new-entrant names one external AI review raised (`context-compress`, "Token Optimizer MCP") were not
+independently found as distinct real projects and are explicitly left unresolved rather than added
+speculatively. One new feature candidate surfaced and was spun out as **QB-111**. QB-042's own named
+competitor list was updated with today's verified figures (see that entry). QB-087 (native-compaction
+positioning) is unaffected and remains separately scoped.
 
 </details>
 
@@ -2384,11 +2577,49 @@ switching to (or fully adopting) Quor would have saved them.
 shared infrastructure for its own opt-in real-sample-collection mechanism (both need to parse real
 Claude Code session logs) — worth scoping together rather than twice.
 
-**Status:** Proposed. Not scoped or implemented. Originally "deliberately not scheduled" per the
-competitive research's own ranking (#7, "important but not differentiating" — RTK already has
-this); re-ranked into Now on 2026-07-31 per the note above. Retains its own original caution: this
-is a retention/conversion feature, not a compression-quality one — it should not be allowed to
-crowd out QB-052/QB-047/QB-041 above it.
+**Status:** Implemented (2026-08-19). Shipped as `quor discover` — the 10th non-filtering CLI
+exemption (`docs/final/CLAUDE.md`'s "The Six CLI Commands" section updated accordingly; that same
+edit also corrected pre-existing drift where three earlier exemptions, `version`/`search`/
+`dashboard`, had shipped without ever being added to that list).
+
+**Design, resolved against real session data, not assumed:** Claude Code's own session transcripts
+(`~/.claude/projects/<project>/*.jsonl`) already record a `cwd` field on nearly every line —
+confirmed directly against this project's own real, multi-MB session files — so matching "does this
+session belong to this project" reads that recorded field rather than reverse-engineering Claude
+Code's (undocumented, best-effort-only per QB-081's own precedent) project-directory
+name-sanitization scheme. Every real `Bash` `tool_use`/`tool_result` pair is streamed (two passes
+per file — one lightweight pre-pass to collect any content already sent to a
+`compress_context`-named tool call elsewhere in the session, since that call always comes *after*
+the `Bash` result it compresses chronologically, never before; a single forward pass provably cannot
+catch this, confirmed by a test that initially failed for exactly this reason) and scored against
+the *real* `FilterRegistry`, not a simulation — the same pipeline `quor gain`'s own numbers come
+from.
+
+**Why this doesn't violate `ANTI_GOALS.md` #4/#5:** both anti-goals govern what *Quor* stores/
+transmits. `quor discover` only reads session transcripts Claude Code itself already wrote to the
+user's own disk, computes an in-memory report, prints it, and exits — nothing scanned is written to
+`TrackingDB` (which architecturally never stores content at all, per QB-047's own investigation) or
+anywhere else. No network call. A single, manually-invoked, read-only pass — never a background
+process. Only Claude's own short human-written `description` field is ever displayed for a
+command (never the raw command text or raw output), to avoid echoing an embedded credential into a
+locally-displayed report.
+
+**Real-data validation** (this project's own `.claude/projects/` directory, 41 sessions in the last
+30 days): 3,833 real `Bash` invocations scanned, ~87.6k tokens (13%) Quor would have saved had every
+one been compressed — `generic` (83.1k), `pytest` (2.0k), and `git-diff` (1.6k) the largest
+contributors, matching this project's own `quor gain` filter-usage shape closely. Confirms the
+scan/score mechanism works correctly against real, messy transcript data (including two benign,
+pre-existing fail-open stage warnings on malformed-looking content — existing pipeline behavior,
+not a bug introduced here).
+
+**Testing:** `tests/unit/test_session_scan.py` (14 tests — `find_session_files`'s cwd-based matching
+including the deliberately-mismatched-directory-name case proving name-guessing isn't used, the
+`--days` cutoff, case-insensitive path comparison, malformed-JSON-line resilience; `scan_project`'s
+real-pipeline scoring, the already-compressed-exclusion fix above, top-N sorting/limiting, and two
+malformed-transcript-shape edge cases — an orphaned `tool_result` with no matching `tool_use`, and a
+non-`Bash` tool call — that must never raise). `quor verify` 247/247 (unaffected — no filter
+changed), `quor validate` clean, `ruff check quor/ tests/` clean, `mypy quor/` clean (152 source
+files), full `tests/unit` sweep green.
 
 </details>
 
@@ -2752,6 +2983,62 @@ QB-048** — because it relies on exact, not fuzzy, matching.
 
 ---
 
+#### QB-111 — Tiered/partial-disclosure read modes for `get_repo_context`
+
+**Effort:** Medium · **Value:** Medium-High · **Risk:** Low · **Expected token impact:** High on
+calls that use it · **Category:** Feature
+
+**New item, added 2026-08-19**, surfaced during QB-086's competitive landscape refresh (see
+`docs/archive/product-discovery/competitive-research-refresh-2026-08.md` §4). LeanCTX — one of three
+new entrants that refresh found — ships 10 read modes (`full`, `map`, `signatures`, `diff`,
+`lines:N-M`, `density:X`) that let a calling agent ask for less than the full compressed output on
+purpose, e.g. "just the function signatures in this file," rather than always receiving one fixed
+shape. Quor's `get_repo_context` MCP tool today returns a single fixed response shape (language,
+exported symbols, import counts, relevant files) with no way for the caller to ask for a narrower or
+denser slice.
+
+<details>
+<summary>Technical details</summary>
+
+**Problem:** A calling assistant that only needs a file's public signatures — not its full
+AST-summarized body, not the whole relevant-files list — has no way to ask `get_repo_context` for
+that today. It either gets the full fixed response or nothing. This is real, validated waste on
+exactly the kind of call where the assistant already knows it wants less (e.g. "does this module
+already export a `parse_config` function" doesn't need the function bodies at all).
+
+**Why this fits Quor's architecture and anti-goals, not just LeanCTX's:** a caller-selected mode is
+an explicit parameter the calling assistant chooses, not a heuristic Quor guesses at — consistent
+with the existing "no heuristic fields" stance (classification/behavior driven by evidence or
+explicit input, never a weak guess). It's an MCP tool parameter addition, not a new CLI command, so
+it doesn't touch "The Six CLI Commands"/12-exemption limit in `docs/final/CLAUDE.md`. It doesn't
+change the `ContentMask` pipeline's correctness contract (ADR-031) — a narrower requested slice is
+still rendered from the same deterministic symbol/AST data `quor map`/`symbols`/`graph` already
+produce, just with a different, caller-chosen projection over it.
+
+**Desired outcome, not yet designed:** extend `get_repo_context`'s parameters with a `mode` (or
+similarly named) option — candidates to design against, informed by but not copied wholesale from
+LeanCTX's set: `full` (today's existing behavior, default — no behavior change for existing callers),
+`signatures` (exported function/class/method signatures only, no bodies), `map` (Quor already has
+`quor map`'s `RepoProfile` — likely the most direct rename/reuse target), and possibly `lines:N-M`
+for a specific file. `diff` and `density:X` (LeanCTX's target-compression-ratio mode) are explicitly
+harder to justify against Quor's own "no heuristic fields"/transparency anti-goals — `density:X`
+in particular means picking *which* lines to drop to hit a ratio, which is a heuristic decision by
+construction — and should be scoped separately, if at all, rather than assumed as part of this item's
+first slice.
+
+**Relationship to existing repo-intelligence commands:** should reuse `quor/pipeline/repo_profile/`'s
+existing `RepoProfile`/`RepoSymbolIndex`/`RepoDependencyGraph` data (QB-061/QB-066/QB-067) — this is
+a new *projection* over data Quor already computes and caches (QB-072's `intel_store.py`), not a new
+computation path. Needs its own design pass (Rule 4, competitor-first design, per
+`docs/final/CLAUDE.md`) before implementation, given the mode surface needs to be picked deliberately
+rather than mirrored wholesale from a competitor's 10-mode set.
+
+**Status:** Proposed. Not scoped or implemented.
+
+</details>
+
+---
+
 #### QB-089 — Exact-match session read deduplication (safe first slice of QB-043)
 
 **Effort:** Medium · **Value:** High · **Risk:** Low · **Expected token impact:** High ·
@@ -3060,6 +3347,20 @@ directly benchmarkable on the same corpus at all). Whenever this item is scoped,
 competitor list should be RTK/Headroom AI/LeanCTX at minimum, not just the original RTK/Headroom
 AI/ZAP (ZAP itself was already established, pre-QB-086, as a non-independent RTK fork — see
 QB-086's own source research — and may not warrant separate benchmarking).
+
+**Scope update (2026-08-19), figures verified live against the GitHub REST API — supersedes the
+2026-07-31 note's then-unverified figures:** RTK 76,641★ (Rust, Apache-2.0, locally runnable single
+binary — the best-suited candidate for an actual side-by-side benchmark run). Headroom AI 66,863★
+(Python/Rust, Apache-2.0, locally runnable but Windows install currently fails to a from-source Rust
+build requiring MSVC — issue #636, open — so any benchmark harness for it needs to run on Linux/macOS
+CI, not Windows, until that's fixed upstream). LeanCTX 3,600★ (Rust, Apache-2.0, prebuilt binary via
+`npm i lean-ctx-bin` — locally runnable on Windows without a compiler, unlike Headroom). Token
+Optimizer 1,930★ (Python, PolyForm Noncommercial — locally runnable but its noncommercial license
+needs a read before benchmarking it as part of any published, public comparison). Caveman 99,161★
+(Go, no asserted license) intentionally excluded from this item's scope — see
+`competitive-research-refresh-2026-08.md` §4/§5 for why its response-rewriting mechanism isn't
+benchmarkable on the same tool-output corpus this harness is meant to run. Full detail:
+`docs/archive/product-discovery/competitive-research-refresh-2026-08.md`.
 
 **Status:** Proposed. Not scoped or implemented.
 

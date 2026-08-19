@@ -39,6 +39,7 @@ _CLI_COMMANDS: frozenset[str] = frozenset(
         "search",
         "version",
         "dashboard",
+        "discover",
     }
 )
 

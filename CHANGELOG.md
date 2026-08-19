@@ -5,6 +5,22 @@ All notable changes to Quor are documented here. Format loosely follows
 
 ## [Unreleased]
 
+- **Added: `quor discover` (QB-034).** Scans this project's existing Claude Code session
+  transcripts (`~/.claude/projects/`, read-only — nothing is stored or transmitted) and reports
+  what Quor would have saved on every real `Bash` command it never had a chance to compress,
+  scored against the real filter pipeline rather than estimated. Answers "what would switching to
+  Quor have saved me" for a new or partial adopter. `--days`/`--project`/`--top` mirror `quor
+  gain`'s own flag conventions.
+- **Fixed: `git-diff` compression silently dropped the changed file's name on three real diff
+  shapes (QB-041).** A mode-only change (`chmod`), a newly added empty file, and a deleted-while-
+  empty file each emit only a `diff --git a/X b/Y` header and a boilerplate mode/index line — no
+  `--- a/`/`+++ b/`/`rename from `/`rename to `/`Binary files ` line, which is what every other diff
+  shape relies on to carry the filename once `diff --git` itself is stripped. Compressed output for
+  these three shapes previously named no file at all. New stage,
+  `protect_diff_filename_headers`, runs first in `git-diff`'s pipeline and protects the header only
+  when no other line in its segment already carries the filename — a no-op for every ordinary
+  content change, rename, or binary diff. See `backlog.md`'s QB-041 entry for the full audit.
+
 ## [0.6.1] — 2026-08-19
 
 - **Fixed: MCP tool usage was invisible to `quor gain`/`dashboard`/`doctor` (QB-105).** Neither

@@ -96,6 +96,18 @@ match_command = '^git\s+(diff|show)\b'
 match_content_types = ["diff"]
 
 [[filter.stages]]
+# QB-041: must run before strip_lines. Some real diff shapes (a mode-only
+# change, a newly added empty file, a deleted-while-empty file) emit no
+# "--- a/"/"+++ b/"/"rename from "/"rename to "/"Binary files " line at
+# all — the "diff --git a/X b/X" header is the *only* line naming the file
+# in those segments. This stage PROTECTs that header line for exactly those
+# segments, before strip_lines' own "^diff --git " pattern would otherwise
+# remove it unconditionally. A no-op for every other diff shape, since a
+# normal content change, rename, and binary diff all already carry a
+# filename elsewhere in their own segment.
+type = "protect_diff_filename_headers"
+
+[[filter.stages]]
 type = "strip_lines"
 # QB-109: `--- a/`/`+++ b/` are deliberately absent from `patterns` below.
 # They used to be listed there, but strip_lines checks preserve_patterns
@@ -211,6 +223,27 @@ must_contain = [
     "new alpha",
     "new beta",
 ]
+
+[[filter.tests]]
+description = "QB-041: mode-only change (chmod) preserves the filename — no --- a/ or +++ b/ line exists for a mode-only diff, so diff --git is the only filename carrier"
+input = "diff --git a/deploy.sh b/deploy.sh\nold mode 100644\nnew mode 100755"
+must_contain = ["deploy.sh", "old mode 100644", "new mode 100755"]
+
+[[filter.tests]]
+description = "QB-041: newly added empty file preserves the filename — git emits no --- /dev/null / +++ b/ pair when the new file has zero content"
+input = "diff --git a/empty.txt b/empty.txt\nnew file mode 100644\nindex 0000000..e69de29"
+must_contain = ["empty.txt", "new file mode 100644"]
+
+[[filter.tests]]
+description = "QB-041: deleted empty file preserves the filename — same reasoning as the newly-added-empty-file case, in reverse"
+input = "diff --git a/empty.txt b/empty.txt\ndeleted file mode 100644\nindex e69de29..0000000"
+must_contain = ["empty.txt", "deleted file mode 100644"]
+
+[[filter.tests]]
+description = "QB-041 regression: a normal content-change diff still strips its diff --git header — protect_diff_filename_headers must not protect a header that already has a --- a/ / +++ b/ filename carrier, or every file in an ordinary diff would show its path twice"
+input = "diff --git a/foo.py b/foo.py\nindex abc..def 100644\n--- a/foo.py\n+++ b/foo.py\n@@ -1,3 +1,4 @@\n+new line"
+must_not_contain = ["diff --git"]
+must_contain = ["--- a/foo.py", "+++ b/foo.py"]
 
 [[filter]]
 # QB-101: `git branch -vv` right-pads the branch-name and hash columns so
