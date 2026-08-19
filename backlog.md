@@ -679,6 +679,168 @@ QB-095's own entry for that same exclusion list).
 
 ---
 
+#### QB-106 — Fix negative/near-zero real-world compression: cat-json, cat-tsx, git-branch
+
+**Effort:** Small-Medium · **Value:** Medium · **Risk:** Low · **Expected token impact:** Low (tiny
+absolute per-call numbers, but a release gate depends on this reading clean) · **Category:** Bug fix
+/ Measurement
+
+**Found during TD-011**, a 2026-08-19 post-QB-105 tech-debt audit — `quor doctor` was run to confirm
+QB-105's own new `mcp-dedup`/`mcp-repo-context` labels didn't introduce any false positives (they
+didn't — neither appears in the flagged list), but the run surfaced 3 pre-existing, unrelated real
+filters already failing `doctor`'s negative/near-zero compression check against this machine's real
+`quor.db`: `cat-json` (net **-3.4%**, 8 calls — genuinely expanding, not just flat), `cat-tsx` (net
+0.0%, only 1 call so far), `git-branch` (net **+2.4%**, 48 calls — a real, repeated sample, not noise).
+
+<details>
+<summary>Technical details</summary>
+
+**Problem:** `quor doctor` is a release gate (hit directly as a blocker while prepping v0.6.1's
+health check) and currently fails on a clean checkout of `main` because of these three filters, none
+of which are new or related to QB-104/QB-105.
+
+**Root cause — not yet determined, needs auditing before a fix is chosen.** Two structurally
+different explanations are both plausible and have different fixes:
+1. The filter's own `ContentMask` stages (e.g. `structured_data_summarize` for `cat-json`) are
+   themselves expanding small/already-minimal input — a fix would live in the filter's own stage
+   pipeline or TOML config (e.g. a per-filter small-input passthrough guard).
+2. The tracked `final_tokens` (per QB-094's own principle) reflects *everything the caller actually
+   received*, including the tee recovery footer and the concise-output instruction dispatcher.py
+   prepends on top of the filter's output — both of which already carry a "never cost more than the
+   filter saved" gate (QB-052 and its follow-on). If either gate is under-firing for tiny inputs
+   specifically, the fix belongs in `dispatcher.py`, not in the filter itself.
+
+Distinguishing (1) from (2) requires inspecting real per-invocation rows (not just the aggregate
+`quor gain --filters` percentages) before choosing where to intervene — a size-threshold passthrough
+guard bolted onto the wrong layer would not fix the root cause, and per [[feedback_no_heuristic_fields
+in memory / QB-041's own idea-3 revert precedent]], a heuristic threshold is not the default answer
+here without evidence it's the actual mechanism.
+
+**Actual root cause (found by querying real per-invocation rows directly, 2026-08-19) — neither of
+the two hypotheses above:**
+- **`cat-json`:** not filter expansion at all. 4 of its 8 real rows are `cat .claude/settings.json`
+  against an **empty file** (`original_tokens=0`) — `cat-json.toml`'s own `on_empty = "(empty
+  document)"` (a deliberate UX feature, not a bug) substitutes a 4-token message. The other 4 rows
+  are genuine byte-identical passthroughs (123→123, 155→155, 311→311 — real files with no
+  homogeneous-array collapse opportunity). `structured_data_summarize.py` was read directly and
+  confirmed to operate on `mask.lines` with "every KEPT line is the original line, unmodified"
+  enforced in code, not just documented — it never reformats or reserializes. The actual bug:
+  `query_filter_analytics`'s `avg_compression_pct` summed `original_tokens`/`final_tokens` over
+  **every** row including `original_tokens == 0` ones — a zero-original row can only ever pull the
+  ratio negative, never up, no matter how well the filter compresses real content.
+  `per_invocation_avg_pct` already excluded these per-row (`CASE WHEN original_tokens > 0`); the
+  aggregate ratio never got the equivalent guard.
+- **`cat-tsx`:** one real invocation, ever (`13→13`, delta 0) — a statistically meaningless single
+  sample sitting at the 0% flag threshold, not a regression. Nothing in the filter to fix.
+- **`git-branch`:** 46 of 48 real rows are delta **0** (`--show-current`/`-a`/`-d <branch>` — output
+  already 1-3 lines, nothing to strip); the only 2 real savings are both `git branch -vv` (-10, -12
+  tokens), diluted by 46 zero-opportunity samples. Not overhead — the filter is already
+  passthrough-equivalent on these; nothing to fix.
+
+A size-threshold passthrough guard (the originally proposed fix) would have been a no-op for all
+three: `cat-json`'s culprit is a 0-token *input*, not filter behavior on small input (and could have
+accidentally suppressed the `on_empty` message itself — a regression); `cat-tsx` has no filter
+behavior to threshold against; `git-branch` already produces byte-identical output on the affected
+rows. Confirmed via `AskUserQuestion`: fix the aggregate calculation only; leave `cat-tsx`/`git-branch`
+as accepted low-sample/near-floor noise, no filter code change.
+
+**Desired outcome:** `quor doctor`'s negative/near-zero compression check no longer reports a false
+regression for `cat-json`. (Explicitly NOT: "all 15 `doctor` checks pass" — `cat-tsx`/`git-branch`
+remain flagged after this fix, correctly, since near-zero real compression on inherently-tiny/
+under-sampled input is an honest reading, not a bug.)
+
+**Resolution:** `quor/tracking/db.py::query_filter_analytics()` — added `eligible_orig_sum`/
+`eligible_final_sum` (SQL `SUM(CASE WHEN original_tokens > 0 THEN ... ELSE 0 END)`), and
+`avg_compression_pct` now divides by `eligible_orig_sum` instead of the unscoped `orig_sum`.
+`original_tokens`/`final_tokens`/`tokens_saved` deliberately stay unscoped (full, honest totals,
+mirroring `GainReport.tokens_saved`'s own "exact identity, no exclusions" contract per QB-017) — only
+the ratio is scoped. Two new tests in `test_tracking.py::TestQueryFilterAnalytics`
+(`test_avg_compression_pct_excludes_zero_original_tokens_rows`,
+`test_avg_compression_pct_all_zero_original_rows_is_zero_not_error`), mirroring the existing
+`per_invocation_avg_pct` exclusion test directly above them.
+
+**Verified against real local data:** `cat-json` now reads **net +0.0%** (was -3.4%) — confirmed via
+`quor doctor` and `quor gain --filters` before/after. `quor doctor` still reports 1/15 failed
+(`cat-tsx`/`git-branch`, as expected and by design — see above). `quor verify` 242/242. `ruff`/`mypy`
+clean. Full `tests/unit` sweep (same exclusion list as QB-095/QB-105) green.
+
+**Status:** Resolved (2026-08-19) for the `cat-json` false-negative. `cat-tsx`/`git-branch` remain
+open `doctor` findings by design — not further work under this ticket; see this entry's own
+"Desired outcome" for why.
+
+</details>
+
+---
+
+#### QB-107 — Deduplicate the 7 near-identical `_track_*_invocation` helpers
+
+**Effort:** Small · **Value:** Low · **Risk:** Low · **Expected token impact:** None (pure
+maintainability, no user-facing behavior change) · **Category:** Engineering / Refactor
+
+**Found during TD-012**, the same 2026-08-19 tech-debt audit. `quor/cli/commands/map.py`,
+`graph.py`, `explore.py`, `search.py`, `symbols.py`, `repo.py`, and now `quor/mcp/server.py`'s own
+`_track()` (QB-105) each hand-roll the identical ~15-line pattern: construct a `TrackingDB`, call
+`track_invocation()` with `original`/`filtered` set equal (synthesis, not compression), swallow any
+exception fail-open. The project's own comments document the copy-paste lineage directly (e.g.
+`REPO_GRAPH_FILTER_LABEL`'s docstring: "Same reasoning as `REPO_PROFILE_FILTER_LABEL`...") — each new
+command was written by copying the previous one's `_track_*` function and changing only the command
+string and filter label.
+
+<details>
+<summary>Technical details</summary>
+
+**Problem:** No behavior is wrong — every copy is correct and independently tested — but every new
+synthesis-style producer re-derives the same boilerplate instead of calling one shared helper. QB-105
+added an 7th copy in `quor/mcp/server.py` rather than refactoring, which is exactly how this reached 7.
+
+**Desired outcome:** One shared helper in `quor/tracking/db.py` (e.g.
+`track_synthesis_invocation(command, output, filter_name, t0, tracking=None)`, mirroring
+`track_invocation()`'s own existing shape) that all 7 call sites call instead of re-deriving the
+construct/track/close/swallow wrapper. `quor/cli/commands/*`'s 6 copies additionally each construct
+their own `TrackingDB` per call (short-lived CLI process convention) versus `mcp/server.py`'s lazy
+singleton (long-lived server convention) — the shared helper needs to accept an already-constructed
+`TrackingDB` (matching `track_invocation()`'s own signature) rather than assuming either lifecycle,
+so both call-site families can adopt it unchanged.
+
+**Status:** Proposed. Not yet scoped.
+
+</details>
+
+---
+
+#### QB-108 — `quor.__version__` silently stale after a version bump until reinstall
+
+**Effort:** Small · **Value:** Low (dev-experience only — CI reinstalls fresh every run, so this
+never affects a real release) · **Risk:** Low · **Expected token impact:** None · **Category:**
+Engineering / Developer Experience
+
+**Found during TD-013**, the same 2026-08-19 tech-debt audit — flagged as an aside twice now without
+ever being filed itself: once in QB-095's own completed entry (`quor.__version__` reporting `0.4.1`
+against `pyproject.toml`'s `0.5.0`), and again during this session's own v0.6.0→0.6.1 bump, where it
+caused a real local `test_version_matches_pyproject` failure until `pip install -e .` was re-run.
+
+<details>
+<summary>Technical details</summary>
+
+**Problem:** `quor/__init__.py`'s `__version__` resolves via `importlib.metadata.version("quor")`,
+which reads the *installed* package's dist-info metadata, not live `pyproject.toml` — bumping
+`pyproject.toml`'s version alone leaves the installed metadata (and therefore `__version__`, and the
+`_FALLBACK_VERSION` drift-guard test) stale until an explicit reinstall. This is a real, if narrow,
+recurring trap for exactly the "bump version, ship" workflow this project does often.
+
+**Desired outcome:** Not yet decided — needs a real design choice, not a guessed fix. Candidates worth
+weighing: a `quor doctor` advisory check that compares `__version__` against `pyproject.toml` and
+warns on drift; a documented reinstall step in the release process; or investigating whether
+`hatchling`'s dynamic-versioning support could resolve `__version__` from `pyproject.toml` directly
+at import time in an editable install, removing the staleness window entirely rather than just
+detecting it.
+
+**Status:** Proposed. Not yet scoped.
+
+</details>
+
+---
+
 #### QB-095 — Path prefix front-coding
 
 **Effort:** Small-Medium · **Value:** High · **Risk:** Low · **Expected token impact:** High on

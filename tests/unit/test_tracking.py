@@ -1521,6 +1521,46 @@ class TestQueryFilterAnalytics:
         # excluded, not averaged in as 0.0 (which would give 25.0).
         assert f.per_invocation_avg_pct == pytest.approx(50.0)
 
+    def test_avg_compression_pct_excludes_zero_original_tokens_rows(self, tmp_path: Path) -> None:
+        """TD-011/QB-106: a real, confirmed production shape — cat-json's
+        `on_empty = "(empty document)"` substitution (original_tokens=0,
+        final_tokens=4) was silently dragging its aggregate ratio negative
+        even though every real (non-empty) invocation was a genuine
+        byte-identical passthrough (0%, not negative). Unconditionally
+        summing original_tokens==0 rows into the ratio can only ever pull it
+        down, never up, regardless of how well the filter compresses real
+        content — the same reasoning per_invocation_avg_pct already applies
+        per-row (test above), now applied to the aggregate ratio too."""
+        db_path = tmp_path / "quor.db"
+        self._populate(db_path, [
+            {"filter_name": "cat-json", "original_tokens": 100, "final_tokens": 100, "project_path": "/proj"},
+            {"filter_name": "cat-json", "original_tokens": 0, "final_tokens": 4, "project_path": "/proj"},
+            {"filter_name": "cat-json", "original_tokens": 0, "final_tokens": 4, "project_path": "/proj"},
+        ])
+        report = query_filter_analytics(db_path, Path("/proj"))
+        f = report.filters[0]
+        assert f.invocation_count == 3
+        # Ratio computed over the one eligible row only: (100-100)/100*100 = 0.0.
+        # NOT negative — unconditionally including both on_empty rows would
+        # give (100-108)/100*100 == -8.0, a false regression signal.
+        assert f.avg_compression_pct == pytest.approx(0.0)
+        # The raw totals stay the full, honest sum — unaffected by the ratio fix.
+        assert f.original_tokens == 100
+        assert f.final_tokens == 108
+        assert f.tokens_saved == -8
+
+    def test_avg_compression_pct_all_zero_original_rows_is_zero_not_error(self, tmp_path: Path) -> None:
+        """Every row in the group has original_tokens==0 (a filter seen only
+        on empty input so far) — eligible_orig_sum is 0, must fall back to
+        0.0 like the pre-existing empty-orig_sum guard, not raise ZeroDivisionError."""
+        db_path = tmp_path / "quor.db"
+        self._populate(db_path, [
+            {"filter_name": "cat-json", "original_tokens": 0, "final_tokens": 4, "project_path": "/proj"},
+        ])
+        report = query_filter_analytics(db_path, Path("/proj"))
+        f = report.filters[0]
+        assert f.avg_compression_pct == 0.0
+
     def test_per_invocation_avg_pct_can_diverge_in_sign_from_aggregate(self, tmp_path: Path) -> None:
         """QB-065's real, confirmed production shape: a few large positive
         invocations carry a healthy-looking aggregate ratio while most real

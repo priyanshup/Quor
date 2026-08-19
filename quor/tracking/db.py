@@ -1065,7 +1065,17 @@ class FilterUsage:
     original_tokens: int
     final_tokens: int
     tokens_saved: int                # original_tokens - final_tokens
-    avg_compression_pct: float       # tokens_saved / original_tokens * 100 (aggregate ratio, matches tests/benchmarks/benchmark_runner.py's own per-category convention)
+    avg_compression_pct: float
+    """Aggregate compression ratio (matches `tests/benchmarks/benchmark_runner.py`'s own
+    per-category convention) — but, unlike `original_tokens`/`final_tokens`/`tokens_saved` above,
+    computed over `original_tokens > 0` rows only (TD-011/QB-106). A row with `original_tokens == 0`
+    (a filter's `on_empty` substitution — e.g. `cat-json.toml`'s `"(empty document)"`) has no real
+    "before" to divide by, and unconditionally including it can only ever pull this ratio down, never
+    up, regardless of how well the filter compresses real content — the same reasoning
+    `per_invocation_avg_pct` below already applies per-row. `original_tokens`/`final_tokens`/
+    `tokens_saved` deliberately stay unscoped (the full, honest total token cost/saving, mirroring
+    `GainReport.tokens_saved`'s own "exact identity, no exclusions" contract) — only this ratio is
+    computed over the eligible subset."""
     per_invocation_avg_pct: float
     """QB-065: the true arithmetic mean of each invocation's own
     `(original-final)/original*100`, NOT the same figure as
@@ -1151,6 +1161,12 @@ def query_filter_analytics(
                  COUNT(*)                                AS n,
                  COALESCE(SUM(original_tokens), 0)       AS orig_sum,
                  COALESCE(SUM(final_tokens), 0)          AS final_sum,
+                 COALESCE(SUM(CASE WHEN original_tokens > 0
+                                    THEN original_tokens ELSE 0 END), 0)
+                                                          AS eligible_orig_sum,
+                 COALESCE(SUM(CASE WHEN original_tokens > 0
+                                    THEN final_tokens ELSE 0 END), 0)
+                                                          AS eligible_final_sum,
                  COALESCE(SUM(was_passthrough), 0)       AS passthroughs,
                  COALESCE(AVG(duration_ms), 0.0)         AS avg_duration,
                  COALESCE(AVG(
@@ -1176,8 +1192,9 @@ def query_filter_analytics(
             final_tokens=int(r["final_sum"]),
             tokens_saved=int(r["orig_sum"]) - int(r["final_sum"]),
             avg_compression_pct=(
-                (int(r["orig_sum"]) - int(r["final_sum"])) / int(r["orig_sum"]) * 100
-                if r["orig_sum"]
+                (int(r["eligible_orig_sum"]) - int(r["eligible_final_sum"]))
+                / int(r["eligible_orig_sum"]) * 100
+                if r["eligible_orig_sum"]
                 else 0.0
             ),
             per_invocation_avg_pct=float(r["avg_pct_per_row"]),
