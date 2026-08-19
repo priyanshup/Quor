@@ -1,3 +1,13 @@
+> **⚠ Superseded for current positioning/roadmap decisions.** This document is pre-implementation
+> due diligence for a project then called "Distill," written before Quor existed. Competitor facts
+> below (RTK's Windows support, Headroom AI's star count and Windows install story, and the absence
+> of LeanCTX/Token Optimizer/Caveman entirely) are stale as of 2026-08-19. See
+> [`competitive-research-refresh-2026-08.md`](competitive-research-refresh-2026-08.md) (QB-086) for
+> the current, directly-verified competitive landscape. This file is preserved unedited below for
+> historical record.
+
+---
+
 # Distill — Final Competitive Research and Product Validation
 ## Pre-Implementation Due Diligence
 

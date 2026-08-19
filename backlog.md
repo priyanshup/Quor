@@ -342,6 +342,17 @@ ticket, rating a naive implementation High risk. Nothing scoped remains to rank 
 items below it for — dropped from this ordering, same treatment QB-094/QB-046/QB-052/QB-105 got
 above. **Current order: QB-041 → QB-086 → QB-034 → QB-055 → QB-054 → QB-049 → QB-039 → QB-053.**
 
+**Housekeeping correction (2026-08-19, later the same day):** QB-086 shipped — the competitive
+landscape refresh is done (research/writing, no code, as scoped). Every competitor figure in its own
+entry below was independently re-verified live against the GitHub REST API rather than carried
+forward from secondary sources; see `docs/archive/product-discovery/competitive-research-refresh-2026-08.md`
+for the full refreshed analysis and QB-086's own entry below for the summary and status update. One
+new backlog candidate came out of the refresh — **QB-111** (tiered/partial-disclosure read modes for
+`get_repo_context`, modeled on a capability a new competitor, LeanCTX, ships and Quor doesn't) — added
+to [Next](#next). Moved to [Completed](#completed) treatment is not applied here (same as QB-095/096/
+097/098/099/105 above) — full write-up left in place, but it no longer occupies a slot in this
+ordering. **Current order: QB-041 → QB-034 → QB-055 → QB-054 → QB-049 → QB-039 → QB-053.**
+
 **Housekeeping correction (2026-08-19, later the same day):** QB-041 shipped. Its own audit found and
 fixed a real filename-loss correctness bug (`protect_diff_filename_headers`) and surfaced a second,
 larger finding spun into its own new item, **QB-112** (`GitStructuralDiffPlugin` unreachable via
@@ -2509,9 +2520,22 @@ possibly conflated or stale) results. Treat every competitor name in this docume
 ones this item itself just added — as needing direct, individual re-verification against the real
 repository before being cited anywhere public-facing, not taken on any single search's word alone.
 
-**Status:** Proposed. Not scoped or implemented. Deliberately kept cheap and high in this ranking —
-research/writing only, no code — because every other prioritization decision in this document
-(including this review's own) depends on this foundation being current.
+**Status:** Implemented (2026-08-19). The refresh is done —
+`docs/archive/product-discovery/competitive-research-refresh-2026-08.md` re-verifies every
+competitor figure directly against the GitHub REST API (not secondary sources) as of 2026-08-19, and
+the original archived document now carries a banner pointing readers to it. Headline corrections:
+Headroom AI's star count is 66,863 (resolving the 29.5K-vs-37K discrepancy this item itself flagged
+as needing resolution — both prior figures were stale/wrong), RTK grew to 76,641★ and still has no
+native Windows hook (falls back to CLAUDE.md compliance-injection, issue #1864 open), Headroom AI's
+`pip install` on Windows currently fails to a from-source Rust build requiring MSVC (issue #636,
+open, live today) — directly answering the original pre-implementation research's own unresolved
+"does Headroom work on Windows" pre-flight gate. LeanCTX, Token Optimizer, and Caveman are all
+confirmed real (not hallucinated/conflated search results) with verified stats; the two *alternate*
+new-entrant names one external AI review raised (`context-compress`, "Token Optimizer MCP") were not
+independently found as distinct real projects and are explicitly left unresolved rather than added
+speculatively. One new feature candidate surfaced and was spun out as **QB-111**. QB-042's own named
+competitor list was updated with today's verified figures (see that entry). QB-087 (native-compaction
+positioning) is unaffected and remains separately scoped.
 
 </details>
 
@@ -2959,6 +2983,62 @@ QB-048** — because it relies on exact, not fuzzy, matching.
 
 ---
 
+#### QB-111 — Tiered/partial-disclosure read modes for `get_repo_context`
+
+**Effort:** Medium · **Value:** Medium-High · **Risk:** Low · **Expected token impact:** High on
+calls that use it · **Category:** Feature
+
+**New item, added 2026-08-19**, surfaced during QB-086's competitive landscape refresh (see
+`docs/archive/product-discovery/competitive-research-refresh-2026-08.md` §4). LeanCTX — one of three
+new entrants that refresh found — ships 10 read modes (`full`, `map`, `signatures`, `diff`,
+`lines:N-M`, `density:X`) that let a calling agent ask for less than the full compressed output on
+purpose, e.g. "just the function signatures in this file," rather than always receiving one fixed
+shape. Quor's `get_repo_context` MCP tool today returns a single fixed response shape (language,
+exported symbols, import counts, relevant files) with no way for the caller to ask for a narrower or
+denser slice.
+
+<details>
+<summary>Technical details</summary>
+
+**Problem:** A calling assistant that only needs a file's public signatures — not its full
+AST-summarized body, not the whole relevant-files list — has no way to ask `get_repo_context` for
+that today. It either gets the full fixed response or nothing. This is real, validated waste on
+exactly the kind of call where the assistant already knows it wants less (e.g. "does this module
+already export a `parse_config` function" doesn't need the function bodies at all).
+
+**Why this fits Quor's architecture and anti-goals, not just LeanCTX's:** a caller-selected mode is
+an explicit parameter the calling assistant chooses, not a heuristic Quor guesses at — consistent
+with the existing "no heuristic fields" stance (classification/behavior driven by evidence or
+explicit input, never a weak guess). It's an MCP tool parameter addition, not a new CLI command, so
+it doesn't touch "The Six CLI Commands"/12-exemption limit in `docs/final/CLAUDE.md`. It doesn't
+change the `ContentMask` pipeline's correctness contract (ADR-031) — a narrower requested slice is
+still rendered from the same deterministic symbol/AST data `quor map`/`symbols`/`graph` already
+produce, just with a different, caller-chosen projection over it.
+
+**Desired outcome, not yet designed:** extend `get_repo_context`'s parameters with a `mode` (or
+similarly named) option — candidates to design against, informed by but not copied wholesale from
+LeanCTX's set: `full` (today's existing behavior, default — no behavior change for existing callers),
+`signatures` (exported function/class/method signatures only, no bodies), `map` (Quor already has
+`quor map`'s `RepoProfile` — likely the most direct rename/reuse target), and possibly `lines:N-M`
+for a specific file. `diff` and `density:X` (LeanCTX's target-compression-ratio mode) are explicitly
+harder to justify against Quor's own "no heuristic fields"/transparency anti-goals — `density:X`
+in particular means picking *which* lines to drop to hit a ratio, which is a heuristic decision by
+construction — and should be scoped separately, if at all, rather than assumed as part of this item's
+first slice.
+
+**Relationship to existing repo-intelligence commands:** should reuse `quor/pipeline/repo_profile/`'s
+existing `RepoProfile`/`RepoSymbolIndex`/`RepoDependencyGraph` data (QB-061/QB-066/QB-067) — this is
+a new *projection* over data Quor already computes and caches (QB-072's `intel_store.py`), not a new
+computation path. Needs its own design pass (Rule 4, competitor-first design, per
+`docs/final/CLAUDE.md`) before implementation, given the mode surface needs to be picked deliberately
+rather than mirrored wholesale from a competitor's 10-mode set.
+
+**Status:** Proposed. Not scoped or implemented.
+
+</details>
+
+---
+
 #### QB-089 — Exact-match session read deduplication (safe first slice of QB-043)
 
 **Effort:** Medium · **Value:** High · **Risk:** Low · **Expected token impact:** High ·
@@ -3267,6 +3347,20 @@ directly benchmarkable on the same corpus at all). Whenever this item is scoped,
 competitor list should be RTK/Headroom AI/LeanCTX at minimum, not just the original RTK/Headroom
 AI/ZAP (ZAP itself was already established, pre-QB-086, as a non-independent RTK fork — see
 QB-086's own source research — and may not warrant separate benchmarking).
+
+**Scope update (2026-08-19), figures verified live against the GitHub REST API — supersedes the
+2026-07-31 note's then-unverified figures:** RTK 76,641★ (Rust, Apache-2.0, locally runnable single
+binary — the best-suited candidate for an actual side-by-side benchmark run). Headroom AI 66,863★
+(Python/Rust, Apache-2.0, locally runnable but Windows install currently fails to a from-source Rust
+build requiring MSVC — issue #636, open — so any benchmark harness for it needs to run on Linux/macOS
+CI, not Windows, until that's fixed upstream). LeanCTX 3,600★ (Rust, Apache-2.0, prebuilt binary via
+`npm i lean-ctx-bin` — locally runnable on Windows without a compiler, unlike Headroom). Token
+Optimizer 1,930★ (Python, PolyForm Noncommercial — locally runnable but its noncommercial license
+needs a read before benchmarking it as part of any published, public comparison). Caveman 99,161★
+(Go, no asserted license) intentionally excluded from this item's scope — see
+`competitive-research-refresh-2026-08.md` §4/§5 for why its response-rewriting mechanism isn't
+benchmarkable on the same tool-output corpus this harness is meant to run. Full detail:
+`docs/archive/product-discovery/competitive-research-refresh-2026-08.md`.
 
 **Status:** Proposed. Not scoped or implemented.
 
