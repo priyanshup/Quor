@@ -354,6 +354,10 @@ next full roadmap review should place it (its own entry's severity note suggests
 top, comparable to where QB-109 itself ranked, but that's a call for a dedicated prioritization pass,
 not a housekeeping note).
 
+**Housekeeping correction (2026-08-19, later the same day):** QB-034 shipped as `quor discover`. Not
+moved to [Completed](#completed) (same full-write-up-left-in-place treatment as above); no longer
+occupies a slot in this ordering. **Current order: QB-055 → QB-054 → QB-049 → QB-039 → QB-053.**
+
 A third candidate raised alongside QB-105 and QB-047 — rewriting `RELEASE_CRITERIA.md`'s gates for
 MCP — was checked against the file and is **already done**: QB-104's 2026-08-16 pass rewrote every
 hook-era gate (IA-F01/F02/F03, IA-S01, PA-Q06, B-F04, V1-F03/S01) in `docs/final/RELEASE_CRITERIA.md`
@@ -2549,11 +2553,49 @@ switching to (or fully adopting) Quor would have saved them.
 shared infrastructure for its own opt-in real-sample-collection mechanism (both need to parse real
 Claude Code session logs) — worth scoping together rather than twice.
 
-**Status:** Proposed. Not scoped or implemented. Originally "deliberately not scheduled" per the
-competitive research's own ranking (#7, "important but not differentiating" — RTK already has
-this); re-ranked into Now on 2026-07-31 per the note above. Retains its own original caution: this
-is a retention/conversion feature, not a compression-quality one — it should not be allowed to
-crowd out QB-052/QB-047/QB-041 above it.
+**Status:** Implemented (2026-08-19). Shipped as `quor discover` — the 10th non-filtering CLI
+exemption (`docs/final/CLAUDE.md`'s "The Six CLI Commands" section updated accordingly; that same
+edit also corrected pre-existing drift where three earlier exemptions, `version`/`search`/
+`dashboard`, had shipped without ever being added to that list).
+
+**Design, resolved against real session data, not assumed:** Claude Code's own session transcripts
+(`~/.claude/projects/<project>/*.jsonl`) already record a `cwd` field on nearly every line —
+confirmed directly against this project's own real, multi-MB session files — so matching "does this
+session belong to this project" reads that recorded field rather than reverse-engineering Claude
+Code's (undocumented, best-effort-only per QB-081's own precedent) project-directory
+name-sanitization scheme. Every real `Bash` `tool_use`/`tool_result` pair is streamed (two passes
+per file — one lightweight pre-pass to collect any content already sent to a
+`compress_context`-named tool call elsewhere in the session, since that call always comes *after*
+the `Bash` result it compresses chronologically, never before; a single forward pass provably cannot
+catch this, confirmed by a test that initially failed for exactly this reason) and scored against
+the *real* `FilterRegistry`, not a simulation — the same pipeline `quor gain`'s own numbers come
+from.
+
+**Why this doesn't violate `ANTI_GOALS.md` #4/#5:** both anti-goals govern what *Quor* stores/
+transmits. `quor discover` only reads session transcripts Claude Code itself already wrote to the
+user's own disk, computes an in-memory report, prints it, and exits — nothing scanned is written to
+`TrackingDB` (which architecturally never stores content at all, per QB-047's own investigation) or
+anywhere else. No network call. A single, manually-invoked, read-only pass — never a background
+process. Only Claude's own short human-written `description` field is ever displayed for a
+command (never the raw command text or raw output), to avoid echoing an embedded credential into a
+locally-displayed report.
+
+**Real-data validation** (this project's own `.claude/projects/` directory, 41 sessions in the last
+30 days): 3,833 real `Bash` invocations scanned, ~87.6k tokens (13%) Quor would have saved had every
+one been compressed — `generic` (83.1k), `pytest` (2.0k), and `git-diff` (1.6k) the largest
+contributors, matching this project's own `quor gain` filter-usage shape closely. Confirms the
+scan/score mechanism works correctly against real, messy transcript data (including two benign,
+pre-existing fail-open stage warnings on malformed-looking content — existing pipeline behavior,
+not a bug introduced here).
+
+**Testing:** `tests/unit/test_session_scan.py` (14 tests — `find_session_files`'s cwd-based matching
+including the deliberately-mismatched-directory-name case proving name-guessing isn't used, the
+`--days` cutoff, case-insensitive path comparison, malformed-JSON-line resilience; `scan_project`'s
+real-pipeline scoring, the already-compressed-exclusion fix above, top-N sorting/limiting, and two
+malformed-transcript-shape edge cases — an orphaned `tool_result` with no matching `tool_use`, and a
+non-`Bash` tool call — that must never raise). `quor verify` 247/247 (unaffected — no filter
+changed), `quor validate` clean, `ruff check quor/ tests/` clean, `mypy quor/` clean (152 source
+files), full `tests/unit` sweep green.
 
 </details>
 

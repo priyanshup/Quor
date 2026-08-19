@@ -5,6 +5,12 @@ All notable changes to Quor are documented here. Format loosely follows
 
 ## [Unreleased]
 
+- **Added: `quor discover` (QB-034).** Scans this project's existing Claude Code session
+  transcripts (`~/.claude/projects/`, read-only — nothing is stored or transmitted) and reports
+  what Quor would have saved on every real `Bash` command it never had a chance to compress,
+  scored against the real filter pipeline rather than estimated. Answers "what would switching to
+  Quor have saved me" for a new or partial adopter. `--days`/`--project`/`--top` mirror `quor
+  gain`'s own flag conventions.
 - **Fixed: `git-diff` compression silently dropped the changed file's name on three real diff
   shapes (QB-041).** A mode-only change (`chmod`), a newly added empty file, and a deleted-while-
   empty file each emit only a `diff --git a/X b/Y` header and a boilerplate mode/index line — no
