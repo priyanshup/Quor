@@ -67,6 +67,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
+from collections import Counter
 from pathlib import Path
 
 from mcp.server.mcpserver import MCPServer
@@ -83,6 +84,7 @@ from quor.pipeline.repo_profile.query_extract import extract_query_terms
 from quor.pipeline.repo_profile.search import merge_search
 from quor.pipeline.repo_profile.search_render import render_relevant_files_block
 from quor.pipeline.repo_profile.symbol_kinds import extract_file_symbols, symbol_kind_by_name
+from quor.pipeline.repo_profile.tiered_collapse import render_tiered_context, render_tiered_payload
 from quor.pipeline.tee import content_hash
 from quor.tracking.db import (
     MCP_DEDUP_FILTER_LABEL,
@@ -129,10 +131,24 @@ def _get_tracking_db() -> TrackingDB:
 
 
 @mcp.tool()
-def compress_context(raw_text: str) -> str:
+def compress_context(raw_text: str = "", focal_file: str = "") -> str:
     """Use this tool whenever reading large command outputs, log streams, git
     history, or long files (exceeding 30 lines). It compresses the input
-    deterministically to conserve token context window space."""
+    deterministically to conserve token context window space.
+
+    focal_file: repo-relative path to a file to anchor graph-distance AST
+    tiering on (R-08) instead of compressing raw_text — when given,
+    raw_text is ignored. Returns the focal file in full, its direct
+    (1-hop) dependency-graph neighbors collapsed to signatures/docstrings,
+    and transitive (2-hop) neighbors collapsed to bare class/interface
+    outlines — except a 2-hop type a 1-hop signature actually references,
+    which is preserved in full so its definition is never missing from
+    the response. Requires repository intelligence (`quor map`) to
+    already exist, like get_repo_context.
+    """
+    if focal_file:
+        return _compress_context_tiered(focal_file)
+
     t0 = time.monotonic()
     original_tokens = count_tokens(raw_text)
     if original_tokens == 0:
@@ -201,6 +217,88 @@ def compress_context(raw_text: str) -> str:
         was_passthrough=filter_config is None,
         t0=t0,
         files_changed=files_changed,
+    )
+    return result
+
+
+def _compress_context_tiered(focal_file: str) -> str:
+    """R-08 (Graph-Distance AST Tiering): hop-tiered multi-file
+    compression anchored at `focal_file`, in place of `compress_context`'s
+    usual single-blob `raw_text` path. See `tiered_collapse.py`'s own
+    module docstring for the 0/1/2-hop tier contract and the cross-file
+    type-coherence pass.
+
+    Routes the assembled multi-file payload through `apply_filter_pipeline()`
+    exactly like the `raw_text` path does (QB-114 parity) — `write_tee()`
+    and `scan_for_secrets()` apply to this payload too, not just the
+    single-blob path.
+
+    Fail-open at two levels: `tiered_collapse.py`'s own per-file fallback
+    (a malformed file falls back to its own full content, never taking
+    other files in the payload down with it — requirement 3's own
+    language), and this function's outer `try`/`except` (an unexpected
+    failure anywhere in tiering/graph-resolution falls back to the focal
+    file's plain, unmodified content rather than raising the tool call).
+    """
+    t0 = time.monotonic()
+    root = Path.cwd()
+    entries = intel_store.load_file_intelligence(root)
+    if entries is None:
+        return (
+            "No repository intelligence found for this directory — run `quor map` "
+            "first to build it."
+        )
+
+    rel_path = _relative_posix_path(focal_file, root)
+    if rel_path is None or rel_path not in entries:
+        return f"No repository intelligence entry for {focal_file!r}."
+
+    try:
+        tiered = render_tiered_context(root, entries, rel_path)
+        payload = render_tiered_payload(tiered)
+    except Exception as exc:  # noqa: BLE001 — fail-open: tiering itself must never crash the tool call
+        try:
+            fallback = (root / rel_path).read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return (
+                f"Graph-distance tiering failed for {focal_file!r} ({exc}), and its "
+                "content could not be read either."
+            )
+        _scan_secrets_safe(fallback)
+        return (
+            f"[Quor: graph-distance tiering failed for {focal_file!r} ({exc}) — "
+            f"falling back to its full, unmodified content]\n{fallback}"
+        )
+
+    output, filter_config = apply_filter_pipeline(payload, payload)
+
+    original_tokens = tiered.original_tokens
+    compressed_tokens = count_tokens(output)
+    saved_pct = (
+        max(0, round((1 - compressed_tokens / original_tokens) * 100)) if original_tokens else 0
+    )
+    tier_counts = Counter(f.tier for f in tiered.files)
+    tier_summary = (
+        f"{tier_counts.get('focus', 0)} focus, "
+        f"{tier_counts.get('signatures', 0)} signatures, "
+        f"{tier_counts.get('outline', 0)} outline"
+    )
+    preserved_note = (
+        f" ({len(tiered.preserved_types)} type(s) preserved)" if tiered.preserved_types else ""
+    )
+    result = (
+        f"[Quor Compressed: {saved_pct}% saved | tiered: {tier_summary}{preserved_note} | "
+        f"tokens {original_tokens}->{compressed_tokens}]\n{output}"
+    )
+
+    track_invocation_safe(
+        _get_tracking_db,
+        command=f"MCP compress_context: focal_file={rel_path}",
+        original=payload,
+        filtered=result,
+        filter_name=filter_config.name if filter_config is not None else None,
+        was_passthrough=filter_config is None,
+        t0=t0,
     )
     return result
 
