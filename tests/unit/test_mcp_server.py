@@ -31,6 +31,7 @@ from pathlib import Path
 import pytest
 
 import quor.mcp.server as mcp_server
+from quor.mcp.schema_pruner import DEFAULT_MAX_TOOL_DESCRIPTION_CHARS
 from quor.mcp.server import compress_context, get_repo_context
 from quor.mcp.session_dedup import DEFAULT_CACHE_SIZE, SessionDedupCache
 from quor.pipeline.repo_profile import intel_store
@@ -312,3 +313,32 @@ class TestGetRepoContextTracking:
         rows = _recent_rows(tmp_path)
         assert len(rows) == 1
         assert rows[0].command == "MCP get_repo_context: (no args)"
+
+
+class TestSchemaPruning:
+    """QB-120: `mcp.list_tools()` is wrapped with `schema_pruner.
+    prune_tool_schema()` (see `_pruned_list_tools` in server.py); `mcp.
+    call_tool()` is not — it resolves through `_tool_manager.call_tool()`
+    directly, a path `list_tools()` never touches. In-process calls
+    against the real `mcp` object, no transport/subprocess needed — same
+    reasoning as this file's own module docstring for why that's safe."""
+
+    def test_list_tools_condenses_verbose_descriptions(self) -> None:
+        import anyio
+
+        tools = anyio.run(mcp_server.mcp.list_tools)
+        by_name = {t.name: t for t in tools}
+        assert "compress_context" in by_name
+        assert "get_repo_context" in by_name
+        for tool in tools:
+            assert tool.description is not None
+            assert len(tool.description) <= DEFAULT_MAX_TOOL_DESCRIPTION_CHARS
+
+    def test_call_tool_still_resolves_full_arguments(self) -> None:
+        import anyio
+
+        async def _call() -> object:
+            return await mcp_server.mcp.call_tool("compress_context", {"raw_text": ""})
+
+        result = anyio.run(_call)
+        assert getattr(result, "is_error", False) is False
