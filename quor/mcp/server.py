@@ -21,6 +21,22 @@ unconditionally on the CLI dispatch path, so an MCP tool call was a real,
 silent safety-net gap relative to a CLI-run command doing the same
 compression.
 
+QB-119 (Tool Payload Projection): `compress_context` also runs `raw_text`
+through `quor.pipeline.projection.json_projector.project_json_text()`
+before handing it to `apply_filter_pipeline()` — strips null/empty JSON
+fields and truncates long arrays to head+tail elements for a JSON-shaped
+payload, fails open (returns the text unchanged) for anything else. This
+runs as a pre-pass rather than a ContentMask stage because it rewrites the
+parsed value tree itself, which ContentMask's line-preservation contract
+can't express — see json_projector.py's own module docstring. The
+`generic` filter this always resolves to also picks up two further QB-119
+additions at the stage level: `remove_ansi`'s `strip_inline` field (strips
+ANSI codes embedded in real content, not just pure-ANSI lines) and
+`deduplicate_consecutive`'s `show_count` field (collapsed duplicate runs
+get a visible "(xN)" count instead of vanishing silently) — both are
+plain opt-in stage config flipped on in `z_generic.toml`, not new code
+paths here.
+
 `get_repo_context` doesn't route through the same pipeline — its output is
 synthesized repository-intelligence metadata, not a captured command's
 stdout being compressed, so there's no raw discarded original for tee to
@@ -76,6 +92,7 @@ from quor.engine.dispatcher import _scan_secrets_safe, apply_filter_pipeline
 from quor.mcp.logging_config import LOGGER_NAME, configure_logging
 from quor.mcp.session_dedup import SessionDedupCache
 from quor.pipeline.git_diff_enrich import count_diff_files
+from quor.pipeline.projection.json_projector import project_json_text
 from quor.pipeline.repo_profile import intel_store
 from quor.pipeline.repo_profile.graph_distance import compute_hop_distances
 from quor.pipeline.repo_profile.intel_model import FileIntelligenceEntry
@@ -175,12 +192,26 @@ def compress_context(raw_text: str = "", focal_file: str = "") -> str:
         )
         return marker
 
+    # QB-119: a JSON-shaped payload (raw_text starts with '{'/'[' and parses
+    # cleanly) gets null/empty-field stripping and head+tail array truncation
+    # first — project_json_text() fails open to raw_text unchanged for
+    # anything that isn't valid JSON, so this is a no-op for the common case
+    # (log output, git diffs, plain text). This runs before apply_filter_pipeline
+    # rather than as a ContentMask stage because it rewrites the value tree
+    # itself (dropping a key changes surrounding commas/brackets) — see
+    # json_projector.py's own module docstring.
+    projected_text = project_json_text(raw_text)
+
     # QB-114: routes through the same filter-lookup → PRE_FILTER →
     # ContentMask → POST_FILTER → tee → secret-scan pipeline `run_dispatch()`
     # runs for CLI/Bash output — `write_tee()` now fires here too (a
     # recovery footer may be appended to `compressed` below), and
     # `scan_for_secrets()` now runs on the result before it's returned.
-    compressed, filter_config = apply_filter_pipeline(raw_text, raw_text)
+    # QB-119: the built-in `generic` filter this always resolves to for raw
+    # text (see module docstring) also strips inline ANSI codes and shows
+    # collapsed-duplicate counts — see z_generic.toml's remove_ansi/
+    # deduplicate_consecutive stage config.
+    compressed, filter_config = apply_filter_pipeline(projected_text, projected_text)
 
     compressed_tokens = count_tokens(compressed)
     saved_pct = max(0, round((1 - compressed_tokens / original_tokens) * 100))

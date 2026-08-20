@@ -8,7 +8,12 @@ name = "generic"
 match_command = '.'
 
 [[filter.stages]]
+# strip_inline (QB-119): also strip ANSI codes embedded alongside real text
+# (e.g. colorized "PASSED"/"FAILED" test-runner output), not just lines
+# that are pure ANSI — see remove_ansi.py's own docstring for why this is
+# an opt-in field rather than the default.
 type = "remove_ansi"
+strip_inline = true
 
 [[filter.stages]]
 # Stack trace frame dedup (docs/archive/product-discovery/competitive-research.md
@@ -28,7 +33,11 @@ preserve_patterns = [
 ]
 
 [[filter.stages]]
+# show_count (QB-119): rewrite a collapsed run's anchor line with a visible
+# "(xN)" suffix instead of silently dropping the repeat count — see
+# deduplicate_consecutive.py's own docstring for why this is opt-in.
 type = "deduplicate_consecutive"
+show_count = true
 
 [[filter.stages]]
 # QB-098: rewrite consecutive timestamp-prefixed lines (docker/kubectl
@@ -158,3 +167,19 @@ must_not_contain = ["+0s", "+1s"]
 description = "QB-098: a single timestamped line has nothing to fold against and is left unchanged"
 input = "just one line\n2026-07-31 10:15:01 INFO solo event\nafter"
 must_contain = ["2026-07-31 10:15:01 INFO solo event"]
+
+[[filter.tests]]
+description = "QB-119: ANSI codes embedded alongside real text are stripped inline, not just pure-ANSI lines"
+input = "\u001b[32mPASSED\u001b[0m tests/test_foo.py"
+must_contain = ["PASSED tests/test_foo.py"]
+must_not_contain = ["\u001b[32m", "\u001b[0m"]
+
+[[filter.tests]]
+description = "QB-119: consecutive duplicate lines collapse to a visible (xN) count instead of vanishing silently"
+input = "build tick\nbuild tick\nbuild tick\nbuild tick\ndone"
+must_contain = ["build tick (×4)", "done"]
+
+[[filter.tests]]
+description = "QB-119: a real error message is never swept into an unrelated duplicate run"
+input = "retrying\nretrying\nAssertionError: expected 200, got 500\nretrying\nretrying"
+must_contain = ["retrying (×2)", "AssertionError: expected 200, got 500"]

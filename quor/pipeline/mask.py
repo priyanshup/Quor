@@ -58,15 +58,22 @@ Invariants (enforced by Pipeline.execute, not by individual stages):
   stage above. A future stage wanting a sixth exception should be held to
   one of these five bars explicitly, not treated as an open door.
 - Not a sixth exception, but worth naming here: truncate_lines (a pre-QB-041
-  stage) and column_padding_compression (QB-101) both rewrite a qualifying
-  KEEP line's content in place — the former shortens overlong lines, the
-  latter collapses internal alignment-padding runs. Neither assigns
-  COMPRESS, neither inserts a line, and neither needs a run of multiple
-  lines to act (each qualifying line is independent, unlike every exception
-  above). This is the same "content changes, decision and line count don't"
-  shape, just without a multi-line run to fold — recorded here so a future
-  reader doesn't mistake either stage for an undocumented violation of
-  "line content is never modified."
+  stage), column_padding_compression (QB-101), and remove_ansi's opt-in
+  `strip_inline` field (QB-119) all rewrite a qualifying KEEP line's content
+  in place — the first two shorten overlong lines / collapse internal
+  alignment-padding runs, the third strips ANSI codes embedded alongside
+  real text. None assigns COMPRESS, none inserts a line, and none needs a
+  run of multiple lines to act (each qualifying line is independent, unlike
+  every exception above). This is the same "content changes, decision and
+  line count don't" shape, just without a multi-line run to fold — recorded
+  here so a future reader doesn't mistake any of the three for an
+  undocumented violation of "line content is never modified."
+- deduplicate_consecutive's opt-in `show_count` field (QB-119) reuses
+  group_repeated's own "rewrite the run's first line, COMPRESS the rest"
+  shape (the first exception above) rather than adding a new one: when a
+  run of consecutive byte-identical KEEP lines is found, the anchor line
+  gains a "(xN)" suffix exactly like group_repeated's pattern-matched runs
+  do, just keyed on exact equality instead of a shared pattern.
 """
 
 from __future__ import annotations

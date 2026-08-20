@@ -135,6 +135,36 @@ class TestRemoveAnsi:
         with pytest.raises(TypeError, match="RemoveAnsiConfig"):
             self.stage.apply(mask, bad_config)
 
+    # -- strip_inline (QB-119) ------------------------------------------
+
+    def test_strip_inline_default_false_leaves_mixed_line_untouched(self) -> None:
+        mixed = "\x1b[32mPASSED\x1b[0m tests/test_foo.py"
+        mask = ContentMask.from_text(mixed)
+        result = self.stage.apply(mask, self._config())
+        assert result.lines[0].line == mixed
+
+    def test_strip_inline_true_removes_codes_keeps_text(self) -> None:
+        mixed = "\x1b[32mPASSED\x1b[0m tests/test_foo.py"
+        mask = ContentMask.from_text(mixed)
+        config = RemoveAnsiConfig(type="remove_ansi", strip_inline=True)
+        result = self.stage.apply(mask, config)
+        assert result.lines[0].line == "PASSED tests/test_foo.py"
+        assert result.lines[0].decision is Decision.KEEP
+
+    def test_strip_inline_true_pure_ansi_line_still_compressed(self) -> None:
+        ansi_line = "\x1b[32m\x1b[0m"
+        mask = ContentMask.from_text(ansi_line)
+        config = RemoveAnsiConfig(type="remove_ansi", strip_inline=True)
+        result = self.stage.apply(mask, config)
+        assert result.lines[0].decision is Decision.COMPRESS
+
+    def test_strip_inline_true_line_without_ansi_unchanged(self) -> None:
+        mask = ContentMask.from_text("plain text, no codes here")
+        config = RemoveAnsiConfig(type="remove_ansi", strip_inline=True)
+        result = self.stage.apply(mask, config)
+        assert result.lines[0].line == "plain text, no codes here"
+        assert result.lines[0].decision is Decision.KEEP
+
 
 # ---------------------------------------------------------------------------
 # strip_lines
@@ -297,6 +327,49 @@ class TestDeduplicateConsecutive:
     def test_wrong_config_type_raises(self) -> None:
         with pytest.raises(TypeError, match="DeduplicateConsecutiveConfig"):
             self.stage.apply(ContentMask.from_text("x"), RemoveAnsiConfig(type="remove_ansi"))
+
+    # -- show_count (QB-119) ---------------------------------------------
+
+    def test_show_count_false_default_drops_count_silently(self) -> None:
+        mask = ContentMask.from_text("same\nsame\nsame")
+        result = self.stage.apply(mask, self._config())
+        assert result.lines[0].line == "same"
+
+    def test_show_count_true_appends_visible_count(self) -> None:
+        mask = ContentMask.from_text("same\nsame\nsame")
+        config = DeduplicateConsecutiveConfig(type="deduplicate_consecutive", show_count=True)
+        result = self.stage.apply(mask, config)
+        assert result.lines[0].line == "same (×3)"  # noqa: RUF001
+        assert result.lines[1].decision is Decision.COMPRESS
+        assert result.lines[2].decision is Decision.COMPRESS
+
+    def test_show_count_true_no_duplicates_no_suffix(self) -> None:
+        mask = ContentMask.from_text("a\nb\nc")
+        config = DeduplicateConsecutiveConfig(type="deduplicate_consecutive", show_count=True)
+        result = self.stage.apply(mask, config)
+        assert [lm.line for lm in result.lines] == ["a", "b", "c"]
+
+    def test_show_count_true_protect_anchor_left_unmodified(self) -> None:
+        """A PROTECT anchor's duplicates are still compressed, but the
+        anchor itself is never rewritten with a count (PROTECT is absolute)."""
+        lines = (
+            _protect("anchor"),
+            LineMask(line="anchor", decision=Decision.KEEP),
+        )
+        mask = ContentMask(lines=lines)
+        config = DeduplicateConsecutiveConfig(type="deduplicate_consecutive", show_count=True)
+        result = self.stage.apply(mask, config)
+        assert result.lines[0].line == "anchor"
+        assert result.lines[0].decision is Decision.PROTECT
+        assert result.lines[1].decision is Decision.COMPRESS
+
+    def test_show_count_true_distinct_error_not_merged_into_run(self) -> None:
+        mask = ContentMask.from_text("retrying\nretrying\nAssertionError: boom\nretrying\nretrying")
+        config = DeduplicateConsecutiveConfig(type="deduplicate_consecutive", show_count=True)
+        result = self.stage.apply(mask, config)
+        rendered = result.render()
+        assert "AssertionError: boom" in rendered
+        assert "retrying (×2)" in rendered  # noqa: RUF001
 
 
 # ---------------------------------------------------------------------------
