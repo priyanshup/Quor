@@ -3,16 +3,33 @@ hook-based integration (see backlog.md's QB-104 entry for the full removal/
 rebuild plan). Exposes Quor's compression pipeline and repository
 intelligence as MCP tools an agent calls explicitly, over stdio.
 
-`compress_context` reuses the same `FilterRegistry`/`Pipeline` machinery
-`quor/engine/dispatcher.py` already runs for Bash output (the promoted
-POC's own logic, unchanged): `FilterRegistry.find()` matches a command/path-
-shaped string, and raw text handed to this tool essentially never matches
-one of the specific patterns (`^git\\s+log\\b`, `^cat\\s+...\\.py\\b`, etc. —
-those match the *command*, not command *output*), so in practice this always
+`compress_context` runs through `quor/engine/dispatcher.py`'s
+`apply_filter_pipeline()` (QB-114, MCP Dispatcher Parity) — the same
+filter-lookup → PRE_FILTER → ContentMask → POST_FILTER → tee → secret-scan
+sequence `run_dispatch()` runs for CLI/Bash output, not a parallel
+reimplementation. `FilterRegistry.find()` matches a command/path-shaped
+string, and raw text handed to this tool essentially never matches one of
+the specific patterns (`^git\\s+log\\b`, `^cat\\s+...\\.py\\b`, etc. — those
+match the *command*, not command *output*), so in practice this always
 falls through to the built-in `generic` filter
 (`quor/filters/builtin/z_generic.toml`, `match_command = '.'`), the same
 catch-all `quor/engine/dispatcher.py` itself falls back to for any
-unrecognized command.
+unrecognized command. Before QB-114, this tool called `FilterRegistry.find()`/
+`.apply()` directly and skipped `write_tee()` (QB-013's recovery-link
+generation) and `scan_for_secrets()` (QB-029/PA-F07) entirely — both fire
+unconditionally on the CLI dispatch path, so an MCP tool call was a real,
+silent safety-net gap relative to a CLI-run command doing the same
+compression.
+
+`get_repo_context` doesn't route through the same pipeline — its output is
+synthesized repository-intelligence metadata, not a captured command's
+stdout being compressed, so there's no raw discarded original for tee to
+make recoverable, and running ContentMask filter stages against its
+already-curated structure would risk corrupting it rather than compressing
+it. It still gets the same secret-scan safety net (`dispatcher.
+_scan_secrets_safe()`) applied to its result before returning, since that
+check is generic to any text crossing the transport boundary, not specific
+to command output.
 
 `get_repo_context` ports the two genuinely repo-state-based Read-hook
 features from the now-removed `quor/adapters/claude_read.py` (QB-079's
@@ -38,10 +55,9 @@ from pathlib import Path
 
 from mcp.server.mcpserver import MCPServer
 
-from quor.filters.registry import FilterRegistry
+from quor.engine.dispatcher import _scan_secrets_safe, apply_filter_pipeline
 from quor.mcp.logging_config import LOGGER_NAME, configure_logging
 from quor.mcp.session_dedup import SessionDedupCache
-from quor.pipeline.content_type import detect
 from quor.pipeline.git_diff_enrich import count_diff_files
 from quor.pipeline.repo_profile import intel_store
 from quor.pipeline.repo_profile.intel_model import FileIntelligenceEntry
@@ -125,13 +141,12 @@ def compress_context(raw_text: str) -> str:
         )
         return marker
 
-    registry = FilterRegistry(project_root=Path.cwd())
-    filter_config = registry.find(raw_text)
-    if filter_config is None:
-        compressed = raw_text
-    else:
-        content_type = detect(raw_text).value
-        compressed = registry.apply(filter_config, raw_text, content_type=content_type)
+    # QB-114: routes through the same filter-lookup → PRE_FILTER →
+    # ContentMask → POST_FILTER → tee → secret-scan pipeline `run_dispatch()`
+    # runs for CLI/Bash output — `write_tee()` now fires here too (a
+    # recovery footer may be appended to `compressed` below), and
+    # `scan_for_secrets()` now runs on the result before it's returned.
+    compressed, filter_config = apply_filter_pipeline(raw_text, raw_text)
 
     compressed_tokens = count_tokens(compressed)
     saved_pct = max(0, round((1 - compressed_tokens / original_tokens) * 100))
@@ -189,10 +204,12 @@ def get_repo_context(file_path: str = "", query: str = "") -> str:
         # an invocation on real output, not on a "go run `quor map`" bailout
         # that did no repository-intelligence lookup at all.
         nudge = _safe_nudge(root)
-        return (
+        bailout = (
             "No repository intelligence found for this directory — run `quor map` "
             "first to build it." + (f"\n\n{nudge}" if nudge else "")
         )
+        _scan_secrets_safe(bailout)
+        return bailout
 
     if file_path:
         block = _repo_context_block(root, entries, file_path)
@@ -238,6 +255,10 @@ def get_repo_context(file_path: str = "", query: str = "") -> str:
         filter_name=MCP_REPO_CONTEXT_FILTER_LABEL,
         t0=t0,
     )
+    # QB-114: no ContentMask/tee here (see module docstring) — this result
+    # isn't a captured command's stdout being compressed — but the same
+    # secret-scan safety net still applies before it crosses the transport.
+    _scan_secrets_safe(result)
     return result
 
 

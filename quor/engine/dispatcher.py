@@ -11,6 +11,21 @@ Execution order:
 Tee is a dispatcher-level concern only — it never touches ContentMask,
 Pipeline, or any StageHandler. See quor/pipeline/tee.py.
 
+QB-114 (MCP Dispatcher Parity): `apply_filter_pipeline()` below is the same
+filter-lookup → PRE_FILTER → ContentMask → POST_FILTER → tee → secret-scan
+safety-net sequence `run_dispatch()` runs on a captured CLI subprocess's
+stdout, factored out for a caller that already has text in hand and never
+spawns a subprocess of its own — `quor/mcp/server.py`'s `compress_context`
+tool, which used to call `FilterRegistry.find()`/`.apply()` directly and
+skip tee/secret-scan entirely. Both callers share the exact same private
+helpers below (`_lookup_filter`, `_apply_content_filter`, `_apply_tee`,
+`_scan_secrets_safe`, etc.) — not two parallel implementations — so a
+future change to any one of them applies to both the CLI and MCP paths
+automatically. `run_dispatch()` itself is untouched by this: it still
+calls each helper inline, in the same order, for its own CLI-specific
+concerns (tracking, files_changed, the concise-output instruction,
+onboarding tips) that don't apply to an MCP tool call.
+
 The concise-output instruction is likewise dispatcher-level only: it is
 prepended to the already-assembled output right before the final
 `sys.stdout.write`, never fed back into ContentMask/tee/plugins, and only
@@ -231,6 +246,66 @@ def run_dispatch(args: list[str], tracking: TrackingDB | None = None) -> int:
     sys.stdout.write(output)
     sys.stdout.flush()
     return proc.returncode
+
+
+def apply_filter_pipeline(match_str: str, captured: str) -> tuple[str, FilterConfig | None]:
+    """Run `run_dispatch()`'s safety-net pipeline — filter lookup,
+    PRE_FILTER/POST_FILTER plugins, the tee recovery footer (ADR-023/
+    QB-013), and the secret-scan warning (PA-F07) — against text a caller
+    already has in hand, for a caller that doesn't spawn a subprocess of
+    its own (QB-114). See this module's docstring for why this exists as
+    a separate function rather than a `run_dispatch()` parameter.
+
+    `match_str` is what `FilterRegistry.find()` matches against — a real
+    shell command for the CLI, or (for MCP's `compress_context`, which has
+    no command) the content itself; `FilterRegistry.find()` already
+    handles both shapes via its own `match_content_types` check before
+    falling back to `match_command` (see `FilterRegistry.find()`'s
+    docstring). `captured` is the text to filter/tee — the same value as
+    `match_str` for a content-only caller, or the subprocess's real stdout
+    for a command caller.
+
+    Returns `(output, filter_config)`: `output` is the final text (tee's
+    footer and any POST_FILTER plugin transform already applied, and
+    already secret-scanned); `filter_config` is the matched filter, or
+    `None` on passthrough. Deliberately excludes what's specific to
+    `run_dispatch()`'s own CLI concerns — tracking, `files_changed`, the
+    concise-output instruction, onboarding tips, and the `stdout` write
+    itself — a caller owns all of those in whatever shape fits its own
+    transport (MCP's `track_invocation_safe`/QB-105 has a different
+    lazy-init shape than `run_dispatch()`'s `TrackingDB | None`).
+    """
+    filter_config, registry = _lookup_filter(match_str)
+    plugin_registry, plugin_ctx = _setup_plugins()
+
+    pre_output, raw_content_type = _run_pre_filter_plugins(
+        plugin_registry, plugin_ctx, cmd_str=match_str, captured=captured
+    )
+
+    if filter_config is None or registry is None:
+        _teardown_plugins(plugin_registry, plugin_ctx)
+        _scan_secrets_safe(pre_output)
+        return pre_output, None
+
+    if raw_content_type is not None and pre_output == captured:
+        content_type = raw_content_type
+    else:
+        content_type = detect(pre_output).value
+    filtered = _apply_content_filter(registry, filter_config, pre_output, content_type=content_type)
+    filtered = _run_post_filter_plugins(
+        plugin_registry,
+        plugin_ctx,
+        cmd_str=match_str,
+        captured=captured,
+        filtered=filtered,
+        content_type=content_type,
+    )
+
+    filtered = _apply_tee(filter_config, captured=captured, final_output=filtered)
+
+    _teardown_plugins(plugin_registry, plugin_ctx)
+    _scan_secrets_safe(filtered)
+    return filtered, filter_config
 
 
 def _run_subprocess(args: list[str]) -> subprocess.CompletedProcess[str] | int:
