@@ -42,6 +42,22 @@ user's last prompt and derive query terms from it — an MCP tool call has
 no such transcript to read, so `query` is instead a direct parameter the
 calling agent passes.
 
+Metadata-enriched payloads (structural/graph-distance anchors): the
+"Repository Context" block's `Defines:` line now shows each symbol's real
+AST kind (class/interface/function/etc. — `Symbol.kind`, QB-066) alongside
+its name, via a fresh single-file parse (`symbol_kinds.py` — deliberately
+*not* `symbol_facts.json`, see that module's own docstring for the
+O(repo-size) cost that would reintroduce), and carries a "Graph depth:
+0-hop (focus)" marker since the requested file is always this call's own
+anchor. When `file_path` and `query` are both given, each "Relevant
+repository files" match is additionally annotated with its hop-distance
+from that anchor (`graph_distance.compute_hop_distances()` — 1-hop direct
+import/importer, 2-hop via one intermediate, farther left unannotated).
+`compress_context` gains a parallel, lighter enrichment — original vs.
+compressed line-span counts alongside the existing token-savings header —
+since it has no file anchor to hang AST/graph metadata off of (its input
+is often command output, not a real source file).
+
 Run directly: `python -m quor.mcp.server` (stdio transport). See
 docs/POC_TESTING.md for how to register this with an MCP client.
 """
@@ -60,11 +76,13 @@ from quor.mcp.logging_config import LOGGER_NAME, configure_logging
 from quor.mcp.session_dedup import SessionDedupCache
 from quor.pipeline.git_diff_enrich import count_diff_files
 from quor.pipeline.repo_profile import intel_store
+from quor.pipeline.repo_profile.graph_distance import compute_hop_distances
 from quor.pipeline.repo_profile.intel_model import FileIntelligenceEntry
 from quor.pipeline.repo_profile.nudge import compute_hook_nudge
 from quor.pipeline.repo_profile.query_extract import extract_query_terms
 from quor.pipeline.repo_profile.search import merge_search
 from quor.pipeline.repo_profile.search_render import render_relevant_files_block
+from quor.pipeline.repo_profile.symbol_kinds import extract_file_symbols, symbol_kind_by_name
 from quor.pipeline.tee import content_hash
 from quor.tracking.db import (
     MCP_DEDUP_FILTER_LABEL,
@@ -150,7 +168,19 @@ def compress_context(raw_text: str) -> str:
 
     compressed_tokens = count_tokens(compressed)
     saved_pct = max(0, round((1 - compressed_tokens / original_tokens) * 100))
-    result = f"[Quor Compressed: {saved_pct}% saved]\n{compressed}"
+    # Metadata enrichment: line-span alongside the existing token-savings
+    # figures — both measured against the same final `compressed` value
+    # (already tee-footer-inclusive when tee fires, exactly like
+    # `compressed_tokens`/`saved_pct` above), so the header always
+    # describes one single, consistent "what you're about to read," not
+    # two different notions of "compressed" in the same response.
+    original_lines = len(raw_text.splitlines())
+    compressed_lines = len(compressed.splitlines())
+    result = (
+        f"[Quor Compressed: {saved_pct}% saved | "
+        f"lines {original_lines}->{compressed_lines} | "
+        f"tokens {original_tokens}->{compressed_tokens}]\n{compressed}"
+    )
     # QB-109: files_changed (QB-093 telemetry prep) was only ever wired into
     # dispatcher.py's git-diff call site, which is dead for real usage since
     # QB-104 made this tool the sole integration surface — 0 of the DB's
@@ -225,7 +255,16 @@ def get_repo_context(file_path: str = "", query: str = "") -> str:
             exclude = frozenset({rel_path}) if rel_path is not None else frozenset()
             matches = merge_search(entries, terms, limit=_MAX_RELEVANT_FILES, exclude=exclude)
             if matches:
-                sections.append(render_relevant_files_block(matches).rstrip("\n"))
+                # Graph-distance annotation (metadata enrichment): only
+                # meaningful relative to an anchor, so only computed when
+                # file_path was also given — a query-only call has nothing
+                # to measure hop-distance from.
+                hop_distances = (
+                    compute_hop_distances(entries, rel_path) if rel_path is not None else None
+                )
+                sections.append(
+                    render_relevant_files_block(matches, hop_distances=hop_distances).rstrip("\n")
+                )
             else:
                 sections.append(f"No relevant files found for query {query!r}.")
         else:
@@ -297,12 +336,26 @@ def _repo_context_block(
     if st.st_size != entry.size or st.st_mtime_ns != entry.mtime_ns:
         return None  # stale cache entry — omit rather than show possibly-wrong info
 
-    defines = ", ".join(entry.top_symbols) if entry.top_symbols else "(none)"
+    # AST node classification (metadata enrichment): a fresh single-file
+    # parse, not symbol_facts.json — see symbol_kinds.py's own docstring
+    # for why. Fail-open on its own (extract_file_symbols() never raises),
+    # so a name simply falls back to bare when no kind was found for it
+    # (extractor unavailable for this language, or the parse failed).
+    kind_by_name = symbol_kind_by_name(extract_file_symbols(root / rel_path))
+    defines = (
+        ", ".join(
+            f"{name} ({kind_by_name[name]})" if name in kind_by_name else name
+            for name in entry.top_symbols
+        )
+        if entry.top_symbols
+        else "(none)"
+    )
     entry_point = "yes" if entry.entry_point else "no"
     return (
         f"Repository Context ({rel_path}):\n"
         f"  Kind: {entry.kind.capitalize()} | Language: {entry.language} | "
-        f"Importance: {entry.importance} | Entry point: {entry_point}\n"
+        f"Importance: {entry.importance} | Entry point: {entry_point} | "
+        f"Graph depth: 0-hop (focus)\n"
         f"  Defines: {defines}\n"
         f"  Imports: {entry.imports} file(s) | Imported by: {entry.imported_by} file(s)"
     )

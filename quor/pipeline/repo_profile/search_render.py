@@ -89,13 +89,27 @@ block onto real file content on every matching Read call, so each entry
 stays to one label word plus the matched value, not a full sentence."""
 
 
-def render_relevant_files_block(matches: list[SearchMatch]) -> str:
+def render_relevant_files_block(
+    matches: list[SearchMatch],
+    *,
+    hop_distances: dict[str, int] | None = None,
+) -> str:
     """QB-081's Read-hook injection format: a compact "Relevant repository
     files" section, one path plus one evidence line per match, no scores
     or confidence — deliberately distinct from `render_search_text()`'s
     fuller per-match template (Evidence/Matched/Language/Kind/Importance/
     Imports/Imported-by), which is built for a one-shot `quor search`
     invocation a person reads, not something prepended onto every Read.
+
+    `hop_distances` (metadata-enrichment work): an optional `{path: hop}`
+    map from `graph_distance.compute_hop_distances()`, keyed relative to
+    whatever focus file the caller anchored the search to. A match whose
+    path is present gets a trailing `" (N-hop)"` annotation; everything
+    else — `None` (no anchor given at all) or a path simply absent from
+    the map (farther than the BFS's `max_hops` cap) — renders with no
+    annotation, byte-identical to this function's pre-enrichment output.
+    Purely additive and opt-in: omitting this parameter entirely preserves
+    the exact original format.
 
     Ends with exactly one blank line after the last entry (mirrors
     `claude_read._render_repo_context_block()`'s own trailing blank-line
@@ -110,7 +124,9 @@ def render_relevant_files_block(matches: list[SearchMatch]) -> str:
         return ""
     lines = ["Relevant repository files", ""]
     for m in matches:
-        lines.append(f"- {m.path}")
+        hop = hop_distances.get(m.path) if hop_distances is not None else None
+        hop_suffix = f" ({hop}-hop)" if hop is not None else ""
+        lines.append(f"- {m.path}{hop_suffix}")
         lines.append(f"  {_RELEVANT_FILES_LABELS[m.evidence]}: {m.matched_value}")
         lines.append("")
     return "\n".join(lines) + "\n"
