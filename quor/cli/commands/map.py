@@ -21,14 +21,26 @@ As of QB-074, `--path` is validated up front (`repo_path.resolve_repo_root`)
 exits with a clear, actionable message instead of silently producing an
 empty profile — and a colorized progress/summary presentation
 (`repo_progress.py`) reports elapsed time and a language count on stderr.
+
+As of QB-122, Markdown output (not `--json`) renders through
+`rich.markdown.Markdown` when stdout is an interactive terminal
+(`sys.stdout.isatty()`) — headings/tables/code fences get real terminal
+styling instead of raw `#`/`|` characters. A piped or redirected stdout
+still gets the untouched markdown text unchanged, since that's what a
+downstream tool (`grep`, a file redirect, another program) expects. Either
+way the tracked/compressed value (`output`, below) is always the plain
+markdown source — only the terminal *display* branches.
 """
 
 from __future__ import annotations
 
+import sys
 import time
 from pathlib import Path
 
 import typer
+from rich.console import Console
+from rich.markdown import Markdown
 
 from quor.cli.repo_path import resolve_repo_root
 from quor.cli.repo_progress import print_build_summary, progress_echo
@@ -60,7 +72,16 @@ def map_command(
     detail = f"{language_count} language{'s' if language_count != 1 else ''}"
     print_build_summary(intel, detail, elapsed_seconds=time.monotonic() - t0)
 
-    typer.echo(output)
+    # QB-122: raw markdown source is what gets tracked/compressed either
+    # way (see `track_invocation_safe` below) — this only changes how it's
+    # *displayed*. An interactive terminal gets it rendered (headings,
+    # tables, code fences); a pipe/redirect (`quor map | grep ...`, `quor
+    # map > FILE.md`) gets the untouched markdown text, since a downstream
+    # tool expects real markdown, not ANSI escape codes.
+    if not json_output and sys.stdout.isatty():
+        Console().print(Markdown(output))
+    else:
+        typer.echo(output)
     # No "before" blob to compress against — this is synthesis, not
     # compression (see module docstring) — so original/filtered default to
     # the same value, making this invocation's GainReport.tokens_saved

@@ -41,6 +41,7 @@ six:
   quor version
   quor dashboard
   quor discover
+  quor help
 
 `init --mcp` scaffolds MCP server registration (writes `./.mcp.json`,
 prints the `claude_desktop_config.json` equivalent) — QB-104's replacement
@@ -108,6 +109,22 @@ app.command(rich_help_panel=_PANEL_UTILITIES)(validate)
 app.command(rich_help_panel=_PANEL_UTILITIES)(verify)
 app.command(rich_help_panel=_PANEL_UTILITIES)(gain)
 app.command(name="version", rich_help_panel=_PANEL_UTILITIES)(version_command)
+
+
+@app.command(name="help", rich_help_panel=_PANEL_UTILITIES)
+def help_command(ctx: typer.Context) -> None:
+    """Show this help message and exit."""
+    # QB-122: an explicit subcommand, not just reliance on `--help` — with
+    # no "help" entry in Typer's command tree, `__main__.py::_CLI_COMMANDS`
+    # doesn't recognize the word either, and "quor help" falls through to
+    # the dispatcher, which hands "help" to the shell as a literal command
+    # name. On Windows that's CMD's own built-in help, not Quor's.
+    # `ctx.parent` is the root app's context (this command's own context is
+    # for "help" itself) — its `get_help()` renders the exact same text
+    # `quor --help` does.
+    assert ctx.parent is not None
+    typer.echo(ctx.parent.get_help())
+    raise typer.Exit()
 
 
 def _version_callback(show_version: bool) -> None:

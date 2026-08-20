@@ -42,6 +42,32 @@ _LOCKFILE_BASENAMES = frozenset(
     }
 )
 
+_TEST_DIR_NAMES = frozenset({"test", "tests", "__tests__", "spec", "specs"})
+_FIXTURE_DIR_NAMES = frozenset({"fixtures", "fixture", "data", "testdata", "test-data", "__fixtures__"})
+
+
+def _is_test_fixture_path(rel_path: str) -> bool:
+    """Naming-convention evidence only — same "convention as proof" rigor
+    `languages.py`'s `is_vendor_or_build_path()` and `intel.py`'s
+    `_is_test_path()` already use, not a content or size guess. True if
+    `rel_path` sits under a fixture/mock-data directory nested inside a
+    test directory (e.g. `tests/fixtures/...`, `tests/data/...`).
+
+    QB-122: a fixture repo (a mock `package.json`, `go.mod`,
+    `requirements.txt`, lockfile, ...) is a real, git-tracked file used to
+    exercise this very package's detectors in tests — with no exclusion it
+    reads as evidence about the *project itself*, so `quor map` run on
+    Quor's own repo reported Flask/Go/pnpm as this project's stack. Scoped
+    to a fixture dir specifically nested under a test dir, not any
+    directory literally named "data" or "fixtures" anywhere in the repo,
+    so real project directories with those names are untouched.
+    """
+    parts = [p.lower() for p in PurePosixPath(rel_path).parts[:-1]]
+    for i, part in enumerate(parts):
+        if part in _TEST_DIR_NAMES and any(p in _FIXTURE_DIR_NAMES for p in parts[i + 1 :]):
+            return True
+    return False
+
 
 def build_profile(root: Path, *, walk_result: WalkResult | None = None) -> RepoProfile:
     """Scan `root` and return its deterministic RepoProfile.
@@ -59,14 +85,21 @@ def build_profile(root: Path, *, walk_result: WalkResult | None = None) -> RepoP
     """
     walk_result = walk_result if walk_result is not None else walk_repository(root)
     files = walk_result.files
+    # QB-122: language/framework/build-system/lockfile detection is scoped
+    # to `detection_files` (fixture dirs excluded) — see
+    # `_is_test_fixture_path()`. Everything else (statistics, entry points,
+    # services, important directories) keeps using the full `files` list;
+    # only these four signals are the ones a committed test fixture (a mock
+    # manifest/lockfile under `tests/fixtures/...`) can silently impersonate.
+    detection_files = [f for f in files if not _is_test_fixture_path(f)]
 
-    languages = compute_language_stats(files)
+    languages = compute_language_stats(detection_files)
     statistics = compute_statistics(root, files, languages)
 
     registry = DetectorRegistry(project_root=root)
-    detected = registry.detect(files, root)
+    detected = registry.detect(detection_files, root)
 
-    lockfiles = sorted(f for f in files if PurePosixPath(f).name in _LOCKFILE_BASENAMES)
+    lockfiles = sorted(f for f in detection_files if PurePosixPath(f).name in _LOCKFILE_BASENAMES)
 
     notes: list[str] = []
     if not walk_result.used_git:

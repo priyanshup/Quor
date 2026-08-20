@@ -80,3 +80,30 @@ class TestHelpGrouping:
         result = runner.invoke(app, ["--help"])
         assert "Remove a pre-QB-104 hook installation." in result.stdout
         assert "Generate a deterministic repository context profile." in result.stdout
+
+
+class TestHelpSubcommand:
+    """QB-122: `quor help` must render Quor's own help, not fall through to
+    the dispatcher (which, unrecognized, hands "help" to the shell as a
+    literal command name — on Windows that resolves to CMD's own built-in
+    help, not Quor's)."""
+
+    def test_help_subcommand_prints_help(self) -> None:
+        result = runner.invoke(app, ["help"])
+        assert result.exit_code == 0
+        assert "Installation" in result.stdout
+        assert "Analysis" in result.stdout
+        assert "Utilities" in result.stdout
+
+    def test_help_subcommand_matches_help_flag(self) -> None:
+        via_flag = runner.invoke(app, ["--help"])
+        via_subcommand = runner.invoke(app, ["help"])
+        assert via_flag.stdout == via_subcommand.stdout
+
+    def test_reachable_without_dispatcher_fallthrough(self) -> None:
+        """Same regression class `TestVersionCommand`'s equivalent test
+        guards against (ADR-037): `help` must be routed to the CLI, never
+        treated as a literal shell command name by the dispatcher."""
+        import quor.__main__ as main_module
+
+        assert "help" in main_module._CLI_COMMANDS

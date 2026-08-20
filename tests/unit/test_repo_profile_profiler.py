@@ -90,3 +90,72 @@ class TestBuildProfileIntegration:
 
         service_paths = {s.path for s in profile.services}
         assert service_paths == {"backend", "frontend"}
+
+
+class TestFixtureExclusion:
+    """QB-122: committed fixture repos under `tests/fixtures/`,
+    `tests/data/`, etc. (mock manifests/lockfiles used to exercise this
+    package's own detectors in tests) must not read as evidence about the
+    profiled project itself."""
+
+    def _build_real_project_with_fixtures(self, root: Path) -> None:
+        _init_git_repo(root)
+        (root / "app.py").write_text("print(1)\n", encoding="utf-8")
+        fixture_dir = root / "tests" / "fixtures" / "flask-mock"
+        fixture_dir.mkdir(parents=True)
+        (fixture_dir / "requirements.txt").write_text("flask==3.0\n", encoding="utf-8")
+        (fixture_dir / "package.json").write_text('{"dependencies": {"express": "*"}}\n', encoding="utf-8")
+        (fixture_dir / "pnpm-lock.yaml").write_text("", encoding="utf-8")
+        (fixture_dir / "index.js").write_text("console.log(1)\n", encoding="utf-8")
+        subprocess.run(["git", "add", "."], cwd=root, check=True)
+
+    def test_fixture_manifests_do_not_leak_into_framework_detection(self, tmp_path: Path) -> None:
+        self._build_real_project_with_fixtures(tmp_path)
+
+        profile = build_profile(tmp_path)
+
+        assert not any(f.name in ("flask", "express") for f in profile.frameworks)
+        assert not any(pm.name == "pip" for pm in profile.package_managers)
+
+    def test_fixture_lockfiles_are_excluded(self, tmp_path: Path) -> None:
+        self._build_real_project_with_fixtures(tmp_path)
+
+        profile = build_profile(tmp_path)
+
+        assert profile.lockfiles == []
+
+    def test_fixture_javascript_does_not_leak_into_language_stats(self, tmp_path: Path) -> None:
+        self._build_real_project_with_fixtures(tmp_path)
+
+        profile = build_profile(tmp_path)
+
+        assert profile.statistics.primary_language == "Python"
+        assert not any(lang.language == "JavaScript" for lang in profile.languages)
+
+    def test_tests_data_directory_is_also_excluded(self, tmp_path: Path) -> None:
+        _init_git_repo(tmp_path)
+        (tmp_path / "app.py").write_text("print(1)\n", encoding="utf-8")
+        data_dir = tmp_path / "tests" / "data" / "sample-repo"
+        data_dir.mkdir(parents=True)
+        (data_dir / "go.mod").write_text("module example.com/mock\n", encoding="utf-8")
+        subprocess.run(["git", "add", "."], cwd=tmp_path, check=True)
+
+        profile = build_profile(tmp_path)
+
+        assert not any(bs.name == "go-modules" for bs in profile.build_systems)
+
+    def test_plain_test_source_files_still_count_as_project_files(self, tmp_path: Path) -> None:
+        # Only fixture/data dirs nested under a test dir are excluded — an
+        # ordinary test module (no fixture dir involved) is still real
+        # project source and must still count.
+        _init_git_repo(tmp_path)
+        (tmp_path / "app.py").write_text("print(1)\n", encoding="utf-8")
+        (tmp_path / "tests").mkdir()
+        (tmp_path / "tests" / "test_app.py").write_text("def test_x(): pass\n", encoding="utf-8")
+        subprocess.run(["git", "add", "."], cwd=tmp_path, check=True)
+
+        profile = build_profile(tmp_path)
+
+        assert profile.statistics.total_files == 2
+        python_stat = next(lang for lang in profile.languages if lang.language == "Python")
+        assert python_stat.file_count == 2

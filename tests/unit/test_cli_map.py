@@ -48,6 +48,75 @@ class TestMapCommandMarkdown:
         assert "Go" in result.stdout
 
 
+class TestMapCommandInteractiveRendering:
+    """QB-122: `quor map`'s Markdown output renders through
+    `rich.markdown.Markdown` when stdout is an interactive terminal, and as
+    untouched raw markdown text otherwise (piped/redirected — CliRunner's
+    captured stream, same as a real pipe)."""
+
+    def test_non_tty_stdout_gets_raw_markdown(self, tmp_path: Path, monkeypatch) -> None:
+        _init_git_repo(tmp_path)
+        (tmp_path / "app.py").write_text("print(1)\n", encoding="utf-8")
+        subprocess.run(["git", "add", "."], cwd=tmp_path, check=True)
+        monkeypatch.chdir(tmp_path)
+
+        result = runner.invoke(app, ["map"])
+
+        assert result.exit_code == 0
+        assert "# Repository Profile" in result.stdout
+
+    def test_tty_stdout_renders_via_rich_markdown(self, tmp_path: Path, monkeypatch) -> None:
+        _init_git_repo(tmp_path)
+        (tmp_path / "app.py").write_text("print(1)\n", encoding="utf-8")
+        subprocess.run(["git", "add", "."], cwd=tmp_path, check=True)
+        monkeypatch.chdir(tmp_path)
+
+        class _FakeStdout:
+            @staticmethod
+            def isatty() -> bool:
+                return True
+
+        class _FakeSys:
+            stdout = _FakeStdout()
+
+        import quor.cli.commands.map as map_module
+
+        monkeypatch.setattr(map_module, "sys", _FakeSys())
+
+        result = runner.invoke(app, ["map"])
+
+        assert result.exit_code == 0
+        # rich.markdown.Markdown rewrites "# Heading" into styled/centered
+        # text with the literal "#" stripped, unlike the raw-echo path.
+        assert "# Repository Profile" not in result.stdout
+        assert "Repository Profile" in result.stdout
+
+    def test_json_flag_ignores_tty_and_stays_raw(self, tmp_path: Path, monkeypatch) -> None:
+        # --json must never go through Markdown rendering, tty or not — it's
+        # meant to be machine-parsed.
+        _init_git_repo(tmp_path)
+        (tmp_path / "app.py").write_text("print(1)\n", encoding="utf-8")
+        subprocess.run(["git", "add", "."], cwd=tmp_path, check=True)
+        monkeypatch.chdir(tmp_path)
+
+        class _FakeStdout:
+            @staticmethod
+            def isatty() -> bool:
+                return True
+
+        class _FakeSys:
+            stdout = _FakeStdout()
+
+        import quor.cli.commands.map as map_module
+
+        monkeypatch.setattr(map_module, "sys", _FakeSys())
+
+        result = runner.invoke(app, ["map", "--json"])
+
+        assert result.exit_code == 0
+        orjson.loads(result.stdout)
+
+
 class TestMapCommandJson:
     def test_json_flag_produces_valid_json(self, tmp_path: Path, monkeypatch) -> None:
         _init_git_repo(tmp_path)
