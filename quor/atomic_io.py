@@ -30,7 +30,10 @@ def write_text_atomic(path: Path, content: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp_name = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        # newline="\n" disables the platform-default newline translation
+        # (CRLF on Windows) so this is byte-for-byte deterministic across
+        # OSes, matching write_json_atomic()'s always-LF output below.
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as fh:
             fh.write(content)
         os.replace(tmp_name, path)
     except BaseException:
