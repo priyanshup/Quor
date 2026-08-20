@@ -27,11 +27,15 @@ automatically with `pip install quor`.
 ### Claude Code CLI
 
 ```
-claude mcp add quor -- python -m quor.mcp.server
+claude mcp add quor -- python -m quor.mcp.launcher
 ```
 
-Run this from the repo root (so `python -m quor.mcp.server` resolves against
-this checkout). Verify registration with:
+Run this from the repo root (so `python -m quor.mcp.launcher` resolves
+against this checkout). This runs `quor/mcp/launcher.py`, not
+`quor/mcp/server.py` directly — a fast pre-flight import check that
+self-repairs a stale `.venv`/missing dependency before handing off to the
+real server, instead of the server crashing pre-handshake with nothing to
+show a trust prompt for. Verify registration with:
 
 ```
 claude mcp list
@@ -39,20 +43,44 @@ claude mcp list
 
 ### `claude_desktop_config.json`
 
-Add an entry under `mcpServers`, pointing `cwd` at this repo so the `quor`
-package is importable:
+Add an entry under `mcpServers`, pointing `command` at the exact Python
+interpreter Quor is installed into — a bare `"python"` resolves off
+whatever PATH the client process happens to have, which is almost never
+the interpreter Quor is actually installed in (venv/pipx/conda all break
+this silently, with no trust prompt to signal it — see the "MCP server
+never starts" note below). Find it with `python -c "import sys;
+print(sys.executable)"` run from the same environment `quor` is installed
+in:
 
 ```json
 {
   "mcpServers": {
     "quor": {
-      "command": "python",
-      "args": ["-m", "quor.mcp.server"],
+      "command": "C:/Users/PUSHPP02/OneDrive - Heineken International/Desktop/Workspace/Quor/.venv/Scripts/python.exe",
+      "args": ["-m", "quor.mcp.launcher"],
       "cwd": "C:/Users/PUSHPP02/OneDrive - Heineken International/Desktop/Workspace/Quor"
     }
   }
 }
 ```
+
+`quor init --mcp` generates this correctly automatically (it writes
+`sys.executable` and `-m quor.mcp.launcher`, not a bare `"python"` running
+the server module directly) — this manual snippet is only for
+`claude_desktop_config.json`, which `init --mcp` can't write for you.
+
+**If the MCP client's trust/approval prompt for `quor` never appears at
+startup:** that's the symptom of exactly this misconfiguration, not a
+client bug. A bare `"python"` (or any interpreter missing the `mcp`
+package) makes the server process crash before it completes the MCP
+handshake, so the client has nothing to show a trust prompt for — it fails
+silently pre-handshake rather than surfacing an error.
+`quor/mcp/launcher.py` self-repairs the common cases of this (stale
+`.venv`, missing dependency) automatically before that crash can happen —
+see its module docstring. If the prompt still never appears after that,
+the repair itself failed (e.g. no network access — check `sys.stderr` for
+what the launcher printed, or set `QUOR_MCP_DISABLE_AUTOREPAIR=1` and
+install dependencies manually if you're offline).
 
 Restart Claude Desktop after editing the config for it to pick up the new
 server.

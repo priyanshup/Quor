@@ -408,33 +408,33 @@ class TestCurrentTeeSizeBytes:
 
 class TestCheckTeeSize:
     def test_reports_size_and_limit_within_budget(self) -> None:
-        from quor.cli.commands.doctor import _check_tee_size
+        from quor.cli.commands.doctor import Status, _check_tee_size
         from quor.config.model import QuorUserConfig
 
         path = write_tee("a" * 1000)
         user_config = QuorUserConfig(tee_max_bytes=1_000_000)
 
-        name, ok, detail = _check_tee_size(user_config)
+        name, status, detail = _check_tee_size(user_config)
 
         expected_size_mb = path.stat().st_size / (1024 * 1024)
         expected_limit_mb = 1_000_000 / (1024 * 1024)
         assert name == "Tee cache size"
-        assert ok is True
+        assert status is Status.PASS
         assert detail == f"{expected_size_mb:.1f} MB used of {expected_limit_mb:.0f} MB limit"
 
     def test_reports_over_limit(self) -> None:
-        from quor.cli.commands.doctor import _check_tee_size
+        from quor.cli.commands.doctor import Status, _check_tee_size
         from quor.config.model import QuorUserConfig
 
         path = write_tee("a" * 10_000)
         user_config = QuorUserConfig(tee_max_bytes=100)
 
-        name, ok, detail = _check_tee_size(user_config)
+        name, status, detail = _check_tee_size(user_config)
 
         expected_size_mb = path.stat().st_size / (1024 * 1024)
         expected_limit_mb = 100 / (1024 * 1024)
         assert name == "Tee cache size"
-        assert ok is True  # advisory only — must never fail doctor
+        assert status is Status.WARN  # advisory only — must never fail doctor
         assert detail == (
             f"{expected_size_mb:.1f} MB used, over the {expected_limit_mb:.0f} MB limit — "
             "will be trimmed on the next scheduled cleanup"

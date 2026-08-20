@@ -31,6 +31,7 @@ docs/POC_TESTING.md for how to register this with an MCP client.
 
 from __future__ import annotations
 
+import logging
 import threading
 import time
 from pathlib import Path
@@ -38,6 +39,7 @@ from pathlib import Path
 from mcp.server.mcpserver import MCPServer
 
 from quor.filters.registry import FilterRegistry
+from quor.mcp.logging_config import LOGGER_NAME, configure_logging
 from quor.mcp.session_dedup import SessionDedupCache
 from quor.pipeline.content_type import detect
 from quor.pipeline.git_diff_enrich import count_diff_files
@@ -61,6 +63,8 @@ from quor.tracking.db import (
 # `FastMCP` (mcp.server.fastmcp) to `MCPServer` (mcp.server.mcpserver) with
 # no back-compat alias — same decorator/`run(transport=...)` API otherwise.
 mcp = MCPServer("Quor Context Compressor")
+
+_logger = logging.getLogger(LOGGER_NAME)
 
 # QB-089: module-level, not per-call — this dict must live exactly as long
 # as this process does (one MCP server subprocess per Claude Code session,
@@ -290,14 +294,28 @@ def _safe_nudge(root: Path) -> str | None:
         return None
 
 
-if __name__ == "__main__":
+def main() -> None:
+    """Block on the stdio MCP loop. Extracted from the `__main__` guard so
+    `quor/mcp/launcher.py` — the self-healing pre-flight entrypoint that
+    `quor init --mcp` now scaffolds instead of this module directly — can
+    hand off to it after confirming dependencies are actually importable."""
+    configure_logging()
+    _logger.info("Quor MCP server starting (stdio transport)")
     try:
         mcp.run(transport="stdio")
+    except Exception:
+        _logger.exception("Quor MCP server crashed")
+        raise
     finally:
         # QB-105: mirrors quor/__main__.py's own `tracking.close()` in a
         # `finally` around run_dispatch() — flush whatever's staged before
         # the process exits. Guarded on `is not None`: a session that never
         # actually tracked an invocation (every call degenerate/untracked)
         # should not force quor.db into existence on exit.
+        _logger.info("Quor MCP server shutting down")
         if _tracking_db is not None:
             _tracking_db.close()
+
+
+if __name__ == "__main__":
+    main()
