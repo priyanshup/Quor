@@ -5,6 +5,16 @@ only pure ANSI-code lines (nothing printable after stripping) are compressed.
 
 This stage uses an internal hardcoded pattern (not user-defined) so it uses
 the stdlib `re` module and has no per-line timeout overhead.
+
+`strip_inline` (QB-119, default False): also rewrite a KEEP line's content
+to remove ANSI codes embedded alongside real text (e.g. pytest's colorized
+"\x1b[32mPASSED\x1b[0m tests/test_foo.py") instead of only compressing
+lines that are pure ANSI. This is the same "content changes, decision and
+line count don't, no run required" shape `quor/pipeline/mask.py`'s module
+docstring already documents for `truncate_lines`/`column_padding_compression`
+— each qualifying line is handled independently, nothing is inferred, and
+every printable character survives. Opt-in and additive: every existing
+filter that doesn't set `strip_inline = true` keeps today's exact behavior.
 """
 
 from __future__ import annotations
@@ -23,6 +33,8 @@ _ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 
 class RemoveAnsiConfig(StageConfig):
     model_config = ConfigDict(frozen=True, extra="forbid")
+
+    strip_inline: bool = False
 
 
 class RemoveAnsiStage:
@@ -57,6 +69,15 @@ class RemoveAnsiStage:
             if _is_ansi_only(lm.line):
                 new_lines.append(
                     LineMask(lm.line, Decision.COMPRESS, "ansi-only line", self.stage_type)
+                )
+            elif config.strip_inline and _ANSI_RE.search(lm.line):
+                new_lines.append(
+                    LineMask(
+                        _ANSI_RE.sub("", lm.line),
+                        Decision.KEEP,
+                        "ansi codes stripped inline",
+                        self.stage_type,
+                    )
                 )
             else:
                 new_lines.append(lm)
