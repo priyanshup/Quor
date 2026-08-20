@@ -5,6 +5,14 @@ schema_version = 1
 [[filter]]
 name = "mypy"
 match_command = '^mypy\b|^python -m mypy\b'
+# Content-signature matching (extends QB-109): MCP's compress_context has no
+# command string, only raw content — content_type.detect()'s mypy check (an
+# exact "Found N errors in M files" summary-line match, not a guess) is the
+# only way this filter can ever be selected there. A clean mypy run (no
+# "Found ... error" summary line at all) has no equivalently unambiguous
+# marker and is deliberately left unrouted, same as any other tool's silent
+# success output.
+match_content_types = ["mypy"]
 abort_unless = ["error", "Error", "warning", "Warning", "note"]
 on_empty = "mypy: no issues found."
 

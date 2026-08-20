@@ -465,9 +465,12 @@ class TestContentTypeDetect:
     def test_plain_text(self) -> None:
         assert detect(_PLAIN_FIXTURE) is ContentType.PLAIN_TEXT
 
-    def test_pytest_output_is_plain_text_by_default(self) -> None:
-        # pytest output doesn't have ANSI codes here — falls through to plain text
-        assert detect(_PYTEST_OUTPUT_FIXTURE) is ContentType.PLAIN_TEXT
+    def test_pytest_output_detected_by_failures_banner(self) -> None:
+        # Content-signature matching (extends QB-109): the "FAILURES" banner
+        # routes this to ContentType.PYTEST rather than falling through to
+        # plain text — see tests/unit/test_content_signatures.py for the
+        # full routing/registry coverage of this change.
+        assert detect(_PYTEST_OUTPUT_FIXTURE) is ContentType.PYTEST
 
     def test_empty_string_is_plain_text(self) -> None:
         assert detect("") is ContentType.PLAIN_TEXT

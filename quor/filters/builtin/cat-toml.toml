@@ -35,6 +35,12 @@ schema_version = 1
 [[filter]]
 name = "cat-toml"
 match_command = '^cat\s+(-\S+\s+)*\S*(\.toml|poetry\.lock|Cargo\.lock)\b'
+# Content-signature matching (extends QB-109): MCP's compress_context has no
+# command string, only raw content — content_type.detect()'s TOML check (a
+# real tomllib.loads() parse, not a guess) is the only way this filter can
+# ever be selected there. See git-diff's identical match_content_types in
+# git.toml for the original precedent.
+match_content_types = ["toml"]
 on_empty = "(empty document)"
 
 [[filter.stages]]

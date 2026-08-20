@@ -5,6 +5,14 @@ schema_version = 1
 [[filter]]
 name = "pytest"
 match_command = '^pytest\b|^python -m pytest\b'
+# Content-signature matching (extends QB-109): MCP's compress_context has no
+# command string, only raw content — content_type.detect()'s pytest check
+# (an exact "FAILURES"/"short test summary info" banner match, not a guess)
+# is the only way this filter can ever be selected there. Checked before the
+# generic traceback content type so a --tb=native failure (which embeds a
+# real "Traceback (most recent call last):" line inside the FAILURES
+# section) still routes here instead of being shadowed by that catch-all.
+match_content_types = ["pytest"]
 abort_unless = ["FAILED", "ERROR", "error"]
 on_empty = "All tests passed."
 
