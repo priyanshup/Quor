@@ -74,6 +74,16 @@ compressed line-span counts alongside the existing token-savings header —
 since it has no file anchor to hang AST/graph metadata off of (its input
 is often command output, not a real source file).
 
+QB-120 (MCP Schema & Tool Definition Pruning): every tool's full
+description and JSON-Schema parameters are sent to the model on every
+`list_tools` call, before any tool is actually selected — a cost paid up
+front regardless of whether the tool is ever invoked. `_pruned_list_tools`
+below wraps `MCPServer.list_tools()` with `schema_pruner.prune_tool_schema()`
+to condense that up-front listing; `call_tool()` resolves through
+`_tool_manager.call_tool()` directly, a separate path `list_tools()` never
+touches, so a tool actually being invoked always sees its full, unpruned
+parameters regardless of what the listing above it showed.
+
 Run directly: `python -m quor.mcp.server` (stdio transport). See
 docs/POC_TESTING.md for how to register this with an MCP client.
 """
@@ -87,9 +97,11 @@ from collections import Counter
 from pathlib import Path
 
 from mcp.server.mcpserver import MCPServer
+from mcp.types import Tool as MCPTool
 
 from quor.engine.dispatcher import _scan_secrets_safe, apply_filter_pipeline
 from quor.mcp.logging_config import LOGGER_NAME, configure_logging
+from quor.mcp.schema_pruner import prune_tool_schema
 from quor.mcp.session_dedup import SessionDedupCache
 from quor.pipeline.git_diff_enrich import count_diff_files
 from quor.pipeline.projection.json_projector import project_json_text
@@ -116,6 +128,22 @@ from quor.tracking.db import (
 # `FastMCP` (mcp.server.fastmcp) to `MCPServer` (mcp.server.mcpserver) with
 # no back-compat alias — same decorator/`run(transport=...)` API otherwise.
 mcp = MCPServer("Quor Context Compressor")
+
+_original_list_tools = mcp.list_tools
+
+
+async def _pruned_list_tools() -> list[MCPTool]:
+    """QB-120: condense verbose tool descriptions/parameter docs before
+    they reach the model's system prompt. `MCPServer.call_tool()` resolves
+    a call through `_tool_manager.call_tool()` directly — a separate path
+    that never goes through `list_tools()` — so this only ever shrinks
+    what's shown for tools that haven't been selected yet; a direct
+    invocation still sees the tool's full, unpruned parameters."""
+    tools = await _original_list_tools()
+    return [MCPTool.model_validate(prune_tool_schema(tool.model_dump())) for tool in tools]
+
+
+mcp.list_tools = _pruned_list_tools  # type: ignore[method-assign]
 
 _logger = logging.getLogger(LOGGER_NAME)
 
