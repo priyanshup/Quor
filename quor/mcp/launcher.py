@@ -89,6 +89,25 @@ _REPAIR_TIMEOUT_SECONDS = 180.0
 _MAX_CHECKOUT_SEARCH_DEPTH = 6
 
 
+def expected_venv_python(root: Path) -> Path:
+    """OS-appropriate path to a project-local `.venv`'s interpreter,
+    relative to `root`: `.venv\\Scripts\\python.exe` on Windows,
+    `.venv/bin/python` on macOS/Linux — the two layouts `python -m venv`
+    itself creates. Read from `sys.platform` at call time (not a
+    module-level constant) so callers can exercise both branches under
+    test via `monkeypatch.setattr(sys, "platform", ...)`.
+
+    Shared by `quor/cli/commands/init.py` (deciding whether to scaffold a
+    `.venv`-relative `.mcp.json` command) and `quor/cli/commands/doctor.py`
+    (checking whether a configured `.venv`-relative command has a real
+    interpreter behind it) — one OS-detection rule instead of two that
+    could drift apart.
+    """
+    if sys.platform == "win32":
+        return root / ".venv" / "Scripts" / "python.exe"
+    return root / ".venv" / "bin" / "python"
+
+
 def _check_imports(modules: Sequence[str] = _REQUIRED_MODULES) -> tuple[bool, str]:
     for module_name in modules:
         try:

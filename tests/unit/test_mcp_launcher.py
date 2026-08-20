@@ -155,6 +155,36 @@ class TestFindDevCheckoutRoot:
         assert launcher._find_dev_checkout_root() is None
 
 
+class TestExpectedVenvPython:
+    """OS-aware `.venv` interpreter resolution shared by `init.py`/`doctor.py`
+    (QB-110-adjacent Windows-path work). `sys.platform` is monkeypatched
+    rather than run per-host, so both branches are exercised regardless of
+    which OS actually runs the suite."""
+
+    def test_windows_layout(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        monkeypatch.setattr(sys, "platform", "win32")
+
+        result = launcher.expected_venv_python(tmp_path)
+
+        assert result == tmp_path / ".venv" / "Scripts" / "python.exe"
+
+    def test_linux_layout(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        monkeypatch.setattr(sys, "platform", "linux")
+
+        result = launcher.expected_venv_python(tmp_path)
+
+        assert result == tmp_path / ".venv" / "bin" / "python"
+
+    def test_macos_uses_the_same_posix_layout_as_linux(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        monkeypatch.setattr(sys, "platform", "darwin")
+
+        result = launcher.expected_venv_python(tmp_path)
+
+        assert result == tmp_path / ".venv" / "bin" / "python"
+
+
 class TestMcpRequirementSpec:
     def test_returns_a_spec_naming_mcp(self) -> None:
         spec = launcher._mcp_requirement_spec()

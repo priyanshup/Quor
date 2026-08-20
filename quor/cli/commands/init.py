@@ -30,13 +30,14 @@ from rich.console import Console
 from quor.atomic_io import write_json_atomic as _write_json_atomic
 from quor.cli.commands.uninstall_hooks import detect_legacy_hooks, remove_legacy_hooks
 from quor.errors import ConfigError
+from quor.mcp.launcher import expected_venv_python
 
 console = Console()
 
 _MCP_JSON_FILENAME = ".mcp.json"
 
 
-def _mcp_server_entry() -> dict[str, Any]:
+def _mcp_server_entry(project_root: Path) -> dict[str, Any]:
     """Built from `sys.executable`, not a bare "python" — same rationale as
     `quor/rewrite/invocation.py`'s `get_quor_invocation()`: an MCP client
     spawns this command as a raw subprocess (no shell, no venv activation,
@@ -50,6 +51,28 @@ def _mcp_server_entry() -> dict[str, Any]:
     case `get_quor_invocation()` falls back to bare "quor" — `sys.executable`
     empty/unset (e.g. some embedded interpreters).
 
+    Exception: if `project_root` already has a `.venv` populated (the
+    interpreter `expected_venv_python()` predicts for this OS actually
+    exists on disk), scaffold a `${CLAUDE_PROJECT_DIR:-.}`-relative command
+    into it instead. This is deliberately narrower than always preferring a
+    relative path — a relative `.venv` layout differs by OS
+    (`.venv/bin/python` vs `.venv\\Scripts\\python.exe`), so a single
+    scaffolded `.mcp.json` still isn't portable to a teammate on a
+    different OS if committed to git; each OS should re-run `quor init
+    --mcp` locally against its own `.venv` rather than relying on a
+    checked-in file scaffolded elsewhere. The upside — matching this
+    project's already-committed `.mcp.json` convention, and surviving a
+    `.venv` recreation without a re-scaffold — is worth it specifically
+    when there's a real local `.venv` to point at.
+
+    Either way, `command` ends up forward-slash-only: the `.venv`-relative
+    branch is built from a literal string, and the `sys.executable` branch
+    goes through `Path.as_posix()`, since `sys.executable` is
+    backslash-separated on Windows. Forward slashes are accepted natively
+    by Windows' own `CreateProcess`, so there's no POSIX-only downside, and
+    it keeps the scaffolded JSON free of backslash escapes that a
+    non-strict-JSON MCP client could mishandle.
+
     Points at `quor.mcp.launcher`, not `quor.mcp.server` directly — the
     right interpreter at scaffold time doesn't guarantee that interpreter's
     environment is still correct later (a `.venv` can drift out of sync
@@ -57,8 +80,16 @@ def _mcp_server_entry() -> dict[str, Any]:
     runs a pre-flight import check and self-repairs before handing off to
     the real server, instead of crashing pre-handshake with no trust
     prompt ever appearing — see `quor/mcp/launcher.py`'s module docstring."""
+    venv_python = expected_venv_python(project_root)
+    if venv_python.exists():
+        suffix = "Scripts/python.exe" if sys.platform == "win32" else "bin/python"
+        command = f"${{CLAUDE_PROJECT_DIR:-.}}/.venv/{suffix}"
+    elif sys.executable:
+        command = Path(sys.executable).as_posix()
+    else:
+        command = "python"
     return {
-        "command": sys.executable or "python",
+        "command": command,
         "args": ["-m", "quor.mcp.launcher"],
     }
 
@@ -98,8 +129,9 @@ def _cleanup_legacy_hooks_if_present() -> None:
 
 
 def _scaffold_mcp(*, yes: bool) -> None:
-    mcp_json_path = Path.cwd() / _MCP_JSON_FILENAME
-    entry = _mcp_server_entry()
+    project_root = Path.cwd()
+    mcp_json_path = project_root / _MCP_JSON_FILENAME
+    entry = _mcp_server_entry(project_root)
 
     try:
         existing = _read_json(mcp_json_path)

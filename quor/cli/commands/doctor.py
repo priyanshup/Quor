@@ -38,6 +38,7 @@ from quor.config.loader import load_user_config
 from quor.config.model import QuorUserConfig
 from quor.errors import ExitCode
 from quor.filters.registry import FilterRegistry
+from quor.mcp.launcher import expected_venv_python
 
 console = Console()
 
@@ -440,6 +441,34 @@ def _has_unexpanded_placeholder(command: str) -> bool:
     return bool(re.search(r"\$\{|\$[A-Za-z_]|%[A-Za-z_][A-Za-z0-9_]*%", command))
 
 
+_CLAUDE_PROJECT_DIR_RE = re.compile(r"\$\{CLAUDE_PROJECT_DIR(?::-[^}]*)?\}")
+
+
+def _normalized_venv_interpreter(command: str, project_root: Path) -> Path | None:
+    """Best-effort local resolution of a `${CLAUDE_PROJECT_DIR:-...}/.venv/...`
+    templated command, for reporting purposes only — never changes the
+    WARN status a templated command already gets, since only the MCP
+    client actually expands it. `None` if `command` isn't shaped like a
+    `.venv`-relative command at all (an unrelated `${...}`-templated
+    command is simply out of scope for this normalization).
+
+    Deliberately OS-agnostic about the *suffix* already present in
+    `command` — a `.venv/bin/python` tail checked in from a macOS/Linux
+    machine is a legitimate `.venv`-relative command, just not one this
+    process's OS (per `expected_venv_python()`) would ever spawn. Reporting
+    what *this* OS expects, and whether it exists, is strictly additional
+    information layered onto the existing WARN, not a correctness verdict
+    on the string itself.
+    """
+    match = _CLAUDE_PROJECT_DIR_RE.match(command)
+    if match is None:
+        return None
+    tail = command[match.end() :].replace("\\", "/").lstrip("/")
+    if not tail.startswith(".venv/"):
+        return None
+    return expected_venv_python(project_root)
+
+
 def _validate_mcp_config_file(path: Path, scope: str) -> tuple[str, Status, str]:
     """Validate one `.mcp.json`/`claude_desktop_config.json` candidate:
     parses as JSON, has a `mcpServers.quor` entry, and that entry's
@@ -478,12 +507,26 @@ def _validate_mcp_config_file(path: Path, scope: str) -> tuple[str, Status, str]
         # templating — the *client* (Claude Code) expands this at spawn
         # time, not something `Path.exists()` can resolve statically here.
         # This repo's own `.mcp.json` uses exactly this form.
-        return (
-            name,
-            Status.WARN,
+        detail = (
             f"'command' contains an unexpanded variable ('{command}') — cannot statically "
-            "verify the interpreter it resolves to",
+            "verify the interpreter it resolves to"
         )
+        # `path.parent` is exactly what an MCP client would substitute
+        # CLAUDE_PROJECT_DIR with for the workspace file (it lives at
+        # `<project_root>/.mcp.json`); a global config could belong to any
+        # project, so normalization only applies to `scope == "workspace"`.
+        if scope == "workspace":
+            resolved = _normalized_venv_interpreter(command, path.parent)
+            if resolved is not None:
+                if resolved.exists():
+                    detail += f"; this OS's expected .venv interpreter exists at {resolved}"
+                else:
+                    detail += (
+                        f"; this OS's expected .venv interpreter ({resolved}) was not found — "
+                        "fine if this file is only ever launched on the OS whose layout it "
+                        "already names, otherwise re-run `quor init --mcp --yes` on this machine"
+                    )
+        return (name, Status.WARN, detail)
     if not Path(command).exists():
         return (
             name,

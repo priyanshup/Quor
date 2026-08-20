@@ -203,6 +203,81 @@ class TestValidateMcpConfigFile:
         assert status is Status.WARN
         assert "unexpanded variable" in detail
 
+    def test_placeholder_venv_command_reports_missing_local_interpreter(
+        self, tmp_path: Path
+    ) -> None:
+        """QB-110-adjacent normalization: a templated `.venv`-relative
+        command still WARNs (never FAILs — only the client can expand it),
+        but when no local `.venv` backs it, the detail should say so
+        instead of stopping at "cannot statically verify"."""
+        path = tmp_path / ".mcp.json"
+        self._write(
+            path,
+            {
+                "mcpServers": {
+                    "quor": {
+                        "command": "${CLAUDE_PROJECT_DIR:-.}/.venv/bin/python",
+                        "args": ["-m", "quor.mcp.launcher"],
+                    }
+                }
+            },
+        )
+
+        _, status, detail = doctor._validate_mcp_config_file(path, "workspace")
+
+        assert status is Status.WARN
+        assert "was not found" in detail
+
+    def test_placeholder_venv_command_reports_existing_local_interpreter(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(sys, "platform", "win32")
+        venv_python = tmp_path / ".venv" / "Scripts" / "python.exe"
+        venv_python.parent.mkdir(parents=True)
+        venv_python.write_text("", encoding="utf-8")
+        path = tmp_path / ".mcp.json"
+        self._write(
+            path,
+            {
+                "mcpServers": {
+                    "quor": {
+                        "command": "${CLAUDE_PROJECT_DIR:-.}/.venv/Scripts/python.exe",
+                        "args": ["-m", "quor.mcp.launcher"],
+                    }
+                }
+            },
+        )
+
+        _, status, detail = doctor._validate_mcp_config_file(path, "workspace")
+
+        assert status is Status.WARN
+        assert "exists at" in detail
+
+    def test_placeholder_normalization_skipped_for_global_scope(
+        self, tmp_path: Path
+    ) -> None:
+        """A global config (e.g. claude_desktop_config.json) isn't tied to
+        any one project directory, so `CLAUDE_PROJECT_DIR` can't be assumed
+        to be this file's parent — normalization must not run there."""
+        path = tmp_path / "claude_desktop_config.json"
+        self._write(
+            path,
+            {
+                "mcpServers": {
+                    "quor": {
+                        "command": "${CLAUDE_PROJECT_DIR:-.}/.venv/bin/python",
+                        "args": ["-m", "quor.mcp.launcher"],
+                    }
+                }
+            },
+        )
+
+        _, status, detail = doctor._validate_mcp_config_file(path, "global")
+
+        assert status is Status.WARN
+        assert "was not found" not in detail
+        assert "exists at" not in detail
+
     def test_args_missing_launcher_warns(self, tmp_path: Path) -> None:
         path = tmp_path / ".mcp.json"
         self._write(
@@ -230,6 +305,40 @@ class TestValidateMcpConfigFile:
 
         assert status is Status.PASS
         assert "quor registered" in detail
+
+
+class TestNormalizedVenvInterpreter:
+    def test_none_for_non_venv_template(self, tmp_path: Path) -> None:
+        result = doctor._normalized_venv_interpreter(
+            "${CLAUDE_PROJECT_DIR:-.}/bin/other", tmp_path
+        )
+        assert result is None
+
+    def test_none_for_unrelated_placeholder(self, tmp_path: Path) -> None:
+        result = doctor._normalized_venv_interpreter("$HOME/.venv/bin/python", tmp_path)
+        assert result is None
+
+    def test_resolves_windows_layout(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(sys, "platform", "win32")
+
+        result = doctor._normalized_venv_interpreter(
+            "${CLAUDE_PROJECT_DIR:-.}/.venv/bin/python", tmp_path
+        )
+
+        assert result == tmp_path / ".venv" / "Scripts" / "python.exe"
+
+    def test_resolves_posix_layout(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(sys, "platform", "linux")
+
+        result = doctor._normalized_venv_interpreter(
+            "${CLAUDE_PROJECT_DIR:-.}/.venv/Scripts/python.exe", tmp_path
+        )
+
+        assert result == tmp_path / ".venv" / "bin" / "python"
 
 
 class TestCheckMcpJsonFiles:
