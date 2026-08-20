@@ -61,7 +61,12 @@ class TestMcpServerEntryUsesRealInterpreter:
         result = runner.invoke(app, ["init", "--mcp", "--yes"])
         assert result.exit_code == 0
         assert '"command": "python"' not in result.stdout
-        assert sys.executable in result.stdout
+        # The snippet is JSON, so backslashes in `sys.executable` (Windows
+        # paths) are escaped there — compare against the same JSON-encoded
+        # form rather than the raw string, which only matches by accident
+        # on POSIX where path separators aren't escaped.
+        expected_command = orjson.dumps(sys.executable).decode()
+        assert expected_command in result.stdout
 
     def test_rerun_is_idempotent_and_reports_already_up_to_date(self) -> None:
         _run_init_mcp()
