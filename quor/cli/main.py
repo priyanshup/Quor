@@ -154,6 +154,15 @@ def root(
         typer.echo(f"quor {__version__}")
         raise typer.Exit()
 
+    # QB-123: fast, fail-open orphan-temp-dir hygiene pass — once per real
+    # CLI subcommand invocation, never on bare `quor`/`--version` above and
+    # never on the hot dispatch path (quor/__main__.py routes "quor git
+    # status"-shaped commands straight to the dispatcher, bypassing this
+    # Typer app entirely).
+    from quor.pipeline.orphan_sweep import sweep_orphaned_temp_dirs
+
+    sweep_orphaned_temp_dirs()
+
 
 @app.command(rich_help_panel=_PANEL_UTILITIES)
 def schema() -> None:

@@ -3,25 +3,37 @@
 Dispatcher-level only — this module never touches ContentMask, Pipeline, or
 any StageHandler. It reads two plain strings (the true raw subprocess output
 and the final output Quor is about to print) and, if they differ, persists
-the raw string to a content-addressed file so nothing is irrecoverably lost
-to aggressive compression (ADR-031).
+the raw string so nothing is irrecoverably lost to aggressive compression
+(ADR-031).
 
-Storage: platformdirs.user_data_dir("quor") / "tee" / "{sha256}.txt".
-Content-addressed, so identical output across invocations dedupes to one
-file. Cleanup deletes files whose mtime is older than `max_age_days`, and is
-throttled via a tiny SQLite state file so the directory is not swept on
-every single dispatch (see cleanup_tee).
+Storage (QB-123): a single bounded SQLite table (`tee_logs`) in
+`platformdirs.user_data_dir("quor") / "tee_state.db"` — the same dedicated
+SQLite file this module has always used for its throttle/adaptive-disable
+state (see "Why a separate tee_state.db" below), now also holding the teed
+content itself. Content-addressed by SHA256, so identical output across
+invocations dedupes to one row (a cache "hit" refreshes `last_used_at`
+instead of inserting a duplicate).
+
+Before QB-123, each teed entry was its own file under
+`platformdirs.user_data_dir("quor") / "tee"`. On Windows, creating many
+individual small files triggers a real-time Defender scan per file and
+fragments the NTFS MFT — a per-file-creation cost that exists independent of
+how small the total retained volume is kept. Consolidating into one SQLite
+table eliminates that per-entry file-creation cost entirely; the retention
+policy itself (age + size, not row count) is unchanged from the file-based
+version — see cleanup_tee().
+
+Cleanup deletes rows whose `last_used_at` is older than `max_age_days`, and
+is throttled via the same tiny `tee_cleanup` state table so the database is
+not swept on every single dispatch (see cleanup_tee()).
 
 Size ceiling (QB-103): the same throttled cleanup pass also enforces a
-total-bytes budget (`max_bytes`), evicting oldest-mtime files first once the
-directory's total size exceeds it. This is a hard safety bound against
+total-bytes budget (`max_bytes`), evicting oldest-`last_used_at` rows first
+once the table's total size exceeds it. This is a hard safety bound against
 pathological growth — a scripted or unusually bursty workload producing far
 more or larger content than the 7-day age window alone would ever
 accumulate under normal, human-paced usage — not a replacement for the
-age-based window. Age eviction always runs first within one pass; size
-eviction only considers whatever survives it, and total size is accumulated
-from the same per-file stat() age eviction already performs, so no second
-directory walk is needed.
+age-based window.
 
 Why a separate tee_state.db instead of reusing tracking/db.py's TrackingDB:
 TrackingDB is an async, queue-based writer (record() enqueues and returns;
@@ -30,18 +42,30 @@ read-then-conditionally-write API, which is what the cleanup throttle check
 needs. Routing the throttle check through TrackingDB would mean either
 changing its public API to add one, or opening a second raw connection to
 quor.db directly — which would contend with TrackingDB's own connection
-instead of avoiding contention. Tee also has to work when the caller passes
-tracking=None (a supported state in run_dispatch()), so it cannot depend on
-a TrackingDB instance existing at all. A second, single-table SQLite file
-is the smaller and more decoupled option. The adaptive-fallback state below
-(tee_status table) reuses this same tee_state.db file for the same reasons.
+instead of avoiding contention. That contention risk is sharper now that
+tee_logs stores real content payloads, not just a throttle timestamp:
+TrackingDB's background thread holds its own WAL connection open for the
+life of a long-running process (the MCP server), and interleaving tee's own
+read/write traffic into that same file would mean two independent writers
+contending for the same locks on every dispatch. Tee also has to work when
+the caller passes tracking=None (a supported state in run_dispatch()), so it
+cannot depend on a TrackingDB instance existing at all. A second,
+single-file SQLite database is the smaller and more decoupled option. The
+adaptive-fallback state below (tee_status table) reuses this same
+tee_state.db file for the same reasons.
 
-Adaptive fallback: if write_tee() fails with an OSError (permission denied,
-corporate filesystem policy, disk full, etc.) MAX_CONSECUTIVE_TEE_FAILURES
-times in a row, tee is persisted as disabled and no further write attempts
-are made — retrying a persistent filesystem restriction on every single
-invocation forever would just generate repeated noise (and, on some
-corporate machines, repeated security-software log entries) for no
+Storing content as a BLOB (UTF-8-encoded bytes) rather than a filesystem
+write also removes a footgun the old file-based version had to work around
+explicitly: os.open() on Windows defaults to text mode and silently rewrites
+"\n" to "\r\n" unless opened with a binary flag. SQLite's BLOB storage has
+no such text-mode translation, so there is nothing to work around.
+
+Adaptive fallback: if write_tee() fails with an OSError or sqlite3.Error
+(disk full, corporate filesystem/AV policy blocking the SQLite file, etc.)
+MAX_CONSECUTIVE_TEE_FAILURES times in a row, tee is persisted as disabled
+and no further write attempts are made — retrying a persistent restriction
+on every single invocation forever would just generate repeated noise (and,
+on some corporate machines, repeated security-software log entries) for no
 benefit. There is no automatic retry/cooldown: the assumption is that a
 persistent restriction will not disappear on its own. Tee stays disabled
 until reset_tee_state() is called explicitly (wired to
@@ -55,7 +79,6 @@ quor/adapters/dispatcher.py's _track() and _teardown_plugins().
 from __future__ import annotations
 
 import hashlib
-import os
 import sqlite3
 import time
 import warnings
@@ -65,15 +88,6 @@ from pathlib import Path
 
 import platformdirs
 
-# os.O_BINARY only exists on Windows; getattr(..., 0) makes the OR below a
-# no-op on POSIX, where there is no text/binary distinction. Without this,
-# os.open() defaults to text mode on Windows and silently rewrites every
-# "\n" to "\r\n" on write — corrupting the tee file relative to the actual
-# raw output (violates ADR-023's "no modification" guarantee, and makes the
-# on-disk bytes no longer match the SHA256 used to name the file).
-_O_BINARY = getattr(os, "O_BINARY", 0)
-
-_TEE_SUBDIR = "tee"
 _STATE_DB_NAME = "tee_state.db"
 _DEFAULT_MAX_AGE_DAYS = 7
 _DEFAULT_THROTTLE_HOURS = 24
@@ -84,6 +98,15 @@ _DEFAULT_THROTTLE_HOURS = 24
 # while still capping how large a pathological/scripted workload can grow
 # the cache before the next cleanup pass trims it back.
 _DEFAULT_MAX_BYTES = 500 * 1024 * 1024
+
+_CREATE_LOGS_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS tee_logs (
+    content_hash TEXT PRIMARY KEY,
+    content BLOB NOT NULL,
+    size_bytes INTEGER NOT NULL,
+    last_used_at REAL NOT NULL
+)
+"""
 
 _CREATE_STATE_TABLE_SQL = """
 CREATE TABLE IF NOT EXISTS tee_cleanup (
@@ -102,10 +125,10 @@ CREATE TABLE IF NOT EXISTS tee_status (
 """
 
 # Named constant, not a magic number: the single source of truth for how
-# many consecutive filesystem failures trigger adaptive disable. Referenced
-# from here, from tests (so they stay correct if this changes), and named
-# in docstrings elsewhere (quor/adapters/dispatcher.py's _apply_tee) rather
-# than restating the number.
+# many consecutive filesystem/SQLite failures trigger adaptive disable.
+# Referenced from here, from tests (so they stay correct if this changes),
+# and named in docstrings elsewhere (quor/engine/dispatcher.py's _apply_tee)
+# rather than restating the number.
 MAX_CONSECUTIVE_TEE_FAILURES = 2
 
 
@@ -115,7 +138,7 @@ class TeeStatus:
 
     Separate from the user's own on/off preference (QuorUserConfig.tee_enabled
     / FilterConfig.tee) — this tracks whether tee has disabled *itself* after
-    repeated filesystem failures, independent of what the user has configured.
+    repeated write failures, independent of what the user has configured.
     """
 
     disabled: bool
@@ -128,68 +151,89 @@ def content_hash(content: str) -> str:
     return hashlib.sha256(content.encode("utf-8")).hexdigest()
 
 
-def tee_dir() -> Path:
-    """The tee cache directory: platformdirs.user_data_dir("quor") / "tee"."""
-    return Path(platformdirs.user_data_dir("quor")) / _TEE_SUBDIR
-
-
-def tee_path(content: str) -> Path:
-    """Deterministic path for `content`: {tee_dir}/{sha256(content)}.txt."""
-    return tee_dir() / f"{content_hash(content)}.txt"
+def _state_db_path() -> Path:
+    return Path(platformdirs.user_data_dir("quor")) / _STATE_DB_NAME
 
 
 def current_tee_size_bytes() -> int:
-    """Sum of every current tee file's size, in bytes.
+    """Sum of every current tee_logs row's size, in bytes.
 
     Read-only — never deletes anything (that's cleanup_tee()'s job). Used by
     `quor doctor` (QB-103) to report cache size against its configured
     ceiling without triggering an eviction pass itself.
     """
-    directory = tee_dir()
-    if not directory.exists():
+    state_path = _state_db_path()
+    if not state_path.exists():
         return 0
-    total = 0
-    for path in directory.glob("*.txt"):
-        try:
-            total += path.stat().st_size
-        except OSError:
-            continue
-    return total
 
-
-def write_tee(content: str) -> Path:
-    """Write `content` to its content-addressed tee file. Idempotent.
-
-    If the file already exists (identical content previously teed), this is
-    a cache hit: the write is skipped but the file's mtime is refreshed to
-    now, so a content-addressed dedup hit does not go stale under the
-    mtime-based retention window in cleanup_tee().
-    """
-    path = tee_path(content)
-    path.parent.mkdir(parents=True, exist_ok=True)
-
-    if path.exists():
-        os.utime(path, None)
-        return path
-
-    data = content.encode("utf-8")
+    conn = _connect_state_db(state_path)
     try:
-        # O_EXCL: fail if another process created it between exists() and
-        # here, rather than silently truncating a concurrently-written file.
-        # Mode 0o600 restricts to owner read/write on POSIX; on Windows the
-        # mode bits are ignored except the read-only flag, which 0o600 does
-        # not set — effectively a no-op there, per the platform's own ACL
-        # defaults.
-        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | _O_BINARY, 0o600)
-    except FileExistsError:
-        os.utime(path, None)
-        return path
-
-    try:
-        os.write(fd, data)
+        conn.execute(_CREATE_LOGS_TABLE_SQL)
+        row = conn.execute("SELECT COALESCE(SUM(size_bytes), 0) FROM tee_logs").fetchone()
     finally:
-        os.close(fd)
-    return path
+        conn.close()
+    return int(row[0])
+
+
+def write_tee(content: str) -> str:
+    """Persist `content` to tee_logs, keyed by its content hash. Idempotent.
+
+    Returns the SHA256 hex digest (not a filesystem path — see module
+    docstring). If a row for this content already exists (identical content
+    previously teed), this is a cache hit: no new row is inserted, but
+    `last_used_at` is refreshed to now, so a content-addressed dedup hit
+    does not go stale under the age-based retention window in
+    cleanup_tee().
+    """
+    digest = content_hash(content)
+    data = content.encode("utf-8")
+    now = time.time()
+
+    state_path = _state_db_path()
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+
+    conn = _connect_state_db(state_path)
+    try:
+        conn.execute(_CREATE_LOGS_TABLE_SQL)
+        conn.execute(
+            """INSERT INTO tee_logs (content_hash, content, size_bytes, last_used_at)
+               VALUES (?, ?, ?, ?)
+               ON CONFLICT(content_hash) DO UPDATE SET last_used_at = excluded.last_used_at
+            """,
+            (digest, data, len(data), now),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    return digest
+
+
+def read_tee(digest: str) -> str | None:
+    """Retrieve a previously teed entry by its content hash.
+
+    Returns `None` if no row exists for `digest` (never teed, or already
+    evicted by cleanup_tee()) — the recovery footer's contract has always
+    been best-effort, not a durability guarantee. Backs `quor doctor
+    --show-tee` (QB-123), the replacement for opening the old recovery
+    file's path directly now that there is no file to open.
+    """
+    state_path = _state_db_path()
+    if not state_path.exists():
+        return None
+
+    conn = _connect_state_db(state_path)
+    try:
+        conn.execute(_CREATE_LOGS_TABLE_SQL)
+        row = conn.execute(
+            "SELECT content FROM tee_logs WHERE content_hash = ?", (digest,)
+        ).fetchone()
+    finally:
+        conn.close()
+
+    if row is None:
+        return None
+    raw = row[0]
+    return raw.decode("utf-8") if isinstance(raw, bytes | bytearray) else raw
 
 
 def get_tee_status() -> TeeStatus:
@@ -198,7 +242,7 @@ def get_tee_status() -> TeeStatus:
     Defaults to enabled/0 failures if the state file or row doesn't exist
     yet — i.e. nothing has ever failed.
     """
-    state_path = Path(platformdirs.user_data_dir("quor")) / _STATE_DB_NAME
+    state_path = _state_db_path()
     if not state_path.exists():
         return TeeStatus(disabled=False, consecutive_failures=0, disabled_reason=None)
 
@@ -221,12 +265,12 @@ def get_tee_status() -> TeeStatus:
 
 
 def record_tee_failure(reason: str) -> None:
-    """Record a filesystem-caused write_tee() failure.
+    """Record a write_tee() failure (OSError or sqlite3.Error).
 
     After MAX_CONSECUTIVE_TEE_FAILURES in a row, persists tee as disabled.
     No automatic retry/cooldown — see module docstring "Adaptive fallback".
     """
-    state_path = Path(platformdirs.user_data_dir("quor")) / _STATE_DB_NAME
+    state_path = _state_db_path()
     state_path.parent.mkdir(parents=True, exist_ok=True)
 
     conn = _connect_state_db(state_path)
@@ -260,7 +304,7 @@ def record_tee_success() -> None:
     is attempted at all (callers check get_tee_status().disabled first), so
     this never runs while disabled and never needs to touch that flag.
     """
-    state_path = Path(platformdirs.user_data_dir("quor")) / _STATE_DB_NAME
+    state_path = _state_db_path()
     state_path.parent.mkdir(parents=True, exist_ok=True)
 
     conn = _connect_state_db(state_path)
@@ -284,7 +328,7 @@ def reset_tee_state() -> None:
     automatic retry (see record_tee_failure()). Wired to the CLI via
     `quor doctor --reset-tee`.
     """
-    state_path = Path(platformdirs.user_data_dir("quor")) / _STATE_DB_NAME
+    state_path = _state_db_path()
     state_path.parent.mkdir(parents=True, exist_ok=True)
 
     conn = _connect_state_db(state_path)
@@ -310,27 +354,28 @@ def cleanup_tee(
     throttle_hours: int = _DEFAULT_THROTTLE_HOURS,
     max_bytes: int = _DEFAULT_MAX_BYTES,
 ) -> None:
-    """Delete tee files older than `max_age_days`, throttled via SQLite.
+    """Delete tee_logs rows older than `max_age_days`, throttled via SQLite.
 
     Also enforces a total-size ceiling (`max_bytes`, QB-103): once age
-    eviction has run, if the surviving files still total more than
-    `max_bytes`, the oldest-mtime survivors are deleted next, until back
-    within budget. A single file larger than `max_bytes` by itself is not
-    special-cased — the ceiling is a hard bound, not a per-file exemption,
-    so it is evicted in its turn, like any other entry, once it's the one
-    keeping the total over budget.
+    eviction has run, if the surviving rows still total more than
+    `max_bytes`, the oldest-`last_used_at` survivors are deleted next, until
+    back within budget. A single row larger than `max_bytes` by itself is
+    not special-cased — the ceiling is a hard bound, not a per-row
+    exemption, so it is evicted in its turn, like any other entry, once
+    it's the one keeping the total over budget.
 
     Quor has no daemon/session concept — every `quor <cmd>` is a fresh
     process — so "at session start" (ADR-023) means "checked at the start of
     some invocation, throttled to at most once per `throttle_hours`". The
-    throttle state (last_cleanup_at) lives in its own tiny SQLite file,
-    separate from tracking/db.py's TrackingDB, so tee cleanup never contends
-    with the tracking background thread's connection. Size eviction shares
-    this same throttle — it is only ever considered when a throttled cleanup
-    pass actually runs, never on every write.
+    throttle state (last_cleanup_at) lives in the tee_cleanup table of this
+    same tee_state.db file — separate from tracking/db.py's TrackingDB, so
+    tee cleanup never contends with the tracking background thread's
+    connection. Size eviction shares this same throttle — it is only ever
+    considered when a throttled cleanup pass actually runs, never on every
+    write.
     """
     now = datetime.now(timezone.utc)  # noqa: UP017
-    state_path = Path(platformdirs.user_data_dir("quor")) / _STATE_DB_NAME
+    state_path = _state_db_path()
     state_path.parent.mkdir(parents=True, exist_ok=True)
 
     conn = _connect_state_db(state_path)
@@ -345,7 +390,8 @@ def cleanup_tee(
             if now - last < timedelta(hours=throttle_hours):
                 return
 
-        _sweep(tee_dir(), max_age_days=max_age_days, max_bytes=max_bytes, now=now)
+        conn.execute(_CREATE_LOGS_TABLE_SQL)
+        _sweep(conn, max_age_days=max_age_days, max_bytes=max_bytes, now=now)
 
         conn.execute(
             """INSERT INTO tee_cleanup (id, last_cleanup_at) VALUES (1, ?)
@@ -384,45 +430,27 @@ def _connect_state_db(state_path: Path) -> sqlite3.Connection:
     return conn
 
 
-def _sweep(directory: Path, *, max_age_days: int, max_bytes: int, now: datetime) -> None:
-    """Delete files in `directory` older than `max_age_days`, then, if the
-    survivors still total more than `max_bytes`, delete oldest-mtime
+def _sweep(conn: sqlite3.Connection, *, max_age_days: int, max_bytes: int, now: datetime) -> None:
+    """Delete rows in `tee_logs` older than `max_age_days`, then, if the
+    survivors still total more than `max_bytes`, delete oldest-`last_used_at`
     survivors next until back within budget (QB-103).
 
-    One enumeration, one stat() per file: size is accumulated from the same
-    stat() call age eviction already needs, not a second directory walk.
+    Runs on the same connection/transaction the throttle check already
+    opened — no second connection, no directory walk.
     """
-    if not directory.exists():
-        return
-
     cutoff = now.timestamp() - max_age_days * 86400
-    survivors: list[tuple[float, int, Path]] = []  # (mtime, size, path)
-    for path in directory.glob("*.txt"):
-        try:
-            st = path.stat()
-        except OSError:
-            # Another process may have already removed it, or it's locked —
-            # cleanup is best-effort, never fatal.
-            continue
-        if st.st_mtime < cutoff:
-            try:
-                path.unlink()
-            except OSError:
-                continue
-            continue
-        survivors.append((st.st_mtime, st.st_size, path))
+    conn.execute("DELETE FROM tee_logs WHERE last_used_at < ?", (cutoff,))
 
-    total = sum(size for _, size, _ in survivors)
+    total = int(conn.execute("SELECT COALESCE(SUM(size_bytes), 0) FROM tee_logs").fetchone()[0])
     if total <= max_bytes:
         return
 
-    # Oldest-mtime-first, stopping as soon as we're back within budget.
-    survivors.sort(key=lambda entry: entry[0])
-    for _mtime, size, path in survivors:
+    # Oldest-last_used_at-first, stopping as soon as we're back within budget.
+    survivors = conn.execute(
+        "SELECT content_hash, size_bytes FROM tee_logs ORDER BY last_used_at ASC"
+    ).fetchall()
+    for digest, size in survivors:
         if total <= max_bytes:
             break
-        try:
-            path.unlink()
-        except OSError:
-            continue
+        conn.execute("DELETE FROM tee_logs WHERE content_hash = ?", (digest,))
         total -= size

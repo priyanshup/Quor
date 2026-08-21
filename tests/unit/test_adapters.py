@@ -450,13 +450,13 @@ class TestDispatcherTee:
 
         import re
 
-        match = re.search(r"\[full output: (.+)\]", output)
+        from quor.pipeline.tee import read_tee
+
+        match = re.search(r"--show-tee (\S+)\]", output)
         assert match is not None
-        tee_file = Path(match.group(1))
-        assert tee_file.exists()
-        # The tee file holds the true raw output, including the PASSED line
-        # that the filter stripped from what's printed to stdout.
-        assert tee_file.read_text(encoding="utf-8") == self._CHANGED_OUTPUT
+        # The recovered entry holds the true raw output, including the
+        # PASSED line that the filter stripped from what's printed to stdout.
+        assert read_tee(match.group(1)) == self._CHANGED_OUTPUT
 
     def test_no_footer_when_output_unchanged(self) -> None:
         # abort_unless (no FAILED/ERROR/error substring) short-circuits the
@@ -524,8 +524,8 @@ class TestDispatcherTee:
 
         mock_cleanup.assert_called_once_with(max_bytes=12345)
 
-    def test_identical_repeated_output_dedupes_to_one_tee_file(self) -> None:
-        from quor.pipeline.tee import tee_dir
+    def test_identical_repeated_output_dedupes_to_one_tee_row(self) -> None:
+        from quor.pipeline.tee import content_hash, read_tee
 
         proc = _make_proc(stdout=self._CHANGED_OUTPUT)
         footers = []
@@ -540,9 +540,10 @@ class TestDispatcherTee:
 
         import re
 
-        paths = [re.search(r"\[full output: (.+)\]", f).group(1) for f in footers]  # type: ignore[union-attr]
-        assert paths[0] == paths[1]
-        assert len(list(tee_dir().glob("*.txt"))) == 1
+        hashes = [re.search(r"--show-tee (\S+)\]", f).group(1) for f in footers]  # type: ignore[union-attr]
+        assert hashes[0] == hashes[1]
+        assert hashes[0] == content_hash(self._CHANGED_OUTPUT)
+        assert read_tee(hashes[0]) == self._CHANGED_OUTPUT
 
     def test_tee_failure_does_not_affect_stdout_or_exit_code(self) -> None:
         """A broken tee write must never affect the real command's output/exit code."""
@@ -717,7 +718,7 @@ class TestDispatcherTee:
         """When the filter's own savings comfortably exceed the tee
         footer's fixed cost, behavior is unchanged from before QB-052: the
         footer is appended and the raw output is recoverable from it."""
-        from quor.pipeline.tee import tee_path
+        from quor.pipeline.tee import content_hash, read_tee
 
         proc = _make_proc(stdout=self._CHANGED_OUTPUT)
         captured = io.StringIO()
@@ -728,24 +729,23 @@ class TestDispatcherTee:
             run_dispatch(["pytest", "tests/"])
 
         output = captured.getvalue()
-        expected_path = tee_path(self._CHANGED_OUTPUT)
-        assert f"[full output: {expected_path}]" in output
-        assert expected_path.exists()
-        assert expected_path.read_text(encoding="utf-8") == self._CHANGED_OUTPUT
+        expected_digest = content_hash(self._CHANGED_OUTPUT)
+        assert f"[full output: quor doctor --show-tee {expected_digest}]" in output
+        assert read_tee(expected_digest) == self._CHANGED_OUTPUT
 
     def test_qb052_footer_suppressed_when_it_would_cause_net_expansion(self) -> None:
         """mypy/npm-shaped case: the filter only strips a handful of tokens,
-        far less than the footer's fixed path-length cost. The visible
-        footer must be omitted — the printed output must never cost more
-        tokens than the true raw output would have — but the tee file is
-        still written unconditionally, so the raw output remains recoverable
-        on disk even though stdout doesn't advertise it.
+        far less than the footer's fixed cost. The visible footer must be
+        omitted — the printed output must never cost more tokens than the
+        true raw output would have — but the tee entry is still written
+        unconditionally, so the raw output remains recoverable even though
+        stdout doesn't advertise it.
 
         The concise-output nudge (QB-052 follow-on, see TestConciseInstruction)
         is gated by the same rule and is suppressed here too: this is the
         exact tiny-savings shape where the fixed nudge cost would also
         outweigh what the filter saved."""
-        from quor.pipeline.tee import tee_path
+        from quor.pipeline.tee import content_hash, read_tee
 
         proc = _make_proc(stdout=self._TINY_CHANGED_OUTPUT)
         captured = io.StringIO()
@@ -760,12 +760,11 @@ class TestDispatcherTee:
         assert not output.startswith(CONCISE_INSTRUCTION)
         assert output == "FAILED tests/test_b.py::test_y\n"
 
-        # The tee file was still written for this exact raw content —
-        # "always generate the tee file" holds even when the footer is
+        # The tee entry was still written for this exact raw content —
+        # "always generate the tee entry" holds even when the footer is
         # suppressed.
-        expected_path = tee_path(self._TINY_CHANGED_OUTPUT)
-        assert expected_path.exists()
-        assert expected_path.read_text(encoding="utf-8") == self._TINY_CHANGED_OUTPUT
+        expected_digest = content_hash(self._TINY_CHANGED_OUTPUT)
+        assert read_tee(expected_digest) == self._TINY_CHANGED_OUTPUT
 
     def test_qb052_error_during_footer_token_check_fails_open(self) -> None:
         """If the new token-count comparison itself raises, _apply_tee's

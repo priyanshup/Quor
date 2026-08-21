@@ -532,6 +532,9 @@ def main() -> None:
     hand off to it after confirming dependencies are actually importable."""
     configure_logging()
     _logger.info("Quor MCP server starting (stdio transport)")
+    from quor.pipeline.orphan_sweep import sweep_orphaned_temp_dirs
+
+    sweep_orphaned_temp_dirs()
     try:
         mcp.run(transport="stdio")
     except Exception:

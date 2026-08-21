@@ -43,6 +43,7 @@ actually reaches stdout. See CONCISE_INSTRUCTION_ENABLED below.
 from __future__ import annotations
 
 import shutil
+import sqlite3
 import subprocess
 import sys
 import time
@@ -583,24 +584,26 @@ def _apply_tee(
       - this filter has not opted out (FilterConfig.tee is not False)
       - the final output actually differs from the true raw subprocess output
         (nothing to recover otherwise — e.g. abort_unless/abort_if short-circuits)
-      - tee has not adaptively disabled itself after repeated filesystem
-        write failures (see quor/pipeline/tee.py's "Adaptive fallback")
+      - tee has not adaptively disabled itself after repeated write
+        failures (see quor/pipeline/tee.py's "Adaptive fallback")
 
-    A write_tee() failure caused by the filesystem (OSError — permission
-    denied, corporate policy, disk full, etc.) is recorded; after
-    MAX_CONSECUTIVE_TEE_FAILURES (quor.pipeline.tee) in a row, tee persists
-    itself as disabled and stops attempting writes entirely until
-    `quor doctor --reset-tee` — no automatic retry.
+    A write_tee() failure (OSError — disk full, etc. — or sqlite3.Error —
+    the tee_state.db file itself unavailable/locked/corporate-policy-
+    blocked) is recorded; after MAX_CONSECUTIVE_TEE_FAILURES
+    (quor.pipeline.tee) in a row, tee persists itself as disabled and stops
+    attempting writes entirely until `quor doctor --reset-tee` — no
+    automatic retry.
 
-    QB-052: the raw file is always written on a successful tee (recoverability
-    is preserved unconditionally), but the visible `"\n[full output: <path>]"`
-    footer is only appended to stdout when doing so keeps the total token
-    count at or below the true raw output's — i.e. when the filter's own
-    compression saved at least as many tokens as the footer costs. `mypy` and
-    other filters with small, mostly-non-repetitive real-world output were
-    consistently landing net-negative (QB-052's real-usage finding) purely
-    because this fixed-cost footer outweighed genuine, real savings; the
-    footer itself was the cause, not the filter's compression logic. Uses
+    QB-052: the entry is always written on a successful tee (recoverability
+    is preserved unconditionally), but the visible
+    `"\n[full output: quor doctor --show-tee <hash>]"` footer is only
+    appended to stdout when doing so keeps the total token count at or below
+    the true raw output's — i.e. when the filter's own compression saved at
+    least as many tokens as the footer costs. `mypy` and other filters with
+    small, mostly-non-repetitive real-world output were consistently landing
+    net-negative (QB-052's real-usage finding) purely because this
+    fixed-cost footer outweighed genuine, real savings; the footer itself
+    was the cause, not the filter's compression logic. Uses
     `count_tokens()` (the same estimator every other token figure in Quor is
     built from) — a direct comparison, not a new heuristic or threshold.
 
@@ -622,14 +625,14 @@ def _apply_tee(
             return final_output
 
         try:
-            path = write_tee(captured)
-        except OSError as exc:
+            digest = write_tee(captured)
+        except (OSError, sqlite3.Error) as exc:
             record_tee_failure(str(exc))
             return final_output
 
         record_tee_success()
 
-        with_footer = f"{final_output}\n[full output: {path}]"
+        with_footer = f"{final_output}\n[full output: quor doctor --show-tee {digest}]"
         if count_tokens(with_footer) > count_tokens(captured):
             return final_output
         return with_footer

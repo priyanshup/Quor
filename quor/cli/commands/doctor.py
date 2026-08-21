@@ -72,9 +72,49 @@ def doctor(
         "--reset-tee",
         help="Clear tee's adaptive-disable state and re-enable it after fixing a filesystem issue.",
     ),
+    show_tee: str = typer.Option(
+        "",
+        "--show-tee",
+        help="Print a previously teed entry's full content by its recovery hash "
+        "(from a '[full output: quor doctor --show-tee <hash>]' footer).",
+    ),
 ) -> None:
     """Run health checks and print a summary with colored status indicators."""
+    if show_tee:
+        _show_tee(show_tee)
+        return
     _run_doctor(reset_tee=reset_tee)
+
+
+def _show_tee(digest: str) -> None:
+    """Print one tee_logs row's content verbatim, or report it's gone.
+
+    QB-123: the recovery mechanism's replacement for opening the old teed
+    file's path directly — content now lives in SQLite (quor/pipeline/tee.py),
+    not on disk, so there is no path left to hand the caller. A miss is
+    expected and unremarkable (the retention window evicted it, or the hash
+    was mistyped), not a doctor failure — this bypasses the health-check
+    exit-code contract entirely (see `doctor()` above).
+    """
+    from quor.pipeline.tee import read_tee
+
+    try:
+        content = read_tee(digest)
+    except Exception as exc:  # noqa: BLE001
+        console.print(f"[red]Could not read tee entry: {exc}[/red]")
+        raise typer.Exit(code=ExitCode.GENERAL_ERROR) from None
+
+    if content is None:
+        console.print(
+            f"[yellow]No tee entry found for hash {digest!r} — it may have expired "
+            "(7-day/500MB retention) or the hash may be mistyped.[/yellow]"
+        )
+        raise typer.Exit(code=ExitCode.GENERAL_ERROR)
+
+    # Raw content printed verbatim, not through Rich markup — it's arbitrary
+    # command output that may itself contain "[...]"-shaped text Rich would
+    # otherwise try to parse as style tags.
+    print(content)
 
 
 def _run_doctor(*, reset_tee: bool = False) -> None:

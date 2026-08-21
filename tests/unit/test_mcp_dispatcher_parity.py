@@ -36,7 +36,7 @@ from quor.mcp.server import compress_context, get_repo_context
 from quor.mcp.session_dedup import SessionDedupCache
 from quor.pipeline.repo_profile import intel_store
 from quor.pipeline.repo_profile.intel_model import FileIntelligenceEntry
-from quor.pipeline.tee import tee_path
+from quor.pipeline.tee import content_hash, read_tee
 from quor.tracking.db import TrackingDB
 
 _FAKE_GITHUB_TOKEN = "ghp_" + "a" * 36
@@ -74,29 +74,28 @@ class TestWriteTeeFiresOverMcp:
     """Requirement 2: write_tee() must fire on compress_context invocations
     so recovery links are generated and accessible."""
 
-    def test_recovery_footer_and_file_appear(self) -> None:
+    def test_recovery_footer_and_entry_appear(self) -> None:
         result = compress_context(_COMPRESSIBLE_TEXT)
 
         assert "[full output:" in result
-        match = re.search(r"\[full output: (.+)\]", result)
+        match = re.search(r"--show-tee (\S+)\]", result)
         assert match is not None
-        recovered = Path(match.group(1))
-        assert recovered.exists()
-        # The recovered file holds the true raw text — including the 300
+        recovered = read_tee(match.group(1))
+        # The recovered entry holds the true raw text — including the 300
         # repeated INFO lines the generic filter's dedup stage collapsed
         # out of what compress_context actually returned.
-        assert recovered.read_text(encoding="utf-8") == _COMPRESSIBLE_TEXT
+        assert recovered == _COMPRESSIBLE_TEXT
 
-    def test_recovery_file_matches_tee_paths_own_naming(self) -> None:
-        """Same content-addressed path `_apply_tee()`/`write_tee()` already
+    def test_recovery_entry_matches_tee_hash_naming(self) -> None:
+        """Same content-addressed hash `_apply_tee()`/`write_tee()` already
         use for the CLI path (tests/unit/test_adapters.py's own
         TestDispatcherTee asserts this identically against run_dispatch) —
         proof this is the real write_tee(), not a lookalike."""
         result = compress_context(_COMPRESSIBLE_TEXT)
 
-        expected_path = tee_path(_COMPRESSIBLE_TEXT)
-        assert f"[full output: {expected_path}]" in result
-        assert expected_path.exists()
+        expected_digest = content_hash(_COMPRESSIBLE_TEXT)
+        assert f"[full output: quor doctor --show-tee {expected_digest}]" in result
+        assert read_tee(expected_digest) == _COMPRESSIBLE_TEXT
 
     def test_no_footer_when_input_too_small_to_compress(self) -> None:
         """Mirrors run_dispatch()'s own contract: tee only fires when
