@@ -151,7 +151,17 @@ def content_hash(content: str) -> str:
     return hashlib.sha256(content.encode("utf-8")).hexdigest()
 
 
-def _state_db_path() -> Path:
+def state_db_path() -> Path:
+    """Path to the shared small-state SQLite file this module owns.
+
+    Public (QB-124) so `quor/pipeline/repo_profile/intel_cleanup.py` can add
+    its own throttle-state table here too, instead of introducing a second
+    tiny state file — same "no unbounded or ad-hoc store" reasoning this
+    module's own docstring already applies to keeping tee_logs/tee_cleanup/
+    tee_status together. Nothing about tee's own tables changes: an
+    unrelated table living in the same file doesn't contend with these,
+    since SQLite locks are file-level only across a single short-lived
+    write, not held for the file's lifetime the way TrackingDB's connection is."""
     return Path(platformdirs.user_data_dir("quor")) / _STATE_DB_NAME
 
 
@@ -162,11 +172,11 @@ def current_tee_size_bytes() -> int:
     `quor doctor` (QB-103) to report cache size against its configured
     ceiling without triggering an eviction pass itself.
     """
-    state_path = _state_db_path()
+    state_path = state_db_path()
     if not state_path.exists():
         return 0
 
-    conn = _connect_state_db(state_path)
+    conn = connect_state_db(state_path)
     try:
         conn.execute(_CREATE_LOGS_TABLE_SQL)
         row = conn.execute("SELECT COALESCE(SUM(size_bytes), 0) FROM tee_logs").fetchone()
@@ -189,10 +199,10 @@ def write_tee(content: str) -> str:
     data = content.encode("utf-8")
     now = time.time()
 
-    state_path = _state_db_path()
+    state_path = state_db_path()
     state_path.parent.mkdir(parents=True, exist_ok=True)
 
-    conn = _connect_state_db(state_path)
+    conn = connect_state_db(state_path)
     try:
         conn.execute(_CREATE_LOGS_TABLE_SQL)
         conn.execute(
@@ -217,11 +227,11 @@ def read_tee(digest: str) -> str | None:
     --show-tee` (QB-123), the replacement for opening the old recovery
     file's path directly now that there is no file to open.
     """
-    state_path = _state_db_path()
+    state_path = state_db_path()
     if not state_path.exists():
         return None
 
-    conn = _connect_state_db(state_path)
+    conn = connect_state_db(state_path)
     try:
         conn.execute(_CREATE_LOGS_TABLE_SQL)
         row = conn.execute(
@@ -242,11 +252,11 @@ def get_tee_status() -> TeeStatus:
     Defaults to enabled/0 failures if the state file or row doesn't exist
     yet — i.e. nothing has ever failed.
     """
-    state_path = _state_db_path()
+    state_path = state_db_path()
     if not state_path.exists():
         return TeeStatus(disabled=False, consecutive_failures=0, disabled_reason=None)
 
-    conn = _connect_state_db(state_path)
+    conn = connect_state_db(state_path)
     try:
         conn.execute(_CREATE_STATUS_TABLE_SQL)
         row = conn.execute(
@@ -270,10 +280,10 @@ def record_tee_failure(reason: str) -> None:
     After MAX_CONSECUTIVE_TEE_FAILURES in a row, persists tee as disabled.
     No automatic retry/cooldown — see module docstring "Adaptive fallback".
     """
-    state_path = _state_db_path()
+    state_path = state_db_path()
     state_path.parent.mkdir(parents=True, exist_ok=True)
 
-    conn = _connect_state_db(state_path)
+    conn = connect_state_db(state_path)
     try:
         conn.execute(_CREATE_STATUS_TABLE_SQL)
         row = conn.execute(
@@ -304,10 +314,10 @@ def record_tee_success() -> None:
     is attempted at all (callers check get_tee_status().disabled first), so
     this never runs while disabled and never needs to touch that flag.
     """
-    state_path = _state_db_path()
+    state_path = state_db_path()
     state_path.parent.mkdir(parents=True, exist_ok=True)
 
-    conn = _connect_state_db(state_path)
+    conn = connect_state_db(state_path)
     try:
         conn.execute(_CREATE_STATUS_TABLE_SQL)
         conn.execute(
@@ -328,10 +338,10 @@ def reset_tee_state() -> None:
     automatic retry (see record_tee_failure()). Wired to the CLI via
     `quor doctor --reset-tee`.
     """
-    state_path = _state_db_path()
+    state_path = state_db_path()
     state_path.parent.mkdir(parents=True, exist_ok=True)
 
-    conn = _connect_state_db(state_path)
+    conn = connect_state_db(state_path)
     try:
         conn.execute(_CREATE_STATUS_TABLE_SQL)
         conn.execute(
@@ -375,10 +385,10 @@ def cleanup_tee(
     write.
     """
     now = datetime.now(timezone.utc)  # noqa: UP017
-    state_path = _state_db_path()
+    state_path = state_db_path()
     state_path.parent.mkdir(parents=True, exist_ok=True)
 
-    conn = _connect_state_db(state_path)
+    conn = connect_state_db(state_path)
     try:
         conn.execute(_CREATE_STATE_TABLE_SQL)
         row = conn.execute(
@@ -404,7 +414,7 @@ def cleanup_tee(
         conn.close()
 
 
-def _connect_state_db(state_path: Path) -> sqlite3.Connection:
+def connect_state_db(state_path: Path) -> sqlite3.Connection:
     """Open the tee state DB with WAL mode, retrying under lock contention.
 
     Mirrors TrackingDB._connect()'s retry pattern (quor/tracking/db.py):

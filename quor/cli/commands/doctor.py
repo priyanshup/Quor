@@ -146,6 +146,7 @@ def _run_doctor(*, reset_tee: bool = False) -> None:
     checks.append(_check_mode(user_config))
     checks.append(_check_tee(user_config))
     checks.append(_check_tee_size(user_config))
+    checks.append(_check_repo_intel_size(user_config))
     checks.append(_check_plugins())
     checks.append(_check_negative_compression_filters())
     checks.append(_check_mcp_interpreter_isolation())
@@ -313,6 +314,44 @@ def _check_tee_size(user_config: QuorUserConfig) -> tuple[str, Status, str]:
             "will be trimmed on the next scheduled cleanup",
         )
     return ("Tee cache size", Status.PASS, f"{size_mb:.1f} MB used of {limit_mb:.0f} MB limit")
+
+
+def _check_repo_intel_size(user_config: QuorUserConfig) -> tuple[str, Status, str]:
+    """Report the repository-intelligence cache's current disk usage against
+    its configured ceiling (QB-124) — the counterpart to `_check_tee_size()`
+    above for the one on-disk store that had no `doctor` visibility at all
+    before this check existed.
+
+    Read-only — never triggers cleanup itself; eviction only happens the
+    next time `cleanup_repo_intel()` actually runs (`quor map`/`symbols`/
+    `graph`/`repo`/`search`/`explore`-triggered, throttled to at most once
+    per 24h). Advisory only, same reasoning as `_check_tee_size()`: being
+    over the limit is expected to self-correct on the next scheduled
+    cleanup pass, so it must never block the rest of `quor doctor`'s real
+    diagnostic checks.
+    """
+    from quor.pipeline.repo_profile.intel_cleanup import current_repo_intel_size_bytes
+
+    try:
+        size_bytes = current_repo_intel_size_bytes()
+    except Exception as exc:  # noqa: BLE001
+        return ("Repository intelligence cache size", Status.PASS, f"(could not check: {exc})")
+
+    limit_bytes = user_config.repo_intel_max_bytes
+    size_mb = size_bytes / (1024 * 1024)
+    limit_mb = limit_bytes / (1024 * 1024)
+    if size_bytes > limit_bytes:
+        return (
+            "Repository intelligence cache size",
+            Status.WARN,
+            f"{size_mb:.1f} MB used, over the {limit_mb:.0f} MB limit — "
+            "will be trimmed on the next `quor map`/`symbols`/`graph` cleanup pass",
+        )
+    return (
+        "Repository intelligence cache size",
+        Status.PASS,
+        f"{size_mb:.1f} MB used of {limit_mb:.0f} MB limit",
+    )
 
 
 def _check_negative_compression_filters() -> tuple[str, Status, str]:

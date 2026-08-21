@@ -137,6 +137,8 @@ def ensure_repo_intelligence(
     never land on stdout the caller might be piping as `--json`); omitted,
     messages are silently discarded (useful for tests and non-interactive
     callers)."""
+    _cleanup_repo_intel_safe()
+
     t0 = time.monotonic()
     _echo = echo or _noop
     quor_version = str(quor.__version__)
@@ -161,6 +163,26 @@ def ensure_repo_intelligence(
         )
 
     return _refresh_from_cache(root, state, t0=t0, echo=_echo, quor_version=quor_version)
+
+
+def _cleanup_repo_intel_safe() -> None:
+    """Run repo_intel retention (QB-124), fail-open — a cleanup error must
+    never block `quor map`/`symbols`/`graph`/`repo`/`search`/`explore` from
+    doing the real work the user asked for. Mirrors
+    `quor/engine/dispatcher.py`'s `_cleanup_tee_safe()`: loads user config
+    for the configured ceilings, `cleanup_repo_intel()` throttles itself
+    internally so this is cheap to call on every invocation."""
+    try:
+        from quor.config.loader import load_user_config
+        from quor.pipeline.repo_profile.intel_cleanup import cleanup_repo_intel
+
+        user_config = load_user_config()
+        cleanup_repo_intel(
+            max_age_days=user_config.repo_intel_max_age_days,
+            max_bytes=user_config.repo_intel_max_bytes,
+        )
+    except Exception as exc:  # noqa: BLE001
+        warnings.warn(f"[quor] repo_intel cleanup error: {exc}", stacklevel=1)
 
 
 # ---------------------------------------------------------------------------

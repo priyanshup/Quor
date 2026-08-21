@@ -91,3 +91,8 @@ class QuorUserConfig(BaseModel):
     mode: str = "audit"  # one of: audit, optimize, simulate — see ADR-009
     tee_enabled: bool = True  # global kill-switch for the tee mechanism — see ADR-023
     tee_max_bytes: int = 500 * 1024 * 1024  # tee cache total-size safety ceiling — ADR-023 (QB-103)
+    # repo_intel/ retention (QB-124) — no user-facing kill-switch, matching quor.db's own
+    # always-on 90-day sweep: this is background cache hygiene, not a pipeline behavior toggle.
+    repo_intel_max_age_days: int = 30
+    repo_intel_max_bytes: int = 1024 * 1024 * 1024  # 1 GB — a reasoned starting ceiling, not a
+    # measured projection like tee_max_bytes' QB-103 figure; revisit once real usage data exists.

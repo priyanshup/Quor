@@ -93,6 +93,14 @@ def cache_dir(root: Path) -> Path:
     return Path(platformdirs.user_data_dir("quor")) / _CACHE_ROOT_SUBDIR / repo_key(root)
 
 
+def cache_root() -> Path:
+    """Parent directory holding every repository's `<repo_key>` cache
+    directory. Public (QB-124) so `intel_cleanup.py` can enumerate every
+    mapped repository's cache without duplicating `_CACHE_ROOT_SUBDIR` — this
+    module is the single owner of that path segment."""
+    return Path(platformdirs.user_data_dir("quor")) / _CACHE_ROOT_SUBDIR
+
+
 # ---------------------------------------------------------------------------
 # state.json
 # ---------------------------------------------------------------------------
