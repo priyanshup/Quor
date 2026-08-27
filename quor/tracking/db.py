@@ -15,6 +15,9 @@ Public API:
     normalize_project_path() — canonical project identity (query_gain's matching rule)
     get_tracking_db()      — factory: create TrackingDB in the platformdirs data dir
     count_tokens()         — ceil(len(text)/4) estimate (±20%)
+    prune_stale_invocations() / prune_stale_invocations_safe() — throttled
+                              age-based retention sweep (QB-128)
+    count_invocations()    — read-side: total row count, for `quor doctor`
 
 Historical note (QB-070): this used to also mirror every record to a
 `invocations.jsonl` file alongside quor.db ("dual persistence", ADR-008).
@@ -38,13 +41,13 @@ import time
 import warnings
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import UTC, datetime, timezone
+from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
 import platformdirs
 
-from quor.storage.state_db import connect_with_wal_retry
+from quor.storage.state_db import connect_state_db, connect_with_wal_retry, state_db_path
 
 _SCHEMA_VERSION = 4
 _SCHEMA_SQL = (Path(__file__).parent / "schema.sql").read_text(encoding="utf-8")
@@ -411,20 +414,19 @@ class TrackingDB:
         # thread that constructed it) and schema/cleanup init.
         conn = connect_with_wal_retry(self._db_path, check_same_thread=False)
         try:
-            self._init_schema_and_cleanup(conn)
+            self._init_schema(conn)
         except BaseException:
             # Whatever failed, this connection is unusable — close it before
             # propagating so its lock (if any) can't linger until GC gets
-            # around to it (see _init_schema_and_cleanup's docstring for the
-            # bug this closes: an unguarded OperationalError here used to
-            # leave a half-initialized, un-closed sqlite3.Connection behind).
+            # around to it (see _init_schema's docstring for the bug this
+            # closes: an unguarded OperationalError here used to leave a
+            # half-initialized, un-closed sqlite3.Connection behind).
             conn.close()
             raise
         return conn
 
-    def _init_schema_and_cleanup(self, conn: sqlite3.Connection) -> None:
-        """Apply the schema and delete stale records, retrying as one unit
-        on a transient lock.
+    def _init_schema(self, conn: sqlite3.Connection) -> None:
+        """Apply the schema, retrying as one unit on a transient lock.
 
         Two TrackingDB instances initializing against the same fresh
         database at nearly the same moment — two Claude Code sessions
@@ -444,7 +446,6 @@ class TrackingDB:
         for attempt in range(5):
             try:
                 self._apply_schema(conn)
-                self._cleanup_old_records(conn)
                 return
             except sqlite3.OperationalError:
                 conn.rollback()
@@ -453,7 +454,22 @@ class TrackingDB:
                 time.sleep(0.05 * (attempt + 1))
 
     def _apply_schema(self, conn: sqlite3.Connection) -> None:
-        """Create tables if they don't exist and record schema migration."""
+        """Create tables if they don't exist and record schema migration.
+
+        QB-128: age-based retention used to be applied right here, on every
+        `_connect()` — i.e. every CLI process, unconditionally, via an
+        unindexed `DELETE ... WHERE recorded_at < ...` full-table scan. That
+        also silently under-covered the MCP server: `_connect()` runs once
+        per *process*, and the MCP server is long-lived, so a fresh sweep
+        would only ever happen once per server restart, however many days
+        the process actually stayed up. `prune_stale_invocations()` below
+        replaces it — throttled (at most once per
+        `QuorUserConfig.telemetry_max_age_days`' sibling setting, the 24h
+        window shared with tee's own throttle pattern) and called from
+        `track_invocation_safe()`/`quor/__main__.py`'s `_run_dispatch()`
+        instead of from here, so both process shapes get an equal chance to
+        catch a day boundary, not just connection time.
+        """
         conn.executescript(_SCHEMA_SQL)
         _ensure_project_identity_columns(conn)
         _ensure_files_changed_column(conn)
@@ -462,13 +478,6 @@ class TrackingDB:
         conn.execute(
             "INSERT OR IGNORE INTO schema_migrations (version) VALUES (?)",
             (_SCHEMA_VERSION,),
-        )
-        conn.commit()
-
-    def _cleanup_old_records(self, conn: sqlite3.Connection) -> None:
-        """Delete records older than 90 days."""
-        conn.execute(
-            "DELETE FROM invocations WHERE recorded_at < datetime('now', '-90 days')"
         )
         conn.commit()
 
@@ -600,6 +609,131 @@ def track_invocation_safe(
             db.close()
     except Exception:  # noqa: BLE001 — tracking must never affect real output
         pass
+
+    # QB-128: every track_invocation_safe() call (every quor/cli/commands/
+    # *.py synthesis command, both MCP tools) is also a chance to run the
+    # throttled retention sweep — see prune_stale_invocations_safe()'s own
+    # docstring for why this replaces the old connect-time-only cleanup.
+    # Its own internal throttle makes this cheap to check on every call.
+    prune_stale_invocations_safe()
+
+
+# ---------------------------------------------------------------------------
+# Retention (QB-128): throttled pruning of stale `invocations` rows
+# ---------------------------------------------------------------------------
+
+_CREATE_TELEMETRY_CLEANUP_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS telemetry_cleanup (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    last_telemetry_cleanup_timestamp TEXT NOT NULL
+)
+"""
+
+
+def prune_stale_invocations(
+    db_path: Path,
+    *,
+    max_age_days: int,
+    throttle_hours: int = 24,
+) -> None:
+    """Delete `invocations` rows older than `max_age_days`, throttled to at
+    most once per `throttle_hours` (QB-128).
+
+    Replaces the old connect-time-only sweep that used to live in
+    `TrackingDB._apply_schema()`'s predecessor: that ran unconditionally on
+    every `TrackingDB._connect()` (an unindexed `DELETE ... WHERE
+    recorded_at < ...` full-table scan on every single CLI invocation), and
+    for the MCP server — a long-lived process where `_connect()` runs
+    exactly once — it only ever got one chance to sweep, however many days
+    the process stayed up. This is called instead from
+    `track_invocation_safe()` and `quor/__main__.py`'s `_run_dispatch()`, so
+    both process shapes get repeated chances to catch a throttle-window
+    boundary; the throttle check below (a single indexed row read) is what
+    makes calling it that often cheap.
+
+    Throttle state (`last_telemetry_cleanup_timestamp`) lives in the shared
+    `tee_state.db` (`quor.storage.state_db`), not `quor.db` itself — mirrors
+    the exact pattern `quor.pipeline.tee.cleanup_tee()` and
+    `quor.pipeline.repo_profile.intel_cleanup.cleanup_repo_intel()` already
+    use for their own throttle tables, reusing the one shared small-state
+    file instead of introducing a fourth. Uses its own independent
+    `connect_with_wal_retry()` connection to `db_path`, separate from
+    `TrackingDB`'s own long-lived background-thread connection to the same
+    file — WAL mode plus that helper's retry-on-lock loop makes concurrent
+    access safe, and the throttle keeps actual contention between the two
+    rare in practice.
+
+    The throttle timestamp is only updated *after* the delete commits
+    successfully — if the delete raises, the exception propagates to the
+    caller (which is always the `_safe` fail-open wrapper below) without
+    marking a sweep as having happened, so the next call retries rather
+    than silently skipping a full throttle window after a transient
+    failure.
+    """
+    if not db_path.exists():
+        return
+
+    now = datetime.now(UTC)
+    state_conn = connect_state_db(state_db_path())
+    try:
+        state_conn.execute(_CREATE_TELEMETRY_CLEANUP_TABLE_SQL)
+        row = state_conn.execute(
+            "SELECT last_telemetry_cleanup_timestamp FROM telemetry_cleanup WHERE id = 1"
+        ).fetchone()
+        if row is not None:
+            last = datetime.fromisoformat(row[0])
+            if now - last < timedelta(hours=throttle_hours):
+                return
+
+        conn = connect_with_wal_retry(db_path)
+        try:
+            conn.execute(
+                "DELETE FROM invocations WHERE recorded_at < datetime('now', ?)",
+                (f"-{max_age_days} days",),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        state_conn.execute(
+            """INSERT INTO telemetry_cleanup (id, last_telemetry_cleanup_timestamp)
+               VALUES (1, ?)
+               ON CONFLICT(id) DO UPDATE SET
+                 last_telemetry_cleanup_timestamp = excluded.last_telemetry_cleanup_timestamp
+            """,
+            (now.isoformat(),),
+        )
+        state_conn.commit()
+    finally:
+        state_conn.close()
+
+
+def prune_stale_invocations_safe() -> None:
+    """Fail-open wrapper around `prune_stale_invocations()` — resolves the
+    configured retention window and `quor.db`'s path itself, so every call
+    site (`track_invocation_safe()`, `_run_dispatch()`) can call this with
+    no arguments. Mirrors `quor/pipeline/repo_profile/intel.py`'s
+    `_cleanup_repo_intel_safe()`: a retention-sweep error must never affect
+    or block the real work the caller is there to do."""
+    try:
+        from quor.config.loader import load_user_config
+
+        user_config = load_user_config()
+        db_path = Path(platformdirs.user_data_dir("quor")) / "quor.db"
+        prune_stale_invocations(db_path, max_age_days=user_config.telemetry_max_age_days)
+    except Exception as exc:  # noqa: BLE001 — retention sweep must never affect real output
+        warnings.warn(f"[quor] telemetry cleanup error: {exc}", stacklevel=1)
+
+
+def count_invocations(db_path: Path) -> int:
+    """Total row count in `invocations`, regardless of project/age — backs
+    `quor doctor`'s telemetry-size check (QB-128). Returns 0 if `db_path`
+    doesn't exist yet (nothing has ever been tracked)."""
+    if not db_path.exists():
+        return 0
+    with contextlib.closing(connect_with_wal_retry(db_path)) as conn:
+        row = conn.execute("SELECT COUNT(*) FROM invocations").fetchone()
+    return int(row[0])
 
 
 # ---------------------------------------------------------------------------
