@@ -1,6 +1,6 @@
 """Typer application and command registration.
 
-The six V1 commands (do not add more without approval) plus ten exempt
+The six V1 commands (do not add more without approval) plus eleven exempt
 utility commands — `schema` (JSON Schema dump), `map` (QB-061's
 deterministic Repository Context Profile), `symbols` (QB-066's
 deterministic Repository Symbols index), `graph` (QB-067's deterministic
@@ -23,8 +23,11 @@ Quor never compressed against the real filter pipeline, and reports what
 switching to (or fully adopting) Quor would have saved; see
 `quor/discovery/session_scan.py`'s own module docstring for why this is
 safe against `ANTI_GOALS.md` #4/#5 — nothing scanned is stored or
-transmitted) — none is a filtering operation, so none counts against the
-six:
+transmitted), and `benchmark` (QB-129's offline compression benchmark —
+reads real files and runs them through the same `apply_filter_pipeline()`
+`compress_context`/CLI dispatch both use, entirely in-process/offline; see
+`quor/cli/commands/benchmark.py`'s own module docstring) — none is a
+filtering operation, so none counts against the six:
   quor init --mcp
   quor validate [file]
   quor explain <command>
@@ -41,6 +44,7 @@ six:
   quor version
   quor dashboard
   quor discover
+  quor benchmark <target_path>
   quor help
 
 `init --mcp` scaffolds MCP server registration (writes `./.mcp.json`,
@@ -64,6 +68,7 @@ nothing about how any command is invoked, routed
 import typer
 
 from quor import __version__
+from quor.cli.commands.benchmark import benchmark
 from quor.cli.commands.dashboard import dashboard_command
 from quor.cli.commands.discover import discover
 from quor.cli.commands.doctor import doctor
@@ -108,6 +113,7 @@ app.command(rich_help_panel=_PANEL_UTILITIES)(explain)
 app.command(rich_help_panel=_PANEL_UTILITIES)(validate)
 app.command(rich_help_panel=_PANEL_UTILITIES)(verify)
 app.command(rich_help_panel=_PANEL_UTILITIES)(gain)
+app.command(rich_help_panel=_PANEL_UTILITIES)(benchmark)
 app.command(name="version", rich_help_panel=_PANEL_UTILITIES)(version_command)
 
 

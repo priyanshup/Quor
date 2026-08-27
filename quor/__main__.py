@@ -18,8 +18,9 @@ entry point at all.
 import contextlib
 import sys
 
-# CLI subcommands defined by Phase 7 (plus uninstall-hooks, QB-104, and
-# help, QB-122). Anything NOT in this set and NOT starting with "-" is
+# CLI subcommands defined by Phase 7 (plus uninstall-hooks, QB-104, help,
+# QB-122, and benchmark, QB-129). Anything NOT in this set and NOT
+# starting with "-" is
 # treated as a dispatch target (e.g. "quor git status") — "help" has to be
 # listed explicitly for the same reason "version" already was (ADR-037):
 # left out, "quor help" would be handed to the dispatcher as a literal
@@ -32,6 +33,7 @@ _CLI_COMMANDS: frozenset[str] = frozenset(
         "validate",
         "explain",
         "gain",
+        "benchmark",
         "verify",
         "doctor",
         "uninstall-hooks",
