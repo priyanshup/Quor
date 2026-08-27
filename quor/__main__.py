@@ -80,12 +80,17 @@ def _ensure_utf8_stdio() -> None:
 
 def _run_dispatch(args: list[str]) -> None:
     from quor.engine.dispatcher import run_dispatch
-    from quor.tracking.db import get_tracking_db
+    from quor.tracking.db import get_tracking_db, prune_stale_invocations_safe
 
     tracking = get_tracking_db()
     try:
         exit_code = run_dispatch(args, tracking=tracking)
     finally:
+        # QB-128: throttled retention sweep — cheap to call on every dispatch
+        # (prune_stale_invocations_safe() no-ops most days) and fail-open, so
+        # it runs after the real command output regardless of exit_code and
+        # can never affect or delay it.
+        prune_stale_invocations_safe()
         tracking.close()
     sys.exit(exit_code)
 

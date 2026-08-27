@@ -652,6 +652,15 @@ class TestFilesChangedColumnMigration:
 
 
 class TestCleanup:
+    """QB-128: age-based retention moved off TrackingDB's own connect path
+    entirely (see quor/tracking/db.py's `TrackingDB._apply_schema()`
+    docstring) — `_connect()`/reopening a `TrackingDB` now only applies the
+    schema, nothing else. Eviction is `prune_stale_invocations()`'s job now
+    (throttled, called from `track_invocation_safe()`/`_run_dispatch()`),
+    covered by tests/unit/test_telemetry_cleanup.py instead. These two
+    tests assert the *current* connect-time contract: reopening never
+    touches existing rows, regardless of age."""
+
     def _insert_old_record(self, db_path: Path, days_ago: int) -> None:
         old_date = (
             datetime.now(UTC) - timedelta(days=days_ago)
@@ -666,28 +675,30 @@ class TestCleanup:
             )
             conn.commit()
 
-    def test_old_records_removed(self, tmp_path: Path) -> None:
+    def test_reconnect_does_not_evict_old_records(self, tmp_path: Path) -> None:
         db_path = tmp_path / "quor.db"
         # First create the schema by opening a DB
         db = TrackingDB(db_path=db_path)
         db.flush()
         db.close()
 
-        # Insert a record that is 100 days old (past the 90-day window)
+        # Insert a record that is 100 days old (past the default 90-day
+        # telemetry_max_age_days window) — proves reconnecting alone is not
+        # what evicts it any more.
         self._insert_old_record(db_path, days_ago=100)
 
         with sqlite3.connect(str(db_path)) as conn:
             count_before = conn.execute("SELECT COUNT(*) FROM invocations").fetchone()[0]
         assert count_before == 1
 
-        # Re-open DB — cleanup runs on connect
+        # Re-open DB — schema init only, no implicit cleanup (QB-128)
         db2 = TrackingDB(db_path=db_path)
         db2.flush()
         db2.close()
 
         with sqlite3.connect(str(db_path)) as conn:
             count_after = conn.execute("SELECT COUNT(*) FROM invocations").fetchone()[0]
-        assert count_after == 0
+        assert count_after == 1
 
     def test_recent_records_preserved(self, tmp_path: Path) -> None:
         db_path = tmp_path / "quor.db"

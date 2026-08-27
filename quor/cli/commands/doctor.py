@@ -147,6 +147,7 @@ def _run_doctor(*, reset_tee: bool = False) -> None:
     checks.append(_check_tee(user_config))
     checks.append(_check_tee_size(user_config))
     checks.append(_check_repo_intel_size(user_config))
+    checks.append(_check_telemetry_size(user_config))
     checks.append(_check_plugins())
     checks.append(_check_negative_compression_filters())
     checks.append(_check_mcp_interpreter_isolation())
@@ -351,6 +352,36 @@ def _check_repo_intel_size(user_config: QuorUserConfig) -> tuple[str, Status, st
         "Repository intelligence cache size",
         Status.PASS,
         f"{size_mb:.1f} MB used of {limit_mb:.0f} MB limit",
+    )
+
+
+def _check_telemetry_size(user_config: QuorUserConfig) -> tuple[str, Status, str]:
+    """Report `quor.db`'s total logged invocation count and on-disk size
+    (QB-128) — visibility into the one store `_check_sqlite()` above only
+    ever confirms is readable/writable, never how much it actually holds.
+
+    Purely informational, unlike `_check_tee_size()`/`_check_repo_intel_size()`
+    above: there's no user-facing byte ceiling for `quor.db` to compare
+    against (retention is age-based only — `telemetry_max_age_days`, QB-128),
+    so this always reports PASS. Read-only — never triggers a sweep itself;
+    that only happens via `prune_stale_invocations_safe()`'s own throttle on
+    the dispatch/MCP call paths.
+    """
+    from quor.tracking.db import count_invocations
+
+    db_path = Path(platformdirs.user_data_dir("quor")) / "quor.db"
+    try:
+        count = count_invocations(db_path)
+        size_bytes = db_path.stat().st_size if db_path.exists() else 0
+    except Exception as exc:  # noqa: BLE001
+        return ("Telemetry DB size", Status.PASS, f"(could not check: {exc})")
+
+    size_mb = size_bytes / (1024 * 1024)
+    return (
+        "Telemetry DB size",
+        Status.PASS,
+        f"{count} invocation(s) logged, {size_mb:.1f} MB on disk "
+        f"(retained {user_config.telemetry_max_age_days} days)",
     )
 
 
