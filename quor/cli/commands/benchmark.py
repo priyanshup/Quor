@@ -36,6 +36,7 @@ from rich.console import Console
 from rich.table import Table
 
 from quor.cli.format_utils import format_count, format_percentage
+from quor.config.loader import find_and_load_project_config, load_user_config, resolve_effective_config
 from quor.engine.dispatcher import apply_filter_pipeline
 from quor.errors import ExitCode
 from quor.tracking.db import count_tokens
@@ -131,8 +132,25 @@ def _benchmark_file(path: Path) -> BenchmarkResult | str:
     if raw_tokens == 0:
         return "empty file"
 
+    # QB-130: resolved relative to this file's own path — walks up looking
+    # for a .quor.toml the same way the MCP server's focal_file path does.
+    # Fail-open, same reasoning as quor/mcp/server.py's
+    # _resolve_project_overrides(): a project-config resolution error must
+    # never take down an otherwise-successful benchmark run.
+    try:
+        project_config = find_and_load_project_config(path)
+        overrides = resolve_effective_config(load_user_config(), project_config)
+    except Exception:  # noqa: BLE001 — fail-open: config resolution must never break a benchmark run
+        overrides = load_user_config()
+
     t0 = time.monotonic()
-    compressed, filter_config = apply_filter_pipeline(raw_text, raw_text)
+    compressed, filter_config = apply_filter_pipeline(
+        raw_text,
+        raw_text,
+        file_path=path,
+        min_token_threshold=overrides.min_token_threshold,
+        exclude_patterns=overrides.exclude_patterns,
+    )
     latency_ms = (time.monotonic() - t0) * 1000
 
     return BenchmarkResult(

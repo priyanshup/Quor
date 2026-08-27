@@ -101,3 +101,86 @@ class QuorUserConfig(BaseModel):
     # needs to opt into. 90 matches the sweep's original hardcoded value (pre-QB-128), now
     # configurable instead of a literal in the DELETE statement.
     telemetry_max_age_days: int = 90
+
+    # QB-130 — global defaults a project's .quor.toml [compression]/[ignore] can override via
+    # resolve_effective_config(). min_token_threshold=0 and exclude_patterns=[] mean "no global
+    # threshold/exclusions" (today's existing behavior, unchanged, until a project opts in).
+    # ast_pruning_enabled=True matches today's existing behavior too — AST summarization stages
+    # already run unconditionally wherever a filter configures them.
+    min_token_threshold: int = 0
+    ast_pruning_enabled: bool = True
+    # Parsed and carried through, deliberately NOT wired into apply_filter_pipeline's actual
+    # compression strength — see ProjectConfig.compression's own docstring for why (QB-039/
+    # ADR-031: a real "aggressive" mode needs its own architecture-first design pass first).
+    aggressiveness: str = "balanced"
+    exclude_patterns: list[str] = Field(default_factory=list)
+
+
+class CompressionOverrides(BaseModel):
+    """`[compression]` section of a project's `.quor.toml` (QB-130).
+
+    Every field is `Optional`/unset-by-default (`None`), distinct from
+    `QuorUserConfig`'s own always-populated fields — `None` here means "this
+    project doesn't override this setting," not "off"/"zero", so
+    `resolve_effective_config()` can tell "explicitly set to a falsy value"
+    apart from "not mentioned in this project's .quor.toml" (e.g.
+    `min_token_threshold = 0` legitimately means "no threshold," and must
+    still win over a non-zero global default if a project sets it).
+
+    `aggressiveness` is parsed and validated as a plain string (matching
+    `QuorUserConfig.mode`'s own existing precedent — no enum/Literal
+    validation for the same reason `mode` has none), and carried through
+    `resolve_effective_config()` unchanged, but deliberately goes nowhere
+    from there: `apply_filter_pipeline()` never reads it. Wiring it into
+    real compression strength is exactly backlog.md's QB-039 ("Compression
+    Modes: Safe/Balanced/Aggressive") — logged there as "Proposed. Not
+    scoped or implemented... needs its own architecture-first design pass,"
+    with several open questions (per-filter vs. global, interaction with
+    the tee recovery footer, whether `quor gain` needs a mode dimension)
+    still unresolved. More concretely, `quor/pipeline/engine.py`'s own
+    docstring states a code-enforced invariant — "PROTECT immutability: no
+    stage may downgrade a PROTECT decision" — and ADR-031 already
+    explicitly considered and rejected a tiered/priority-based budgeting
+    scheme that a real "aggressive" mode would need. Accepting the field
+    now (so `.quor.toml` round-trips and `quor doctor` can report it)
+    without pretending it does anything yet keeps this ticket's scope
+    honest about what's actually wired versus merely parsed.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    min_token_threshold: int | None = None
+    ast_pruning_enabled: bool | None = None
+    # None means "unset" here, same as the two fields above — NOT the same
+    # thing as QuorUserConfig.aggressiveness's own "balanced" *global*
+    # default. A default of "balanced" here would mean any .quor.toml that
+    # sets *any* [compression] field (even just min_token_threshold) also
+    # silently overrides aggressiveness to "balanced" whether the project
+    # asked for that or not — resolve_effective_config() only overrides a
+    # field the project actually set.
+    aggressiveness: str | None = None
+
+
+class IgnoreOverrides(BaseModel):
+    """`[ignore]` section of a project's `.quor.toml` (QB-130)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    exclude_patterns: list[str] = Field(default_factory=list)
+
+
+class ProjectConfig(BaseModel):
+    """Project-level overrides from a `.quor.toml` file (QB-130).
+
+    Distinct from `QuorConfig` (a `[[filter]]` TOML file's own schema) and
+    `QuorUserConfig` (`~/.config/quor/config.toml`, user-level, applies to
+    every project) — `.quor.toml` lives at a project's root and overrides
+    `QuorUserConfig`'s defaults for that project only, discovered by
+    `quor.config.loader.find_and_load_project_config()` and merged via
+    `quor.config.loader.resolve_effective_config()`.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    compression: CompressionOverrides = Field(default_factory=CompressionOverrides)
+    ignore: IgnoreOverrides = Field(default_factory=IgnoreOverrides)

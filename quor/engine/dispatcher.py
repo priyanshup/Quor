@@ -42,6 +42,7 @@ actually reaches stdout. See CONCISE_INSTRUCTION_ENABLED below.
 
 from __future__ import annotations
 
+import fnmatch
 import shutil
 import sqlite3
 import subprocess
@@ -49,7 +50,7 @@ import sys
 import time
 import uuid
 import warnings
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -249,7 +250,14 @@ def run_dispatch(args: list[str], tracking: TrackingDB | None = None) -> int:
     return proc.returncode
 
 
-def apply_filter_pipeline(match_str: str, captured: str) -> tuple[str, FilterConfig | None]:
+def apply_filter_pipeline(
+    match_str: str,
+    captured: str,
+    *,
+    file_path: Path | None = None,
+    min_token_threshold: int = 0,
+    exclude_patterns: Sequence[str] = (),
+) -> tuple[str, FilterConfig | None]:
     """Run `run_dispatch()`'s safety-net pipeline — filter lookup,
     PRE_FILTER/POST_FILTER plugins, the tee recovery footer (ADR-023/
     QB-013), and the secret-scan warning (PA-F07) — against text a caller
@@ -266,6 +274,24 @@ def apply_filter_pipeline(match_str: str, captured: str) -> tuple[str, FilterCon
     `match_str` for a content-only caller, or the subprocess's real stdout
     for a command caller.
 
+    `file_path`/`min_token_threshold`/`exclude_patterns` (QB-130): a
+    resolved project's `.quor.toml` overrides, already merged by the
+    caller (`resolve_effective_config()` — this function stays unaware of
+    `ProjectConfig`/`QuorUserConfig` entirely, taking only the primitives
+    it needs, matching `match_str`/`captured`'s own narrow-signature
+    style). Both checks bypass compression the exact same way a "no filter
+    matched" passthrough already does — reusing that code path below
+    rather than adding a second one — so PRE_FILTER plugins and the
+    secret-scan safety net still run either way; only the tee step
+    (nothing was aggressively compressed, so there is nothing to make
+    recoverable) and the filter/ContentMask stages are skipped.
+    `exclude_patterns` only applies when `file_path` is given — a caller
+    with no real file identity (MCP's plain `raw_text` path) has nothing
+    to match a glob against, and silently not matching is correct there,
+    not a bug. Matched against both the file's POSIX-style path and its
+    bare filename, so a pattern can target either an extension (`*.md`)
+    or a path segment (`tests/**`).
+
     Returns `(output, filter_config)`: `output` is the final text (tee's
     footer and any POST_FILTER plugin transform already applied, and
     already secret-scanned); `filter_config` is the matched filter, or
@@ -276,7 +302,14 @@ def apply_filter_pipeline(match_str: str, captured: str) -> tuple[str, FilterCon
     transport (MCP's `track_invocation_safe`/QB-105 has a different
     lazy-init shape than `run_dispatch()`'s `TrackingDB | None`).
     """
-    filter_config, registry = _lookup_filter(match_str)
+    bypassed = (
+        min_token_threshold > 0 and count_tokens(captured) < min_token_threshold
+    ) or (file_path is not None and _matches_any_pattern(file_path, exclude_patterns))
+
+    if bypassed:
+        filter_config, registry = None, None
+    else:
+        filter_config, registry = _lookup_filter(match_str)
     plugin_registry, plugin_ctx = _setup_plugins()
 
     pre_output, raw_content_type = _run_pre_filter_plugins(
@@ -307,6 +340,33 @@ def apply_filter_pipeline(match_str: str, captured: str) -> tuple[str, FilterCon
     _teardown_plugins(plugin_registry, plugin_ctx)
     _scan_secrets_safe(filtered)
     return filtered, filter_config
+
+
+def _matches_any_pattern(file_path: Path, patterns: Sequence[str]) -> bool:
+    """QB-130: True if any of `patterns` (fnmatch-style globs, e.g. `*.md`,
+    `tests/**`) matches `file_path` anchored at *any* path-segment
+    boundary — not just a full match against the entire path.
+
+    `apply_filter_pipeline()` has no concept of "project root" (it stays
+    decoupled from ProjectConfig/discovery entirely — see its own
+    docstring), so a caller typically passes an absolute path. Requiring
+    a pattern like `tests/**` to match the *entire* absolute path (which
+    `fnmatch.fnmatch()` alone would demand — it behaves like
+    `re.fullmatch`, not a search) would mean it could never realistically
+    fire. Checking every suffix of the path starting at each `/` boundary
+    (down to the bare filename) instead gives the same "matches at any
+    directory level unless the pattern itself is more specific" behavior
+    `.gitignore` patterns already have, without needing to know where the
+    project root actually is. `fnmatch`'s `*` already crosses `/`
+    (verified: unlike `glob`, it has no path-separator special-casing),
+    so `**` and `*` behave the same — no extra handling needed for the
+    double-star spelling some users will still reach for out of habit.
+    """
+    parts = file_path.as_posix().split("/")
+    # A list, not a generator — reused once per pattern below; a generator
+    # would silently exhaust after the first pattern and never match again.
+    suffixes = ["/".join(parts[i:]) for i in range(len(parts))]
+    return any(fnmatch.fnmatch(suffix, pattern) for pattern in patterns for suffix in suffixes)
 
 
 def _run_subprocess(args: list[str]) -> subprocess.CompletedProcess[str] | int:

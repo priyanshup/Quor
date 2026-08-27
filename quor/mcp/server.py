@@ -99,6 +99,8 @@ from pathlib import Path
 from mcp.server.mcpserver import MCPServer
 from mcp.types import Tool as MCPTool
 
+from quor.config.loader import find_and_load_project_config, load_user_config, resolve_effective_config
+from quor.config.model import QuorUserConfig
 from quor.engine.dispatcher import _scan_secrets_safe, apply_filter_pipeline
 from quor.mcp.logging_config import LOGGER_NAME, configure_logging
 from quor.mcp.schema_pruner import prune_tool_schema
@@ -186,6 +188,21 @@ def _get_tracking_db() -> TrackingDB:
     return _tracking_db
 
 
+def _resolve_project_overrides(anchor_path: Path) -> QuorUserConfig:
+    """QB-130: resolve the effective config for a target file/directory —
+    the user's global `~/.config/quor/config.toml` with any `.quor.toml`
+    found walking up from `anchor_path` merged over it. Fail-open: a
+    project-config resolution error (unreadable directory, race with a
+    file being deleted mid-walk) must never block a real tool call, so
+    this falls back to the global config alone on any exception, matching
+    every other fail-open helper in this module (`_safe_nudge`, etc.)."""
+    try:
+        project_config = find_and_load_project_config(anchor_path)
+        return resolve_effective_config(load_user_config(), project_config)
+    except Exception:  # noqa: BLE001 — fail-open: config resolution must never break a tool call
+        return load_user_config()
+
+
 @mcp.tool()
 def compress_context(raw_text: str = "", focal_file: str = "") -> str:
     """Use this tool whenever reading large command outputs, log streams, git
@@ -250,7 +267,17 @@ def compress_context(raw_text: str = "", focal_file: str = "") -> str:
     # text (see module docstring) also strips inline ANSI codes and shows
     # collapsed-duplicate counts — see z_generic.toml's remove_ansi/
     # deduplicate_consecutive stage config.
-    compressed, filter_config = apply_filter_pipeline(projected_text, projected_text)
+    # QB-130: resolved relative to cwd (this call has no real file path of
+    # its own — `raw_text` is often a command's output, not a file's
+    # content) — only `min_token_threshold` can meaningfully apply here;
+    # `exclude_patterns` needs a `file_path` to match against, which
+    # `apply_filter_pipeline` simply skips when none is given.
+    project_overrides = _resolve_project_overrides(Path.cwd())
+    compressed, filter_config = apply_filter_pipeline(
+        projected_text,
+        projected_text,
+        min_token_threshold=project_overrides.min_token_threshold,
+    )
 
     compressed_tokens = count_tokens(compressed)
     saved_pct = max(0, round((1 - compressed_tokens / original_tokens) * 100))
@@ -340,7 +367,18 @@ def _compress_context_tiered(focal_file: str) -> str:
             f"falling back to its full, unmodified content]\n{fallback}"
         )
 
-    output, filter_config = apply_filter_pipeline(payload, payload)
+    # QB-130: resolved relative to the focal file's real path — the one
+    # `compress_context` call shape that actually has a concrete file
+    # identity to walk up from and to match `exclude_patterns` against.
+    focal_path = root / rel_path
+    project_overrides = _resolve_project_overrides(focal_path)
+    output, filter_config = apply_filter_pipeline(
+        payload,
+        payload,
+        file_path=focal_path,
+        min_token_threshold=project_overrides.min_token_threshold,
+        exclude_patterns=project_overrides.exclude_patterns,
+    )
 
     original_tokens = tiered.original_tokens
     compressed_tokens = count_tokens(output)

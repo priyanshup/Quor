@@ -148,6 +148,7 @@ def _run_doctor(*, reset_tee: bool = False) -> None:
     checks.append(_check_tee_size(user_config))
     checks.append(_check_repo_intel_size(user_config))
     checks.append(_check_telemetry_size(user_config))
+    checks.append(_check_project_config())
     checks.append(_check_plugins())
     checks.append(_check_negative_compression_filters())
     checks.append(_check_mcp_interpreter_isolation())
@@ -383,6 +384,50 @@ def _check_telemetry_size(user_config: QuorUserConfig) -> tuple[str, Status, str
         f"{count} invocation(s) logged, {size_mb:.1f} MB on disk "
         f"(retained {user_config.telemetry_max_age_days} days)",
     )
+
+
+def _check_project_config() -> tuple[str, Status, str]:
+    """Report whether a project-level `.quor.toml` (QB-130) is active for
+    the current working directory, and if so, what it overrides.
+
+    Walks up from `Path.cwd()` via `find_and_load_project_config()` — the
+    exact same resolution a real `compress_context`/`quor benchmark` call
+    from this directory would do — rather than checking cwd alone, so this
+    check can't report "no .quor.toml" for a subdirectory of a project that
+    actually has one active a few levels up. FAIL (not PASS/advisory) on
+    invalid TOML: unlike the size/cache checks above, a broken `.quor.toml`
+    silently falls back to global defaults everywhere it's used
+    (`_resolve_project_overrides()`'s own fail-open contract) — a user
+    with a typo in that file deserves a loud signal that their overrides
+    aren't actually applying, not silence.
+    """
+    from quor.config.loader import find_and_load_project_config
+    from quor.errors import ConfigError
+
+    name = "Project config (.quor.toml)"
+    try:
+        project_config = find_and_load_project_config(Path.cwd())
+    except ConfigError as exc:
+        return (name, Status.FAIL, str(exc))
+    except Exception as exc:  # noqa: BLE001 — advisory check, must never block doctor
+        return (name, Status.PASS, f"(could not check: {exc})")
+
+    if project_config is None:
+        return (name, Status.PASS, "none found — using global defaults")
+
+    active: list[str] = []
+    c = project_config.compression
+    if c.min_token_threshold is not None:
+        active.append(f"min_token_threshold={c.min_token_threshold}")
+    if c.ast_pruning_enabled is not None:
+        active.append(f"ast_pruning_enabled={c.ast_pruning_enabled}")
+    if c.aggressiveness is not None:
+        active.append(f"aggressiveness={c.aggressiveness} (parsed only, not yet applied — QB-039)")
+    if project_config.ignore.exclude_patterns:
+        active.append(f"exclude_patterns={project_config.ignore.exclude_patterns}")
+
+    detail = "; ".join(active) if active else "found, but declares no overrides"
+    return (name, Status.PASS, detail)
 
 
 def _check_negative_compression_filters() -> tuple[str, Status, str]:
