@@ -44,6 +44,8 @@ from typing import Any
 
 import platformdirs
 
+from quor.storage.state_db import connect_with_wal_retry
+
 _SCHEMA_VERSION = 4
 _SCHEMA_SQL = (Path(__file__).parent / "schema.sql").read_text(encoding="utf-8")
 
@@ -401,27 +403,14 @@ class TrackingDB:
     # ------------------------------------------------------------------
 
     def _connect(self) -> sqlite3.Connection:
-        self._db_path.parent.mkdir(parents=True, exist_ok=True)
-        conn = sqlite3.connect(str(self._db_path), check_same_thread=False)
+        # QB-127: WAL setup + retry-on-lock + synchronous=NORMAL now live in
+        # quor/storage/state_db.py, shared with tee.py/intel_cleanup.py's
+        # connections instead of reimplemented here — this method now only
+        # adds what's specific to TrackingDB: check_same_thread=False (the
+        # connection is used by the background worker thread, not the
+        # thread that constructed it) and schema/cleanup init.
+        conn = connect_with_wal_retry(self._db_path, check_same_thread=False)
         try:
-            # PRAGMA journal_mode=WAL requires a brief exclusive lock. If another
-            # connection already has the DB open, this can transiently fail. Retry
-            # a few times before giving up — WAL mode is still likely already set.
-            for attempt in range(5):
-                try:
-                    conn.execute("PRAGMA journal_mode=WAL")
-                    break
-                except sqlite3.OperationalError:
-                    conn.rollback()
-                    if attempt == 4:
-                        warnings.warn(
-                            "[quor] could not set WAL mode (database locked); "
-                            "concurrent tracking writes may be slower",
-                            stacklevel=1,
-                        )
-                    else:
-                        time.sleep(0.05 * (attempt + 1))
-            conn.execute("PRAGMA synchronous=NORMAL")
             self._init_schema_and_cleanup(conn)
         except BaseException:
             # Whatever failed, this connection is unusable — close it before
@@ -757,7 +746,7 @@ def query_gain(
     # of the "unclosed database" ResourceWarnings observed across the test
     # suite. Every write below already has its own explicit conn.commit(),
     # so nothing here relied on Connection.__exit__'s implicit commit.
-    with contextlib.closing(sqlite3.connect(str(db_path))) as conn:
+    with contextlib.closing(connect_with_wal_retry(db_path)) as conn:
         conn.row_factory = sqlite3.Row
 
         # query_gain() connects directly, independent of TrackingDB — an
@@ -940,7 +929,7 @@ def query_recent_invocations(
         f"(project_key_normalized = ? OR project_key_normalized LIKE ? {_LIKE_ESCAPE_CLAUSE})"
     )
 
-    with contextlib.closing(sqlite3.connect(str(db_path))) as conn:
+    with contextlib.closing(connect_with_wal_retry(db_path)) as conn:
         conn.row_factory = sqlite3.Row
         _ensure_project_identity_columns(conn)
         conn.create_function("normalize_project_path", 1, normalize_project_path)
@@ -1195,7 +1184,7 @@ def query_filter_analytics(
         f"(project_key_normalized = ? OR project_key_normalized LIKE ? {_LIKE_ESCAPE_CLAUSE})"
     )
 
-    with contextlib.closing(sqlite3.connect(str(db_path))) as conn:
+    with contextlib.closing(connect_with_wal_retry(db_path)) as conn:
         conn.row_factory = sqlite3.Row
 
         _ensure_project_identity_columns(conn)

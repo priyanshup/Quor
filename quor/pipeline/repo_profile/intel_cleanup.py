@@ -31,11 +31,12 @@ repo_intel actually is:
   actively-used cache purely because `state.json` happens to be rewritten
   less often than `file_intelligence.json` within the same scan.
 
-Throttle state lives in a new `repo_intel_cleanup` table inside
-`quor/pipeline/tee.py`'s own `tee_state.db` (via its now-public
-`state_db_path()`/`connect_state_db()`) rather than a third small SQLite
-file — see `tee.state_db_path()`'s own docstring for why consolidating
-here, not introducing another dedicated file, is the deliberate choice.
+Throttle state lives in a new `repo_intel_cleanup` table inside the same
+shared `tee_state.db` that `quor/pipeline/tee.py` itself uses (via
+`quor/storage/state_db.py`'s `state_db_path()`/`connect_state_db()`,
+QB-127) rather than a third small SQLite file — see that module's own
+docstring for why consolidating here, not introducing another dedicated
+file, is the deliberate choice.
 This is CLI-only cache hygiene (`quor map`/`symbols`/`graph`/`repo`/
 `search`/`explore`, via `intel.py::ensure_repo_intelligence()`), never on
 the MCP `compress_context`/`get_repo_context` hot path — matching where
@@ -49,7 +50,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from quor.pipeline.repo_profile import intel_store
-from quor.pipeline.tee import connect_state_db, state_db_path
+from quor.storage.state_db import connect_state_db, state_db_path
 
 _DEFAULT_MAX_AGE_DAYS = 30
 """Longer than tee's 7-day window on purpose: repo intelligence is a

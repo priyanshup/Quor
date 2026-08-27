@@ -54,6 +54,18 @@ single-file SQLite database is the smaller and more decoupled option. The
 adaptive-fallback state below (tee_status table) reuses this same
 tee_state.db file for the same reasons.
 
+QB-127: `state_db_path()` and the WAL-mode/retry connection logic
+(`connect_state_db()`) that used to live here moved to
+`quor/storage/state_db.py` — the two-independent-callers reasoning above
+was already true before that move (`repo_profile/intel_cleanup.py` has
+shared this file since QB-124) and is unaffected by *where* the connect
+helper's code lives; only the accidental home of that code changed.
+`TrackingDB._connect()` now shares the same underlying
+`connect_with_wal_retry()` for its own separate `quor.db` connection, so
+the WAL-retry loop and `synchronous=NORMAL` setting exist in one place
+for every store instead of being reimplemented per store with small,
+accidental differences.
+
 Storing content as a BLOB (UTF-8-encoded bytes) rather than a filesystem
 write also removes a footgun the old file-based version had to work around
 explicitly: os.open() on Windows defaults to text mode and silently rewrites
@@ -81,14 +93,12 @@ from __future__ import annotations
 import hashlib
 import sqlite3
 import time
-import warnings
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-import platformdirs
+from quor.storage.state_db import connect_state_db, state_db_path
 
-_STATE_DB_NAME = "tee_state.db"
 _DEFAULT_MAX_AGE_DAYS = 7
 _DEFAULT_THROTTLE_HOURS = 24
 # 500 MB (QB-103): comfortably above the tens-of-MB steady state a heavy
@@ -149,20 +159,6 @@ class TeeStatus:
 def content_hash(content: str) -> str:
     """SHA256 hex digest of `content`, per ADR-023."""
     return hashlib.sha256(content.encode("utf-8")).hexdigest()
-
-
-def state_db_path() -> Path:
-    """Path to the shared small-state SQLite file this module owns.
-
-    Public (QB-124) so `quor/pipeline/repo_profile/intel_cleanup.py` can add
-    its own throttle-state table here too, instead of introducing a second
-    tiny state file — same "no unbounded or ad-hoc store" reasoning this
-    module's own docstring already applies to keeping tee_logs/tee_cleanup/
-    tee_status together. Nothing about tee's own tables changes: an
-    unrelated table living in the same file doesn't contend with these,
-    since SQLite locks are file-level only across a single short-lived
-    write, not held for the file's lifetime the way TrackingDB's connection is."""
-    return Path(platformdirs.user_data_dir("quor")) / _STATE_DB_NAME
 
 
 def current_tee_size_bytes() -> int:
@@ -412,32 +408,6 @@ def cleanup_tee(
         conn.commit()
     finally:
         conn.close()
-
-
-def connect_state_db(state_path: Path) -> sqlite3.Connection:
-    """Open the tee state DB with WAL mode, retrying under lock contention.
-
-    Mirrors TrackingDB._connect()'s retry pattern (quor/tracking/db.py):
-    PRAGMA journal_mode=WAL requires a brief exclusive lock, which can
-    transiently fail if two quor processes race to open this file for the
-    first time concurrently. Retry a few times before giving up — the
-    throttle check/upsert below still works correctly without WAL, just
-    with less concurrent-writer headroom.
-    """
-    conn = sqlite3.connect(str(state_path))
-    for attempt in range(5):
-        try:
-            conn.execute("PRAGMA journal_mode=WAL")
-            break
-        except sqlite3.OperationalError:
-            if attempt == 4:
-                warnings.warn(
-                    "[quor] could not set WAL mode on tee state db (database locked)",
-                    stacklevel=2,
-                )
-            else:
-                time.sleep(0.05 * (attempt + 1))
-    return conn
 
 
 def _sweep(conn: sqlite3.Connection, *, max_age_days: int, max_bytes: int, now: datetime) -> None:
