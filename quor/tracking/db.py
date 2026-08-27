@@ -1394,6 +1394,273 @@ def query_filter_analytics(
 
 
 # ---------------------------------------------------------------------------
+# Read-side: query_gain_by_tool (QB-131)
+# ---------------------------------------------------------------------------
+
+# The literal `command=` prefixes quor/mcp/server.py writes for its two
+# tools (see compress_context()/get_repo_context()'s own track_invocation_safe
+# calls) — the same "exact, literal prefix, not a heuristic" convention
+# query_gain() already relies on for `command LIKE 'Read: %'`
+# (read_hook_invocations). Neither prefix contains a LIKE metacharacter
+# (%, _), so the patterns built from them below need no ESCAPE clause —
+# unlike the project-path LIKE patterns elsewhere in this module, which
+# escape arbitrary user directory names.
+_MCP_COMPRESS_CONTEXT_PREFIX = "MCP compress_context"
+_MCP_GET_REPO_CONTEXT_PREFIX = "MCP get_repo_context"
+
+TOOL_COMPRESS_CONTEXT = "compress_context"
+TOOL_GET_REPO_CONTEXT = "get_repo_context"
+TOOL_CLI = "cli"
+
+
+@dataclass(frozen=True)
+class ToolUsage:
+    """Aggregated stats for one tool-origin bucket (QB-131) — which surface
+    an invocation came through, not which filter matched. Deliberately a
+    *different* grouping axis than `FilterUsage` above and does NOT apply
+    `query_gain()`'s QB-092/QB-105 SYNTHESIS_FILTER_LABELS exclusion: the
+    entire point of `TOOL_GET_REPO_CONTEXT` is to show its real usage volume,
+    and that exclusion would zero it out (every get_repo_context row carries
+    `MCP_REPO_CONTEXT_FILTER_LABEL`, which is a synthesis label). A tool
+    bucket with by-design zero savings (get_repo_context) is reported as
+    exactly that — 0 tokens_saved, real operation count — not hidden.
+    """
+
+    tool: str  # TOOL_COMPRESS_CONTEXT | TOOL_GET_REPO_CONTEXT | TOOL_CLI
+    operations: int
+    tokens_before: int
+    tokens_after: int
+    tokens_saved: int              # tokens_before - tokens_after, exact identity
+    compression_pct: float
+    """Aggregate ratio over `tokens_before > 0` rows only — same convention
+    as `FilterUsage.avg_compression_pct` (TD-011/QB-106): a row with no real
+    "before" (an on_empty substitution, or a synthesis row's original==final)
+    can only ever pull this down, never reflect real compression quality."""
+
+
+def query_gain_by_tool(
+    db_path: Path,
+    project_path: Path,
+    days: int = 30,
+) -> tuple[ToolUsage, ...]:
+    """Return per-tool-origin usage, read from SQLite (QB-131).
+
+    Three buckets, split by the literal `command` prefix each producer
+    writes: `compress_context`/`get_repo_context` (the two MCP tools) and
+    `cli` (everything else — Bash dispatch, the Read hook, and CLI synthesis
+    commands like `quor map`). Only buckets with at least one recorded
+    operation are returned — mirrors `query_filter_analytics()`'s own
+    "don't fabricate a zero-row group for something that was never
+    recorded" convention, not padded out to always contain all three.
+
+    Empty/missing database returns `()`, never raises — same fail-open
+    contract as every other query_* function in this module.
+    """
+    if not db_path.exists():
+        return ()
+
+    project_key = normalize_project_path(project_path)
+    if _is_degenerate_project_key(project_key):
+        raise ValueError(
+            f"project_path {str(project_path)!r} normalizes to {project_key!r}, "
+            "which has no directory segment of its own and is too broad to "
+            "safely scope a query (it would match every project under that "
+            "root/drive). Pass a specific project directory instead."
+        )
+    subdir_pattern = f"{_escape_like(project_key)}/%"
+    since = f"-{days} days"
+    project_filter = (
+        f"(project_key_normalized = ? OR project_key_normalized LIKE ? {_LIKE_ESCAPE_CLAUSE})"
+    )
+
+    with contextlib.closing(connect_with_wal_retry(db_path)) as conn:
+        conn.row_factory = sqlite3.Row
+        _ensure_project_identity_columns(conn)
+        conn.create_function("normalize_project_path", 1, normalize_project_path)
+        conn.execute(
+            """UPDATE invocations
+               SET project_key_normalized = normalize_project_path(project_path)
+               WHERE project_key_normalized IS NULL
+            """
+        )
+        conn.commit()
+
+        rows = conn.execute(
+            f"""SELECT
+                 CASE
+                     WHEN command LIKE ? THEN ?
+                     WHEN command LIKE ? THEN ?
+                     ELSE ?
+                 END                                      AS tool,
+                 COUNT(*)                                 AS n,
+                 COALESCE(SUM(original_tokens), 0)        AS orig_sum,
+                 COALESCE(SUM(final_tokens), 0)            AS final_sum,
+                 COALESCE(SUM(CASE WHEN original_tokens > 0
+                                    THEN original_tokens ELSE 0 END), 0)
+                                                            AS eligible_orig_sum,
+                 COALESCE(SUM(CASE WHEN original_tokens > 0
+                                    THEN final_tokens ELSE 0 END), 0)
+                                                            AS eligible_final_sum
+               FROM invocations
+               WHERE {project_filter}
+                 AND recorded_at >= datetime('now', ?)
+               GROUP BY tool
+               ORDER BY n DESC, tool ASC
+            """,
+            (
+                f"{_MCP_COMPRESS_CONTEXT_PREFIX}%",
+                TOOL_COMPRESS_CONTEXT,
+                f"{_MCP_GET_REPO_CONTEXT_PREFIX}%",
+                TOOL_GET_REPO_CONTEXT,
+                TOOL_CLI,
+                project_key,
+                subdir_pattern,
+                since,
+            ),
+        ).fetchall()
+
+    return tuple(
+        ToolUsage(
+            tool=r["tool"],
+            operations=int(r["n"]),
+            tokens_before=int(r["orig_sum"]),
+            tokens_after=int(r["final_sum"]),
+            tokens_saved=int(r["orig_sum"]) - int(r["final_sum"]),
+            compression_pct=(
+                (int(r["eligible_orig_sum"]) - int(r["eligible_final_sum"]))
+                / int(r["eligible_orig_sum"]) * 100
+                if r["eligible_orig_sum"]
+                else 0.0
+            ),
+        )
+        for r in rows
+    )
+
+
+# ---------------------------------------------------------------------------
+# Read-side: query_gain_by_file (QB-131)
+# ---------------------------------------------------------------------------
+
+# Literal, exact command prefixes that carry an identifiable file path — the
+# only two producers that record one (see each prefix's own call site).
+# Deliberately does NOT attempt to extract a file from a Bash-dispatched
+# command's raw shell text (e.g. "cat foo.py", "git diff bar.py") — there is
+# no reliable, non-heuristic way to pick "the file" out of arbitrary shell
+# argv, and a project convention (see [[feedback_no_heuristic_fields]] in
+# product memory) is to leave a field out entirely rather than back it with
+# a guess. A file-level breakdown is therefore necessarily scoped to what
+# Quor can name with certainty: Read-hook reads and MCP compress_context
+# calls made with an explicit `focal_file`.
+_READ_HOOK_PREFIX = "Read: "
+_MCP_FOCAL_FILE_PREFIX = "MCP compress_context: focal_file="
+
+
+@dataclass(frozen=True)
+class FileUsage:
+    """Aggregated stats for one file (QB-131), across every Read-hook and
+    MCP `compress_context(focal_file=...)` invocation of it in the queried
+    project/window. See `query_gain_by_file()`'s docstring for why this
+    can't also cover Bash-dispatched commands."""
+
+    file_path: str
+    operations: int
+    tokens_before: int
+    tokens_after: int
+    tokens_saved: int
+    compression_pct: float
+
+
+def query_gain_by_file(
+    db_path: Path,
+    project_path: Path,
+    days: int = 30,
+    limit: int = 10,
+) -> tuple[FileUsage, ...]:
+    """Return the top `limit` files by cumulative net tokens saved (QB-131),
+    read from SQLite. Scoped to invocations with an identifiable file
+    (`Read: {file_path}` / `MCP compress_context: focal_file={path}`) — see
+    module-level prefix constants' own comment for why a Bash-dispatched
+    command's file can't be reliably named. Empty/missing database returns
+    `()`, never raises.
+    """
+    if not db_path.exists():
+        return ()
+
+    project_key = normalize_project_path(project_path)
+    if _is_degenerate_project_key(project_key):
+        raise ValueError(
+            f"project_path {str(project_path)!r} normalizes to {project_key!r}, "
+            "which has no directory segment of its own and is too broad to "
+            "safely scope a query (it would match every project under that "
+            "root/drive). Pass a specific project directory instead."
+        )
+    subdir_pattern = f"{_escape_like(project_key)}/%"
+    since = f"-{days} days"
+    project_filter = (
+        f"(project_key_normalized = ? OR project_key_normalized LIKE ? {_LIKE_ESCAPE_CLAUSE})"
+    )
+
+    with contextlib.closing(connect_with_wal_retry(db_path)) as conn:
+        conn.row_factory = sqlite3.Row
+        _ensure_project_identity_columns(conn)
+        conn.create_function("normalize_project_path", 1, normalize_project_path)
+        conn.execute(
+            """UPDATE invocations
+               SET project_key_normalized = normalize_project_path(project_path)
+               WHERE project_key_normalized IS NULL
+            """
+        )
+        conn.commit()
+
+        rows = conn.execute(
+            f"""SELECT
+                 CASE
+                     WHEN command LIKE ? THEN substr(command, length(?) + 1)
+                     WHEN command LIKE ? THEN substr(command, length(?) + 1)
+                 END                                      AS file_path,
+                 COUNT(*)                                 AS n,
+                 COALESCE(SUM(original_tokens), 0)        AS orig_sum,
+                 COALESCE(SUM(final_tokens), 0)            AS final_sum
+               FROM invocations
+               WHERE {project_filter}
+                 AND recorded_at >= datetime('now', ?)
+                 AND (command LIKE ? OR command LIKE ?)
+               GROUP BY file_path
+               ORDER BY (orig_sum - final_sum) DESC
+               LIMIT ?
+            """,
+            (
+                f"{_READ_HOOK_PREFIX}%",
+                _READ_HOOK_PREFIX,
+                f"{_MCP_FOCAL_FILE_PREFIX}%",
+                _MCP_FOCAL_FILE_PREFIX,
+                project_key,
+                subdir_pattern,
+                since,
+                f"{_READ_HOOK_PREFIX}%",
+                f"{_MCP_FOCAL_FILE_PREFIX}%",
+                limit,
+            ),
+        ).fetchall()
+
+    return tuple(
+        FileUsage(
+            file_path=r["file_path"],
+            operations=int(r["n"]),
+            tokens_before=int(r["orig_sum"]),
+            tokens_after=int(r["final_sum"]),
+            tokens_saved=int(r["orig_sum"]) - int(r["final_sum"]),
+            compression_pct=(
+                (int(r["orig_sum"]) - int(r["final_sum"])) / int(r["orig_sum"]) * 100
+                if r["orig_sum"]
+                else 0.0
+            ),
+        )
+        for r in rows
+    )
+
+
+# ---------------------------------------------------------------------------
 # Factory
 # ---------------------------------------------------------------------------
 

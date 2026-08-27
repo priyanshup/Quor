@@ -30,7 +30,7 @@ from __future__ import annotations
 from rich.table import Table
 
 from quor.cli.format_utils import format_count, format_percentage
-from quor.tracking.db import GainReport
+from quor.tracking.db import FileUsage, GainReport, ToolUsage
 
 # Below this many recorded commands, the blended percentage is dominated by
 # whichever single command happened to run first rather than by anything
@@ -133,5 +133,57 @@ def build_top_filters_table(report: GainReport) -> Table | None:
             filter_display_name(name),
             f"[cyan]{format_count(saved)}[/cyan]",
             f"[dim]({format_percentage(fraction)})[/dim]",
+        )
+    return table
+
+
+_TOOL_DISPLAY_NAMES: dict[str, str] = {
+    "compress_context": "MCP compress_context",
+    "get_repo_context": "MCP get_repo_context",
+    "cli": "CLI / Bash / Read hook",
+}
+
+
+def build_tool_usage_table(by_tool: tuple[ToolUsage, ...]) -> Table | None:
+    """`--by-tool` (QB-131): operations and net tokens saved per tool
+    origin. `None` when the window has no invocations at all — same
+    "nothing to show" convention `build_top_filters_table()` uses, rather
+    than an empty table with headers and no rows."""
+    if not by_tool:
+        return None
+    table = Table(show_header=True, header_style="bold")
+    table.add_column("Tool")
+    table.add_column("Operations", justify="right")
+    table.add_column("Tokens saved", justify="right")
+    table.add_column("Compression", justify="right")
+    for usage in by_tool:
+        table.add_row(
+            _TOOL_DISPLAY_NAMES.get(usage.tool, usage.tool),
+            format_count(usage.operations),
+            f"[cyan]{format_count(usage.tokens_saved)}[/cyan]",
+            f"[dim]{usage.compression_pct:.1f}%[/dim]",
+        )
+    return table
+
+
+def build_file_usage_table(by_file: tuple[FileUsage, ...]) -> Table | None:
+    """`--by-file` (QB-131): the top files by cumulative net tokens saved.
+    `by_file` is already limited/sorted by `query_gain_by_file()` — this
+    only lays it out. `None` when there's nothing to show (no Read-hook or
+    MCP `focal_file` invocations in the window — see that function's own
+    docstring for why a Bash-dispatched command's file can't be named)."""
+    if not by_file:
+        return None
+    table = Table(show_header=True, header_style="bold")
+    table.add_column("File")
+    table.add_column("Operations", justify="right")
+    table.add_column("Tokens saved", justify="right")
+    table.add_column("Compression", justify="right")
+    for usage in by_file:
+        table.add_row(
+            usage.file_path,
+            format_count(usage.operations),
+            f"[cyan]{format_count(usage.tokens_saved)}[/cyan]",
+            f"[dim]{usage.compression_pct:.1f}%[/dim]",
         )
     return table

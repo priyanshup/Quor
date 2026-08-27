@@ -33,16 +33,29 @@ from rich.console import Console
 from rich.table import Table
 
 from quor.cli.format_utils import format_count, format_percentage
+from quor.cli.gain_exporter import build_gain_payload, render_gain_csv, render_gain_json
 from quor.cli.gain_presentation import (
+    build_file_usage_table,
     build_stats_table,
+    build_tool_usage_table,
     build_top_filters_table,
     eligible_compression_line,
     low_sample_caveat,
 )
 from quor.config.loader import load_user_config
-from quor.tracking.db import GainReport, query_gain
+from quor.errors import ExitCode
+from quor.tracking.db import (
+    FileUsage,
+    GainReport,
+    ToolUsage,
+    query_gain,
+    query_gain_by_file,
+    query_gain_by_tool,
+)
 
 console = Console(highlight=False)
+
+_VALID_FORMATS = ("table", "json", "csv")
 
 
 def gain(
@@ -59,17 +72,57 @@ def gain(
             "Also show per-filter real-usage analytics (QB-054): usage/"
             "compression leaders and laggards, real-vs-benchmark "
             "divergence, and usage trend over time. Records one snapshot "
-            "to the local analytics history each time this flag is used."
+            "to the local analytics history each time this flag is used. "
+            "Rich-output only — has no effect when --format is json/csv."
+        ),
+    ),
+    output_format: str = typer.Option(
+        "table",
+        "--format",
+        help="Output format: 'table' (default, Rich), 'json', or 'csv'.",
+    ),
+    by_tool: bool = typer.Option(
+        False,
+        "--by-tool",
+        help=(
+            "Break down token savings by tool origin (QB-131): MCP "
+            "compress_context, MCP get_repo_context, or direct CLI/Read-hook "
+            "dispatch."
+        ),
+    ),
+    by_file: bool = typer.Option(
+        False,
+        "--by-file",
+        help=(
+            "List the top 10 files by cumulative net token savings (QB-131). "
+            "Only covers invocations with an identifiable file (Read-hook "
+            "reads and MCP compress_context calls made with focal_file) — a "
+            "Bash-dispatched command's file can't be named without guessing."
         ),
     ),
 ) -> None:
     """Show token savings for a project over the last N days."""
+    if output_format not in _VALID_FORMATS:
+        typer.secho(
+            f"✗ --format must be one of {_VALID_FORMATS!r}, got {output_format!r}",
+            fg=typer.colors.RED,
+        )
+        raise typer.Exit(code=ExitCode.GENERAL_ERROR)
+
     project_path = (project or Path.cwd()).resolve()
     db_path = Path(platformdirs.user_data_dir("quor")) / "quor.db"
 
     report = query_gain(db_path, project_path, days=days)
-    mode = load_user_config().mode
+    tool_usage = query_gain_by_tool(db_path, project_path, days=days) if by_tool else None
+    file_usage = query_gain_by_file(db_path, project_path, days=days) if by_file else None
 
+    if output_format != "table":
+        _print_structured(report, output_format, by_tool=tool_usage, by_file=file_usage)
+        if report.total_invocations == 0:
+            raise typer.Exit()
+        return
+
+    mode = load_user_config().mode
     _print_header(report, project_path=project_path, mode=mode)
 
     if report.total_invocations == 0:
@@ -81,10 +134,56 @@ def gain(
             _print_filter_analytics(db_path, project_path, days=days)
         raise typer.Exit()
 
-    _print_report(report)
+    _print_report(report, tool_usage=tool_usage, file_usage=file_usage)
 
     if filters:
         _print_filter_analytics(db_path, project_path, days=days)
+
+
+def _print_structured(
+    report: GainReport,
+    output_format: str,
+    *,
+    by_tool: tuple[ToolUsage, ...] | None,
+    by_file: tuple[FileUsage, ...] | None,
+) -> None:
+    """`--format json`/`--format csv`: print the machine-readable payload
+    and nothing else — no Rich markup, no headline prose, so the output is
+    safe to pipe straight into another tool. `report.total_invocations == 0`
+    still renders a clean empty payload here (empty `by_tool`/`by_file`
+    lists, zeroed summary) rather than a special-cased message, matching
+    `query_gain()`'s own "empty is a valid GainReport, not an error"
+    contract."""
+    payload = build_gain_payload(report, by_tool=by_tool, by_file=by_file)
+    if output_format == "json":
+        typer.echo(render_gain_json(payload))
+    else:
+        typer.echo(render_gain_csv(payload), nl=False)
+
+
+def _print_breakdowns(
+    tool_usage: tuple[ToolUsage, ...] | None, file_usage: tuple[FileUsage, ...] | None
+) -> None:
+    """`--by-tool`/`--by-file` under the default Rich table format."""
+    if tool_usage is not None:
+        table = build_tool_usage_table(tool_usage)
+        console.print("[bold]By tool[/bold]")
+        if table is None:
+            console.print("[dim]No tool-level activity recorded in this window.[/dim]")
+        else:
+            console.print(table)
+        console.print()
+
+    if file_usage is not None:
+        table = build_file_usage_table(file_usage)
+        console.print("[bold]Top files[/bold]")
+        if table is None:
+            console.print(
+                "[dim]No Read-hook or MCP focal_file activity recorded in this window.[/dim]"
+            )
+        else:
+            console.print(table)
+        console.print()
 
 
 def _print_header(report: GainReport, *, project_path: Path, mode: str) -> None:
@@ -109,7 +208,12 @@ def _print_header(report: GainReport, *, project_path: Path, mode: str) -> None:
         )
 
 
-def _print_report(report: GainReport) -> None:
+def _print_report(
+    report: GainReport,
+    *,
+    tool_usage: tuple[ToolUsage, ...] | None = None,
+    file_usage: tuple[FileUsage, ...] | None = None,
+) -> None:
     console.print()
     console.rule(style="dim")
     console.print()
@@ -121,6 +225,7 @@ def _print_report(report: GainReport) -> None:
     _print_headline(report)
     _print_stats(report)
     _print_top_savings(report)
+    _print_breakdowns(tool_usage, file_usage)
 
     if report.negative_row_count > 0:
         console.print(_negative_row_notice_text(report), soft_wrap=True)
