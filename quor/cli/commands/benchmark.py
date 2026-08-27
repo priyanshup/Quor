@@ -36,7 +36,11 @@ from rich.console import Console
 from rich.table import Table
 
 from quor.cli.format_utils import format_count, format_percentage
-from quor.config.loader import find_and_load_project_config, load_user_config, resolve_effective_config
+from quor.config.loader import (
+    find_and_load_project_config,
+    load_user_config,
+    resolve_effective_config,
+)
 from quor.engine.dispatcher import apply_filter_pipeline
 from quor.errors import ExitCode
 from quor.tracking.db import count_tokens

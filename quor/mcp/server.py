@@ -99,7 +99,11 @@ from pathlib import Path
 from mcp.server.mcpserver import MCPServer
 from mcp.types import Tool as MCPTool
 
-from quor.config.loader import find_and_load_project_config, load_user_config, resolve_effective_config
+from quor.config.loader import (
+    find_and_load_project_config,
+    load_user_config,
+    resolve_effective_config,
+)
 from quor.config.model import QuorUserConfig
 from quor.engine.dispatcher import _scan_secrets_safe, apply_filter_pipeline
 from quor.mcp.logging_config import LOGGER_NAME, configure_logging

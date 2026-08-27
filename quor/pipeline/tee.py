@@ -95,7 +95,6 @@ import sqlite3
 import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 
 from quor.storage.state_db import connect_state_db, state_db_path
 
