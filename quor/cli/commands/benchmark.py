@@ -154,6 +154,7 @@ def _benchmark_file(path: Path) -> BenchmarkResult | str:
         file_path=path,
         min_token_threshold=overrides.min_token_threshold,
         exclude_patterns=overrides.exclude_patterns,
+        ast_pruning_enabled=overrides.ast_pruning_enabled,
     )
     latency_ms = (time.monotonic() - t0) * 1000
 

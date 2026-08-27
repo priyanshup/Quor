@@ -114,6 +114,18 @@ _STAGE_HANDLERS: dict[str, tuple[type, type[StageConfig]]] = {
 _BUILTIN_DIR = Path(__file__).parent / "builtin"
 _COMMAND_TIMEOUT: float = 0.1  # seconds for command matching regex
 
+# QB-132: the two stage types `ast_pruning_enabled=False` disables. Skipped
+# entirely at StageEntry-build time in `_run_pipeline()` below — not routed
+# through `can_handle()` (which has no access to this flag, same limitation
+# `code_ast_summarize.py`'s own docstring already documents for its
+# per-language availability check) and not left in the entries list to be a
+# `StageResult(was_skipped=True, ...)` (that would still cost a
+# `_build_stage_entry()` call for a stage guaranteed not to run). A filter's
+# other stages (strip_lines/deduplicate_consecutive/max_tokens, ...) are
+# unaffected — this is "skip the AST pass," not "skip the whole filter,"
+# so a disabled-AST-pruning file still gets ordinary line-based compression.
+_AST_STAGE_TYPES = frozenset({"python_ast_summarize", "code_ast_summarize"})
+
 
 def _build_stage_entry(stage_dict: dict[str, Any]) -> StageEntry:
     """Convert a raw stage dict (from TOML) into a validated StageEntry.
@@ -303,8 +315,24 @@ class FilterRegistry:
     # Application
     # ------------------------------------------------------------------
 
-    def apply(self, filter_config: FilterConfig, content: str, content_type: str = "") -> str:
-        """Apply filter to content. Returns compressed string or original on abort."""
+    def apply(
+        self,
+        filter_config: FilterConfig,
+        content: str,
+        content_type: str = "",
+        *,
+        ast_pruning_enabled: bool = True,
+    ) -> str:
+        """Apply filter to content. Returns compressed string or original on abort.
+
+        `ast_pruning_enabled` (QB-132) mirrors `QuorUserConfig.ast_pruning_enabled`/
+        `.quor.toml`'s `[compression] ast_pruning_enabled` — `False` skips this
+        filter's `python_ast_summarize`/`code_ast_summarize` stage(s), if any,
+        falling back to whatever line-based compression (`strip_lines`,
+        `max_tokens`, ...) the same filter already configures. Defaults to
+        `True` (today's existing, unconditional-AST behavior) so every caller
+        that doesn't have a resolved config in hand is unaffected.
+        """
         if filter_config.abort_unless and not any(
             s in content for s in filter_config.abort_unless
         ):
@@ -313,7 +341,9 @@ class FilterRegistry:
         if filter_config.abort_if and any(s in content for s in filter_config.abort_if):
             return content
 
-        result = self._run_pipeline(filter_config, content, content_type)
+        result = self._run_pipeline(
+            filter_config, content, content_type, ast_pruning_enabled=ast_pruning_enabled
+        )
         rendered = result.mask.render()
 
         if not rendered.strip() and filter_config.on_empty:
@@ -377,12 +407,15 @@ class FilterRegistry:
         *,
         early_exit: bool = True,
         track_tokens: bool = False,
+        ast_pruning_enabled: bool = True,
     ) -> PipelineResult:
         detected = content_type or detect(content).value
 
         mask = ContentMask.from_text(content)
         entries: list[StageEntry] = []
         for stage_dict in filter_config.stages:
+            if not ast_pruning_enabled and stage_dict.get("type") in _AST_STAGE_TYPES:
+                continue
             try:
                 entries.append(_build_stage_entry(stage_dict))
             except ConfigError as exc:

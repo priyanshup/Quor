@@ -365,6 +365,12 @@ next full roadmap review should place it (its own entry's severity note suggests
 top, comparable to where QB-109 itself ranked, but that's a call for a dedicated prioritization pass,
 not a housekeeping note).
 
+**Housekeeping note (2026-08-28):** **QB-133** added (extension-based filter routing missing from
+`FilterRegistry.find()` — every `cat-*` AST filter unreachable via `compress_context`/`quor
+benchmark`, same architectural gap class as QB-109/QB-112/QB-114), found during QB-132's
+`ast_pruning_enabled` wiring work. Same as QB-112 above: new, not yet triaged into the ordering,
+deliberately left unranked rather than guessed into a position.
+
 **Housekeeping correction (2026-08-19, later the same day):** QB-034 shipped as `quor discover`. Not
 moved to [Completed](#completed) (same full-write-up-left-in-place treatment as above); no longer
 occupies a slot in this ordering. **Current order: QB-055 → QB-054 → QB-049 → QB-039 → QB-053.**
@@ -1169,6 +1175,58 @@ finding #1 (tee recovery link) arguably outranks both given it underwrites every
 compression item's trust story, not just its own feature area.
 
 </details>
+
+---
+
+#### QB-133 — `FilterRegistry.find()` has no extension-based routing — every AST-aware `cat-*` filter (Python/JS/TS/Go/Java/Rust/C#) is unreachable via `compress_context`/`quor benchmark`, same architectural gap class as QB-109/QB-112/QB-114
+
+**Effort:** Medium · **Value:** High — this is the gap directly undercutting QB-005B/C/D/QB-046's
+entire AST-summarization investment · **Risk:** Low to document, Medium-High to leave unfixed
+(silent, total loss of a shipped feature's real-world value on the sole production integration
+surface) · **Expected token impact:** Potentially large and currently unmeasured — every
+Python/JS/TS/Go/Java/Rust/C# file compressed via `compress_context` or benchmarked via `quor
+benchmark` today gets zero AST body-stripping · **Category:** Bug fix / Architecture
+
+**Found 2026-08-28**, during QB-132 (`ast_pruning_enabled` wiring), by direct source read and
+empirical reproduction — not inference. `FilterRegistry.find(command)` checks `match_content_types`
+(structural-shape detection: JSON/YAML/diff/...) then `match_command` (a regex expecting literal
+shell-command text, e.g. `cat-python.toml`'s `^cat\s+(-\S+\s+)*\S*\.py\b`) against whatever single
+string it's given. There is no file-extension-based matching path at all — every `cat-<language>.toml`
+filter (`cat-python`, `cat-javascript`, `cat-typescript`, `cat-tsx`, `cat-go`, `cat-java`, `cat-rust`,
+`cat-csharp`) can only ever match a string that literally reads like `cat <path>`.
+
+Every `apply_filter_pipeline()` caller that compresses a real file passes the file's own *content* as
+`match_str`, never a synthetic command:
+- `quor/mcp/server.py`'s `compress_context(raw_text)` (no `focal_file`): `match_str=raw_text`.
+- `quor/mcp/server.py`'s `_compress_context_tiered()` (`focal_file` path): `match_str=payload` (the
+  rendered multi-file payload).
+- `quor/cli/commands/benchmark.py`'s `_benchmark_file()`: `match_str=raw_text`.
+
+None of these ever look like `cat <path>`, so none can match a `cat-<language>.toml` filter's
+`match_command` — every one falls through to the generic catch-all (`z_generic.toml`,
+`match_command = '.'`). **Confirmed empirically:** `quor benchmark sample.ts --format json` against a
+normal TypeScript file with an obviously compressible function body reports `"filter": "generic"`,
+`0%` savings — `cat-typescript.toml` never even gets a chance to run.
+
+Since QB-104 made MCP the sole integration surface, this means QB-005B/C/D's (Python/JavaScript/
+TypeScript) and QB-046's (Go/Java/Rust/C#) entire AST-body-stripping investment is dark in real usage
+today — the exact "unreachable via `compress_context`" gap class QB-109/QB-112/QB-114 already found
+and fixed for other filter families (git-diff/mypy/cat-json/cat-toml/pytest; `GitStructuralDiffPlugin`;
+the tee recovery link and secret-scan), just never audited for the `cat-*` language filters
+specifically until now.
+
+**Desired outcome, not yet designed:** `apply_filter_pipeline()` (or `FilterRegistry.find()` itself)
+needs a second lookup path keyed on `file_path`'s extension when one is given — either synthesizing a
+`cat <path>`-shaped match string when `file_path` is present and no better `match_content_types`/
+`match_command` match exists, or adding an explicit extension → filter table (`quor/pipeline/
+ast_summarize/registry.py`'s own `EXTENSION_TO_LANGUAGE` already exists for exactly this purpose, but
+is wired into `quor symbols`/`quor graph`, not `FilterRegistry.find()` — reusing it here rather than a
+second, parallel table is the obvious starting point, not yet verified as sufficient). The right
+mechanism needs its own design pass — same "architecture-first before code" norm QB-005A/QB-035A/
+QB-036/QB-114 already established for this project.
+
+**Status:** Proposed. Not scoped or implemented. Not yet triaged into the Now ordering — recommend
+sequencing near QB-109/QB-112/QB-114 given comparable severity.
 
 ---
 

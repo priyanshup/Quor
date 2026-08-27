@@ -2,11 +2,11 @@
 
 Covers quor/config/model.py's ProjectConfig/CompressionOverrides/
 IgnoreOverrides, quor/config/loader.py's find_and_load_project_config()/
-resolve_effective_config(), and the exclude_patterns/min_token_threshold
-wiring in quor/engine/dispatcher.py's apply_filter_pipeline(). Does NOT
-test `aggressiveness` changing compression behavior — see
-TestAggressivenessIsParsedButNotWired below for why that's the point, not
-a gap.
+resolve_effective_config(), and the exclude_patterns/min_token_threshold/
+ast_pruning_enabled (QB-132) wiring in quor/engine/dispatcher.py's
+apply_filter_pipeline(). Does NOT test `aggressiveness` changing
+compression behavior — see TestAggressivenessIsParsedButNotWired below for
+why that's the point, not a gap.
 """
 
 from __future__ import annotations
@@ -336,6 +336,77 @@ class TestMinTokenThresholdWiring:
         assert (zero_filter is None) == (default_filter is None)
         assert blocked_filter is None
         assert blocked_output == short_text
+
+
+# ---------------------------------------------------------------------------
+# apply_filter_pipeline — ast_pruning_enabled (QB-132 wiring)
+# ---------------------------------------------------------------------------
+
+
+class TestAstPruningEnabledWiring:
+    """Unlike min_token_threshold/exclude_patterns (which bypass the whole
+    filter), ast_pruning_enabled=False only disables that filter's own
+    python_ast_summarize/code_ast_summarize stage — the filter still runs,
+    and still matches, so `filter_config` is never None here."""
+
+    _PY_SOURCE = 'def foo(x, y):\n    """Add two numbers."""\n    total = x + y\n    return total\n'
+
+    def test_disabled_preserves_function_body(self) -> None:
+        output, filter_config = apply_filter_pipeline(
+            "cat script.py", self._PY_SOURCE, ast_pruning_enabled=False
+        )
+
+        assert filter_config is not None and filter_config.name == "cat-python"
+        assert "total = x + y" in output
+
+    def test_default_true_strips_function_body(self) -> None:
+        """Regression guard: omitting the argument reproduces today's
+        existing AST-body-stripping behavior unchanged."""
+        output, filter_config = apply_filter_pipeline("cat script.py", self._PY_SOURCE)
+
+        assert filter_config is not None and filter_config.name == "cat-python"
+        assert "total = x + y" not in output
+
+    def test_explicit_true_matches_default(self) -> None:
+        default_output, _ = apply_filter_pipeline("cat script.py", self._PY_SOURCE)
+        explicit_output, _ = apply_filter_pipeline(
+            "cat script.py", self._PY_SOURCE, ast_pruning_enabled=True
+        )
+
+        assert explicit_output == default_output
+
+    def test_run_dispatch_honors_the_global_setting(self) -> None:
+        """QB-132: unlike min_token_threshold/exclude_patterns (which only
+        ever reach apply_filter_pipeline() — no test claims run_dispatch()
+        honors those either), the *global* QuorUserConfig.ast_pruning_enabled
+        does reach the real Bash CLI dispatch path (run_dispatch() has no
+        project-config resolution of its own, see apply_filter_pipeline()'s
+        own call site in dispatcher.py for why only the global setting, not
+        a `.quor.toml` override, applies here)."""
+        import io
+        import subprocess
+        from unittest.mock import MagicMock, patch
+
+        from quor.config.model import QuorUserConfig
+        from quor.engine.dispatcher import run_dispatch
+
+        proc = MagicMock(spec=subprocess.CompletedProcess)
+        proc.stdout = self._PY_SOURCE
+        proc.returncode = 0
+
+        captured = io.StringIO()
+        with (
+            patch("subprocess.run", return_value=proc),
+            patch("sys.stdout", captured),
+            patch(
+                "quor.engine.dispatcher.load_user_config",
+                return_value=QuorUserConfig(ast_pruning_enabled=False),
+            ),
+        ):
+            exit_code = run_dispatch(["cat", "script.py"], tracking=None)
+
+        assert exit_code == 0
+        assert "total = x + y" in captured.getvalue()
 
 
 # ---------------------------------------------------------------------------

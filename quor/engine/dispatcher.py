@@ -191,8 +191,20 @@ def run_dispatch(args: list[str], tracking: TrackingDB | None = None) -> int:
         content_type = raw_content_type
     else:
         content_type = detect(pre_output).value
+    # QB-132: run_dispatch() (the real Bash CLI dispatch path) has no
+    # resolved-project-config plumbing today — unlike apply_filter_pipeline()
+    # (QB-130's min_token_threshold/exclude_patterns are the same, pre-
+    # existing gap — see that function's own docstring). Only the *global*
+    # QuorUserConfig.ast_pruning_enabled is honored here; a `.quor.toml`
+    # project override does not reach this path. get_user_config() is
+    # already loaded/cached above for _setup_plugins()/_apply_tee(), so this
+    # costs no extra I/O.
     filtered = _apply_content_filter(
-        registry, filter_config, pre_output, content_type=content_type
+        registry,
+        filter_config,
+        pre_output,
+        content_type=content_type,
+        ast_pruning_enabled=get_user_config().ast_pruning_enabled,
     )
     filtered = _run_post_filter_plugins(
         plugin_registry,
@@ -257,6 +269,7 @@ def apply_filter_pipeline(
     file_path: Path | None = None,
     min_token_threshold: int = 0,
     exclude_patterns: Sequence[str] = (),
+    ast_pruning_enabled: bool = True,
 ) -> tuple[str, FilterConfig | None]:
     """Run `run_dispatch()`'s safety-net pipeline — filter lookup,
     PRE_FILTER/POST_FILTER plugins, the tee recovery footer (ADR-023/
@@ -274,23 +287,28 @@ def apply_filter_pipeline(
     `match_str` for a content-only caller, or the subprocess's real stdout
     for a command caller.
 
-    `file_path`/`min_token_threshold`/`exclude_patterns` (QB-130): a
-    resolved project's `.quor.toml` overrides, already merged by the
-    caller (`resolve_effective_config()` — this function stays unaware of
-    `ProjectConfig`/`QuorUserConfig` entirely, taking only the primitives
-    it needs, matching `match_str`/`captured`'s own narrow-signature
-    style). Both checks bypass compression the exact same way a "no filter
-    matched" passthrough already does — reusing that code path below
-    rather than adding a second one — so PRE_FILTER plugins and the
-    secret-scan safety net still run either way; only the tee step
-    (nothing was aggressively compressed, so there is nothing to make
-    recoverable) and the filter/ContentMask stages are skipped.
-    `exclude_patterns` only applies when `file_path` is given — a caller
-    with no real file identity (MCP's plain `raw_text` path) has nothing
-    to match a glob against, and silently not matching is correct there,
-    not a bug. Matched against both the file's POSIX-style path and its
-    bare filename, so a pattern can target either an extension (`*.md`)
-    or a path segment (`tests/**`).
+    `file_path`/`min_token_threshold`/`exclude_patterns` (QB-130) and
+    `ast_pruning_enabled` (QB-132): a resolved project's `.quor.toml`
+    overrides, already merged by the caller (`resolve_effective_config()` —
+    this function stays unaware of `ProjectConfig`/`QuorUserConfig`
+    entirely, taking only the primitives it needs, matching
+    `match_str`/`captured`'s own narrow-signature style). The first two
+    checks bypass compression the exact same way a "no filter matched"
+    passthrough already does — reusing that code path below rather than
+    adding a second one — so PRE_FILTER plugins and the secret-scan safety
+    net still run either way; only the tee step (nothing was aggressively
+    compressed, so there is nothing to make recoverable) and the
+    filter/ContentMask stages are skipped. `exclude_patterns` only applies
+    when `file_path` is given — a caller with no real file identity (MCP's
+    plain `raw_text` path) has nothing to match a glob against, and
+    silently not matching is correct there, not a bug. Matched against both
+    the file's POSIX-style path and its bare filename, so a pattern can
+    target either an extension (`*.md`) or a path segment (`tests/**`).
+    `ast_pruning_enabled=False` is narrower than the other two — it never
+    bypasses the whole filter, only that filter's own
+    `python_ast_summarize`/`code_ast_summarize` stage(s) (see
+    `FilterRegistry.apply()`'s own docstring); a matched filter's other
+    stages still run.
 
     Returns `(output, filter_config)`: `output` is the final text (tee's
     footer and any POST_FILTER plugin transform already applied, and
@@ -325,7 +343,13 @@ def apply_filter_pipeline(
         content_type = raw_content_type
     else:
         content_type = detect(pre_output).value
-    filtered = _apply_content_filter(registry, filter_config, pre_output, content_type=content_type)
+    filtered = _apply_content_filter(
+        registry,
+        filter_config,
+        pre_output,
+        content_type=content_type,
+        ast_pruning_enabled=ast_pruning_enabled,
+    )
     filtered = _run_post_filter_plugins(
         plugin_registry,
         plugin_ctx,
@@ -518,11 +542,18 @@ def _apply_content_filter(
     pre_output: str,
     *,
     content_type: str,
+    ast_pruning_enabled: bool = True,
 ) -> str:
     """Run the matched ContentMask filter. Fail-open: returns `pre_output`
-    unchanged if the filter raises."""
+    unchanged if the filter raises. `ast_pruning_enabled` (QB-132) is passed
+    straight through to `FilterRegistry.apply()` — see its own docstring."""
     try:
-        return registry.apply(filter_config, pre_output, content_type=content_type)
+        return registry.apply(
+            filter_config,
+            pre_output,
+            content_type=content_type,
+            ast_pruning_enabled=ast_pruning_enabled,
+        )
     except Exception as exc:  # noqa: BLE001
         warnings.warn(f"[quor] filter apply error: {exc}", stacklevel=1)
         return pre_output

@@ -281,6 +281,7 @@ def compress_context(raw_text: str = "", focal_file: str = "") -> str:
         projected_text,
         projected_text,
         min_token_threshold=project_overrides.min_token_threshold,
+        ast_pruning_enabled=project_overrides.ast_pruning_enabled,
     )
 
     compressed_tokens = count_tokens(compressed)
@@ -382,6 +383,7 @@ def _compress_context_tiered(focal_file: str) -> str:
         file_path=focal_path,
         min_token_threshold=project_overrides.min_token_threshold,
         exclude_patterns=project_overrides.exclude_patterns,
+        ast_pruning_enabled=project_overrides.ast_pruning_enabled,
     )
 
     original_tokens = tiered.original_tokens

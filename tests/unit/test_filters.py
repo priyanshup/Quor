@@ -937,6 +937,88 @@ class TestCodeFilterEmptyOutputFallback:
         assert rendered != "(empty document)"
         assert "function add(x: number, y: number): number {" in rendered
 
+
+# ---------------------------------------------------------------------------
+# QB-132: FilterRegistry.apply(..., ast_pruning_enabled=False) must skip a
+# filter's python_ast_summarize/code_ast_summarize stage(s) specifically —
+# not the whole filter — falling back to whatever line-based compression
+# (strip_lines/deduplicate_consecutive/max_tokens) the same filter already
+# configures. Default (True, or omitted) must reproduce today's existing
+# AST-body-stripping behavior exactly, unchanged.
+# ---------------------------------------------------------------------------
+
+
+class TestAstPruningEnabledStageSkip:
+    registry = FilterRegistry(skip_user=True, skip_project=True)
+
+    def test_python_disabled_preserves_function_body(self) -> None:
+        fc = self.registry.find("cat script.py")
+        assert fc is not None and fc.name == "cat-python"
+        src = 'def foo(x, y):\n    """Add two numbers."""\n    total = x + y\n    return total\n'
+
+        rendered = self.registry.apply(fc, src, ast_pruning_enabled=False)
+
+        assert "total = x + y" in rendered
+        assert "return total" in rendered
+
+    def test_python_enabled_still_strips_function_body(self) -> None:
+        """Regression guard: the default (True) must reproduce today's
+        existing behavior unchanged."""
+        fc = self.registry.find("cat script.py")
+        assert fc is not None and fc.name == "cat-python"
+        src = 'def foo(x, y):\n    """Add two numbers."""\n    total = x + y\n    return total\n'
+
+        rendered_default = self.registry.apply(fc, src)
+        rendered_explicit_true = self.registry.apply(fc, src, ast_pruning_enabled=True)
+
+        assert "total = x + y" not in rendered_default
+        assert rendered_default == rendered_explicit_true
+
+    def test_python_disabled_other_stages_still_run(self) -> None:
+        """Disabling AST pruning must not disable the rest of the filter's
+        pipeline — strip_lines' ordinary comment-stripping (a whole-line
+        comment, not TODO/FIXME/NOTE) still applies."""
+        fc = self.registry.find("cat script.py")
+        assert fc is not None and fc.name == "cat-python"
+        src = "# a plain comment, not preserved\nx = 1\ndef foo():\n    return 1\n"
+
+        rendered = self.registry.apply(fc, src, ast_pruning_enabled=False)
+
+        assert "a plain comment" not in rendered
+        assert "return 1" in rendered
+
+    def test_javascript_disabled_preserves_function_body(self) -> None:
+        pytest.importorskip("tree_sitter_javascript")
+        fc = self.registry.find("cat app.js")
+        assert fc is not None and fc.name == "cat-javascript"
+        src = "function add(x, y) {\n  const total = x + y;\n  return total;\n}\n"
+
+        rendered = self.registry.apply(fc, src, ast_pruning_enabled=False)
+
+        assert "const total = x + y;" in rendered
+
+    def test_typescript_disabled_preserves_function_body(self) -> None:
+        pytest.importorskip("tree_sitter_typescript")
+        fc = self.registry.find("cat app.ts")
+        assert fc is not None and fc.name == "cat-typescript"
+        src = "function add(x: number, y: number): number {\n  const total = x + y;\n  return total;\n}\n"
+
+        rendered = self.registry.apply(fc, src, ast_pruning_enabled=False)
+
+        assert "const total = x + y;" in rendered
+
+    def test_disabled_does_not_affect_filters_without_an_ast_stage(self) -> None:
+        """A filter with no python_ast_summarize/code_ast_summarize stage at
+        all (e.g. the generic catch-all) must be byte-for-byte unaffected by
+        this flag."""
+        fc = self.registry.find("some random command")
+        assert fc is not None
+        src = "line one\nline one\nline two\n"
+
+        assert self.registry.apply(fc, src, ast_pruning_enabled=False) == self.registry.apply(
+            fc, src, ast_pruning_enabled=True
+        )
+
     def test_typescript_minified_bundle_triggers_fallback(self) -> None:
         pytest.importorskip("tree_sitter_typescript")
         fc = self.registry.find("cat bundle.min.ts")
