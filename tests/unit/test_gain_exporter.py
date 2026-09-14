@@ -267,6 +267,32 @@ class TestQueryGainByFile:
         big_py = next(f for f in by_file if f.file_path == "big.py")
         assert big_py.tokens_saved == 900
 
+    def test_mcp_compress_context_file_path_prefix_is_recognized(self, tmp_path: Path) -> None:
+        """QB-133 follow-on: `compress_context(file_path=...)` — a third,
+        independent producer of a real file identity alongside the Read
+        hook and `focal_file` — must be picked up by the same query, not
+        just the two prefixes that existed when this function was first
+        written."""
+        db_path = tmp_path / "quor.db"
+        project = tmp_path / "proj"
+        _seed(
+            db_path,
+            [
+                {
+                    "command": "MCP compress_context: file_path=src/app.ts",
+                    "project_path": project.as_posix(),
+                    "original_tokens": 600,
+                    "final_tokens": 200,
+                },
+            ],
+        )
+
+        by_file = query_gain_by_file(db_path, project, days=30)
+
+        assert len(by_file) == 1
+        assert by_file[0].file_path == "src/app.ts"
+        assert by_file[0].tokens_saved == 400
+
     def test_limit_truncates_to_top_n(self, tmp_path: Path) -> None:
         db_path = tmp_path / "quor.db"
         project = tmp_path / "proj"

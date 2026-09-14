@@ -1265,6 +1265,60 @@ Tests: `tests/unit/test_project_config.py::TestExtensionBasedFilterLookup` (Pyth
 QB-109 already covers it via `match_content_types`, the `.pyi`-falls-back-to-`generic`-not-`cat` case,
 and the `route_by_extension=False` opt-out). Full `tests/unit` suite green, `ruff`/`mypy` clean.
 
+**Correction, same day, found while building QB-134 below:** the synthesized `cat <path>` command
+originally used `file_path.as_posix()` (the *full* path) — `match_command` patterns are anchored on
+non-whitespace (`\S`), and a real absolute path can contain a space a real shell command genuinely
+can't (a Windows user profile, "Program Files", a synced-folder name — **this repository's own path
+is one**, `...\OneDrive - Heineken International\...`). That silently broke every match for any file
+under a space-containing directory — confirmed empirically: `quor benchmark` against this repo's own
+absolute path fell back to `generic` where the identical content under a space-free path correctly
+matched `cat-typescript`. Fixed by synthesizing from `file_path.name` (the bare filename) instead —
+sufficient for every pattern above (extension or literal basename, neither needs a directory prefix)
+and structurally immune to a directory-boundary space. Regression test:
+`TestExtensionBasedFilterLookup::test_directory_with_a_space_still_routes_correctly`.
+
+---
+
+#### QB-134 — `compress_context`'s lightweight `file_path` parameter, so QB-133's filter routing reaches the tool's primary (non-`focal_file`) usage pattern
+
+**Effort:** Small · **Value:** High — without this, QB-133's fix only ever benefits `focal_file`
+calls (repository-intelligence-gated, graph-tiering, a secondary mode) and `quor benchmark` (offline
+diagnostics), never the tool's own documented primary use ("reading... long files") · **Risk:** Low ·
+**Expected token impact:** Makes QB-133's already-measured per-language savings (44% TypeScript, 53%
+Python, 21% YAML, ...) reachable from real agent usage, not just benchmark/tiered calls · **Category:**
+Feature / Bug fix follow-on
+
+**Found 2026-08-28**, same session as QB-133, by re-reading `compress_context`'s own signature after
+shipping that fix: `compress_context(raw_text: str = "", focal_file: str = "")` had exactly one way to
+attach a file identity to `raw_text` — `focal_file` — and that parameter does something structurally
+bigger and gated: multi-hop dependency-graph tiering, requiring `quor map` to have been run first. An
+agent that just read a `.ts` file and wants to compress its content (the tool's own docstring: "Use
+this tool whenever reading... long files") has no lightweight way to say "this is a `.ts` file" without
+opting into the entire tiering mechanism. So QB-133's fix — real, verified, but only reachable via
+`focal_file`/`quor benchmark` — never reached the tool's own primary, no-repo-intelligence-required
+call shape at all.
+
+**Shipped same day.** Added `file_path: str = ""` to `compress_context()` — purely a routing/
+`exclude_patterns`/`.quor.toml`-resolution hint (reuses `apply_filter_pipeline()`'s existing `file_path`
+parameter, QB-130/QB-133), never triggering `quor map`/graph-tiering, and ignored when `focal_file` is
+given (that path keeps its own, stronger identity). Validated the same way `focal_file`/`get_repo_context`
+already validate their own path arguments (`_relative_posix_path()` — silently ignored if it resolves
+outside the server's cwd, not an error). Tracked under a new `"MCP compress_context: file_path={path}"`
+command prefix — `query_gain_by_file()` (QB-131) extended to recognize it as a third, independent
+file-identity producer alongside the Read hook and `focal_file`, not a variant of either.
+
+This is also what surfaced QB-133's own path-with-a-space regression (see that entry's "Correction, same
+day" note) — building this feature's tests against `Path.cwd()` (this repository's own, space-containing
+path) rather than a synthetic space-free `tmp_path` is what exposed it.
+
+Tests: `tests/unit/test_mcp_server.py::TestCompressContextFilePathRouting` (routing, `focal_file`
+priority, the out-of-repo path-traversal guard, tracked-command format, `exclude_patterns` bypass via a
+`.quor.toml` resolved from `file_path`'s own location) and
+`tests/unit/test_gain_exporter.py::TestQueryGainByFile::test_mcp_compress_context_file_path_prefix_is_recognized`.
+Full `tests/unit` suite green, `ruff`/`mypy` clean.
+
+**Status:** Shipped.
+
 ---
 
 #### QB-110 — Windows platform audit: paths, encoding, performance (long-path/MAX_PATH fix)

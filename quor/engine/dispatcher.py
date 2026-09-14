@@ -488,11 +488,27 @@ def _lookup_filter(
     every single time — confirmed empirically for `.ts`/`.py`/`.yaml`/`.env`
     (see backlog.md's QB-133 entry: `quor benchmark` reported `"generic"`,
     0% savings, for each, despite each having its own purpose-built filter).
+
+    Synthesizes from `file_path.name` (the bare filename), not the full
+    path: every `match_command` pattern here is `\\S*\\.<ext>\\b`/a literal
+    basename, anchored on non-whitespace (`\\S`) — real shell-command text
+    a caller like `run_dispatch()` sees genuinely can't contain an
+    unescaped space mid-argument, but a real absolute *path* very much can
+    (a Windows user profile, "Program Files", a synced-folder name with a
+    space in it — this very repository's own path is one). Synthesizing
+    with the full path silently broke on exactly that shape (found and
+    fixed the same day as the file_path→routing feature that surfaced it,
+    empirically: `quor benchmark` against an absolute path containing a
+    space fell back to `generic` where a relative/space-free path with the
+    identical content correctly matched `cat-typescript`). The basename
+    alone is sufficient for every pattern above (extension or literal
+    basename, neither cares about a directory prefix) and can never
+    contain a directory-boundary space to begin with.
     """
     try:
         registry = FilterRegistry(project_root=Path.cwd())
         if file_path is not None:
-            by_path = registry.find(f"cat {file_path.as_posix()}")
+            by_path = registry.find(f"cat {file_path.name}")
             if by_path is not None and by_path.name not in _TOO_GENERIC_FOR_FILE_PATH_ROUTING:
                 return by_path, registry
         return registry.find(cmd_str), registry

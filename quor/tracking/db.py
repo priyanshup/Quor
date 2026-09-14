@@ -1542,25 +1542,30 @@ def query_gain_by_tool(
 # ---------------------------------------------------------------------------
 
 # Literal, exact command prefixes that carry an identifiable file path — the
-# only two producers that record one (see each prefix's own call site).
+# only producers that record one (see each prefix's own call site).
 # Deliberately does NOT attempt to extract a file from a Bash-dispatched
 # command's raw shell text (e.g. "cat foo.py", "git diff bar.py") — there is
 # no reliable, non-heuristic way to pick "the file" out of arbitrary shell
 # argv, and a project convention (see [[feedback_no_heuristic_fields]] in
 # product memory) is to leave a field out entirely rather than back it with
 # a guess. A file-level breakdown is therefore necessarily scoped to what
-# Quor can name with certainty: Read-hook reads and MCP compress_context
-# calls made with an explicit `focal_file`.
+# Quor can name with certainty: Read-hook reads, MCP compress_context calls
+# made with an explicit `focal_file`, and (QB-133 follow-on) MCP
+# compress_context calls made with the lighter-weight `file_path` routing
+# hint — a third, independent producer of a real file identity, not a
+# variant of the other two.
 _READ_HOOK_PREFIX = "Read: "
 _MCP_FOCAL_FILE_PREFIX = "MCP compress_context: focal_file="
+_MCP_FILE_PATH_PREFIX = "MCP compress_context: file_path="
 
 
 @dataclass(frozen=True)
 class FileUsage:
     """Aggregated stats for one file (QB-131), across every Read-hook and
-    MCP `compress_context(focal_file=...)` invocation of it in the queried
-    project/window. See `query_gain_by_file()`'s docstring for why this
-    can't also cover Bash-dispatched commands."""
+    MCP `compress_context(focal_file=...)`/`compress_context(file_path=...)`
+    invocation of it in the queried project/window. See
+    `query_gain_by_file()`'s docstring for why this can't also cover
+    Bash-dispatched commands."""
 
     file_path: str
     operations: int
@@ -1578,10 +1583,10 @@ def query_gain_by_file(
 ) -> tuple[FileUsage, ...]:
     """Return the top `limit` files by cumulative net tokens saved (QB-131),
     read from SQLite. Scoped to invocations with an identifiable file
-    (`Read: {file_path}` / `MCP compress_context: focal_file={path}`) — see
-    module-level prefix constants' own comment for why a Bash-dispatched
-    command's file can't be reliably named. Empty/missing database returns
-    `()`, never raises.
+    (`Read: {file_path}` / `MCP compress_context: focal_file={path}` /
+    `MCP compress_context: file_path={path}`) — see module-level prefix
+    constants' own comment for why a Bash-dispatched command's file can't
+    be reliably named. Empty/missing database returns `()`, never raises.
     """
     if not db_path.exists():
         return ()
@@ -1617,6 +1622,7 @@ def query_gain_by_file(
                  CASE
                      WHEN command LIKE ? THEN substr(command, length(?) + 1)
                      WHEN command LIKE ? THEN substr(command, length(?) + 1)
+                     WHEN command LIKE ? THEN substr(command, length(?) + 1)
                  END                                      AS file_path,
                  COUNT(*)                                 AS n,
                  COALESCE(SUM(original_tokens), 0)        AS orig_sum,
@@ -1624,7 +1630,7 @@ def query_gain_by_file(
                FROM invocations
                WHERE {project_filter}
                  AND recorded_at >= datetime('now', ?)
-                 AND (command LIKE ? OR command LIKE ?)
+                 AND (command LIKE ? OR command LIKE ? OR command LIKE ?)
                GROUP BY file_path
                ORDER BY (orig_sum - final_sum) DESC
                LIMIT ?
@@ -1634,11 +1640,14 @@ def query_gain_by_file(
                 _READ_HOOK_PREFIX,
                 f"{_MCP_FOCAL_FILE_PREFIX}%",
                 _MCP_FOCAL_FILE_PREFIX,
+                f"{_MCP_FILE_PATH_PREFIX}%",
+                _MCP_FILE_PATH_PREFIX,
                 project_key,
                 subdir_pattern,
                 since,
                 f"{_READ_HOOK_PREFIX}%",
                 f"{_MCP_FOCAL_FILE_PREFIX}%",
+                f"{_MCP_FILE_PATH_PREFIX}%",
                 limit,
             ),
         ).fetchall()

@@ -566,6 +566,28 @@ class TestExtensionBasedFilterLookup:
         assert with_path_filter.name == (without_path_filter and without_path_filter.name)
         assert with_path_output == without_path_output
 
+    def test_directory_with_a_space_still_routes_correctly(self, tmp_path: Path) -> None:
+        """Regression guard: the synthesized `cat <path>` command must use
+        `file_path.name` (the bare filename), not the full path.
+        `match_command` patterns are anchored on non-whitespace (`\\S`) —
+        real shell-command text can't contain an unescaped mid-argument
+        space, but a real absolute path very much can (a Windows user
+        profile, "Program Files", a synced-folder name — this repository's
+        own path is one). Using the full path silently broke the match for
+        exactly this shape; found and fixed the same day this mechanism was
+        generalized (see backlog.md's QB-133 entry)."""
+        pytest.importorskip("tree_sitter_typescript")
+        spacey_dir = tmp_path / "My Documents"
+        spacey_dir.mkdir()
+        file_path = spacey_dir / "sample.ts"
+
+        output, filter_config = apply_filter_pipeline(
+            self._TS_SOURCE, self._TS_SOURCE, file_path=file_path
+        )
+
+        assert filter_config is not None and filter_config.name == "cat-typescript"
+        assert "const total = x + y;" not in output
+
     def test_route_by_extension_false_opts_out(self, tmp_path: Path) -> None:
         """`mcp/server.py`'s `_compress_context_tiered()` needs this: its
         `payload` is a multi-file synthesized rendering, not `file_path`'s

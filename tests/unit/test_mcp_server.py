@@ -252,6 +252,105 @@ class TestCompressContextTracking:
         assert result.startswith("[Quor Compressed:")
 
 
+class TestCompressContextFilePathRouting:
+    """QB-133 follow-on: compress_context's lightweight `file_path` hint —
+    unlike `focal_file`, it needs no `quor map` and never triggers
+    graph-distance tiering, it only lets `raw_text` be routed to the
+    matching language/format-specific filter instead of always falling
+    through to `generic`. This is what makes the QB-133 filter-routing fix
+    actually reach the tool's primary, no-repo-intelligence-required usage
+    pattern, not just the heavier `focal_file` one."""
+
+    _PY_SOURCE = 'def foo(x, y):\n    """Add two numbers."""\n    total = x + y\n    return total\n'
+
+    def test_file_path_routes_to_language_specific_filter(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+
+        result = compress_context(self._PY_SOURCE, file_path="sample.py")
+
+        assert "total = x + y" not in result  # AST-compressed, not the generic passthrough
+
+    def test_without_file_path_same_content_stays_generic(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _fresh_tracking_db: TrackingDB
+    ) -> None:
+        """Regression guard, pinning the bug this fixes: the exact same
+        Python-shaped content, with no `file_path` given, has no way to be
+        routed to `cat-python` — exactly as it did before this feature."""
+        monkeypatch.chdir(tmp_path)
+
+        compress_context(self._PY_SOURCE)
+        _fresh_tracking_db.flush()
+
+        rows = _recent_rows(tmp_path)
+        assert len(rows) == 1
+        assert rows[0].filter_name == "generic"
+
+    def test_focal_file_takes_priority_over_file_path(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """When both are given, `focal_file` (the stronger, repository-
+        intelligence-backed identity) wins — `file_path` is simply never
+        consulted, mirroring `compress_context()`'s own early return."""
+        monkeypatch.chdir(tmp_path)
+
+        result = compress_context(
+            self._PY_SOURCE, focal_file="missing.py", file_path="sample.py"
+        )
+
+        assert "No repository intelligence" in result
+
+    def test_file_path_outside_cwd_is_ignored(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _fresh_tracking_db: TrackingDB
+    ) -> None:
+        """The same in-repo path-traversal guard `focal_file`/`get_repo_context`
+        already apply — an out-of-repo `file_path` must be silently ignored,
+        not raise, and not leak a filter selection from outside the project."""
+        monkeypatch.chdir(tmp_path)
+
+        result = compress_context(self._PY_SOURCE, file_path="../outside/sample.py")
+        _fresh_tracking_db.flush()
+
+        assert result.startswith("[Quor Compressed:")
+        rows = _recent_rows(tmp_path)
+        assert len(rows) == 1
+        assert rows[0].filter_name == "generic"
+        assert rows[0].command == "MCP compress_context"
+
+    def test_tracked_command_records_the_file_path(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _fresh_tracking_db: TrackingDB
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+
+        compress_context(self._PY_SOURCE, file_path="src/sample.py")
+        _fresh_tracking_db.flush()
+
+        rows = _recent_rows(tmp_path)
+        assert len(rows) == 1
+        assert rows[0].command == "MCP compress_context: file_path=src/sample.py"
+        assert rows[0].filter_name == "cat-python"
+
+    def test_exclude_patterns_bypass_applies_when_file_path_given(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _fresh_tracking_db: TrackingDB
+    ) -> None:
+        """QB-130's exclude_patterns only ever applies when a real file
+        identity is available — `file_path` now supplies that for the plain
+        `raw_text` call shape too, resolved from a `.quor.toml` found
+        relative to `file_path` itself, not just cwd."""
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".quor.toml").write_text(
+            "[ignore]\nexclude_patterns = [\"*.py\"]\n", encoding="utf-8"
+        )
+
+        compress_context(self._PY_SOURCE, file_path="sample.py")
+        _fresh_tracking_db.flush()
+
+        rows = _recent_rows(tmp_path)
+        assert len(rows) == 1
+        assert rows[0].filter_name is None  # bypassed, same as "no filter matched"
+
+
 class TestGetRepoContextTracking:
     """QB-105: get_repo_context must call track_invocation() the same way
     quor map/explore/repo already do for their own synthesis-not-compression

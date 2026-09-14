@@ -208,7 +208,7 @@ def _resolve_project_overrides(anchor_path: Path) -> QuorUserConfig:
 
 
 @mcp.tool()
-def compress_context(raw_text: str = "", focal_file: str = "") -> str:
+def compress_context(raw_text: str = "", focal_file: str = "", file_path: str = "") -> str:
     """Use this tool whenever reading large command outputs, log streams, git
     history, or long files (exceeding 30 lines). It compresses the input
     deterministically to conserve token context window space.
@@ -222,6 +222,21 @@ def compress_context(raw_text: str = "", focal_file: str = "") -> str:
     which is preserved in full so its definition is never missing from
     the response. Requires repository intelligence (`quor map`) to
     already exist, like get_repo_context.
+
+    file_path (QB-133 follow-on): repo-relative path identifying what
+    `raw_text` is — pass this whenever `raw_text` is a file's own content
+    (as opposed to a command's output/a log stream), so it can be routed to
+    the right language/format-specific filter (e.g. `.ts` -> AST-aware
+    TypeScript compression, `.yaml` -> structure-aware YAML compression)
+    instead of the generic fallback every plain `raw_text` call used to get
+    regardless of what kind of file it came from. Unlike `focal_file`, this
+    does NOT require `quor map` and never triggers graph-distance tiering —
+    it only affects which filter `raw_text` is matched against. Ignored
+    when `focal_file` is given (that path already has its own, stronger
+    file identity). Does not need to be a file that exists on disk; a path
+    outside the current working directory is ignored (treated the same as
+    not passing one), the same safety check `focal_file`/`get_repo_context`
+    already apply to their own path arguments.
     """
     if focal_file:
         return _compress_context_tiered(focal_file)
@@ -267,20 +282,31 @@ def compress_context(raw_text: str = "", focal_file: str = "") -> str:
     # runs for CLI/Bash output — `write_tee()` now fires here too (a
     # recovery footer may be appended to `compressed` below), and
     # `scan_for_secrets()` now runs on the result before it's returned.
-    # QB-119: the built-in `generic` filter this always resolves to for raw
-    # text (see module docstring) also strips inline ANSI codes and shows
-    # collapsed-duplicate counts — see z_generic.toml's remove_ansi/
-    # deduplicate_consecutive stage config.
-    # QB-130: resolved relative to cwd (this call has no real file path of
-    # its own — `raw_text` is often a command's output, not a file's
-    # content) — only `min_token_threshold` can meaningfully apply here;
-    # `exclude_patterns` needs a `file_path` to match against, which
-    # `apply_filter_pipeline` simply skips when none is given.
-    project_overrides = _resolve_project_overrides(Path.cwd())
+    # QB-119: the built-in `generic` filter this resolves to for raw text
+    # with no real file identity (see module docstring) also strips inline
+    # ANSI codes and shows collapsed-duplicate counts — see
+    # z_generic.toml's remove_ansi/deduplicate_consecutive stage config.
+    # QB-130/QB-133 follow-on: `resolved_file_path` (None unless the caller
+    # passed a real, in-repo `file_path`) both scopes `.quor.toml`
+    # resolution to that file's own location (matching `_compress_context_
+    # tiered()`'s identical `_resolve_project_overrides(focal_path)` call)
+    # and lets `apply_filter_pipeline()` route to a language/format-specific
+    # filter instead of the generic fallback. `exclude_patterns` also only
+    # ever applies when `file_path` is given — see `apply_filter_pipeline()`'s
+    # own docstring. `rel_file_path` reuses `_relative_posix_path()` — the
+    # same in-repo path-traversal guard `focal_file`/`get_repo_context`
+    # already apply to their own path arguments — so an out-of-repo
+    # `file_path` is silently ignored, same as not passing one.
+    root = Path.cwd()
+    rel_file_path = _relative_posix_path(file_path, root) if file_path else None
+    resolved_file_path = root / rel_file_path if rel_file_path is not None else None
+    project_overrides = _resolve_project_overrides(resolved_file_path or root)
     compressed, filter_config = apply_filter_pipeline(
         projected_text,
         projected_text,
+        file_path=resolved_file_path,
         min_token_threshold=project_overrides.min_token_threshold,
+        exclude_patterns=project_overrides.exclude_patterns,
         ast_pruning_enabled=project_overrides.ast_pruning_enabled,
     )
 
@@ -310,9 +336,14 @@ def compress_context(raw_text: str = "", focal_file: str = "") -> str:
         if filter_config is not None and filter_config.name == "git-diff"
         else None
     )
+    command = (
+        f"MCP compress_context: file_path={rel_file_path}"
+        if rel_file_path is not None
+        else "MCP compress_context"
+    )
     track_invocation_safe(
         _get_tracking_db,
-        command="MCP compress_context",
+        command=command,
         original=raw_text,
         filtered=result,
         filter_name=filter_config.name if filter_config is not None else None,
