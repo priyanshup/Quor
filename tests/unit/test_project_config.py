@@ -424,13 +424,18 @@ class TestExtensionBasedFilterLookup:
     of caller `match_str` alone can never route correctly: a real file's
     *content* passed as `match_str` (MCP's `compress_context(focal_file=...)`,
     `quor benchmark`), which never looks like a `cat <path>` command and has
-    no detectable `match_content_types` shape for source code either — see
-    backlog.md's QB-133 entry for the empirical repro this fixes. Unrelated
-    to any `.quor.toml`/`QuorUserConfig` setting — this fires unconditionally
-    whenever `file_path` is given, matching the fact that every real caller
-    that passes `file_path` also passes that same file's content as
-    `match_str` (there is no real call site where the two point at different
-    files)."""
+    no detectable `match_content_types` shape for most extension-specific
+    filters either (source code, YAML, `.env`/`.ini` — unlike JSON/TOML/diff)
+    — see backlog.md's QB-133 entry for the empirical repro this fixes.
+    Generalized beyond any fixed extension list (no `EXTENSION_TO_LANGUAGE`-
+    style table here): the synthesized command's result is accepted whenever
+    it names something more specific than the two universal catch-alls
+    (`cat`, `generic`) — see `_TOO_GENERIC_FOR_FILE_PATH_ROUTING`'s own
+    comment. Unrelated to any `.quor.toml`/`QuorUserConfig` setting — this
+    fires unconditionally whenever `file_path` is given, matching the fact
+    that every real caller that passes `file_path` also passes that same
+    file's content as `match_str` (there is no real call site where the two
+    point at different files)."""
 
     _TS_SOURCE = (
         "function add(x: number, y: number): number {\n  const total = x + y;\n  return total;\n}\n"
@@ -460,6 +465,59 @@ class TestExtensionBasedFilterLookup:
         assert filter_config is not None and filter_config.name == "cat-python"
         assert "total = x + y" not in output
 
+    def test_yaml_content_routes_to_cat_yaml_when_file_path_given(self, tmp_path: Path) -> None:
+        """YAML has no `match_content_types` entry (`ContentType` has no
+        "yaml" member at all) — unlike JSON/TOML, it was never covered by
+        QB-109's content-type fix, and relies entirely on this path-based
+        one."""
+        yaml_text = "name: sample\nitems:\n" + "".join(f"  - item{i}\n" for i in range(20))
+        file_path = tmp_path / "sample.yaml"
+
+        _output, filter_config = apply_filter_pipeline(yaml_text, yaml_text, file_path=file_path)
+
+        assert filter_config is not None and filter_config.name == "cat-yaml"
+
+    def test_dotenv_content_routes_to_dotenv_filter_when_file_path_given(
+        self, tmp_path: Path
+    ) -> None:
+        """`cat-dotenv.toml` also declares a bare-filename `match_command`
+        branch (`^\\S*\\.env$`) that looks like it was meant for a caller
+        passing a plain path as `match_str` — but no real caller does that
+        today (every real caller passes either a shell command or the
+        file's content), so that branch was just as unreachable as the
+        `cat-<language>` filters were before this fix. The synthesized
+        `cat <path>` command reaches it through the *other* half of its
+        pattern instead."""
+        env_text = "API_KEY=abc123\nDEBUG=true\nPORT=8080\n"
+        file_path = tmp_path / "sample.env"
+
+        _output, filter_config = apply_filter_pipeline(env_text, env_text, file_path=file_path)
+
+        assert filter_config is not None and filter_config.name == "dotenv"
+
+    def test_ini_content_routes_to_ini_filter_when_file_path_given(self, tmp_path: Path) -> None:
+        ini_text = "[section]\nkey=value\nother=thing\n"
+        file_path = tmp_path / "sample.ini"
+
+        _output, filter_config = apply_filter_pipeline(ini_text, ini_text, file_path=file_path)
+
+        assert filter_config is not None and filter_config.name == "ini"
+
+    def test_lockfile_basename_routes_to_cat_toml_when_file_path_given(
+        self, tmp_path: Path
+    ) -> None:
+        """`cat-toml.toml`'s `match_command` also matches the literal
+        basenames `poetry.lock`/`Cargo.lock`, not just a `.toml` extension —
+        this fix has to work for a basename match, not only a suffix match,
+        since it reuses `match_command` as-is rather than deriving from
+        `file_path.suffix`."""
+        lock_text = 'name = "example"\nversion = "1.0.0"\n'
+        file_path = tmp_path / "poetry.lock"
+
+        _output, filter_config = apply_filter_pipeline(lock_text, lock_text, file_path=file_path)
+
+        assert filter_config is not None and filter_config.name == "cat-toml"
+
     def test_same_content_without_file_path_falls_through_to_generic(self) -> None:
         """The bug this fixes, pinned as a regression guard: with no
         `file_path` at all (MCP's plain `raw_text` path has no file
@@ -471,11 +529,10 @@ class TestExtensionBasedFilterLookup:
 
         assert filter_config is not None and filter_config.name == "generic"
 
-    def test_non_ast_extension_is_unaffected(self, tmp_path: Path) -> None:
+    def test_json_extension_is_unaffected(self, tmp_path: Path) -> None:
         """A `.json` file already routes correctly via `match_content_types`
         (QB-109) — this fix must not interfere with, or duplicate, that
-        existing mechanism for an extension it doesn't cover
-        (`.json` is not in EXTENSION_TO_LANGUAGE)."""
+        existing mechanism."""
         json_text = '{"a": 1, "b": null}'
         file_path = tmp_path / "sample.json"
 
@@ -483,34 +540,37 @@ class TestExtensionBasedFilterLookup:
 
         assert filter_config is not None and filter_config.name == "cat-json"
 
-    def test_extension_with_no_language_specific_filter_falls_back_gracefully(
+    def test_extension_with_only_a_too_generic_match_falls_back_to_match_str(
         self, tmp_path: Path
     ) -> None:
-        """`.pyi` is a registered AST-summarization extension
-        (EXTENSION_TO_LANGUAGE) but `cat-python.toml`'s own `match_command`
-        pattern (`\\.py\\b`) doesn't match it (no word boundary between "y"
-        and "i" — confirmed by direct regex test, not assumed). The
-        synthesized `cat <path>` command still matches the broader,
-        extension-agnostic `cat.toml` filter (`^cat\\b`, ordered between the
-        language-specific filters and the generic catch-all — see
-        `cat.toml`), so this is not the same as finding nothing: it's one
-        tier less specific than `cat-python`, which is the correct,
-        graceful degradation, not an error or a dropped file."""
+        """`.pyi` has no filter of its own — `cat-python.toml`'s
+        `match_command` pattern (`\\.py\\b`) doesn't match it (no word
+        boundary between "y" and "i" — confirmed by direct regex test, not
+        assumed) — and the synthesized `cat <path>` command only ever
+        matches the extension-agnostic `cat.toml` catch-all
+        (`_TOO_GENERIC_FOR_FILE_PATH_ROUTING` excludes it by design — see
+        that constant's own comment for why silently promoting content into
+        `cat` instead of `generic` would be an unrequested behavior change).
+        So this must fall back to match_str-based matching exactly as if no
+        `file_path` had been given at all."""
         file_path = tmp_path / "sample.pyi"
 
-        output, filter_config = apply_filter_pipeline(
+        without_path_output, without_path_filter = apply_filter_pipeline(
+            self._PY_SOURCE, self._PY_SOURCE
+        )
+        with_path_output, with_path_filter = apply_filter_pipeline(
             self._PY_SOURCE, self._PY_SOURCE, file_path=file_path
         )
 
-        assert filter_config is not None and filter_config.name == "cat"
-        assert output != ""
+        assert with_path_filter is not None and with_path_filter.name == "generic"
+        assert with_path_filter.name == (without_path_filter and without_path_filter.name)
+        assert with_path_output == without_path_output
 
     def test_route_by_extension_false_opts_out(self, tmp_path: Path) -> None:
         """`mcp/server.py`'s `_compress_context_tiered()` needs this: its
         `payload` is a multi-file synthesized rendering, not `file_path`'s
-        own raw content, so extension-based routing must be disableable
-        without also losing `exclude_patterns`' use of the same
-        `file_path`."""
+        own raw content, so path-based routing must be disableable without
+        also losing `exclude_patterns`' use of the same `file_path`."""
         file_path = tmp_path / "sample.ts"
 
         _output, filter_config = apply_filter_pipeline(
