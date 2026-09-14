@@ -377,6 +377,13 @@ def _compress_context_tiered(focal_file: str) -> str:
     # identity to walk up from and to match `exclude_patterns` against.
     focal_path = root / rel_path
     project_overrides = _resolve_project_overrides(focal_path)
+    # QB-133: route_by_extension=False — `payload` is render_tiered_payload()'s
+    # multi-file, `### path (tier)`-sectioned rendering, not focal_path's own
+    # raw content, so routing it by focal_path's extension would apply a
+    # single-language AST parser to content that was never one file of that
+    # language to begin with. `file_path=focal_path` still scopes
+    # `exclude_patterns` correctly — only the new extension-based filter
+    # lookup is opted out here.
     output, filter_config = apply_filter_pipeline(
         payload,
         payload,
@@ -384,6 +391,7 @@ def _compress_context_tiered(focal_file: str) -> str:
         min_token_threshold=project_overrides.min_token_threshold,
         exclude_patterns=project_overrides.exclude_patterns,
         ast_pruning_enabled=project_overrides.ast_pruning_enabled,
+        route_by_extension=False,
     )
 
     original_tokens = tiered.original_tokens

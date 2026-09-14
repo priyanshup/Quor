@@ -1,12 +1,15 @@
-"""Unit tests for QB-130: project-level `.quor.toml` overrides.
+"""Unit tests for QB-130: project-level `.quor.toml` overrides, plus other
+`quor/engine/dispatcher.py::apply_filter_pipeline()` behavior that has
+grown alongside it in this same file rather than starting a second one.
 
 Covers quor/config/model.py's ProjectConfig/CompressionOverrides/
 IgnoreOverrides, quor/config/loader.py's find_and_load_project_config()/
-resolve_effective_config(), and the exclude_patterns/min_token_threshold/
-ast_pruning_enabled (QB-132) wiring in quor/engine/dispatcher.py's
-apply_filter_pipeline(). Does NOT test `aggressiveness` changing
-compression behavior — see TestAggressivenessIsParsedButNotWired below for
-why that's the point, not a gap.
+resolve_effective_config(), the exclude_patterns/min_token_threshold/
+ast_pruning_enabled (QB-132) wiring, and — unrelated to any `.quor.toml`
+setting — QB-133's extension-based filter-lookup fallback (`_lookup_filter()`'s
+`file_path` parameter). Does NOT test `aggressiveness` changing compression
+behavior — see TestAggressivenessIsParsedButNotWired below for why that's
+the point, not a gap.
 """
 
 from __future__ import annotations
@@ -407,6 +410,114 @@ class TestAstPruningEnabledWiring:
 
         assert exit_code == 0
         assert "total = x + y" in captured.getvalue()
+
+
+# ---------------------------------------------------------------------------
+# apply_filter_pipeline / _lookup_filter — extension-based routing fallback
+# (QB-133)
+# ---------------------------------------------------------------------------
+
+
+class TestExtensionBasedFilterLookup:
+    """`_lookup_filter()`'s `file_path` parameter — a synthesized
+    `cat <path>` command tried before `match_str` itself, for the one class
+    of caller `match_str` alone can never route correctly: a real file's
+    *content* passed as `match_str` (MCP's `compress_context(focal_file=...)`,
+    `quor benchmark`), which never looks like a `cat <path>` command and has
+    no detectable `match_content_types` shape for source code either — see
+    backlog.md's QB-133 entry for the empirical repro this fixes. Unrelated
+    to any `.quor.toml`/`QuorUserConfig` setting — this fires unconditionally
+    whenever `file_path` is given, matching the fact that every real caller
+    that passes `file_path` also passes that same file's content as
+    `match_str` (there is no real call site where the two point at different
+    files)."""
+
+    _TS_SOURCE = (
+        "function add(x: number, y: number): number {\n  const total = x + y;\n  return total;\n}\n"
+    )
+    _PY_SOURCE = 'def foo(x, y):\n    """Add two numbers."""\n    total = x + y\n    return total\n'
+
+    def test_ts_content_routes_to_cat_typescript_when_file_path_given(
+        self, tmp_path: Path
+    ) -> None:
+        pytest.importorskip("tree_sitter_typescript")
+        file_path = tmp_path / "sample.ts"
+
+        output, filter_config = apply_filter_pipeline(
+            self._TS_SOURCE, self._TS_SOURCE, file_path=file_path
+        )
+
+        assert filter_config is not None and filter_config.name == "cat-typescript"
+        assert "const total = x + y;" not in output  # AST-compressed, not the generic passthrough
+
+    def test_py_content_routes_to_cat_python_when_file_path_given(self, tmp_path: Path) -> None:
+        file_path = tmp_path / "sample.py"
+
+        output, filter_config = apply_filter_pipeline(
+            self._PY_SOURCE, self._PY_SOURCE, file_path=file_path
+        )
+
+        assert filter_config is not None and filter_config.name == "cat-python"
+        assert "total = x + y" not in output
+
+    def test_same_content_without_file_path_falls_through_to_generic(self) -> None:
+        """The bug this fixes, pinned as a regression guard: with no
+        `file_path` at all (MCP's plain `raw_text` path has no file
+        identity), the exact same TypeScript-shaped content has no way to
+        be routed to `cat-typescript` — it falls through to the generic
+        catch-all, exactly as it did before this fix. Expected, not a
+        remaining gap; see `_lookup_filter()`'s own docstring."""
+        _output, filter_config = apply_filter_pipeline(self._TS_SOURCE, self._TS_SOURCE)
+
+        assert filter_config is not None and filter_config.name == "generic"
+
+    def test_non_ast_extension_is_unaffected(self, tmp_path: Path) -> None:
+        """A `.json` file already routes correctly via `match_content_types`
+        (QB-109) — this fix must not interfere with, or duplicate, that
+        existing mechanism for an extension it doesn't cover
+        (`.json` is not in EXTENSION_TO_LANGUAGE)."""
+        json_text = '{"a": 1, "b": null}'
+        file_path = tmp_path / "sample.json"
+
+        _output, filter_config = apply_filter_pipeline(json_text, json_text, file_path=file_path)
+
+        assert filter_config is not None and filter_config.name == "cat-json"
+
+    def test_extension_with_no_language_specific_filter_falls_back_gracefully(
+        self, tmp_path: Path
+    ) -> None:
+        """`.pyi` is a registered AST-summarization extension
+        (EXTENSION_TO_LANGUAGE) but `cat-python.toml`'s own `match_command`
+        pattern (`\\.py\\b`) doesn't match it (no word boundary between "y"
+        and "i" — confirmed by direct regex test, not assumed). The
+        synthesized `cat <path>` command still matches the broader,
+        extension-agnostic `cat.toml` filter (`^cat\\b`, ordered between the
+        language-specific filters and the generic catch-all — see
+        `cat.toml`), so this is not the same as finding nothing: it's one
+        tier less specific than `cat-python`, which is the correct,
+        graceful degradation, not an error or a dropped file."""
+        file_path = tmp_path / "sample.pyi"
+
+        output, filter_config = apply_filter_pipeline(
+            self._PY_SOURCE, self._PY_SOURCE, file_path=file_path
+        )
+
+        assert filter_config is not None and filter_config.name == "cat"
+        assert output != ""
+
+    def test_route_by_extension_false_opts_out(self, tmp_path: Path) -> None:
+        """`mcp/server.py`'s `_compress_context_tiered()` needs this: its
+        `payload` is a multi-file synthesized rendering, not `file_path`'s
+        own raw content, so extension-based routing must be disableable
+        without also losing `exclude_patterns`' use of the same
+        `file_path`."""
+        file_path = tmp_path / "sample.ts"
+
+        _output, filter_config = apply_filter_pipeline(
+            self._TS_SOURCE, self._TS_SOURCE, file_path=file_path, route_by_extension=False
+        )
+
+        assert filter_config is not None and filter_config.name == "generic"
 
 
 # ---------------------------------------------------------------------------

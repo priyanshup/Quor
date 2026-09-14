@@ -1225,8 +1225,31 @@ second, parallel table is the obvious starting point, not yet verified as suffic
 mechanism needs its own design pass — same "architecture-first before code" norm QB-005A/QB-035A/
 QB-036/QB-114 already established for this project.
 
-**Status:** Proposed. Not scoped or implemented. Not yet triaged into the Now ordering — recommend
-sequencing near QB-109/QB-112/QB-114 given comparable severity.
+**Status — corrected 2026-08-28, shipped same day:** `_lookup_filter()` (`quor/engine/dispatcher.py`)
+now takes an optional `file_path` and, when its suffix is a registered AST-summarization extension
+(`EXTENSION_TO_LANGUAGE` — the existing table, reused verbatim, not a parallel one), tries a
+synthesized `cat <path>` command **first**, reusing each `cat-<language>.toml` filter's own
+`match_command` pattern rather than adding a new matching mechanism. Falls back to `match_str`-based
+matching (today's existing behavior, unchanged) when the extension isn't registered or the synthesized
+command doesn't match anything (e.g. `.pyi` — `cat-python.toml`'s `\.py\b` pattern has no word boundary
+before a trailing `i`, so it degrades one tier to the extension-agnostic `cat.toml`, not all the way to
+`generic`). **Re-verified empirically:** the same `quor benchmark sample.ts` repro that found this now
+reports `"filter": "cat-typescript"`, `45.83%` savings.
+
+Wired into both `apply_filter_pipeline()` callers with a real file identity —
+`quor/cli/commands/benchmark.py` and `quor/mcp/server.py`'s `compress_context(focal_file=...)` — via a
+new `route_by_extension` parameter (default `True`). One nuance surfaced during implementation and
+handled explicitly, not glossed over: `_compress_context_tiered()`'s `payload` is
+`render_tiered_payload()`'s multi-file, `### path (tier)`-sectioned rendering, not `focal_path`'s own
+raw content — routing that through a single-language parser keyed on the focal file's extension would
+be applying the wrong parser to content that was never one file of that language. That call site passes
+`route_by_extension=False`, keeping `file_path` active for its original `exclude_patterns` purpose
+while opting out of the new extension-based filter lookup specifically.
+
+Tests: `tests/unit/test_project_config.py::TestExtensionBasedFilterLookup` (extension routing for
+Python/TypeScript, the `.pyi` degrade-one-tier case, the `.json`-is-unaffected case since QB-109 already
+covers it via `match_content_types`, and the `route_by_extension=False` opt-out). Full `tests/unit`
+suite green, `ruff`/`mypy` clean.
 
 ---
 

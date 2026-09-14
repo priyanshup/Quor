@@ -57,6 +57,7 @@ from typing import TYPE_CHECKING
 from quor.config.loader import load_user_config
 from quor.config.model import FilterConfig, QuorUserConfig
 from quor.filters.registry import FilterRegistry
+from quor.pipeline.ast_summarize.registry import EXTENSION_TO_LANGUAGE
 from quor.pipeline.content_type import detect
 from quor.pipeline.git_diff_enrich import count_diff_files
 from quor.pipeline.onboarding import MAX_ONBOARDING_COMMANDS, record_filtered_command
@@ -270,6 +271,7 @@ def apply_filter_pipeline(
     min_token_threshold: int = 0,
     exclude_patterns: Sequence[str] = (),
     ast_pruning_enabled: bool = True,
+    route_by_extension: bool = True,
 ) -> tuple[str, FilterConfig | None]:
     """Run `run_dispatch()`'s safety-net pipeline — filter lookup,
     PRE_FILTER/POST_FILTER plugins, the tee recovery footer (ADR-023/
@@ -285,7 +287,20 @@ def apply_filter_pipeline(
     falling back to `match_command` (see `FilterRegistry.find()`'s
     docstring). `captured` is the text to filter/tee — the same value as
     `match_str` for a content-only caller, or the subprocess's real stdout
-    for a command caller.
+    for a command caller. When `file_path` is also given and
+    `route_by_extension` is True (the default), `_lookup_filter()`
+    additionally tries a synthesized `cat <path>` command first for a
+    recognized AST-summarization extension (QB-133) — see that function's
+    own docstring; `match_str` itself is still the fallback, never bypassed.
+    `route_by_extension=False` (see `mcp/server.py`'s `_compress_context_tiered()`
+    for the one real caller that needs it) keeps `file_path` active for
+    `exclude_patterns` above while opting *out* of extension routing — for a
+    caller whose `file_path` identifies the request (e.g. a focal file to
+    scope a glob exclusion against) without `match_str`/`captured` actually
+    being that file's own raw content (a multi-file synthesized payload,
+    for instance), where guessing a single language from the extension
+    would be applying the wrong parser to content that was never that one
+    file to begin with.
 
     `file_path`/`min_token_threshold`/`exclude_patterns` (QB-130) and
     `ast_pruning_enabled` (QB-132): a resolved project's `.quor.toml`
@@ -327,7 +342,9 @@ def apply_filter_pipeline(
     if bypassed:
         filter_config, registry = None, None
     else:
-        filter_config, registry = _lookup_filter(match_str)
+        filter_config, registry = _lookup_filter(
+            match_str, file_path if route_by_extension else None
+        )
     plugin_registry, plugin_ctx = _setup_plugins()
 
     pre_output, raw_content_type = _run_pre_filter_plugins(
@@ -424,12 +441,47 @@ def _run_subprocess(args: list[str]) -> subprocess.CompletedProcess[str] | int:
         return 127
 
 
-def _lookup_filter(cmd_str: str) -> tuple[FilterConfig | None, FilterRegistry | None]:
+def _lookup_filter(
+    cmd_str: str, file_path: Path | None = None
+) -> tuple[FilterConfig | None, FilterRegistry | None]:
     """Resolve the FilterConfig (if any) matching `cmd_str`. Fail-open: any
     registry error returns (None, None), which the caller already treats as
-    passthrough regardless of which of the two was the actual cause."""
+    passthrough regardless of which of the two was the actual cause.
+
+    `file_path` (QB-133): when given and its suffix is one of the
+    AST-summarization languages' extensions
+    (`quor.pipeline.ast_summarize.registry.EXTENSION_TO_LANGUAGE`), a
+    synthesized `cat <path>` command is tried FIRST, reusing the exact
+    `match_command` regex every `cat-<language>.toml` filter already
+    declares (e.g. `cat-typescript.toml`'s `^cat\\s+(-\\S+\\s+)*\\S*\\.ts\\b`)
+    rather than a second, parallel extension table.
+
+    This closes the gap `cmd_str` alone cannot: `run_dispatch()` never
+    passes `file_path` (its `cmd_str` is already a real `cat <path>`
+    command when that's what ran, so it already matches directly), but
+    `apply_filter_pipeline()`'s callers with a real file identity — MCP's
+    `compress_context(focal_file=...)`, `quor benchmark` — pass the file's
+    own *content* as `cmd_str`. Source code has no detectable
+    `match_content_types` shape (unlike JSON/YAML/diff), so that content
+    never matches a `cat-<language>.toml` filter's `match_command` either,
+    and falls through to the generic catch-all (`match_command = '.'`)
+    every single time — confirmed empirically (see backlog.md's QB-133
+    entry: `quor benchmark` reported `"generic"`, 0% savings, for an
+    ordinary `.ts` file with an obviously compressible function body).
+
+    Falls back to matching `cmd_str` itself (today's existing behavior,
+    unchanged) when `file_path` is absent, its extension isn't a
+    registered AST language, or the synthesized command doesn't match
+    anything (e.g. a project/user filter removed the built-in `cat-*`
+    filter for that extension) — this never narrows what `cmd_str` alone
+    could already match, only adds a first attempt ahead of it.
+    """
     try:
         registry = FilterRegistry(project_root=Path.cwd())
+        if file_path is not None and file_path.suffix in EXTENSION_TO_LANGUAGE:
+            by_extension = registry.find(f"cat {file_path.as_posix()}")
+            if by_extension is not None:
+                return by_extension, registry
         return registry.find(cmd_str), registry
     except Exception as exc:  # noqa: BLE001
         warnings.warn(f"[quor] filter registry error: {exc}", stacklevel=1)
