@@ -251,3 +251,127 @@ class TestGetRepoContextTool:
 
         assert is_error is False
         assert "run `quor map`" in text
+
+
+class TestMcpResources:
+    """QB-136: quor://metrics/gain and quor://config/effective, exercised
+    over the exact same real stdio JSON-RPC transport as every other class
+    in this file — resources/list and resources/read, not an in-process
+    call of the underlying function (tests/unit/test_mcp_server.py already
+    covers those directly)."""
+
+    def test_resources_list_includes_both_resources(self, tmp_path: Path) -> None:
+        import anyio
+        from mcp import ClientSession
+        from mcp.client.stdio import stdio_client
+
+        async def _list() -> set[str]:
+            params = _server_params(tmp_path / "data")
+            with anyio.fail_after(_HANDSHAKE_TIMEOUT_SECONDS):
+                async with stdio_client(params) as (read, write):
+                    async with ClientSession(read, write) as session:
+                        await session.initialize()
+                        result = await session.list_resources()
+                        return {str(r.uri) for r in result.resources}
+
+        uris = anyio.run(_list)
+
+        assert "quor://metrics/gain" in uris
+        assert "quor://config/effective" in uris
+
+    def test_resources_read_gain_metrics_over_stdio(self, tmp_path: Path) -> None:
+        import anyio
+        import orjson
+        from mcp import ClientSession
+        from mcp.client.stdio import stdio_client
+
+        async def _read() -> str:
+            params = _server_params(tmp_path / "data")
+            with anyio.fail_after(_HANDSHAKE_TIMEOUT_SECONDS):
+                async with stdio_client(params) as (read, write):
+                    async with ClientSession(read, write) as session:
+                        await session.initialize()
+                        result = await session.read_resource("quor://metrics/gain")
+                        return "".join(
+                            getattr(block, "text", "") for block in result.contents
+                        )
+
+        body = anyio.run(_read)
+        payload = orjson.loads(body)
+
+        assert "error" not in payload
+        assert payload["summary"]["total_operations"] == 0
+
+    def test_resources_read_effective_config_over_stdio(self, tmp_path: Path) -> None:
+        import anyio
+        import orjson
+        from mcp import ClientSession
+        from mcp.client.stdio import stdio_client
+
+        async def _read() -> str:
+            params = _server_params(tmp_path / "data")
+            with anyio.fail_after(_HANDSHAKE_TIMEOUT_SECONDS):
+                async with stdio_client(params) as (read, write):
+                    async with ClientSession(read, write) as session:
+                        await session.initialize()
+                        result = await session.read_resource("quor://config/effective")
+                        return "".join(
+                            getattr(block, "text", "") for block in result.contents
+                        )
+
+        body = anyio.run(_read)
+        payload = orjson.loads(body)
+
+        assert "error" not in payload
+        assert payload["project"] is None  # no .quor.toml in the spawned cwd
+        assert payload["global"]["min_token_threshold"] == 0
+
+
+class TestCompressFilePromptOverStdio:
+    """QB-136: prompts/list and prompts/get for compress_file_prompt, over
+    real stdio transport."""
+
+    def test_prompts_list_includes_compress_file_prompt(self, tmp_path: Path) -> None:
+        import anyio
+        from mcp import ClientSession
+        from mcp.client.stdio import stdio_client
+
+        async def _list() -> set[str]:
+            params = _server_params(tmp_path / "data")
+            with anyio.fail_after(_HANDSHAKE_TIMEOUT_SECONDS):
+                async with stdio_client(params) as (read, write):
+                    async with ClientSession(read, write) as session:
+                        await session.initialize()
+                        result = await session.list_prompts()
+                        return {p.name for p in result.prompts}
+
+        names = anyio.run(_list)
+
+        assert "compress_file_prompt" in names
+
+    def test_prompts_get_returns_compressed_content(self, tmp_path: Path) -> None:
+        """Spawns the server with `cwd=Path.cwd()` (this repo — see
+        `_server_params()`), same as every other class in this file, so
+        `file_path="quor/mcp/server.py"` resolves to a real, in-repo
+        Python file the server can actually read and compress."""
+        import anyio
+        from mcp import ClientSession
+        from mcp.client.stdio import stdio_client
+
+        async def _get() -> str:
+            params = _server_params(tmp_path / "data")
+            with anyio.fail_after(_HANDSHAKE_TIMEOUT_SECONDS):
+                async with stdio_client(params) as (read, write):
+                    async with ClientSession(read, write) as session:
+                        await session.initialize()
+                        result = await session.get_prompt(
+                            "compress_file_prompt", {"file_path": "quor/mcp/server.py"}
+                        )
+                        message = result.messages[0]
+                        content = message.content
+                        return getattr(content, "text", str(content))
+
+        text = anyio.run(_get)
+
+        assert "Analyze the following compressed content of quor/mcp/server.py" in text
+        assert "filter: cat-python" in text

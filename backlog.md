@@ -1366,6 +1366,63 @@ control proving behavior is unchanged when there's nothing to override). Full `t
 
 ---
 
+#### QB-136 — MCP Resources and Prompts protocol extensions: `quor://metrics/gain`, `quor://config/effective`, and a `compress_file_prompt` Prompt
+
+**Effort:** Small-Medium · **Value:** Medium — rounds out `quor/mcp/server.py`'s protocol surface
+beyond `@mcp.tool()`: a client can now read Quor's own telemetry/config state directly
+(`resources/read`) or fetch a reusable compress-then-analyze instruction template (`prompts/get`)
+without going through a tool call first · **Risk:** Low (both resources and the prompt are read-only,
+reuse existing pipelines, and fail open) · **Expected token impact:** None directly — protocol surface,
+not a new compression path · **Category:** Feature
+
+**Shipped 2026-09-14.** Two `@mcp.resource()`s and one `@mcp.prompt()`, added to `quor/mcp/server.py`
+using the installed `mcp` SDK's `MCPServer.resource()`/`.prompt()` decorators (the same high-level
+registration style `@mcp.tool()` already uses):
+
+- `quor://metrics/gain` — the last-30-days `GainReport` for the server's cwd, delegating to
+  `query_gain()` + `quor/cli/gain_exporter.py`'s own `build_gain_payload()`/`render_gain_json()`
+  (QB-131) rather than a second JSON-shaping implementation — this resource's body is byte-for-byte
+  what `quor gain --format json` prints for the same project/window.
+- `quor://config/effective` — the active global `~/.config/quor/config.toml`, any `.quor.toml` found
+  above the cwd, and the merged result `resolve_effective_config()` (QB-130) actually applies,
+  returned as three separate keys (`global`/`project`/`effective`) so a caller can see both the raw
+  inputs and the merge outcome.
+- `compress_file_prompt(file_path)` — reads `file_path` (validated the same way every other path
+  argument in this module is, via `_relative_posix_path()`) and routes it through the identical
+  `apply_filter_pipeline()` call `compress_context(file_path=...)` uses (QB-133 routing, QB-130
+  project-config overrides, secret-scan already applied inside the pipeline itself), returning a
+  prompt string with the compressed content already embedded and an instruction to analyze it — not a
+  bare "go call a tool" instruction requiring a second round-trip.
+
+**Fail-open (explicit ask, not just this codebase's usual convention):** both resources wrap their
+entire body in try/except and return a `{"error": "..."}` JSON payload (`_resource_error_json()`) on
+any failure — a missing/locked `quor.db` (`query_gain()` already tolerates a missing file on its own;
+the try/except is the wider net for everything else) or an unreadable/invalid `.quor.toml`
+(`find_and_load_project_config()` raises `ConfigError` by design for its own direct callers — this
+resource still must not let that cross the transport boundary). Deliberately differs from this file's
+own `_resolve_project_overrides()` helper (which silently falls back to the global config alone,
+correct for a tool call that just needs *something* usable): a config-inspection resource whose whole
+job is showing what's active would make silently hiding a broken `.quor.toml` actively misleading, so
+the failure is reported in-band instead. `compress_file_prompt` mirrors the same contract with a plain
+explanatory string in place of a JSON error, since a prompt's return type is text, not a payload with
+an error-schema convention of its own.
+
+Tests: `tests/unit/test_mcp_server.py::TestMetricsGainResource`/`TestConfigEffectiveResource`/
+`TestCompressFilePromptResource` (empty/zeroed payload, a real recorded invocation reflected correctly,
+project-override merge shown both raw and merged, the two fail-open JSON-error paths, out-of-repo/
+missing-file handling for the prompt, and prompt registration itself) — all in-process, same reasoning
+as this file's own module docstring for why that's safe (the decorators return the original plain
+function unchanged). `tests/e2e/test_mcp_e2e.py::TestMcpResources`/`TestCompressFilePromptOverStdio`
+(new, `-m integration`) — real stdio JSON-RPC `resources/list`, `resources/read` for both resources,
+`prompts/list`, and `prompts/get`, spawning the real server subprocess exactly like this file's
+existing tool tests already do. Full `tests/unit` suite and `tests/e2e/test_mcp_e2e.py -m integration`
+both green, `ruff`/`mypy` clean (one pre-existing, unrelated `no-untyped-def` finding in each test file,
+on a helper predating this ticket).
+
+**Status:** Shipped.
+
+---
+
 #### QB-110 — Windows platform audit: paths, encoding, performance (long-path/MAX_PATH fix)
 
 **Effort:** Small-Medium · **Value:** Medium-High (correctness fix for Quor's own stated target

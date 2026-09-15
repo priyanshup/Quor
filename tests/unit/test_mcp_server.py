@@ -28,6 +28,8 @@ from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+import orjson
+import platformdirs
 import pytest
 
 import quor.mcp.server as mcp_server
@@ -441,3 +443,179 @@ class TestSchemaPruning:
 
         result = anyio.run(_call)
         assert getattr(result, "is_error", False) is False
+
+
+# ---------------------------------------------------------------------------
+# QB-136: MCP Resources (quor://metrics/gain, quor://config/effective) and
+# the compress_file_prompt Prompt. In-process, same reasoning as this file's
+# own module docstring for why that's safe for tools: `@mcp.resource()`/
+# `@mcp.prompt()` also return the original plain function unchanged.
+# ---------------------------------------------------------------------------
+
+
+class TestMetricsGainResource:
+    """quor://metrics/gain — must byte-for-byte match `quor gain --format
+    json`'s own payload shape (it reuses the exact same
+    build_gain_payload()/render_gain_json() serializers), and must never
+    raise regardless of what goes wrong underneath."""
+
+    def test_empty_project_is_clean_zeroed_payload(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """No quor.db at all yet (query_gain()'s own fail-open) — a plain
+        empty/zeroed summary, not an error."""
+        monkeypatch.chdir(tmp_path)
+
+        body = mcp_server.metrics_gain_resource()
+        payload = orjson.loads(body)
+
+        assert payload["summary"]["total_operations"] == 0
+        assert payload["summary"]["tokens_saved"] == 0
+        assert "error" not in payload
+
+    def test_reflects_a_real_recorded_invocation(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Writes directly to the same on-disk path
+        `platformdirs.user_data_dir("quor")/quor.db` resolves to (the exact
+        path `quor gain`/`get_tracking_db()` themselves use) rather than
+        going through the module-level `_tracking_db` singleton this file's
+        other fixtures swap out — proving this resource reads the real,
+        conventional location, not a test-only shortcut."""
+        from quor.tracking.db import InvocationRecord, TrackingDB
+
+        monkeypatch.chdir(tmp_path)
+        data_dir = tmp_path / "data"
+        monkeypatch.setattr(platformdirs, "user_data_dir", lambda *_a, **_kw: str(data_dir))
+
+        db = TrackingDB(db_path=data_dir / "quor.db")
+        db.record(
+            InvocationRecord(
+                command="git status",
+                project_path=tmp_path.as_posix(),
+                original_tokens=100,
+                final_tokens=20,
+                filter_name="git-status",
+                was_passthrough=False,
+                duration_ms=5.0,
+            )
+        )
+        db.flush()
+        db.close()
+
+        body = mcp_server.metrics_gain_resource()
+        payload = orjson.loads(body)
+
+        assert payload["summary"]["total_operations"] == 1
+        assert payload["summary"]["tokens_saved"] == 80
+
+    def test_fails_open_as_json_error_on_unexpected_query_failure(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def _boom(*_a: object, **_kw: object) -> None:
+            raise sqlite3.Error("database is locked")
+
+        monkeypatch.setattr(mcp_server, "query_gain", _boom)
+
+        body = mcp_server.metrics_gain_resource()
+        payload = orjson.loads(body)
+
+        assert "error" in payload
+        assert "database is locked" in payload["error"]
+
+
+class TestConfigEffectiveResource:
+    """quor://config/effective — global + project + merged-effective view of
+    QB-130's resolve_effective_config(), plus its own fail-open contract."""
+
+    def test_no_project_config_reports_project_as_none(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+
+        body = mcp_server.config_effective_resource()
+        payload = orjson.loads(body)
+
+        assert payload["project"] is None
+        assert payload["global"] == payload["effective"]
+        assert payload["global"]["min_token_threshold"] == 0
+
+    def test_project_override_is_shown_both_raw_and_merged(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".quor.toml").write_text(
+            "[compression]\nmin_token_threshold = 500\n", encoding="utf-8"
+        )
+
+        body = mcp_server.config_effective_resource()
+        payload = orjson.loads(body)
+
+        assert payload["project"]["compression"]["min_token_threshold"] == 500
+        assert payload["global"]["min_token_threshold"] == 0  # untouched
+        assert payload["effective"]["min_token_threshold"] == 500  # merged
+
+    def test_fails_open_as_json_error_on_invalid_project_toml(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """find_and_load_project_config() raises ConfigError on malformed
+        TOML (fail-loud, by design, for its own direct callers) — this
+        resource still must not let that exception cross the transport
+        boundary, unlike `_resolve_project_overrides()`'s silent fallback
+        (see this resource's own docstring for why it reports instead of
+        hiding the failure)."""
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".quor.toml").write_text("not valid toml [[[", encoding="utf-8")
+
+        body = mcp_server.config_effective_resource()
+        payload = orjson.loads(body)
+
+        assert "error" in payload
+
+
+class TestCompressFilePromptResource:
+    """compress_file_prompt — routes through the identical
+    apply_filter_pipeline() call compress_context(file_path=...) uses, so
+    the returned prompt embeds genuinely compressed content, not the raw
+    file."""
+
+    _PY_SOURCE = 'def foo(x, y):\n    """Add two numbers."""\n    total = x + y\n    return total\n'
+
+    def test_embeds_compressed_content_for_a_real_file(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "sample.py").write_text(self._PY_SOURCE, encoding="utf-8")
+
+        result = mcp_server.compress_file_prompt("sample.py")
+
+        assert "Analyze the following compressed content of sample.py" in result
+        assert "filter: cat-python" in result
+        assert "total = x + y" not in result  # AST-compressed, not the raw file
+
+    def test_missing_file_returns_explanatory_string_not_a_raise(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+
+        result = mcp_server.compress_file_prompt("does_not_exist.py")
+
+        assert "Could not read" in result
+
+    def test_path_outside_cwd_is_rejected_not_raised(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+
+        result = mcp_server.compress_file_prompt("../outside/sample.py")
+
+        assert "Could not resolve" in result
+
+    def test_registered_as_an_mcp_prompt(self) -> None:
+        import anyio
+
+        prompts = anyio.run(mcp_server.mcp.list_prompts)
+        by_name = {p.name: p for p in prompts}
+
+        assert "compress_file_prompt" in by_name
+        assert "file_path" in {arg.name for arg in by_name["compress_file_prompt"].arguments or []}

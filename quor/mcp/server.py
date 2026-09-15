@@ -84,6 +84,17 @@ to condense that up-front listing; `call_tool()` resolves through
 touches, so a tool actually being invoked always sees its full, unpruned
 parameters regardless of what the listing above it showed.
 
+QB-136 (MCP Resources & Prompts): two Resources (`quor://metrics/gain`,
+`quor://config/effective`) and one Prompt (`compress_file_prompt`) round
+out the two `@mcp.tool()`s above with the other two MCP primitives a
+client can address directly (`resources/read`, `prompts/get`) instead of
+only ever going through a tool call. Both resources and the prompt reuse
+existing machinery (`query_gain()`/`gain_exporter.py`,
+`resolve_effective_config()`, `apply_filter_pipeline()`) rather than a
+second implementation, and each fails open with an in-band error (JSON for
+the resources, a plain string for the prompt) instead of raising — see
+each one's own docstring.
+
 Run directly: `python -m quor.mcp.server` (stdio transport). See
 docs/POC_TESTING.md for how to register this with an MCP client.
 """
@@ -96,9 +107,12 @@ import time
 from collections import Counter
 from pathlib import Path
 
+import orjson
+import platformdirs
 from mcp.server.mcpserver import MCPServer
 from mcp.types import Tool as MCPTool
 
+from quor.cli.gain_exporter import build_gain_payload, render_gain_json
 from quor.config.loader import (
     find_and_load_project_config,
     load_user_config,
@@ -127,6 +141,7 @@ from quor.tracking.db import (
     TrackingDB,
     count_tokens,
     get_tracking_db,
+    query_gain,
     track_invocation_safe,
 )
 
@@ -617,6 +632,152 @@ def _safe_nudge(root: Path) -> str | None:
         return compute_hook_nudge(root)
     except Exception:  # noqa: BLE001 — fail-open: never let a nudge error surface
         return None
+
+
+# ---------------------------------------------------------------------------
+# QB-136: MCP Resources and a Prompt — protocol-level additions distinct
+# from the two `@mcp.tool()`s above. A Resource is data a client reads
+# (`resources/read`), not an action it invokes; a Prompt is a reusable
+# instruction template a client fetches (`prompts/get`), filled in with
+# arguments the client supplies. Both share the tools' fail-open contract
+# (ADR-018): a resource/prompt handler raising would surface as a protocol-
+# level error to every client, not a per-call inconvenience, so each one
+# below wraps its real work in try/except and returns a description of the
+# failure in-band instead.
+# ---------------------------------------------------------------------------
+
+
+def _resource_error_json(message: str) -> str:
+    """The single fallback shape every resource reader below returns on
+    failure — `{"error": "..."}`, always valid JSON, never a raised
+    exception or a bare/partial string. A resource's `mime_type` promises
+    JSON to the client regardless of whether the read succeeded, so the
+    error path has to honor that promise too."""
+    return orjson.dumps({"error": message}).decode()
+
+
+@mcp.resource(
+    "quor://metrics/gain",
+    name="Token Savings Metrics",
+    title="Quor Gain Metrics",
+    description=(
+        "Current token-savings metrics for this directory's project over "
+        "the last 30 days — the same GainReport `quor gain --format json` "
+        "prints (equivalent output), read straight from quor.db."
+    ),
+    mime_type="application/json",
+)
+def metrics_gain_resource() -> str:
+    """Reuses `query_gain()` + `quor/cli/gain_exporter.py`'s own
+    `build_gain_payload()`/`render_gain_json()` (QB-131) rather than a
+    second JSON-shaping implementation — this resource's body is byte-for-
+    byte what `quor gain --format json` prints for the same cwd/window.
+    `query_gain()` already tolerates a missing `quor.db` on its own
+    (returns a zeroed `GainReport`, not an error — see its own docstring);
+    the try/except here is the wider net for everything else that could
+    still go wrong (a locked/corrupted database file, a `quor.db` under a
+    directory this process can't read, ...) so a resource read never raises
+    regardless of cause.
+    """
+    try:
+        project_path = Path.cwd().resolve()
+        db_path = Path(platformdirs.user_data_dir("quor")) / "quor.db"
+        report = query_gain(db_path, project_path, days=30)
+        payload = build_gain_payload(report)
+        return render_gain_json(payload)
+    except Exception as exc:  # noqa: BLE001 — fail-open: a resource read must never raise
+        return _resource_error_json(f"failed to read gain metrics: {exc}")
+
+
+@mcp.resource(
+    "quor://config/effective",
+    name="Effective Configuration",
+    title="Quor Effective Config",
+    description=(
+        "The active global (~/.config/quor/config.toml) and project-level "
+        "(.quor.toml, if one exists above this directory) configuration, "
+        "plus the merged result resolve_effective_config() (QB-130) "
+        "actually applies to compression."
+    ),
+    mime_type="application/json",
+)
+def config_effective_resource() -> str:
+    """Unlike `_resolve_project_overrides()` above (which exists to hand a
+    tool call *something* usable, so it silently falls back to the global
+    config alone on any resolution error), this resource's entire purpose
+    is showing a caller what's actually active — silently hiding a broken
+    `.quor.toml` here would be actively misleading rather than merely
+    inconvenient. So an unreadable/invalid config still fails open (no
+    exception crosses the transport boundary), but the failure itself is
+    reported in the JSON body rather than swallowed.
+    """
+    try:
+        anchor = Path.cwd()
+        global_config = load_user_config()
+        project_config = find_and_load_project_config(anchor)
+        effective_config = resolve_effective_config(global_config, project_config)
+        payload = {
+            "global": global_config.model_dump(),
+            "project": project_config.model_dump() if project_config is not None else None,
+            "effective": effective_config.model_dump(),
+            "anchor": str(anchor),
+        }
+        return orjson.dumps(payload, option=orjson.OPT_INDENT_2).decode()
+    except Exception as exc:  # noqa: BLE001 — fail-open: a resource read must never raise
+        return _resource_error_json(f"failed to resolve configuration: {exc}")
+
+
+@mcp.prompt()
+def compress_file_prompt(file_path: str) -> str:
+    """Compress `file_path` and return a prompt instructing the assistant to
+    analyze the compressed payload (QB-136) — not a bare instruction to go
+    call a tool itself, the compressed content is already embedded in the
+    returned prompt text, ready to reason about.
+
+    Routes through the identical `apply_filter_pipeline()` call
+    `compress_context(file_path=...)` uses (QB-133 extension-based
+    routing, QB-130 `.quor.toml` project overrides, `_scan_secrets_safe()`
+    already applied inside `apply_filter_pipeline()` itself) — a second,
+    parallel compression path here would risk drifting from the real one.
+    `file_path` is validated the same way every other path argument in
+    this module is (`_relative_posix_path()` — must resolve inside this
+    server's cwd); anything outside it, or unreadable, or a pipeline error,
+    still returns a normal prompt *string* explaining the failure rather
+    than raising — a `prompts/get` failure would surface as a protocol-
+    level error to the client, worse than a prompt that just says what
+    went wrong.
+    """
+    root = Path.cwd()
+    rel_path = _relative_posix_path(file_path, root)
+    if rel_path is None:
+        return f"Could not resolve {file_path!r} to a file inside {root} — nothing to compress."
+
+    resolved = root / rel_path
+    try:
+        raw_text = resolved.read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        return f"Could not read {file_path!r}: {exc}"
+
+    try:
+        project_overrides = _resolve_project_overrides(resolved)
+        compressed, filter_config = apply_filter_pipeline(
+            raw_text,
+            raw_text,
+            file_path=resolved,
+            min_token_threshold=project_overrides.min_token_threshold,
+            exclude_patterns=project_overrides.exclude_patterns,
+            ast_pruning_enabled=project_overrides.ast_pruning_enabled,
+        )
+    except Exception as exc:  # noqa: BLE001 — fail-open: a prompt read must never raise
+        return f"Compression failed for {file_path!r}: {exc}"
+
+    filter_name = filter_config.name if filter_config is not None else "passthrough"
+    return (
+        f"Analyze the following compressed content of {rel_path} "
+        f"(filter: {filter_name}). Summarize its purpose, key symbols/"
+        "exports, and anything notable about its structure:\n\n"
+        f"{compressed}"
+    )
 
 
 def main() -> None:
