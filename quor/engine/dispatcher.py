@@ -26,6 +26,17 @@ calls each helper inline, in the same order, for its own CLI-specific
 concerns (tracking, files_changed, the concise-output instruction,
 onboarding tips) that don't apply to an MCP tool call.
 
+QB-135 (Project-Config Parity): `run_dispatch()` previously never resolved
+a `.quor.toml` project override at all — only `apply_filter_pipeline()`'s
+callers (MCP, `quor benchmark`) did, via `resolve_effective_config()`. Now
+`run_dispatch()` calls the same `find_and_load_project_config()` +
+`resolve_effective_config()` pair itself (`_resolve_project_overrides()`,
+below), anchored on the dispatched command's file identity when one exists
+(`_extract_cat_file_path()` — only the narrow `cat <path>` shape, not a
+general heuristic) or the cwd otherwise, so `min_token_threshold`,
+`exclude_patterns`, and `ast_pruning_enabled` overrides now reach the real
+CLI dispatch path too.
+
 The concise-output instruction is likewise dispatcher-level only: it is
 prepended to the already-assembled output right before the final
 `sys.stdout.write`, never fed back into ContentMask/tee/plugins, and only
@@ -54,7 +65,11 @@ from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from quor.config.loader import load_user_config
+from quor.config.loader import (
+    find_and_load_project_config,
+    load_user_config,
+    resolve_effective_config,
+)
 from quor.config.model import FilterConfig, QuorUserConfig
 from quor.filters.registry import FilterRegistry
 from quor.pipeline.content_type import detect
@@ -135,28 +150,53 @@ def run_dispatch(args: list[str], tracking: TrackingDB | None = None) -> int:
     proc = result
     captured = proc.stdout or ""
 
-    # QuorUserConfig.toml is read+parsed+validated at most once per dispatch:
-    # tee cleanup (below, for tee_max_bytes — QB-103), _setup_plugins() (only
-    # when plugins are discovered), and _apply_tee() (whenever the
-    # non-passthrough path is reached) each need it, so a dispatch touching
-    # more than one of these previously risked reading the same on-disk file
-    # more than once. get_user_config() is a plain memoizing closure local to
-    # this one call — nothing is cached across dispatches or processes, so
-    # this changes nothing about *what* is read, only how many times.
-    # Declared here, before tee cleanup, so cleanup_tee()'s tee_max_bytes
-    # shares this same single read too.
+    # QB-135: the only file identity run_dispatch() can extract from an
+    # arbitrary dispatched command without guessing — see
+    # _extract_cat_file_path()'s own docstring. None for every other
+    # command shape (git status, pytest, npm test, ...), same as today.
+    cat_file_path = _extract_cat_file_path(args)
+
+    # QuorUserConfig.toml (+ any `.quor.toml` project override, QB-135) is
+    # read+parsed+validated+merged at most once per dispatch: tee cleanup
+    # (below, for tee_max_bytes — QB-103), _setup_plugins() (only when
+    # plugins are discovered), _apply_tee() (whenever the non-passthrough
+    # path is reached), and the bypass/ast_pruning_enabled checks below each
+    # need it, so a dispatch touching more than one of these previously
+    # risked reading the same on-disk file(s) more than once. get_user_config()
+    # is a plain memoizing closure local to this one call — nothing is cached
+    # across dispatches or processes, so this changes nothing about *what* is
+    # read, only how many times. Declared here, before tee cleanup, so
+    # cleanup_tee()'s tee_max_bytes shares this same single read too.
     cached_user_config: QuorUserConfig | None = None
 
     def get_user_config() -> QuorUserConfig:
         nonlocal cached_user_config
         if cached_user_config is None:
-            cached_user_config = load_user_config()
+            cached_user_config = _resolve_project_overrides(cat_file_path or Path.cwd())
         return cached_user_config
 
     # --- Tee cleanup: once per dispatch, throttled internally (ADR-023) ---
     _cleanup_tee_safe(get_user_config)
 
-    filter_config, registry = _lookup_filter(cmd_str)
+    # QB-135: same bypass apply_filter_pipeline() already applies for its
+    # own callers (MCP compress_context, quor benchmark) — a project's
+    # resolved min_token_threshold/exclude_patterns now reach the real CLI
+    # dispatch path too, not just those two. `cat_file_path is None` means
+    # this command has no single-file identity to check exclude_patterns
+    # against (correct, not a bug — see apply_filter_pipeline()'s own
+    # docstring for the identical case).
+    effective_config = get_user_config()
+    bypassed = (
+        effective_config.min_token_threshold > 0
+        and count_tokens(captured) < effective_config.min_token_threshold
+    ) or (
+        cat_file_path is not None
+        and _matches_any_pattern(cat_file_path, effective_config.exclude_patterns)
+    )
+    if bypassed:
+        filter_config, registry = None, None
+    else:
+        filter_config, registry = _lookup_filter(cmd_str)
     plugin_registry, plugin_ctx = _setup_plugins(get_user_config)
 
     pre_output, raw_content_type = _run_pre_filter_plugins(
@@ -191,14 +231,12 @@ def run_dispatch(args: list[str], tracking: TrackingDB | None = None) -> int:
         content_type = raw_content_type
     else:
         content_type = detect(pre_output).value
-    # QB-132: run_dispatch() (the real Bash CLI dispatch path) has no
-    # resolved-project-config plumbing today — unlike apply_filter_pipeline()
-    # (QB-130's min_token_threshold/exclude_patterns are the same, pre-
-    # existing gap — see that function's own docstring). Only the *global*
-    # QuorUserConfig.ast_pruning_enabled is honored here; a `.quor.toml`
-    # project override does not reach this path. get_user_config() is
-    # already loaded/cached above for _setup_plugins()/_apply_tee(), so this
-    # costs no extra I/O.
+    # QB-135: get_user_config() now returns the resolved effective config —
+    # global QuorUserConfig with any `.quor.toml` project override merged in
+    # (QB-130) — so a project's ast_pruning_enabled override reaches this
+    # path exactly like it already does for apply_filter_pipeline()'s own
+    # callers. Already loaded/cached above for the bypass check/
+    # _setup_plugins()/_apply_tee(), so this costs no extra I/O.
     filtered = _apply_content_filter(
         registry,
         filter_config,
@@ -408,6 +446,50 @@ def _matches_any_pattern(file_path: Path, patterns: Sequence[str]) -> bool:
     # would silently exhaust after the first pattern and never match again.
     suffixes = ["/".join(parts[i:]) for i in range(len(parts))]
     return any(fnmatch.fnmatch(suffix, pattern) for pattern in patterns for suffix in suffixes)
+
+
+def _resolve_project_overrides(anchor_path: Path) -> QuorUserConfig:
+    """QB-135: resolve the effective config for `run_dispatch()`'s current
+    invocation — the user's global `~/.config/quor/config.toml` with any
+    `.quor.toml` project override found walking up from `anchor_path`
+    merged over it (QB-130) — the same `find_and_load_project_config()` +
+    `resolve_effective_config()` pair `apply_filter_pipeline()`'s own
+    callers (`mcp/server.py`'s `_resolve_project_overrides()`, `quor
+    benchmark`) already apply; `run_dispatch()` itself had never called
+    either before this. Fail-open: a project-config resolution error
+    (unreadable directory, race with a file being deleted mid-walk) must
+    never block a real dispatch, so this falls back to the global config
+    alone on any exception — same contract as every other fail-open helper
+    in this module.
+    """
+    try:
+        project_config = find_and_load_project_config(anchor_path)
+        return resolve_effective_config(load_user_config(), project_config)
+    except Exception:  # noqa: BLE001 — fail-open: config resolution must never break a dispatch
+        return load_user_config()
+
+
+def _extract_cat_file_path(args: list[str]) -> Path | None:
+    """QB-135: `run_dispatch()`'s only reliable file identity — when the
+    dispatched command is literally `cat <path>` (exactly one positional
+    argument, no flags). This is the same narrow shape `_lookup_filter()`'s
+    own `file_path` parameter already documents elsewhere in this module:
+    "`run_dispatch()` never passes `file_path` (its `cmd_str` is already a
+    real `cat <path>` command when that's what ran, so it already matches
+    directly)" — reused here, not a new heuristic, to anchor `.quor.toml`
+    project-config resolution and to check `exclude_patterns` against the
+    actual file being read.
+
+    Any other command (`git status`, `pytest`, `npm test`, a `cat` with
+    flags or multiple paths, ...) has no single-file identity to extract
+    without guessing — returns `None`, which both callers below already
+    treat as "no file identity" correctly, not a bug (see
+    `apply_filter_pipeline()`'s own docstring for the identical "nothing to
+    match a glob against" case for MCP's plain `raw_text` path).
+    """
+    if len(args) == 2 and args[0] == "cat" and not args[1].startswith("-"):
+        return Path(args[1])
+    return None
 
 
 def _run_subprocess(args: list[str]) -> subprocess.CompletedProcess[str] | int:

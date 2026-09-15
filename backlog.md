@@ -1321,6 +1321,51 @@ Full `tests/unit` suite green, `ruff`/`mypy` clean.
 
 ---
 
+#### QB-135 — `run_dispatch()` (the real Bash CLI dispatch path) never resolved a `.quor.toml` project override at all — `min_token_threshold`/`exclude_patterns`/`ast_pruning_enabled` were silently inert for every real `quor <command>` invocation
+
+**Effort:** Small · **Value:** High — `run_dispatch()` is Quor's core interception mechanism (what
+`quor git status`/`quor cat foo.py`/every hook-intercepted Bash command actually runs), almost
+certainly the dominant real-world call path, so anyone who set up per-project compression tuning in
+`.quor.toml` had it do nothing for their actual CLI usage · **Risk:** Low · **Expected token impact:**
+Makes QB-130's already-shipped `.quor.toml` overrides (and QB-132's `ast_pruning_enabled`) reachable
+from the primary usage pattern, not just MCP `compress_context`/`quor benchmark` · **Category:** Bug fix
+
+**Found 2026-09-14**, direct source read of `run_dispatch()` and `__main__.py`'s `_run_dispatch()`:
+neither called `resolve_effective_config()`/`find_and_load_project_config()` at all. Only
+`apply_filter_pipeline()`'s callers (MCP, `quor benchmark`) ever resolved a project config —
+`run_dispatch()` itself, per its own then-current QB-132 comment, only ever read the *global*
+`QuorUserConfig.ast_pruning_enabled`; `min_token_threshold`/`exclude_patterns` reached neither path
+before this fix. Same architectural gap class as QB-109/QB-112/QB-114/QB-133: a mechanism built and
+verified against one caller, silently absent from the dominant one.
+
+**Shipped same day.** `run_dispatch()` now calls a new `_resolve_project_overrides()` helper (the same
+`find_and_load_project_config()` + `resolve_effective_config()` pair `mcp/server.py`'s own
+`_resolve_project_overrides()`/`quor benchmark` already use), anchored on the dispatched command's file
+identity when one exists. That identity comes from a new `_extract_cat_file_path()` — deliberately
+narrow: only the literal `cat <path>` shape (one positional argument, no flags), reusing the exact
+precedent `_lookup_filter()`'s own `file_path` parameter already documents elsewhere in this module,
+not a new heuristic guessing a "the file" out of an arbitrary shell command. Every other command shape
+(`git status`, `pytest`, `npm test`, ...) has no single-file identity to extract — `exclude_patterns`
+correctly never matches there (same "nothing to match a glob against" contract
+`apply_filter_pipeline()`'s own docstring already establishes for MCP's plain `raw_text` path), while
+`min_token_threshold`/`ast_pruning_enabled` (which don't need a file identity) still apply. The
+`min_token_threshold`/`exclude_patterns` bypass logic mirrors `apply_filter_pipeline()`'s own bypass
+exactly (same passthrough path, so PRE_FILTER plugins and the secret-scan safety net still run either
+way). `get_user_config()`'s existing per-dispatch memoizing closure now caches the *resolved* config
+instead of the raw global one — `tee_enabled`/`tee_max_bytes`/`mode` (not part of `ProjectConfig`) are
+unaffected, so this is behavior-preserving for tee/plugins and additionally correct for
+`ast_pruning_enabled`/`min_token_threshold`/`exclude_patterns`.
+
+Tests: `tests/unit/test_project_config.py::TestRunDispatchProjectConfigWiring` (project
+`min_token_threshold` bypass, project `exclude_patterns` bypass, project `ast_pruning_enabled`
+override, a non-`cat` command's `exclude_patterns` correctly never matching, and a no-`.quor.toml`
+control proving behavior is unchanged when there's nothing to override). Full `tests/unit` suite green,
+`ruff`/`mypy` clean.
+
+**Status:** Shipped.
+
+---
+
 #### QB-110 — Windows platform audit: paths, encoding, performance (long-path/MAX_PATH fix)
 
 **Effort:** Small-Medium · **Value:** Medium-High (correctness fix for Quor's own stated target

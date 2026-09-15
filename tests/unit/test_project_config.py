@@ -413,6 +413,101 @@ class TestAstPruningEnabledWiring:
 
 
 # ---------------------------------------------------------------------------
+# run_dispatch — .quor.toml project-config resolution (QB-135)
+# ---------------------------------------------------------------------------
+
+
+class TestRunDispatchProjectConfigWiring:
+    """QB-135: unlike QB-132's `test_run_dispatch_honors_the_global_setting`
+    above (only the *global* `ast_pruning_enabled` reached `run_dispatch()`
+    before this fix — `min_token_threshold`/`exclude_patterns` reached
+    neither), `run_dispatch()` now resolves a project's `.quor.toml` the
+    same way `apply_filter_pipeline()`'s own callers (MCP, `quor benchmark`)
+    already do, anchored on the dispatched `cat <path>` command's own file
+    (`_extract_cat_file_path()`)."""
+
+    _PY_SOURCE = 'def foo(x, y):\n    """Add two numbers."""\n    total = x + y\n    return total\n'
+
+    def _run_dispatch_capturing(self, args: list[str], stdout_text: str) -> str:
+        import io
+        import subprocess
+        from unittest.mock import MagicMock, patch
+
+        from quor.engine.dispatcher import run_dispatch
+
+        proc = MagicMock(spec=subprocess.CompletedProcess)
+        proc.stdout = stdout_text
+        proc.returncode = 0
+
+        captured = io.StringIO()
+        with patch("subprocess.run", return_value=proc), patch("sys.stdout", captured):
+            run_dispatch(args, tracking=None)
+        return captured.getvalue()
+
+    def test_project_min_token_threshold_bypasses_a_cat_dispatch(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _write_project_config(tmp_path, "[compression]\nmin_token_threshold = 1000000\n")
+        (tmp_path / "script.py").write_text(self._PY_SOURCE, encoding="utf-8")
+        monkeypatch.chdir(tmp_path)
+
+        output = self._run_dispatch_capturing(["cat", "script.py"], self._PY_SOURCE)
+
+        # A real filter match would strip the function body (AST pruning) —
+        # byte-identical output proves the threshold bypassed it entirely.
+        assert output == self._PY_SOURCE
+
+    def test_project_exclude_patterns_bypasses_a_cat_dispatch(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _write_project_config(tmp_path, '[ignore]\nexclude_patterns = ["script.py"]\n')
+        (tmp_path / "script.py").write_text(self._PY_SOURCE, encoding="utf-8")
+        monkeypatch.chdir(tmp_path)
+
+        output = self._run_dispatch_capturing(["cat", "script.py"], self._PY_SOURCE)
+
+        assert output == self._PY_SOURCE
+
+    def test_project_ast_pruning_enabled_override_reaches_run_dispatch(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _write_project_config(tmp_path, "[compression]\nast_pruning_enabled = false\n")
+        (tmp_path / "script.py").write_text(self._PY_SOURCE, encoding="utf-8")
+        monkeypatch.chdir(tmp_path)
+
+        output = self._run_dispatch_capturing(["cat", "script.py"], self._PY_SOURCE)
+
+        assert "total = x + y" in output
+
+    def test_exclude_patterns_never_matches_a_non_cat_command(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A command with no single-file identity (anything but `cat <path>`)
+        has nothing for exclude_patterns to match against — silently not
+        bypassing is correct, not a gap (see `_extract_cat_file_path()`'s
+        own docstring). Proven here via the generic filter's
+        deduplicate_consecutive stage still firing on `git status` output,
+        which a bypass would have prevented."""
+        _write_project_config(tmp_path, '[ignore]\nexclude_patterns = ["*"]\n')
+        monkeypatch.chdir(tmp_path)
+
+        output = self._run_dispatch_capturing(["git", "status"], _REPEATED_LINE_TEXT)
+
+        assert output.count("identical line") < 200
+
+    def test_no_project_config_behaves_exactly_like_before(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """No `.quor.toml` anywhere above `tmp_path` — resolve_effective_config()
+        returns the global config unchanged, so behavior matches pre-QB-135."""
+        monkeypatch.chdir(tmp_path)
+
+        output = self._run_dispatch_capturing(["cat", "script.py"], self._PY_SOURCE)
+
+        assert "total = x + y" not in output  # AST pruning still runs by default
+
+
+# ---------------------------------------------------------------------------
 # apply_filter_pipeline / _lookup_filter — extension-based routing fallback
 # (QB-133)
 # ---------------------------------------------------------------------------
